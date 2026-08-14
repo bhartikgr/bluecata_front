@@ -190,9 +190,62 @@ app.use((req, res, next) => {
           if (!actualCols.has(col)) missing.push(`${tbl}.${col}`);
         }
       }
-      if (missing.length > 0) {
+      /* ======================================================================
+       * WAVE 49 · C-3 — THE BOOT DOCTOR NOW CHECKS THE MIGRATIONS.
+       *
+       * The 14-column check above (v23.4.1) is kept: it is cheap and it has
+       * caught real drift. What it could not do is notice that NONE of the
+       * numbered migrations had ever been applied. Review C measured a database
+       * with no `__drizzle_migrations_applied` ledger, 0 of Wave 48's 142 money
+       * type-floor triggers, and no `partner_invoice` table — on which this
+       * doctor printed "schema is current". It was not lying about its 14
+       * columns; it was drawing a conclusion those 14 columns cannot support.
+       *
+       * `checkMigrationIntegrity` verifies the ledger exists, that its highest
+       * applied id equals the highest migration file on disk, that a
+       * representative set of tables from migrations 0167–0186 is present, that
+       * all 142 type-floor triggers exist, AND that each installed trigger's
+       * BODY matches the one in migration 0186 (finding A-6B). It is read-only.
+       *
+       * Same escalation as the column check: fatal in production, loud warning
+       * elsewhere. Every failure names its subject — a doctor that says
+       * "out of date" without saying what is out of date is how C-3 survived.
+       * ==================================================================== */
+      let migrationProblems: string[] = [];
+      let migrationSummary = "";
+      try {
+        const { checkMigrationIntegrity, formatMigrationIntegrity } = await import(
+          "./lib/migrationIntegrity"
+        );
+        const integrity = checkMigrationIntegrity({ db });
+        migrationSummary = formatMigrationIntegrity(integrity);
+        migrationProblems = integrity.problems
+          .filter((p) => p.severity === "fail")
+          .map((p) => `[${p.code}] ${p.detail}`);
+        for (const w of integrity.problems.filter((p) => p.severity === "warn")) {
+          structuredLog.warn(`[boot] db:doctor migration warning [${w.code}] ${w.detail}`);
+        }
+      } catch (integrityErr) {
+        /* Fail LOUD, not silent. If the migration check itself cannot run we do
+         * not know the state of the schema, and "we do not know" must never be
+         * reported as "current" — that is precisely the C-3 failure mode. */
+        migrationProblems = [
+          `[migration_check_failed] the migration-integrity check could not run: ` +
+            `${(integrityErr as Error).message}. Schema state is UNKNOWN.`,
+        ];
+      }
+
+      if (missing.length > 0 || migrationProblems.length > 0) {
         const isProd = process.env.NODE_ENV === "production";
-        const msg = `[boot] Database schema is out of date. Run 'npm run db:migrate' then restart. Missing: ${missing.join(", ")}.`;
+        const parts: string[] = [];
+        if (missing.length > 0) parts.push(`Missing columns/tables: ${missing.join(", ")}.`);
+        if (migrationProblems.length > 0) {
+          parts.push(`Migration integrity FAILED: ${migrationProblems.join(" | ")}`);
+        }
+        const msg =
+          `[boot] Database schema is out of date. Run 'npm run db:migrate' then restart. ` +
+          parts.join(" ");
+        if (migrationSummary) structuredLog.warn(`[boot] db:doctor detail\n${migrationSummary}`);
         if (isProd) {
           structuredLog.error(msg + " Aborting boot.");
           process.exit(1);
@@ -200,7 +253,11 @@ app.use((req, res, next) => {
           structuredLog.warn(msg + " (non-production: continuing anyway)");
         }
       } else {
-        structuredLog.info("[boot] db:doctor passed — schema is current");
+        structuredLog.info(
+          "[boot] db:doctor passed — critical columns present AND migration ledger, " +
+            "recent-migration tables and all money type-floor triggers verified",
+        );
+        if (migrationSummary) structuredLog.info(`[boot] db:doctor detail\n${migrationSummary}`);
       }
     } catch (doctorErr) {
       // Doctor check failed (e.g. fresh DB before first migrate) — warn and continue

@@ -68,6 +68,7 @@ import {
   spvFormationChecklist,
   spvFilingsChecklist,
   SPV_JURISDICTION_GENERIC_NOTICE,
+  spvJurisdictionDisplay, /* WAVE 40 / F-3 — single jurisdiction precedence */
 } from "@shared/spvEngine";
 
 /* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
@@ -249,18 +250,50 @@ export interface SpvDetail {
 
 const CHECK_ITEM = "flex items-start gap-2 text-xs py-1";
 
+/* WAVE 40 — the 16 tab keys this component declares, kept next to the triggers
+   themselves. Used ONLY to validate an incoming `initialTab`: an unrecognised
+   value falls back to "overview" instead of leaving Radix with a selected value
+   that matches no trigger (which renders a tab strip with nothing selected and
+   no panel — the exact shape of the F-1 defect this wave fixed). */
+export const SPV_TAB_KEYS: readonly string[] = [
+  "overview",
+  "mandate",
+  "fees",
+  "lps",
+  "deployments",
+  "distributions",
+  "documents",
+  "transfers",
+  "close",
+  "winddown",
+  "compliance",
+  "esignature",
+  "nav",
+  "k1",
+  "sideletters",
+  "reach",
+];
+
 export function SpvDetailTabs({
   spvId,
   detail,
   currency,
   canWrite,
   onChanged,
+  initialTab,
 }: {
   spvId: string;
   detail: SpvDetail;
   currency: string;
   canWrite: boolean;
   onChanged: () => void;
+  /* WAVE 40 — which tab this mount opens on. Optional and defaulted, so every
+     existing call site keeps landing on Overview unchanged; the SPV Engine list
+     passes "lps" when the GP arrives via the "Open LP roster & capital calls"
+     link, so the link keeps the promise its label makes. An unknown value would
+     leave Radix with no selected tab, so it is validated against the declared
+     trigger set below rather than trusted. */
+  initialTab?: string;
 }) {
   const register = detail.register ?? [];
   const subs = detail.subscriptions ?? [];
@@ -307,8 +340,18 @@ export function SpvDetailTabs({
     if (!Number.isInteger(n) || n < 1990 || n > 9999) return "—";
     return String(n);
   })();
-  const jurisdictionDisplay =
-    compliance.code === "other" && jurisdictionCountry.trim() ? jurisdictionCountry.trim() : compliance.label;
+  /* WAVE 40 / F-3 — the DISPLAYED jurisdiction now comes from the one shared
+     resolver every SPV surface uses (`spvJurisdictionDisplay`, shared/spvEngine.ts),
+     so this panel, the SPV Engine list card and the standalone detail page can no
+     longer print three different domiciles for the same stored row. The COMPLIANCE
+     copy above still keys on `compliance`, which is derived from the same
+     country-first value — the label and the compliance text stay in agreement.
+     `compliance.label` remains the fallback path inside the shared resolver, so
+     nothing about non-US vehicles changes except that it is decided once. */
+  const jurisdictionDisplay = spvJurisdictionDisplay({
+    jurisdiction: typeof spv.jurisdiction === "string" ? spv.jurisdiction : null,
+    terms: spv.terms,
+  }).label;
 
   // D6 — jurisdiction-aware, NON-BLOCKING investor-count awareness.
   const lpCount = subs.filter((s) => s.status !== "withdrawn").length;
@@ -317,7 +360,11 @@ export function SpvDetailTabs({
   const overLimit = awareness.limit != null && lpCount > awareness.limit;
 
   return (
-    <Tabs defaultValue="overview" className="w-full" data-testid={`spv-tabs-${spvId}`}>
+    <Tabs
+      defaultValue={initialTab && SPV_TAB_KEYS.includes(initialTab) ? initialTab : "overview"}
+      className="w-full"
+      data-testid={`spv-tabs-${spvId}`}
+    >
       <TabsList className="flex flex-wrap h-auto">
         <TabsTrigger value="overview" data-testid="spv-tab-overview">Overview</TabsTrigger>
         <TabsTrigger value="mandate" data-testid="spv-tab-mandate">Mandate</TabsTrigger>

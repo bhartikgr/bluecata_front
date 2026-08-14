@@ -194,8 +194,11 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       // discipline. Any future sacred waiver must update BOTH places.
       "server/lib/capTableMembership.ts":
         "688b555426544527534afa12ce54e34069480db989c74c85d7d9020b9a45d750",
-      // WAIVER-5 — WAVE 34, **PENDING OWNER RATIFICATION** (parent agent,
-      // 2026-08-11). Covers client/src/pages/founder/Billing.tsx, whose
+      // WAIVER-5 — WAVE 34, taken under delegated authority 2026-08-11,
+      // **OWNER-RATIFIED 2026-08-13** (WAVE 48 · ITEM 2, ruling R13 "Ratify").
+      // The ratification changed the DECISION record only: the hash pinned below
+      // is the same Wave 34 hash, and G-8/G-9 still enforce it byte-for-byte.
+      // Covers client/src/pages/founder/Billing.tsx, whose
       // `minor / 100` hardcoded an ISO-4217 exponent of 2 and would render a JPY
       // invoice wrong by a factor of 100 to a paying customer. Now exponent-driven
       // via client/src/lib/currency.ts formatMinor.
@@ -206,7 +209,7 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       // and escalated rather than hiding it — the correct behaviour.
       //
       // AND THIS ENTRY, AGAIN, IS THE SECOND-PATH MISS. WAIVER-5 was recorded in
-      // sacred_check.sh, which reported 47/47 green, while this test stayed RED.
+      // sacred_check.sh, which reported 47/47 green (48/48 since Wave 50), while this test stayed RED.
       // That is the identical failure documented for WAIVER-4 eleven lines above,
       // repeated on the very next waiver despite the warning being written here.
       // A waiver is not installed until BOTH enforcement points are updated and
@@ -248,9 +251,10 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     }
     // Baseline size invariant — 40 is CORRECT and must not be "corrected" to 47.
     // This test reads sacred_baseline/SACRED_SHA256.txt, which holds 40 entries.
-    // `npm run sacred` reports 47/47 because scripts/sacred_check.sh checks those
-    // 40 PLUS 7 further files it tracks separately (see its header). Two different
-    // manifests, two different correct numbers. Changing this to 47 makes the test
+    // `npm run sacred` reports 48/48 because scripts/sacred_check.sh checks those
+    // 40 PLUS 7 (Wave 47) PLUS 1 (Wave 50: server/db/connection.ts) further files it
+    // tracks separately (see its header). Two different manifests, two different
+    // correct numbers. Changing this to 48 makes the test
     // fail, which is how this comment came to be written.
     expect(total).toBe(40);
     // WAIVER-1 (owner ruling 2026-08-09, spec/OWNER_RULINGS_2026_08_09.md item G-4 /
@@ -374,21 +378,48 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     expect(uncovered, "waivers installed in sacred_check.sh but NOT in this test").toEqual([]);
   });
 
-  /* ---------- G-11: an UNRATIFIED waiver must be visible, at BOTH points ----- */
+  /* ---------- G-11: ratification state must agree at BOTH points ------------- */
   /* WAVE 38 · ROW 6. WAIVER-5 (client/src/pages/founder/Billing.tsx) was taken
-   * under DELEGATED authority and has never been signed off by the owner. Its
+   * under DELEGATED authority and had never been signed off by the owner. Its
    * bytes were enforced — but every gate an operator reads printed a flat green
-   * `SACRED OK: 47/47`, so nothing distinguished a sacred edit the owner
+   * `SACRED OK: 47/47` (48/48 since Wave 50), so nothing distinguished a sacred edit the owner
    * approved from one nobody has yet agreed to. Enforcement of BYTES is not
    * ratification of a DECISION, and a summary that conflates them is a check
    * that passes while checking nothing.
    *
-   * This table is the SECOND enforcement point's independent copy of the
+   * WAVE 48 · ITEM 2 (R13) — THE OWNER RATIFIED WAIVER-5 ON 2026-08-13
+   * ("Ratify"). So the pending set is now EMPTY and WAIVER-5 moves into
+   * RATIFIED_HERE below. This is NOT a weakening of Row 6's check, and the
+   * distinction matters enough to spell out:
+   *   • field 5 is still MANDATORY and still validated against the recognised
+   *     set on EVERY row (POLE 1), so a missing or unknown state still fails;
+   *   • the pending set is still compared with sacred_check.sh in BOTH
+   *     directions (POLE 2), so a NEW delegated waiver appearing there while
+   *     this table says "nothing is pending" still fails;
+   *   • the RATIFIED set is now ALSO compared in both directions (POLE 3), so a
+   *     row cannot be quietly flipped to RATIFIED in the shell script without
+   *     this second enforcement point recording the same decision — which is the
+   *     property the empty pending set would otherwise have cost us;
+   *   • the waived file's bytes are untouched: WAIVER_1_FROZEN still pins
+   *     ddbc591c… for Billing.tsx and G-8/G-9 still enforce it. Ratifying a
+   *     waiver changes a DECISION record, never a hash.
+   *
+   * These tables are the SECOND enforcement point's independent copy of the
    * ratification state — the same reasoning as WAIVER_1_FROZEN and
-   * EXTRA_WAIVED_FROZEN. It is compared against sacred_check.sh in BOTH
-   * directions, so neither a waiver quietly marked RATIFIED there nor a new
-   * unratified waiver added there can slip past. */
+   * EXTRA_WAIVED_FROZEN. */
   const PENDING_RATIFICATION: Record<string, string> = {
+    /* EMPTY since 2026-08-13. A new delegated, unsigned waiver belongs here. */
+  };
+
+  /** WAVE 48 · ITEM 2 — waiver id → the date the owner ratified it, keyed by
+   *  path. Independently written here; compared with sacred_check.sh below. */
+  const RATIFIED_HERE: Record<string, string> = {
+    "client/src/components/home3compo/LearnSection.jsx": "WAIVER-1",
+    "client/src/components/home3compo/PricingSection.jsx": "WAIVER-1",
+    "server/lib/capTableMembership.ts": "WAIVER-4",
+    "server/lib/rateLimit.ts": "WAIVER-2",
+    "server/db/migrate.ts": "WAIVER-3",
+    /* Ratified 2026-08-13 by owner ruling R13 (WAVE 48 · ITEM 2). */
     "client/src/pages/founder/Billing.tsx": "WAIVER-5",
   };
 
@@ -417,14 +448,34 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       .sort();
     expect(pendingThere, "pending waivers in sacred_check.sh vs this test").toEqual(pendingHere);
 
-    /* POLE 3 — and it is a NON-EMPTY set today. If WAIVER-5 is ever ratified,
-       this assertion is the thing that forces the ratification to be recorded
-       in both places at once instead of one. */
-    expect(pendingHere.length).toBe(1);
-    expect(pendingHere[0]).toContain("WAIVER-5");
+    /* POLE 3 — WAVE 48 · ITEM 2. The pending set is empty, so the load-bearing
+       both-directions assertion moves to the RATIFIED set: every row the shell
+       script calls RATIFIED must be recorded as ratified HERE, and vice versa.
+       Without this, an empty pending table would make POLE 2 satisfiable by a
+       script in which every waiver had been silently self-ratified. */
+    const ratifiedThere = rows
+      .filter((r) => r.ratification === "RATIFIED")
+      .map((r) => `${r.waiver} ${r.path}`)
+      .sort();
+    const ratifiedHere = Object.entries(RATIFIED_HERE)
+      .map(([p, w]) => `${w} ${p}`)
+      .sort();
+    expect(ratifiedThere, "RATIFIED waivers in sacred_check.sh vs this test").toEqual(ratifiedHere);
+
+    /* POLE 4 — the two sets PARTITION the rows: every waiver row is in exactly
+       one of them, so a row can neither be counted twice nor vanish. */
+    expect(ratifiedThere.length + pendingThere.length).toBe(rows.length);
+
+    /* POLE 5 — WAIVER-5 specifically is now RATIFIED, and is still a waiver in
+       force (not deleted, its bytes still frozen). */
+    expect(ratifiedHere.join("\n")).toContain("WAIVER-5 client/src/pages/founder/Billing.tsx");
+    expect(Object.keys(PENDING_RATIFICATION)).toEqual([]);
+    expect(WAIVER_1_FROZEN["client/src/pages/founder/Billing.tsx"]).toBe(
+      "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f",
+    );
   });
 
-  it("(G-11b) sacred_check.sh's OWN OUTPUT names every unratified waiver", () => {
+  it("(G-11b) sacred_check.sh's OWN OUTPUT states the ratification state honestly", () => {
     /* The point of Row 6 is what an OPERATOR SEES, so this executes the gate and
        reads the line, rather than trusting the array it is derived from. The
        script only reads files, so running it here cannot dirty the tree. */
@@ -432,12 +483,30 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       encoding: "utf8",
       cwd: ROOT,
     });
-    expect(out).toContain("SACRED OK: 47/47");
+    expect(out).toContain("SACRED OK: 48/48");
     for (const [rel, waiver] of Object.entries(PENDING_RATIFICATION)) {
       expect(out, `${waiver} is pending ratification but the summary line does not say so`).toContain(waiver);
       expect(out).toContain(rel);
     }
-    expect(out).toContain("PENDING OWNER RATIFICATION");
+    /* WAVE 48 · ITEM 2 — with nothing pending, the operator line must say so
+       POSITIVELY rather than simply omitting the subject, and must not still be
+       claiming a pending ratification. */
+    if (Object.keys(PENDING_RATIFICATION).length === 0) {
+      expect(out).toContain("waivers OWNER-RATIFIED");
+      expect(out).not.toContain("PENDING OWNER RATIFICATION");
+      expect(out).not.toContain("UNRATIFIED");
+    } else {
+      expect(out).toContain("PENDING OWNER RATIFICATION");
+    }
+    /* The ratified waiver is STILL LISTED AS WAIVED — ratification must not make
+       a waiver disappear from what the operator sees. */
+    expect(out).toContain("WAIVER-5 x1");
+    expect(out).toContain("6 under KNOWN_DRIFT freeze");
+    const listed = execFileSync("bash", [path.join(ROOT, "scripts", "sacred_check.sh"), "--list"], {
+      encoding: "utf8",
+      cwd: ROOT,
+    });
+    expect(listed).toContain("client/src/pages/founder/Billing.tsx");
 
     /* BOTH POLES. The machine-readable form must agree with the human line —
        a JSON consumer (the deploy gate) must not see a cleaner story. */
@@ -447,11 +516,19 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
         cwd: ROOT,
       }).trim(),
     ) as { entries: number; ok: number; unratified_waivers: number; unratified: string; exit: number };
-    expect(json.entries).toBe(47);
-    expect(json.ok).toBe(47);
+    expect(json.entries).toBe(48);
+    expect(json.ok).toBe(48);
     expect(json.exit).toBe(0);
     expect(json.unratified_waivers).toBe(Object.keys(PENDING_RATIFICATION).length);
-    expect(json.unratified).toContain("WAIVER-5");
+    for (const waiver of Object.values(PENDING_RATIFICATION)) {
+      expect(json.unratified).toContain(waiver);
+    }
+    /* WAVE 48 · ITEM 2 — the machine-readable form must tell the SAME story as
+       the human line: nothing pending, and WAIVER-5 no longer named as such. */
+    if (Object.keys(PENDING_RATIFICATION).length === 0) {
+      expect(json.unratified_waivers).toBe(0);
+      expect(json.unratified).toBe("");
+    }
   });
 });
 

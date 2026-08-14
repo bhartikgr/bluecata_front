@@ -313,13 +313,39 @@ export function registerCollectiveRoutes(app: Express): void {
   /* -----------------------------------------------------------------
    * v25.47 APD-020 — public GET /api/consortium/pricing
    *
-   * PUBLIC (no auth) Consortium Partner pricing page data: the canonical
-   * 5-tier taxonomy (catalyst/builder/amplifier/nexus/founding_member),
-   * DB-resolved from platform_fees in canonical order. founding_member is
-   * flagged invite-only. No economics beyond the public list price.
+   * PUBLIC (no auth) Consortium Partner pricing page data.
+   *
+   * WAVE 46 / OWNER RULING R21, verbatim: "This should be 100% dynamic.
+   * Nothing static or hard coded." This endpoint advertises WHATEVER THE
+   * DATABASE HOLDS — every tier that has a priced, non-archived row, in
+   * canonical order, with admin-added tiers appended. Change a price, add a
+   * tier, freeze or archive one, and this response follows with NO CODE
+   * CHANGE. There is no ladder, no count and no amount compiled in; the tier
+   * COUNT is whatever the DB yields, so "the canonical 5" is an observation
+   * about today's data, not a promise this handler enforces.
+   *
+   * (Provenance corrected: the amounts come from `partner_tier_price` via
+   * `resolveConsortiumPricing`, NOT from `platform_fees` as this comment used
+   * to claim — Wave 45 moved the source and the comment was left stale.)
+   *
+   * R6 — AN EMPTY LIST IS AN EXPLICIT REFUSAL, NOT AN EMPTY PAGE. When no
+   * priced row resolves (an unpriced or wholly un-seeded DB, or a fail-closed
+   * read), we say so in the payload rather than shipping `{tiers: []}` and
+   * letting the page render a blank grid that looks like "we have no
+   * products". No economics beyond the public list price are ever exposed.
    * ----------------------------------------------------------------- */
   app.get("/api/consortium/pricing", (_req: Request, res: Response) => {
     const tiers = resolveConsortiumPricing();
+    if (tiers.length === 0) {
+      return res.json({
+        tiers,
+        unpriced: true,
+        message:
+          "No partner tier pricing is published. Pricing is served from the " +
+          "database and this platform has no compiled-in price list to fall " +
+          "back on, so nothing is advertised until a tier is priced.",
+      });
+    }
     res.json({ tiers });
   });
 

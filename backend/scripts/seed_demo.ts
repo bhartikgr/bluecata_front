@@ -23,20 +23,32 @@
  * Writes:
  *   1. `users` row per demo user (idempotent on conflict on id)
  *   2. `user_credentials` row per demo user (bcrypt-hashed; rotates on conflict)
- *   3. `audit_log` row per user (action = 'demo.seeded')
+ *   3. `audit_log` row per user (action = 'demo.seeded') — WAVE 51 · ITEM 4:
+ *      written ONLY through `appendAdminAudit()`, the canonical hash-chain
+ *      writer. If that write fails, NO row is written and the refusal is
+ *      counted and printed. This script never fabricates a `prev_hash`/`hash`
+ *      pair. Before Wave 51 it wrote a 64-zero `prev_hash` with a foreign hash
+ *      formula AND — because it used non-existent column names under an `as any`
+ *      cast — silently wrote no row at all.
  *
  * Cross-tenant note: same rationale as scripts/create_admin.ts — identity
  * tables are global; admins are scoped to `tenant_admin_capavate` only for
  * audit traceability.
  */
-import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getDb } from "../server/db/connection";
-import {
-  users as usersTable,
-  auditLog as auditLogTable,
-} from "../shared/schema";
+import { users as usersTable } from "../shared/schema";
 import { storeCredential } from "../server/userCredentialsStore";
+
+/**
+ * WAVE 51 · ITEM 4 — the tenant whose audit chain these seed rows extend.
+ *
+ * Named, because the value matters: this is the tenant that carried the live
+ * `"boot verifier tick: chain broken at link 0 of 1"` incident, and it is the
+ * only hardcoded tenant among the audit writers in `scripts/`. Rows are appended
+ * to its chain through the canonical writer or not at all.
+ */
+const DEMO_SEED_TENANT_ID = "tenant_admin_capavate";
 
 interface DemoUser {
   id: string;
@@ -65,7 +77,11 @@ function parseArgs(argv: string[]): { password: string } {
 async function main() {
   const { password } = parseArgs(process.argv.slice(2));
   const db = getDb();
-  const now = new Date().toISOString();
+  /* WAVE 51 · ITEM 4 — the local `now` this function used to hold is gone with
+   * the hand-rolled audit insert. `appendAdminAudit()` timestamps the row itself,
+   * inside the same transaction that reads the chain tip, so the timestamp that
+   * goes into the hash is the timestamp that is stored. A caller-supplied `now`
+   * could disagree with it. */
 
   // v23.4.1 Task F — Production data guard.
   // Refuse to seed demo data if real (non-demo) users already exist.
@@ -90,6 +106,10 @@ async function main() {
 
   let created = 0;
   let rotated = 0;
+  /* WAVE 51 · ITEM 4 — audit outcomes are COUNTED and reported, so "it wrote
+   * nothing" can never again be invisible. */
+  let auditsAppended = 0;
+  let auditsRefused = 0;
 
   for (const u of DEMO_USERS) {
     // 1. Upsert users row.
@@ -135,36 +155,71 @@ async function main() {
       continue;
     }
 
-    // 3. Audit row.
+    /* ═════════════════════════════════════════════════════════════════════════
+     * 3. AUDIT ROW — WAVE 51 · ITEM 4.
+     * ═════════════════════════════════════════════════════════════════════════
+     *
+     * WHAT THIS BLOCK USED TO DO — TWO defects, one of which hid the other:
+     *
+     *     const prevHash = "0".repeat(64); // simplified; full chain handled by
+     *                                      // appendAdminAudit at runtime
+     *     const currHash = sha256(prevHash + JSON.stringify(audit) + now);
+     *     db.insert(auditLogTable).values({
+     *       tenantId: "tenant_admin_capavate",
+     *       targetType: "user", payload: …, prevHash, currHash, …
+     *     } as any).onConflictDoNothing().run();
+     *     } catch { /* non-fatal; audit chain is informational here *\/ }
+     *
+     * (1) THE HASH WAS FABRICATED. `prev_hash` was pinned to 64 zeros — the
+     *     GENESIS prior — for every row and every run, and the hash came from a
+     *     formula (`sha256(prev + json + ts)`) that `verifyTenantAuditChain()`
+     *     does not use. Its comment said the chain was "handled by
+     *     appendAdminAudit at runtime"; appendAdminAudit does not revisit rows
+     *     written by anyone else, and no reconciler exists. Into a tenant that
+     *     already has history, such a row verifies as broken at the link it
+     *     occupies — the mechanism behind the live
+     *     `tenant_admin_capavate` incident, reproduced in
+     *     build_log/wave51/W51_item4_diagnose_BEFORE.json.
+     *
+     * (2) IT ALSO NEVER WROTE ANYTHING, AND SAID NOTHING. `targetType`,
+     *     `payload` and `currHash` are NOT columns of `shared/schema.ts:auditLog`
+     *     — the columns are `target`, `payload_json` and `hash`, and `hash` is
+     *     NOT NULL. The `as any` cast silenced the type error, drizzle dropped
+     *     the unknown keys, SQLite raised
+     *     `NOT NULL constraint failed: audit_log.hash`, and the bare `catch {}`
+     *     swallowed it. MEASURED, not inferred: see probe `3b` in
+     *     build_log/wave51/W51_item4_diagnose_BEFORE.json. So this seeder has
+     *     silently audited nothing, while looking in review like a writer that
+     *     needed only its field names corrected — which would have started
+     *     landing broken rows immediately.
+     *
+     * THE FIX: the canonical writer, which computes `prev_hash` and `hash`
+     * itself inside BEGIN IMMEDIATE from the tenant's real chain tip, or NO ROW
+     * AT ALL with the failure stated. A seeder is not exempt: an unverifiable
+     * row written by a seed script is indistinguishable from tampering to every
+     * verifier that reads it afterwards. */
     try {
-      const audit = {
-        actor: "system:seed_demo",
-        action: "demo.seeded",
-        target: `user:${u.id}`,
-        payload: { email: u.email, role: u.role, password_rotated: true },
-      };
-      const auditId = `audit_demo_${u.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const prevHash = "0".repeat(64); // simplified; full chain handled by appendAdminAudit at runtime
-      const currHash = createHash("sha256")
-        .update(prevHash + JSON.stringify(audit) + now)
-        .digest("hex");
-      db.insert(auditLogTable)
-        .values({
-          id: auditId,
-          tenantId: "tenant_admin_capavate",
-          actorId: "system:seed_demo",
-          action: audit.action,
-          targetType: "user",
-          targetId: u.id,
-          payload: JSON.stringify(audit.payload),
-          prevHash,
-          currHash,
-          createdAt: now,
-        } as any)
-        .onConflictDoNothing()
-        .run();
-    } catch {
-      /* non-fatal; audit chain is informational here */
+      const { appendAdminAudit } = await import("../server/adminPlatformStore");
+      appendAdminAudit(
+        "system:seed_demo",
+        `user:${u.id}`,
+        "demo.seeded",
+        { email: u.email, role: u.role, password_rotated: true, source: "scripts/seed_demo.ts" },
+        DEMO_SEED_TENANT_ID,
+      );
+      auditsAppended++;
+    } catch (err) {
+      /* LOUD, and no row. The seed's user/credential writes above are the
+       * point of this script and remain valid; what must never happen is a
+       * fabricated chain link, so nothing is written on this path. */
+      auditsRefused++;
+      console.error(
+        `[seed_demo] AUDIT NOT WRITTEN for ${u.email}: ${(err as Error).message}\n` +
+          `  No audit_log row was created. This script will NOT fabricate a prev_hash/hash\n` +
+          `  pair — an unverifiable row breaks verifyTenantAuditChain() for ` +
+          `${DEMO_SEED_TENANT_ID}\n  permanently (audit_log is append-only). ` +
+          `See build_log/wave51/AUDIT_CHAIN_REPAIR.md.`,
+      );
     }
 
     console.log(`  \u2713 ${u.email.padEnd(36)} (role=${u.role})`);
@@ -172,6 +227,12 @@ async function main() {
 
   console.log("");
   console.log(`Seeded ${DEMO_USERS.length} demo users (${created} new, ${rotated} credentials rotated).`);
+  /* WAVE 51 · ITEM 4 — the audit outcome is REPORTED. The previous version could
+   * not have told you it had written nothing, because it never looked. */
+  console.log(
+    `Audit rows appended via appendAdminAudit(): ${auditsAppended}` +
+      (auditsRefused > 0 ? ` — ${auditsRefused} REFUSED (see errors above)` : ""),
+  );
   console.log("Demo password:", password);
   console.log("");
   console.log("Try:");

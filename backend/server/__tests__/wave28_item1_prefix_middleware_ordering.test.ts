@@ -627,6 +627,117 @@ describe("WAVE 28 · ITEM 1 — generic prefix-middleware ordering sweep over th
     }
   }, 60_000);
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+   * WAVE 51 · ITEM 3 — THE MISSING POSITIVE HALF OF THE ADMIN GUARD PIN.
+   *
+   * Case (13) above filters `sweep()` to `missed > 0`. That filter is correct
+   * FOR ITS OWN PURPOSE — it pins the inert mounts — but it has a consequence
+   * nobody wrote down: of the two `requireAdmin` mounts in `server/routes.ts`,
+   * the one that actually protects the admin surface (`:611`, claims 362, misses
+   * 0) is FILTERED OUT, and the only one case (13) watches is the documented
+   * duplicate at `:1300`, which misses 216 routes and protects nothing new.
+   *
+   * So the suite pinned the DECORATIVE mount and asserted nothing at all about
+   * the load-bearing one. Deleting `app.use("/api/admin", requireAdmin)` at :611
+   * would have left case (13) GREEN: the surviving mount's missed set is what it
+   * pins, and removing the earlier mount does not change it.
+   *
+   * THIS CASE ADDS THE OTHER HALF, and adds ONLY that:
+   *   • case (13) is untouched — the 216-route pin stays exactly as it was;
+   *   • nothing here is filtered by `missed > 0`, so the protecting mount is in
+   *     scope for the first time;
+   *   • every expectation is GENERATED FROM THE LIVE ROUTER STACK. The admin
+   *     route family is discovered by walking the stack, not listed here, so a
+   *     new `/api/admin/*` route that lands above the guard fails this case by
+   *     name on the wave that adds it.
+   *
+   * BOTH POLES were proven by mutation, not by argument: with the `:611` mount
+   * deleted, and again with it MOVED below the admin routes, this case goes RED
+   * naming the escaping routes; restored, it is GREEN. Recorded in
+   * build_log/WAVE51_REPORT.md.
+   * ═══════════════════════════════════════════════════════════════════════════ */
+  it("(13b) the EARLIEST `requireAdmin` mount applicable to `/api/admin` EXISTS and misses ZERO routes — the positive half case (13)'s `missed > 0` filter cannot see", () => {
+    const ADMIN_PREFIX = "/api/admin";
+    /* The admin route family, DISCOVERED from the live stack. Path-segment
+     * boundary, not string prefix, so `/api/administrators` could never be
+     * counted as protected by an `/api/admin` mount (case (14)'s lesson). */
+    const adminSigs = allRouteSignatures().filter((sig) => {
+      const p = pathOf(sig);
+      return p === ADMIN_PREFIX || p.startsWith(`${ADMIN_PREFIX}/`);
+    });
+    /* ANTI-VACUITY 1 — there must BE an admin surface. If a refactor moved every
+     * admin route elsewhere, this case must fail loudly rather than pass by
+     * having nothing left to check. The threshold is deliberately far below the
+     * current count (362 claimed) and is a floor, not a pin. */
+    expect(adminSigs.length, "no /api/admin routes found — this case would be vacuous").toBeGreaterThan(100);
+
+    /* Every `requireAdmin` mount, in stack order. NOT filtered by `missed`. */
+    const adminGuards = sweep()
+      .filter((f) => f.mw === "requireAdmin")
+      .sort((a, b) => a.idx - b.idx);
+
+    /* ANTI-VACUITY 2 — the guard must be MOUNTED. A build that deleted every
+     * `requireAdmin` mount fails here, which is the first pole. */
+    expect(
+      adminGuards.length,
+      "no `requireAdmin` prefix mount exists on the router — the admin surface is unguarded",
+    ).toBeGreaterThan(0);
+
+    /* The EARLIEST mount that actually applies to the admin prefix. "Applicable"
+     * is measured by asking the mount's own matcher, so this follows Express's
+     * matching rules rather than re-implementing them. */
+    const applicable = adminGuards.filter((f) =>
+      f.coveredPaths.some((sig) => {
+        const p = pathOf(sig);
+        return p === ADMIN_PREFIX || p.startsWith(`${ADMIN_PREFIX}/`);
+      }),
+    );
+    expect(
+      applicable.length,
+      "no `requireAdmin` mount governs any /api/admin route",
+    ).toBeGreaterThan(0);
+    const earliest = applicable[0];
+
+    /* THE POSITIVE ASSERTION, stated three ways so it cannot be satisfied by
+     * accident.
+     *
+     * (i) The earliest applicable mount misses NOTHING — by PATH, not by count,
+     *     for the same reason case (13) pins paths: a count is unchanged when one
+     *     route leaves the missed set and another joins it. */
+    expect(
+      earliest.missedPaths,
+      `${keyOf(earliest)} is the earliest requireAdmin mount applicable to ${ADMIN_PREFIX} ` +
+        `but ${earliest.missedPaths.length} route(s) are registered ABOVE it and therefore ` +
+        `bypass the admin guard entirely`,
+    ).toEqual([]);
+
+    /* (ii) ZERO MISSES IS NOT ENOUGH ON ITS OWN — a mount that governed one
+     *      trivial route would also miss zero. The earliest applicable mount must
+     *      cover the WHOLE discovered admin family: set inclusion, named on
+     *      failure, generated from the stack. */
+    const coveredSet = new Set(earliest.coveredPaths);
+    const escaping = adminSigs.filter((sig) => !coveredSet.has(sig));
+    expect(
+      escaping,
+      `these /api/admin routes are NOT governed by ${keyOf(earliest)}: ${escaping.join(", ")}`,
+    ).toEqual([]);
+
+    /* (iii) And it is genuinely load-bearing, not a stub: it claims at least the
+     *       whole admin family. Compared against the DISCOVERED count, never a
+     *       literal, so this does not become another arithmetic pin. */
+    expect(earliest.claims).toBeGreaterThanOrEqual(adminSigs.length);
+
+    /* CONSISTENCY WITH CASE (13), asserted rather than assumed: the mount this
+     * case protects must NOT be one of the mounts pinned as inert. If a future
+     * wave ever made the earliest mount inert, that would satisfy case (13)'s pin
+     * by adding an entry while silently unguarding the admin surface — the exact
+     * failure mode this case exists to close. */
+    expect(
+      Object.keys(WAVE38_INERT_PREFIX_MOUNTS),
+      `${keyOf(earliest)} protects the admin surface and must never be pinned as inert`,
+    ).not.toContain(keyOf(earliest));
+  }, 60_000);
+
   it("(14) `/api/partner-taxonomy` is NOT swept into the `/api/partner` bucket — a prefix mount must respect the path boundary", async () => {
     // If `app.use("/api/partner")` matched by string prefix rather than by path
     // segment, moving it to the top of the stack would have newly rate-limited

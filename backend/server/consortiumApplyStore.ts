@@ -77,8 +77,21 @@ import { CONSORTIUM_AGREEMENT_VERSION } from "@shared/consortiumAgreement";
 // (admin consortium_partner contact + owner team membership) so the approved
 // partner can actually reach /api/partner/me. requirePartnerAuth reads these.
 import { partnerTeamStore } from "./partnerWorkspaceStore";
-import { upsertConsortiumPartner } from "./adminContactsStore";
+import {
+  upsertConsortiumPartner,
+  // WAVE 44 · DEFECT 1 — read-only identity resolution + cache rollback safety.
+  findActiveConsortiumPartnerContactByEmail,
+  dropContactFromCacheAfterRollback,
+} from "./adminContactsStore";
 import { emitBridgeEvent } from "./bridgeStore"; /* v25.16 NC2 (cross-comp) — wire application lifecycle to bridge */
+/* WAVE 47 · R20 — "ON APPROVAL": approving a Consortium Partner application
+ * RAISES the annual subscription invoice inside the approval transaction. The
+ * whole of the money logic lives in the module below; this file only calls it
+ * and reports what it returned. See server/lib/partnerApprovalInvoice.ts. */
+import {
+  raiseApprovalInvoice,
+  type ApprovalInvoiceOutcome,
+} from "./lib/partnerApprovalInvoice";
 
 /* ============================================================
  * Types
@@ -606,7 +619,10 @@ export async function sendApplicationAckEmail(
       refId: app.id,
     });
     return {
-      emailSent: result.delivered,
+      /* WAVE 48 · ITEM 4 — `delivered` renamed to `transportAccepted`. The
+         value reported to the caller is UNCHANGED: this is still "the transport
+         accepted the handoff", which is all `emailSent` ever meant here. */
+      emailSent: result.transportAccepted,
       error: result.error,
       fallback: result.fallback,
       mode: result.mode,
@@ -893,6 +909,23 @@ export function getRecentApprovalRedeemUrl(applicationId: string): string | null
   return RECENT_APPROVAL_REDEEM_URLS.get(applicationId) ?? null;
 }
 
+/* WAVE 47 · R20 — the invoice outcome of the most recent approval, so the
+ * approving admin's response can state what was billed (or why nothing was)
+ * instead of leaving it invisible. Same in-memory, one-entry-per-approval
+ * window semantics as RECENT_APPROVAL_REDEEM_URLS above; the DURABLE record is
+ * the `partner_invoice` row plus the `invoice.issued` money event, and this map
+ * is only how the HTTP layer reads back the outcome of the transaction it just
+ * committed. Nothing confidential is held here: an amount, a currency and an
+ * invoice number the partner is about to receive anyway. */
+const RECENT_APPROVAL_INVOICES = new Map<string, ApprovalInvoiceOutcome>();
+
+/** WAVE 47 · R20 — admin read-back of the invoice raised by an approval. */
+export function getRecentApprovalInvoice(
+  applicationId: string,
+): ApprovalInvoiceOutcome | null {
+  return RECENT_APPROVAL_INVOICES.get(applicationId) ?? null;
+}
+
 /* v25.24 NH-3 fix — in-process serialization lock for approveApplication.
  *
  * Lane A2 (FINDING-G) flagged that v25.23's NH-E heal only fires on RE-approve;
@@ -961,15 +994,83 @@ function _approveApplicationLocked(
    * upsertOwner is a no-op; if not, it heals the half-state. Then return
    * the existing row. We do this BEFORE the early return below. */
   if (existing.status === "approved" && existing.provisionedPartnerId) {
-    try {
-      const db2 = getDb();
-      const userRows: any[] = db2
-        .select({ id: usersTable.id })
-        .from(usersTable)
-        .where(eq(usersTable.email, existing.contactEmail))
-        .all();
-      const userId = userRows.length > 0 ? String(userRows[0].id) : "";
-      if (userId) {
+    /* ========================================================================
+     * WAVE 49 · C-2 — THE SECOND DOOR, NOW CLOSED.
+     *
+     * REPRODUCED FAILURE (server/__tests__/wave49_c2_repro_diagnostic.test.ts,
+     * recorded in build_log/wave49/W49_C2_repro_diagnostic_BEFORE_fix.txt):
+     * an application approved for "Alpha Holdings Ltd" whose contact email
+     * differs only in CASE from the contact email of "Beta Partners LLC" was
+     * re-approved, and the applicant was granted a `managing_partner` seat on
+     * BETA — HTTP 200, no error, no warning the admin would ever see.
+     *
+     * Wave 44 made the pending→approved path atomic and added a read-only
+     * pre-flight that refuses PARTNER_CONTACT_EMAIL_CONFLICT before any write.
+     * That work is intact. But the pre-flight is BELOW this branch, and this
+     * branch is the only path an ALREADY-approved application takes — which is
+     * precisely the population approved before the pre-flight existed (see the
+     * v25.23 NH-E note above: this branch was added for legacy half-provisioned
+     * approvals). The pre-flight can never see them. So Wave 44 hardened the
+     * path that no longer had the problem.
+     *
+     * Three things were wrong here, and all three are fixed:
+     *   1. NO ID-MATCH ASSERTION. The transactional path asserts
+     *      `partnerContact.id === partnerId` at :1264 and refuses otherwise.
+     *      This path did not, and `upsertConsortiumPartner` resolves an existing
+     *      contact by LOWER-CASED email and RETURNS THE OTHER ROW'S ID when
+     *      `preferredId` does not match (adminContactsStore.ts:936-987). The
+     *      seat was then granted on whatever id came back.
+     *   2. NOT TRANSACTIONAL. `upsertConsortiumPartner` (which may CREATE a
+     *      contacts row) and `upsertOwner` ran as two independent writes, so a
+     *      failure between them left a contact with no seat.
+     *   3. FATAL FAILURES SWALLOWED. `catch { log.warn }` then `return existing`
+     *      meant every failure — including the cross-org grant — was reported to
+     *      the admin as success.
+     *
+     * The assertion is the load-bearing part: A HEAL MUST NEVER GRANT A SEAT ON
+     * AN ORGANISATION WHOSE ID DOES NOT MATCH THE APPLICATION'S
+     * `provisioned_partner_id`. Everything else follows from it.
+     *
+     * What is deliberately NOT changed: a legitimate idempotent re-approve of
+     * the SAME application still succeeds, still heals a genuinely missing seat,
+     * and still does not double-provision; and an applicant who has not signed
+     * up yet is still a no-op rather than an error. A heal branch that refused
+     * every re-approval would "fix" this finding and destroy the recovery path
+     * the branch exists for. Both poles are asserted in
+     * server/__tests__/wave49_c2_heal_branch_cross_org_seat.test.ts.
+     * ====================================================================== */
+    const healPartnerId = existing.provisionedPartnerId;
+    const db2 = getDb();
+    const userRows: any[] = db2
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.email, existing.contactEmail))
+      .all();
+    const userId = userRows.length > 0 ? String(userRows[0].id) : "";
+
+    if (userId) {
+      /* Read-only pre-flight, mirroring Wave 44's: resolve the identity BEFORE
+       * opening the transaction so a refusal costs zero writes and the
+       * application keeps its status. `findActiveConsortiumPartnerContactByEmail`
+       * is the same resolver the pre-flight below uses, and it matches on the
+       * same lower-cased email `upsertConsortiumPartner` matches on — so what it
+       * sees is what the upsert would have returned. */
+      const collidingContact = findActiveConsortiumPartnerContactByEmail(existing.contactEmail);
+      if (collidingContact && collidingContact.id !== healPartnerId) {
+        /* THE REFUSAL. Typed, fatal, and it names BOTH ids so an admin can act.
+         * This is the exact condition that granted the cross-organisation seat. */
+        throw new Error(
+          `PARTNER_HEAL_ID_MISMATCH:${collidingContact.id}:${healPartnerId}:${
+            collidingContact.displayName || collidingContact.legalName
+          }`,
+        );
+      }
+
+      /* Inside the transaction, and fatal on failure. `upsertConsortiumPartner`
+       * may CREATE a contacts row; pairing it with `upsertOwner` in one
+       * transaction means there is no observable state where the contact exists
+       * without its owner seat. */
+      const healTx = rawDb().transaction(() => {
         const partnerContact = upsertConsortiumPartner(
           {
             legalName: existing.organizationName,
@@ -978,17 +1079,29 @@ function _approveApplicationLocked(
             partnerType: (existing.partnerType as any) ?? null,
             regionCode: null,
             hqCountry: existing.jurisdiction ?? null,
-            preferredId: existing.provisionedPartnerId,
+            preferredId: healPartnerId,
           },
           actorUserId,
         );
+        /* THE ID-MATCH ASSERTION. The pre-flight above catches the known
+         * collision shape; this catches EVERY other way the resolved id could
+         * diverge — a row inserted by a sibling process between the pre-flight
+         * and this write, a cache/DB disagreement, a future change to the
+         * resolver. It is checked against the value that is about to receive a
+         * `managing_partner` seat, immediately before the seat is granted, so
+         * nothing can slip between the check and the use. */
+        if (partnerContact.id !== healPartnerId) {
+          throw new Error(
+            `PARTNER_HEAL_ID_MISMATCH:${partnerContact.id}:${healPartnerId}:resolved_after_preflight`,
+          );
+        }
         partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
-      }
-    } catch (healErr) {
-      log.warn(
-        "[consortium.apply] A8 re-provisioning on idempotent approve failed",
-        JSON.stringify({ applicationId: existing.id, error: (healErr as Error).message }),
-      );
+      });
+      /* NOT wrapped in a catch. A heal that cannot be completed safely must
+       * surface as a typed refusal, not as a warning in a log nobody reads
+       * followed by 200 OK. The route maps PARTNER_HEAL_ID_MISMATCH to 409 with
+       * `applicationUnchanged: true`. */
+      healTx();
     }
     // Idempotent — return existing.
     return existing;
@@ -998,7 +1111,73 @@ function _approveApplicationLocked(
   }
 
   const now = nowIso();
-  const partnerId = `ac_consortium_partner_${randomBytes(6).toString("hex")}`;
+
+  /* ==========================================================================
+   * WAVE 44 · DEFECT 1 — PRE-FLIGHT PARTNER IDENTITY RESOLUTION (read-only).
+   *
+   * REPRODUCED FAILURE (server/__tests__/wave44_repro_partner_provisioning.test.ts):
+   * approving an application whose contact email already belongs to an active
+   * `consortium_partner` contact returned HTTP 200 with status=approved and a
+   * provisioned_partner_id, emitted 1 bridge event instead of 3, and created NO
+   * partner in the admin registry. Cause: a fresh `ac_consortium_partner_<hex>`
+   * id was minted and committed to `consortium_applications.provisioned_partner_id`
+   * BEFORE anyone checked whether a contacts row could be created with that id.
+   * `upsertConsortiumPartner` then found the existing row by lower-cased email,
+   * logged `contact.preferredId.mismatch`, and returned the OTHER id — inside a
+   * non-fatal try/catch, so nothing failed and nothing was reported. The
+   * application pointed at an id that exists nowhere. Case-insensitive too: an
+   * UPPERCASE duplicate of the same address failed identically.
+   *
+   * Identity is therefore resolved HERE, before any write, and the id we are
+   * about to commit is the id that will exist:
+   *   · no existing partner contact for this email → mint a fresh id (as before);
+   *   · existing contact, SAME organisation, no partner_organizations row → REUSE
+   *     the existing contact id (heals a legacy half-provisioned partner);
+   *   · existing contact, SAME organisation, partner row already there → refuse
+   *     PARTNER_ALREADY_PROVISIONED (approving again would double-create);
+   *   · existing contact, DIFFERENT organisation → refuse
+   *     PARTNER_CONTACT_EMAIL_CONFLICT, naming the partner that holds the email.
+   * Both refusals throw BEFORE the transaction opens: zero writes, the
+   * application keeps its prior status, and the admin is told the real reason.
+   * ======================================================================== */
+  const normaliseOrgName = (s: string): string =>
+    String(s ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const existingPartnerContact = findActiveConsortiumPartnerContactByEmail(existing.contactEmail);
+  let reusedPartnerContactId: string | null = null;
+  if (existingPartnerContact) {
+    const sameOrg =
+      normaliseOrgName(existingPartnerContact.legalName) === normaliseOrgName(existing.organizationName) ||
+      normaliseOrgName(existingPartnerContact.displayName) === normaliseOrgName(existing.organizationName);
+    if (!sameOrg) {
+      throw new Error(
+        `PARTNER_CONTACT_EMAIL_CONFLICT:${existingPartnerContact.id}:${
+          existingPartnerContact.displayName || existingPartnerContact.legalName
+        }`,
+      );
+    }
+    let partnerOrgExists = false;
+    try {
+      const row = rawDb()
+        .prepare(`SELECT id FROM partner_organizations WHERE id = ?`)
+        .get(existingPartnerContact.id) as { id?: string } | undefined;
+      partnerOrgExists = !!row?.id;
+    } catch {
+      /* Table unreadable — treat as "cannot confirm", which must NOT become a
+         silent re-provision. Refuse below via the already-provisioned path. */
+      partnerOrgExists = true;
+    }
+    if (partnerOrgExists) {
+      throw new Error(
+        `PARTNER_ALREADY_PROVISIONED:${existingPartnerContact.id}:${
+          existingPartnerContact.displayName || existingPartnerContact.legalName
+        }`,
+      );
+    }
+    reusedPartnerContactId = existingPartnerContact.id;
+  }
+
+  const partnerId =
+    reusedPartnerContactId ?? `ac_consortium_partner_${randomBytes(6).toString("hex")}`;
   const newTenantId = `tenant_cp_${partnerId}`;
 
   // Pre-compute the updated row (hash) before opening the tx.
@@ -1035,6 +1214,23 @@ function _approveApplicationLocked(
   const chapterMembershipId = `cm_${randomBytes(6).toString("hex")}`;
   const chapterTenantId = `tenant_chap_${updated.expectedChapter}`;
 
+  /* WAVE 44 · DEFECT 1 — RAM-projection compensation handles. Both stores push
+   * into module-level caches from inside their own (nested → SAVEPOINT)
+   * transactions; on rollback the durable rows vanish but the caches would not,
+   * so the process would keep claiming a partner the database does not have. */
+  let provisionedContactId: string | null = null;
+  let provisionedTeamOwnerUserId: string | null = null;
+  /* WAVE 47 · R20 — the invoice outcome, captured inside the transaction and
+   * read AFTER the commit. It is only ever non-null if the transaction
+   * committed, because a refusal from raiseApprovalInvoice throws and rolls the
+   * whole approval back. */
+  /* A one-field holder, not a bare `let`: TypeScript's control-flow analysis
+   * does not track assignments made inside the transaction callback, so a bare
+   * `let` would be narrowed to `null` at every post-commit read. The holder
+   * keeps the declared type honest instead of casting it away. */
+  const approvalInvoiceRef: { current: ApprovalInvoiceOutcome | null } = { current: null };
+
+  try {
   db.transaction((tx: any) => {
     // 1) tenant row
     tx.insert(tenantsTable)
@@ -1105,6 +1301,118 @@ function _approveApplicationLocked(
       .onConflictDoNothing()
       .run();
 
+    /* ======================================================================
+     * WAVE 44 · DEFECT 1 — A8 PARTNER PROVISIONING IS NOW INSIDE THIS
+     * TRANSACTION, AND IT IS FATAL.
+     *
+     * It used to run AFTER the commit inside `try { … } catch { log.warn }`.
+     * That is what made the failure silent and non-atomic: the application was
+     * already `approved` with a `provisioned_partner_id` by the time the
+     * partner contact turned out not to be creatable, and the only trace was a
+     * log line plus a `contact.preferredId.mismatch` audit row no admin reads.
+     *
+     * Inside the transaction every write below either commits together with the
+     * approval or is rolled back with it — including the bridge outbox rows
+     * emitted by `createContact` (investor/ac_consortium_partner_*) and by
+     * `partnerTeamStore.add` (platform/ac_consortium_partner_*). Those two
+     * emissions are precisely the ones missing from the live failures, which is
+     * why a success showed 3 outbox events and a failure showed 1. There is no
+     * longer an in-between state to observe.
+     * ==================================================================== */
+    const partnerContact = upsertConsortiumPartner(
+      {
+        legalName: updated.organizationName,
+        email: updated.contactEmail,
+        website: updated.website ?? null,
+        partnerType: (updated.partnerType as any) ?? null,
+        regionCode: null,
+        hqCountry: updated.jurisdiction ?? null,
+        // v24.4.1 Bug 3 — keep the adminContactsStore id aligned with the
+        // partner_organizations.id (and the application's provisionedPartnerId)
+        // so /api/admin/partners and /api/partner/me agree on one partner id.
+        preferredId: partnerId,
+      },
+      actorUserId,
+    );
+    provisionedContactId = partnerContact.id;
+
+    /* THE ASSERTION THAT MAKES AN ORPHAN ID UNWRITABLE. `provisioned_partner_id`
+     * is set to `partnerId` a few lines below; if the contacts row that
+     * /api/admin/partners reads does not carry exactly that id, this throws and
+     * the approval never commits. The check is a DB-direct read, not the RAM
+     * cache, so a cache entry alone cannot satisfy it. */
+    if (partnerContact.id !== partnerId) {
+      throw new Error(`PARTNER_PROVISIONING_ID_MISMATCH:${partnerContact.id}:${partnerId}`);
+    }
+    const contactRow = rawDb()
+      .prepare(`SELECT id FROM contacts WHERE id = ? AND kind = 'consortium_partner'`)
+      .get(partnerId) as { id?: string } | undefined;
+    if (!contactRow?.id) {
+      throw new Error("PARTNER_CONTACT_ROW_MISSING");
+    }
+
+    partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
+    provisionedTeamOwnerUserId = userId;
+
+    /* W2-I — carry the application's agreement sign-off onto the DURABLE
+     * partner contact record so an approved partner is already "signed" and the
+     * requireSignedAgreement gate (which reads
+     * contacts.partner_agreement_signed_at) lets them write immediately.
+     * Enforced off this column, NEVER the mutable onboarding_state JSON.
+     * WAVE 44: moved inside the transaction with the rest of provisioning — an
+     * approval must not commit with a signature that silently failed to carry. */
+    if (updated.agreementSignedAt) {
+      rawDb()
+        .prepare(
+          `UPDATE contacts
+              SET partner_agreement_version = ?,
+                  partner_agreement_signed_at = ?,
+                  partner_agreement_signature_hash = ?
+            WHERE id = ?`,
+        )
+        .run(
+          updated.agreementVersion,
+          updated.agreementSignedAt,
+          updated.agreementSignatureHash,
+          partnerContact.id,
+        );
+    }
+
+    /* ======================================================================
+     * WAVE 47 · R20 — RAISE THE PARTNER INVOICE, INSIDE THIS TRANSACTION.
+     *
+     * Owner ruling: "On approval". So the invoice is not a follow-up job, a
+     * cron sweep or a post-commit best-effort call — it is part of the same
+     * atomic act as the approval. An approval that cannot raise an invoice
+     * FAILS: `raiseApprovalInvoice` throws a typed ApprovalInvoiceError when it
+     * cannot resolve a price, when a $0 did not come from an explicit
+     * per-partner override, or when the invoice/line/total/event did not land.
+     * Every throw lands in the catch below, which better-sqlite3 has already
+     * rolled back, so there is no approve-and-silently-skip state to observe.
+     *
+     * POSITION: after A8 provisioning and BEFORE the application UPDATE, which
+     * is the only point where all three inputs are readable — the partner
+     * `contacts` row (for the per-partner override), the canonical billing tier
+     * (written by upsertConsortiumPartner) and the grandfather grant.
+     *
+     * GRANDFATHERED PARTNERS: `raiseApprovalInvoice` returns
+     * `{ invoiced: false, exemption: … }` and writes NOTHING when the resolved
+     * price is an explicit per-partner $0 (R17). It is not a $0 invoice: it is
+     * no invoice. The exemption is audited after the commit.
+     *
+     * FORWARD-ONLY: this line is on the pending → approved transition only. An
+     * already-approved application returns from the idempotency short-circuit
+     * far above and never reaches this transaction, so the 30 applications
+     * approved before this wave are never billed. There is no backfill.
+     * ==================================================================== */
+    approvalInvoiceRef.current = raiseApprovalInvoice({
+      applicationId: updated.id,
+      partnerId,
+      organizationName: updated.organizationName,
+      actorUserId,
+      nowIso: now,
+    });
+
     // 5) Update application row with approval + new chain link
     tx.update(appsTable)
       .set({
@@ -1121,8 +1429,89 @@ function _approveApplicationLocked(
       .where(eq(appsTable.id, id))
       .run();
   });
+  } catch (txErr) {
+    /* WAVE 44 · DEFECT 1 — LOUD, ATOMIC FAILURE.
+     *
+     * better-sqlite3 has already rolled the whole transaction back: no tenant,
+     * no partner_organizations row, no user, no chapter membership, no contact,
+     * no team membership, no bridge outbox rows, and — the point of the wave —
+     * NO `provisioned_partner_id` on the application, which keeps its previous
+     * status. What SQLite cannot roll back are the two in-process caches, so we
+     * compensate them here before rethrowing. */
+    /* WAVE 47 · R20 — the invoice row is rolled back with everything else, so
+     * the in-process outcome must not survive either: reporting an invoice that
+     * the database does not have is the same class of lie as the RAM-projection
+     * bug WAVE 44 fixed below. */
+    approvalInvoiceRef.current = null;
+    RECENT_APPROVAL_INVOICES.delete(existing.id);
+    if (provisionedContactId) dropContactFromCacheAfterRollback(provisionedContactId);
+    if (provisionedTeamOwnerUserId) {
+      partnerTeamStore.dropFromProjectionAfterRollback(partnerId, provisionedTeamOwnerUserId);
+    }
+    const reason = (txErr as Error).message || "unknown";
+    log.error(
+      "[consortium.apply] approval ROLLED BACK — partner provisioning failed",
+      JSON.stringify({ applicationId: existing.id, partnerId, reason }),
+    );
+    /* Audit the refusal so the failure is visible to an admin auditor even if
+     * the HTTP response is lost. Best-effort: an audit failure must not mask
+     * the real error. */
+    try {
+      appendAdminAudit(
+        actorUserId,
+        `consortium_application:${existing.id}`,
+        "consortium.apply.approval_failed",
+        { organizationName: existing.organizationName, attemptedPartnerId: partnerId, reason },
+      );
+    } catch { /* non-fatal */ }
+    // Preserve the specific code so the route can report the real reason.
+    if (/^PARTNER_/.test(reason)) throw txErr;
+    throw new Error(`PARTNER_PROVISIONING_FAILED:${reason}`);
+  }
 
   appsCache.set(updated.id, updated);
+
+  /* WAVE 47 · R20 — publish the committed invoice outcome and audit it.
+   *
+   * Both branches are audited, because "this partner was NOT invoiced" is the
+   * claim that most needs an audit trail: an exemption is a decision about
+   * money, and R17's four grandfathered partners must be provably exempt rather
+   * than accidentally free. The invoiced branch records the invoice id, number,
+   * amount in minor units, currency and where the price came from — never a
+   * major-unit float. */
+  const approvalInvoice = approvalInvoiceRef.current;
+  if (approvalInvoice) {
+    RECENT_APPROVAL_INVOICES.set(updated.id, approvalInvoice);
+    try {
+      appendAdminAudit(
+        actorUserId,
+        `consortium_application:${updated.id}`,
+        approvalInvoice.invoiced
+          ? "consortium.apply.approval_invoice_raised"
+          : "consortium.apply.approval_invoice_exempt",
+        approvalInvoice.invoiced
+          ? {
+              partnerId,
+              invoiceId: approvalInvoice.invoiceId,
+              invoiceNumber: approvalInvoice.invoiceNumber,
+              amountMinor: approvalInvoice.amountMinor,
+              currency: approvalInvoice.currency,
+              priceSource: approvalInvoice.priceSource,
+              tier: approvalInvoice.tier,
+              idempotent: approvalInvoice.idempotent,
+            }
+          : {
+              partnerId,
+              reason: approvalInvoice.exemption?.reason ?? "unknown",
+              grandfatherGrant: approvalInvoice.exemption?.grandfatherGrant ?? null,
+              priceSource: approvalInvoice.priceSource,
+              tier: approvalInvoice.tier,
+              rulingRef: "R17",
+            },
+        newTenantId,
+      );
+    } catch { /* audit is best-effort; it must never undo a committed approval */ }
+  }
 
   // Post-commit notifications + audit
   appendAdminAudit(
@@ -1142,68 +1531,15 @@ function _approveApplicationLocked(
     partnerId,
   });
 
-  // A8 (v24.0) — provision the partner-workspace authorization records that
-  // requirePartnerAuth needs: an active consortium_partner admin contact and an
-  // owner/managing-partner team membership for the approved user. Without these
-  // the approved partner's session exists but /api/partner/me returns 403.
-  // Idempotent (safe on re-approval) and non-fatal (logged, never throws) so a
-  // transient failure cannot roll back the durable DB provisioning above.
-  try {
-    const partnerContact = upsertConsortiumPartner(
-      {
-        legalName: updated.organizationName,
-        email: updated.contactEmail,
-        website: updated.website ?? null,
-        partnerType: (updated.partnerType as any) ?? null,
-        regionCode: null,
-        hqCountry: updated.jurisdiction ?? null,
-        // v24.4.1 Bug 3 — keep the adminContactsStore id aligned with the
-        // partner_organizations.id (and the application's provisionedPartnerId).
-        // Without this, /api/admin/partners (reads adminContactsStore) returns
-        // a different id than the one stored on the approved application,
-        // breaking scripts/create_partner_admin.ts and any downstream lookup
-        // that uses provisionedPartnerId as the canonical partner identifier.
-        preferredId: partnerId,
-      },
-      actorUserId,
-    );
-    partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
-
-    // W2-I — carry the application's agreement sign-off onto the DURABLE
-    // partner contact record so an approved partner is already "signed" and the
-    // requireSignedAgreement gate (which reads contacts.partner_agreement_signed_at)
-    // lets them write immediately. Enforced off this column, NEVER the mutable
-    // onboarding_state JSON. Non-fatal: a failure here must not roll back the
-    // approval; the partner falls into the grace/sign-once path instead.
-    if (updated.agreementSignedAt) {
-      try {
-        rawDb()
-          .prepare(
-            `UPDATE contacts
-                SET partner_agreement_version = ?,
-                    partner_agreement_signed_at = ?,
-                    partner_agreement_signature_hash = ?
-              WHERE id = ?`,
-          )
-          .run(
-            updated.agreementVersion,
-            updated.agreementSignedAt,
-            updated.agreementSignatureHash,
-            partnerContact.id,
-          );
-      } catch (agrErr) {
-        log.warn(
-          "[consortium.apply] agreement carry-to-partner failed",
-          JSON.stringify({ applicationId: updated.id, error: (agrErr as Error).message }),
-        );
-      }
-    }
-  } catch (provErr) {
-    log.warn(
-      "[consortium.apply] partner-workspace authz provisioning failed",
-      JSON.stringify({ applicationId: updated.id, error: (provErr as Error).message }),
-    );
-  }
+  /* WAVE 44 · DEFECT 1 — the post-commit, non-fatal A8 block that used to live
+   * here (upsertConsortiumPartner + upsertOwner + agreement carry, all wrapped
+   * in `catch { log.warn }`) has MOVED INSIDE the transaction above. It is not
+   * duplicated here: running it twice would emit the bridge events twice. The
+   * only thing left to do post-commit is the invite token + welcome email
+   * below, which are deliberately outside the transaction because an SMTP
+   * outage must not undo a legitimate approval — and, unlike partner
+   * provisioning, they leave a durable, admin-visible artefact
+   * (auth_redeem_tokens + the admin-readable redeem URL) when the send fails. */
 
   // v23.4.7 Phase 1 (A-001): issue partner-invite redemption token and send
   // the welcome email containing the password-setup link.
@@ -1270,7 +1606,7 @@ function _approveApplicationLocked(
           JSON.stringify({
             applicationId: updated.id,
             tokenId: partnerInviteTokenId,
-            delivered: result.delivered,
+            transportAccepted: result.transportAccepted,
             mode: result.mode,
           }),
         );
@@ -1635,7 +1971,55 @@ export function registerConsortiumApplyRoutes(app: Express): void {
           parsed.data.status === "approved"
             ? getRecentApprovalRedeemUrl(String(req.params.id))
             : null;
-        res.json({ application: updated, partnerInviteRedeemUrl });
+        /* ====================================================================
+         * WAVE 44 — THE WELCOME/MAGIC-LINK EMAIL, REPORTED HONESTLY (R6).
+         *
+         * VERDICT (c): the welcome email IS implemented and IS wired to
+         * approval, and it fails silently. `sendEmail` returns
+         * `{ delivered: false, mode: "smtp", error: "smtp_not_configured" }`
+         * when SMTP_HOST is unset (server/lib/emailSender.ts), the call site is
+         * fire-and-forget (`void sendEmail(...).then/.catch`), and there is NO
+         * email outbox table — so a non-delivery left nothing an admin could
+         * see. That is why 30 approved applications produced zero emails.
+         *
+         * What is FIXED here is the reporting, not the transport: the response
+         * now states whether the platform can send mail at all, and never
+         * implies delivery it cannot confirm. `deliveryConfirmed` is
+         * deliberately null rather than false — the send is asynchronous, so at
+         * response time the outcome is genuinely UNKNOWN, and printing `false`
+         * would be as dishonest as printing `true`. The durable invite token is
+         * minted regardless, and `partnerInviteRedeemUrl` above is the
+         * admin-usable fallback. Wiring a real SMTP transport (or an email
+         * outbox table with retries) is an owner/Avi operational item, recorded
+         * in build_log/wave44/REMEDIATION_live_partner_provisioning.md.
+         * ================================================================== */
+        const smtpConfigured = !!(process.env.SMTP_HOST ?? "").trim();
+        const partnerInviteEmail =
+          parsed.data.status === "approved"
+            ? {
+                attempted: true,
+                smtpConfigured,
+                deliveryConfirmed: null as null,
+                mustShareLinkManually: !smtpConfigured,
+                note: smtpConfigured
+                  ? "Welcome email dispatched asynchronously; delivery is not confirmed by this response."
+                  : "SMTP_HOST is not configured, so NO welcome email was sent. Share partnerInviteRedeemUrl with the partner manually.",
+              }
+            : null;
+        /* WAVE 47 · R20 — tell the approving admin what was billed.
+         *
+         * `partnerInvoice` is `null` for a rejection and for an idempotent
+         * re-approval (which raises nothing by design — see the invoice-number
+         * latch in partnerApprovalInvoice.ts). For a fresh approval it is either
+         * `{ invoiced: true, … }` with the invoice id/number/amountMinor, or
+         * `{ invoiced: false, exemption: … }` for an R17 grandfathered partner.
+         * A price that could not be resolved never reaches here at all: it
+         * throws and is reported as a refusal by the handler below. */
+        const partnerInvoice =
+          parsed.data.status === "approved"
+            ? getRecentApprovalInvoice(String(req.params.id))
+            : null;
+        res.json({ application: updated, partnerInviteRedeemUrl, partnerInviteEmail, partnerInvoice });
       } catch (err) {
         const msg = (err as Error).message;
         if (msg === "APPLICATION_NOT_FOUND") {
@@ -1651,6 +2035,143 @@ export function registerConsortiumApplyRoutes(app: Express): void {
           res.status(409).json({
             error: "approval_in_progress",
             message: "Another admin is currently approving this application. Retry in a moment.",
+          });
+          return;
+        }
+        /* ====================================================================
+         * WAVE 44 · DEFECT 1 — SURFACE THE REAL REASON TO THE ADMIN.
+         *
+         * Every provisioning failure used to arrive here and become a generic
+         * 500 `review_failed` — except that provisioning failures never even
+         * got this far, because they were swallowed by a non-fatal catch and
+         * the response was 200 OK. Now they throw, and each carries the
+         * specific reason plus the identifiers an admin needs to act:
+         *   PARTNER_CONTACT_EMAIL_CONFLICT — another partner already holds this
+         *     contact email; approving would orphan the provisioned id.
+         *   PARTNER_ALREADY_PROVISIONED — this partner exists; approving again
+         *     would double-create.
+         *   PARTNER_PROVISIONING_ID_MISMATCH / PARTNER_CONTACT_ROW_MISSING /
+         *   PARTNER_PROVISIONING_FAILED — the transaction rolled back; the
+         *     application is unchanged.
+         * In every case the application keeps its prior status, so the admin can
+         * retry after fixing the data instead of discovering months later that
+         * `status: approved` meant nothing.
+         * ================================================================== */
+        if (msg.startsWith("PARTNER_CONTACT_EMAIL_CONFLICT")) {
+          const [, existingPartnerId, ...nameParts] = msg.split(":");
+          const existingPartnerName = nameParts.join(":");
+          res.status(409).json({
+            error: "partner_contact_email_conflict",
+            reason: msg,
+            existingPartnerId: existingPartnerId ?? null,
+            existingPartnerName: existingPartnerName || null,
+            applicationUnchanged: true,
+            message:
+              `This contact email is already the partner contact for "${existingPartnerName}" ` +
+              `(${existingPartnerId}). Approving would create an application that points at a ` +
+              `partner record that cannot exist. Use a distinct contact email for this ` +
+              `organisation, or add this person to the existing partner's team instead. ` +
+              `The application has NOT been approved and is unchanged.`,
+          });
+          return;
+        }
+        /* ====================================================================
+         * WAVE 49 · C-2 — THE HEAL REFUSAL.
+         *
+         * A re-approve whose contact email resolves to a DIFFERENT partner
+         * organisation than the application's `provisioned_partner_id`. Before
+         * this wave the same condition granted the applicant a
+         * `managing_partner` seat on that other organisation and returned 200.
+         *
+         * 409, matching the Wave 44 pre-flight refusals: nothing is broken, the
+         * request cannot be satisfied in the current data state, and the fix is
+         * a data fix an admin can make. `applicationUnchanged: true` is literally
+         * true — the refusal is raised before the heal transaction opens (or the
+         * transaction rolls back), so no seat, no contact and no status change.
+         * ================================================================== */
+        if (msg.startsWith("PARTNER_HEAL_ID_MISMATCH")) {
+          const [, resolvedId, expectedId, ...healNameParts] = msg.split(":");
+          const holderName = healNameParts.join(":");
+          res.status(409).json({
+            error: "partner_heal_id_mismatch",
+            reason: msg,
+            resolvedPartnerId: resolvedId ?? null,
+            applicationPartnerId: expectedId ?? null,
+            existingPartnerName: holderName || null,
+            seatGranted: false,
+            applicationUnchanged: true,
+            message:
+              `This application is already approved against partner ${expectedId}, but its ` +
+              `contact email resolves to a DIFFERENT partner organisation` +
+              (holderName ? ` ("${holderName}", ${resolvedId})` : ` (${resolvedId})`) +
+              `. Re-provisioning was REFUSED: completing it would have granted a ` +
+              `managing_partner seat on an organisation this applicant has no relationship ` +
+              `with. NO seat was granted and the application is unchanged. Resolve the ` +
+              `duplicate contact email — the two records share one address, differing only ` +
+              `in case — then retry.`,
+          });
+          return;
+        }
+        if (msg.startsWith("PARTNER_ALREADY_PROVISIONED")) {
+          const [, existingPartnerId, ...nameParts2] = msg.split(":");
+          const existingPartnerName2 = nameParts2.join(":");
+          res.status(409).json({
+            error: "partner_already_provisioned",
+            reason: msg,
+            existingPartnerId: existingPartnerId ?? null,
+            existingPartnerName: existingPartnerName2 || null,
+            applicationUnchanged: true,
+            message:
+              `A partner organisation already exists for this contact email: ` +
+              `"${existingPartnerName2}" (${existingPartnerId}). Approving this application ` +
+              `would create a second partner for the same organisation. Reject or withdraw ` +
+              `this duplicate application instead. The application is unchanged.`,
+          });
+          return;
+        }
+        if (
+          msg.startsWith("PARTNER_PROVISIONING_FAILED") ||
+          msg.startsWith("PARTNER_PROVISIONING_ID_MISMATCH") ||
+          msg.startsWith("PARTNER_CONTACT_ROW_MISSING")
+        ) {
+          res.status(500).json({
+            error: "partner_provisioning_failed",
+            reason: msg,
+            applicationUnchanged: true,
+            message:
+              `Partner provisioning failed and the approval was ROLLED BACK, so the ` +
+              `application is unchanged and no partner record was created (reason: ${msg}). ` +
+              `Nothing was half-written; fix the underlying cause and retry the approval.`,
+          });
+          return;
+        }
+        /* ====================================================================
+         * WAVE 47 · R20 — REFUSE THE APPROVAL, AND SAY WHY.
+         *
+         * These codes come from raiseApprovalInvoice and all mean the same
+         * thing: the approval was ROLLED BACK because the platform could not
+         * raise an honest invoice for it. That is the whole point of the ruling
+         * — the alternative (approve now, invoice "later") is what produced 30
+         * approved partners and zero invoices. 409 rather than 500 because
+         * nothing is broken: the request cannot be satisfied in the platform's
+         * current pricing state, and the fix is a data fix an admin can make.
+         * ================================================================== */
+        if (msg.startsWith("PARTNER_APPROVAL_")) {
+          const [code, ...detailParts] = msg.split(":");
+          res.status(409).json({
+            error: "partner_approval_invoice_refused",
+            reason: msg,
+            code,
+            detail: detailParts.join(":") || null,
+            applicationUnchanged: true,
+            invoiceRaised: false,
+            message:
+              `The approval was REFUSED and rolled back because the $/year partner ` +
+              `subscription invoice could not be raised (${msg}). The application is ` +
+              `unchanged, no partner was provisioned and no invoice exists. Approving ` +
+              `without an invoice is not an option under ruling R20; resolve the ` +
+              `partner's price (or record an explicit $0 override if this partner is ` +
+              `grandfathered under R17) and retry the approval.`,
           });
           return;
         }
@@ -1830,7 +2351,8 @@ export function registerConsortiumApplyRoutes(app: Express): void {
           category: "partner_welcome",
           refId: application.id,
         });
-        emailSent = Boolean(r.delivered);
+        // WAVE 48 · ITEM 4 — renamed field, identical value.
+        emailSent = Boolean(r.transportAccepted);
       } catch (e) {
         emailError = (e as Error).message;
       }

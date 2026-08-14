@@ -207,7 +207,7 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
       encoding: "utf8",
       cwd: REPO_ROOT,
     });
-    expect(out).toContain("SACRED OK: 47/47");
+    expect(out).toContain("SACRED OK: 48/48");
   });
 
   /**
@@ -233,7 +233,7 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
    * COPY, and then proves the real bytes are untouched.
    *
    * BOTH POLES, plus an anti-vacuity control:
-   *   - the disposable tree is proven FAITHFUL first (it must report 47/47), so
+   *   - the disposable tree is proven FAITHFUL first (it must report 48/48), so
    *     a subsequent RED cannot be an artefact of a broken copy;
    *   - one appended byte on the COPY turns it RED and names the file;
    *   - the REAL file's sha256 and size are captured before and compared after,
@@ -262,13 +262,13 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
       if (m) rels.push(m[1]);
     }
 
-    // PRECONDITION, ASSERTED RATHER THAN ASSUMED. 47 manifest entries plus the
+    // PRECONDITION, ASSERTED RATHER THAN ASSUMED. 48 manifest entries plus the
     // single EXTRA_FROZEN row (WAIVER-3, server/db/migrate.ts). If this parse
     // ever silently yields fewer paths the copy would be trivially green and the
     // whole test would check nothing — precisely the failure class this file
     // exists to prevent.
-    expect(rels.length).toBe(48);
-    expect(new Set(rels).size).toBe(48);
+    expect(rels.length).toBe(49);
+    expect(new Set(rels).size).toBe(49);
     expect(rels).toContain("server/captableCommitStore.ts");
     expect(rels).toContain("server/db/migrate.ts");
 
@@ -324,7 +324,7 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
       // below could be produced by a broken copy rather than by the drift.
       const clean = runSacred(repo);
       expect(clean.code).toBe(0);
-      expect(clean.out).toContain("SACRED OK: 47/47");
+      expect(clean.out).toContain("SACRED OK: 48/48");
 
       // POLE 2 — one byte, on the COPY, never on the working tree.
       const victim = p(repo, "server", "captableCommitStore.ts");
@@ -339,7 +339,7 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
       fs.copyFileSync(realVictim, victim);
       const relisted = runSacred(repo);
       expect(relisted.code).toBe(0);
-      expect(relisted.out).toContain("SACRED OK: 47/47");
+      expect(relisted.out).toContain("SACRED OK: 48/48");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -356,7 +356,7 @@ describe("W10/G-3 — the pre-deploy gate now verifies sacred files, and can be 
       encoding: "utf8",
       cwd: REPO_ROOT,
     });
-    expect(after).toContain("SACRED OK: 47/47");
+    expect(after).toContain("SACRED OK: 48/48");
   });
 
   /**

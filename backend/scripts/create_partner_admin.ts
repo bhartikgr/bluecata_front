@@ -22,7 +22,11 @@
  *      cost 4 in NODE_ENV=test for speed).
  *   3. `user_prefs` row (activeTenantId = partner org id).
  *   4. `partner_team_members` in-memory row (partnerTeamStore.add).
- *   5. `audit_log` row (action = 'partner_admin.created' | 'rotated').
+ *   5. `audit_log` row (action = 'partner_admin.created' | 'bound' |
+ *      'password_rotated') — WAVE 51 · ITEM 4: written ONLY through
+ *      `appendAdminAudit()`, the canonical hash-chain writer. If that write
+ *      fails, NO row is written and `auditAppended: false` is returned. This
+ *      script never fabricates a `prev_hash`/`hash` pair.
  *
  * Usage:
  *   npx tsx scripts/create_partner_admin.ts \
@@ -46,7 +50,6 @@ import {
   users as usersTable,
   userPrefs as userPrefsTable,
   tenants as tenantsTable,
-  auditLog as auditLogTable,
 } from "../shared/schema";
 import { storeCredential } from "../server/userCredentialsStore";
 import { getById as getPartnerById, findContactByEmail } from "../server/adminContactsStoreShim";
@@ -134,6 +137,16 @@ export async function createPartnerAdmin(args: Args): Promise<{
   created: boolean;
   bindingAdded: boolean;
   passwordRotated: boolean;
+  /**
+   * WAVE 51 · ITEM 4 — whether a VERIFIABLE audit row was appended.
+   *
+   * Reported rather than assumed, because the only two acceptable outcomes are
+   * "a row that verifies" and "no row, said out loud". The previous behaviour —
+   * a fabricated row nobody could verify — is no longer reachable, and its
+   * absence is now observable to callers and to the test suite instead of being
+   * a warning on stderr that a CI log swallows.
+   */
+  auditAppended: boolean;
 }> {
   const db = getDb();
   const now = new Date().toISOString();
@@ -252,38 +265,80 @@ export async function createPartnerAdmin(args: Args): Promise<{
   partnerTeamStore.add(args.partnerId, userId, args.subRole, "u_system_cli", { isSeed: false });
   const bindingAdded = !before;
 
-  // Audit log. Same caveat as create_admin.ts: the hash field is NOT NULL but
-  // the canonical hash-chain reconciler will rewrite this on its next tick.
+  /* ══════════════════════════════════════════════════════════════════════════
+   * WAVE 51 · ITEM 4 — AUDIT ROW, WRITTEN THROUGH THE CANONICAL CHAIN WRITER.
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * WHAT THIS CODE USED TO DO, and why it was the defect:
+   *
+   *     const placeholderHash = sha256(`${auditId}:${userId}:${action}:${now}`);
+   *     await db.insert(auditLogTable).values({ …, prevHash: null, hash: placeholderHash, … });
+   *     // comment: "the canonical hash-chain reconciler will rewrite this on its next tick"
+   *
+   * THERE IS NO RECONCILER. Nothing in this repository ever rewrites an
+   * `audit_log` row; `appendAudit()` in server/adminPlatformStore.ts is the only
+   * writer, and it computes the hash at INSERT time and never revisits it. The
+   * comment described a component that does not exist, and on that basis the
+   * script wrote a row with:
+   *   • `prev_hash = NULL`, which `verifyTenantAuditChain` compares against the
+   *     tenant's expected prior hash and finds unequal, and
+   *   • a hash from a DIFFERENT FORMULA — `sha256(id:user:action:ts)` instead of
+   *     the canonical `sha256(prev|id|action|target|ts|payload)` — so even the
+   *     link content could not be recomputed.
+   * Either fault alone breaks verification permanently, because `audit_log` is
+   * append-only by design and there is no supported way to rewrite the row.
+   *
+   * This is the mechanism behind the live incident on `tenant_admin_capavate`
+   * (`"boot verifier tick: chain broken at link 0 of 1"`, HTTP 409 on "Resolve
+   * incident"), reproduced in build_log/wave51/W51_item4_diagnose_BEFORE.json:
+   * this exact formula produces that exact detail string. Diagnosis, attribution
+   * and the safe repair are in build_log/wave51/AUDIT_CHAIN_REPAIR.md.
+   *
+   * THE FIX, per the brief's two permitted options: extend the chain correctly
+   * via the canonical writer, OR refuse to write at all. Both are implemented —
+   * `appendAdminAudit()` is the canonical public wrapper over `appendAudit()`,
+   * which opens BEGIN IMMEDIATE, reads the tenant's current chain tip, and sets
+   * `prev_hash` and `hash` itself. If it throws, NO ROW IS WRITTEN and the
+   * failure is reported loudly and in the return value. The one thing this
+   * script can no longer do is fabricate a row that nothing can verify.
+   *
+   * NOTE ON SACRED FILES: this fixes the CALLER. `server/adminPlatformStore.ts`
+   * is not sacred but was not changed either — `appendAudit()` was already
+   * correct; the scripts were bypassing it. `captableCommitStore.ts` (sacred) is
+   * a different chain and is untouched. */
   const action = created
     ? "partner_admin.created"
     : bindingAdded
       ? "partner_admin.bound"
       : "partner_admin.password_rotated";
-  const auditId = `aud_${createHash("sha256").update(`${userId}:${now}:${action}`).digest("hex").slice(0, 24)}`;
-  const placeholderHash = createHash("sha256")
-    .update(`${auditId}:${userId}:${action}:${now}`)
-    .digest("hex");
+  let auditAppended = false;
   try {
-    await db.insert(auditLogTable).values({
-      id: auditId,
-      tenantId: args.partnerId,
-      actorId: userId,
+    const { appendAdminAudit } = await import("../server/adminPlatformStore");
+    appendAdminAudit(
+      userId,
+      `partner_team_member:${args.partnerId}:${userId}`,
       action,
-      target: "partner_team_member",
-      targetId: `${args.partnerId}:${userId}`,
-      payloadJson: JSON.stringify({
+      {
         email: args.email,
         name,
         subRole: args.subRole,
         source: "scripts/create_partner_admin.ts",
-      }),
-      prevHash: null,
-      hash: placeholderHash,
-      createdAt: now,
-      deletedAt: null,
-    });
+      },
+      args.partnerId,
+    );
+    auditAppended = true;
   } catch (e) {
-    console.warn(`[create_partner_admin] audit_log insert failed: ${(e as Error).message}`);
+    /* REFUSE TO WRITE rather than write something unverifiable. The user and
+     * credential writes above already succeeded and are the source of truth, so
+     * this is not fatal — but it is NOT silent, and it never leaves a row behind. */
+    console.error(
+      `[create_partner_admin] AUDIT NOT WRITTEN: ${(e as Error).message}\n` +
+        `  NO audit_log row was created for ${action} (${args.partnerId}/${userId}).\n` +
+        `  This script will NOT fabricate a hash-chain row: an unverifiable row breaks\n` +
+        `  verifyTenantAuditChain() for this tenant permanently, which is the Wave 51\n` +
+        `  Item 4 defect. Record this action manually via the admin surface, or re-run\n` +
+        `  once the cause above is resolved. See build_log/wave51/AUDIT_CHAIN_REPAIR.md.`,
+    );
   }
 
   return {
@@ -294,6 +349,7 @@ export async function createPartnerAdmin(args: Args): Promise<{
     created,
     bindingAdded,
     passwordRotated: !created && !bindingAdded,
+    auditAppended,
   };
 }
 

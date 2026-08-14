@@ -74,7 +74,24 @@ export function PresentationsCard() {
                 <p className="text-[11px] text-slate-400">{m.location}</p>
               </div>
             ))}
-            <Link href="/collective/presentations">
+            {/* WAVE 41 · REACHABILITY RULE R3 — REAL DEFECT, REPAIRED (not allowlisted).
+                R3 flagged an interactive <a> nested inside <Link>. It was right, and
+                this is not a stylistic quibble. wouter is pinned at 3.9.0, whose
+                Link (node_modules/wouter/src/index.js:308-318) clones its child
+                ONLY when `asChild` is passed; otherwise it renders its OWN <a> and
+                places `children` inside it. Without `asChild` this emitted
+                  <a href="/collective/presentations"><a class="…" data-testid="…">…</a></a>
+                — nested anchors, which is invalid HTML, and the INNER anchor (the
+                one carrying the class and the testid, i.e. the one the user sees
+                and clicks) had NO href. So keyboard focus, middle-click,
+                open-in-new-tab, "copy link address" and the status-bar preview all
+                behaved wrongly on the visible element, while a plain left-click
+                still worked because it bubbled to the outer anchor's onClick.
+                That is why no test caught it: the testid is on the inner anchor and
+                clicking it navigates. `asChild` makes wouter clone this anchor and
+                give it the href, producing ONE correct <a>. No element, class,
+                testid or copy string is added or removed. */}
+              <Link asChild href="/collective/presentations">
               <a className="block text-xs text-[#cc0001] hover:underline pt-1" data-testid="widget-presentations-viewall">
                 View all presentations
               </a>

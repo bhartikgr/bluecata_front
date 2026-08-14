@@ -47,6 +47,7 @@ import {
   SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS,
   SPV_JURISDICTION_LABELS,
   resolveSpvJurisdiction,
+  spvJurisdictionDisplay, /* WAVE 40 / F-3 — single jurisdiction precedence */
   type SpvDTO,
   type SpvJurisdiction,
 } from "@shared/spvEngine";
@@ -59,15 +60,15 @@ import {
  * more specific value, and the one the enum is now reconciled against by
  * scripts/backfill_spv_jurisdiction.ts) and fall back to the enum column.
  */
+/* WAVE 40 / F-3 — delegated to the shared resolver. This function's exact rules
+   (country-first, free text shown as typed, no "delaware" fallback) were the
+   CORRECT ones; they were just implemented only here, while PartnerSpvDetail read
+   the enum column alone — which is why one vehicle read "British Virgin Islands"
+   on this card and "United States (Delaware)" on its own page. The body moved
+   verbatim into `spvJurisdictionDisplay()` (shared/spvEngine.ts) and all three
+   SPV surfaces now call that, so the two reads cannot disagree again. */
 function jurisdictionLabelFor(s: SpvDTO): string {
-  const country = (s.terms as { jurisdictionCountry?: unknown } | null)?.jurisdictionCountry;
-  const resolved: SpvJurisdiction = resolveSpvJurisdiction(
-    typeof country === "string" && country.trim() ? country : s.jurisdiction,
-  );
-  // A free-text country we cannot map still deserves to be SHOWN as typed
-  // rather than flattened to "Other / not specified".
-  if (resolved === "other" && typeof country === "string" && country.trim()) return country.trim();
-  return SPV_JURISDICTION_LABELS[resolved];
+  return spvJurisdictionDisplay(s).label;
 }
 
 /**
@@ -212,6 +213,13 @@ export default function PartnerSpvEngine() {
   const [step, setStep] = useState(0);
   const [w, setW] = useState<WizardState>(EMPTY_WIZARD);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /* WAVE 40 — which tab the NEXT mount of <SpvDetailTabs> should open on, and
+     for which vehicle. Scoped by id on purpose: a request to land on "lps" for
+     one SPV must not silently change where a different SPV's card opens. When
+     the id does not match, `initialTab` is undefined and SpvDetailTabs keeps its
+     own "overview" default — so the plain card click behaves exactly as before
+     this wave. */
+  const [selectedTab, setSelectedTab] = useState<{ id: string; tab: string } | null>(null);
 
   const list = useQuery<{ spvs: SpvDTO[] }>({
     queryKey: ["/api/partner/me/spv"],
@@ -952,10 +960,31 @@ export default function PartnerSpvEngine() {
               /* SPV-BUG-3 (F4 family) — the card was a bare <div> onClick, so a
                  plain first click was dropped (needed a raw pointer sequence).
                  Real button semantics (role + tabIndex + keyboard) make a single
-                 normal click — and Enter/Space — open the detail reliably. */
-              role="button"
-              tabIndex={0}
-              aria-expanded={selectedId === s.id}
+                 normal click — and Enter/Space — open the detail reliably.
+
+                 WAVE 40 / F-1 — `role="button" tabIndex={0}` ARE GONE FROM THIS
+                 CARD, and must not come back. Two proven reasons:
+
+                 1. KEYBOARD (reproduced in Chromium, both poles — see
+                    build_log/WAVE40_REPORT.md). The card's own onKeyDown below
+                    fires on Enter/Space BUBBLED FROM ANY DESCENDANT. Pressing
+                    Enter on an SPV tab trigger therefore toggled `selectedId`
+                    and UNMOUNTED the whole tab panel mid-activation: 16 tabs
+                    present in source, 1 reachable by keyboard.
+                 2. ARIA. A `role="button"` element has PRESENTATIONAL CHILDREN:
+                    its entire subtree is flattened in the accessibility tree, so
+                    the 16 `role="tab"` triggers, the publish Button and both
+                    Links inside it do not exist for assistive technology.
+
+                 The single-normal-click contract SPV-BUG-3 bought is preserved
+                 twice over: the card keeps its onClick (click anywhere on the
+                 card body still toggles), and the header now carries a REAL
+                 <button data-testid=`spv-row-toggle-${s.id}`> — a native
+                 control, focusable, Enter/Space-activated by the browser, with
+                 aria-expanded/aria-controls on the element that actually owns
+                 the disclosure. `scripts/reachability/reachability_gate.ts` rule
+                 R3 fails the build if an interactive role is ever wrapped around
+                 these controls again. */
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
@@ -988,10 +1017,36 @@ export default function PartnerSpvEngine() {
                       Call panel on PartnerSpvDetail were unreachable.
                       stopPropagation keeps the card's accordion toggle intact — the
                       card stays a click-to-expand control, this is an extra exit. */}
+                  {/* WAVE 40 — OWNER RULING 2026-08-13: this link opens the
+                      TABBED VIEW, landing on the LPs tab, which is where the LP
+                      roster and capital-call controls actually live now.
+
+                      `href` is deliberately KEPT pointing at the standalone page
+                      even though the plain click is intercepted: a middle-click
+                      or ⌘/Ctrl-click still opens that page in a new tab, and
+                      wouter needs a real href to render a real anchor. The
+                      standalone page is ALSO still reachable by a plain click,
+                      via the explicit `spv-open-standalone-*` link appended
+                      below — it holds 6 capabilities that exist nowhere else
+                      (`python3 scripts/spv_two_surface_audit.py --check`), so it
+                      must never lose its last inbound plain-click path. */}
                   <Link
                     href={`/collective/partner/spvs/${s.id}`}
                     className="text-xs underline text-[color:var(--cv-color-primary)] inline-block mt-1"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      /* Modifier / non-primary clicks are the user asking for a
+                         new tab or window — let the browser have them. */
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSelectedTab({ id: s.id, tab: "lps" });
+                      setSelectedId(s.id);
+                    }}
+                    /* The card's onKeyDown calls preventDefault() on Enter, which
+                       suppressed the browser's own activation of this link for a
+                       keyboard user. Stop the event here so the link works by
+                       keyboard as well as by mouse. */
+                    onKeyDown={(e) => e.stopPropagation()}
                     data-testid={`spv-open-detail-${s.id}`}
                   >
                     Open LP roster &amp; capital calls →
@@ -1030,12 +1085,62 @@ export default function PartnerSpvEngine() {
                         href={`/collective/partner/funds/${s.id}`}
                         className="text-xs underline text-[color:var(--cv-color-primary)] inline-block mt-1"
                         onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
                         data-testid={`spv-open-fund-commitments-${s.id}`}
                       >
                         Open fund commitment register →
                       </Link>
                     </>
                   )}
+                  {/* WAVE 40 / F-1 — THE REAL DISCLOSURE CONTROL.
+
+                      Appended at the END of this column deliberately: the
+                      silent-drop guard compares a container's child order as a
+                      SUBSEQUENCE, so an append is additive while an insertion or
+                      a wrap would read as a removal.
+
+                      This is a native <button>, so the browser — not a hand
+                      written key handler — activates it on Enter and Space, and
+                      it is the element that carries aria-expanded /
+                      aria-controls. stopPropagation on both click and keydown
+                      keeps the card's own onClick/onKeyDown from double-toggling
+                      it back closed. */}
+                  <br />
+                  <button
+                    type="button"
+                    className="text-xs underline text-[color:var(--cv-color-primary)] inline-block mt-1"
+                    aria-expanded={selectedId === s.id}
+                    aria-controls={`spv-detail-${s.id}`}
+                    data-testid={`spv-row-toggle-${s.id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedId(s.id === selectedId ? null : s.id);
+                    }}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    {selectedId === s.id ? "Hide vehicle detail tabs" : "Show vehicle detail tabs"}
+                  </button>
+                  {/* WAVE 40 — the standalone SPV admin page kept explicitly
+                      reachable by a plain click. The two-surface audit
+                      (`scripts/spv_two_surface_audit.py --check`, verdict
+                      recorded in build_log/WAVE40_REPORT.md) shows 6 endpoints
+                      that live ONLY there: LP invite, LP commit, GP-scoped LP
+                      roster, capital calls, and both CRM contact endpoints.
+                      Repointing the blue link above at the tabs took away its
+                      only plain-click door, so this replaces it in the same
+                      place. This is a relocation, not a subtraction — nothing
+                      here may be deleted until those 6 endpoints have callers on
+                      the tabbed surface. */}
+                  <br />
+                  <Link
+                    href={`/collective/partner/spvs/${s.id}`}
+                    className="text-xs underline text-[color:var(--cv-color-text-muted)] inline-block mt-1"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    data-testid={`spv-open-standalone-${s.id}`}
+                  >
+                    Open standalone SPV admin page (LP invites, commits, capital calls) →
+                  </Link>
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
@@ -1057,9 +1162,17 @@ export default function PartnerSpvEngine() {
               </div>
 
               {selectedId === s.id && detail.data && (
-                <div className="mt-3 border-t pt-3 text-sm space-y-2" data-testid={`spv-detail-${s.id}`} onClick={(e) => e.stopPropagation()}>
+                /* WAVE 40 / F-1 — `id` for the header button's aria-controls, and
+                   onKeyDown stopPropagation so that a key pressed on ANY control
+                   inside the tabbed detail (a tab trigger, an amount input, a
+                   Save button) can never bubble to the card's Enter/Space
+                   handler and unmount the panel the user is working in. This is
+                   the second half of the F-1 fix; removing role="button" alone
+                   would leave the bubbling toggle in place. */
+                <div className="mt-3 border-t pt-3 text-sm space-y-2" id={`spv-detail-${s.id}`} data-testid={`spv-detail-${s.id}`} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                   {/* W-FIX1f SPV-UI-1 — tabbed detail exposing every engine capability. */}
                   <SpvDetailTabs
+                    initialTab={selectedTab?.id === s.id ? selectedTab.tab : undefined}
                     spvId={s.id}
                     detail={detail.data as unknown as SpvDetail}
                     currency={s.currency}

@@ -1,10 +1,29 @@
 /**
  * v25.47 APD-020 — Consortium Partner pricing (PUBLIC, no auth).
  *
- * Renders the canonical 5-tier Consortium Partner taxonomy
- * (catalyst / builder / amplifier / nexus / founding_member) DB-driven from the
- * public GET /api/consortium/pricing endpoint. founding_member is invite-only.
- * Nothing is hardcoded — prices come straight from the resolved tier list.
+ * Renders the Consortium Partner tier taxonomy DB-driven from the public
+ * GET /api/consortium/pricing endpoint.
+ *
+ * WAVE 46 / OWNER RULING R21, verbatim: "This should be 100% dynamic. Nothing
+ * static or hard coded." This page renders WHATEVER THE DATABASE HOLDS:
+ *   • the number of cards is `tiers.length` — five today, not five by contract;
+ *   • every amount, currency and billing period is printed from the row;
+ *   • archiving a tier removes its card, freezing one marks it not purchasable,
+ *     adding one adds a card — all with NO CODE CHANGE;
+ *   • an empty list renders an EXPLICIT REFUSAL (R6), never a blank grid.
+ *
+ * WHAT WAS REMOVED HERE (money literal on a price surface):
+ *
+ *     {t.inviteOnly && t.amountMinor === 0 ? "By invitation" : formatMoney(…)}
+ *
+ * A compiled-in `0` decided which WORDS a customer saw in place of a price. It
+ * was also wrong in both directions: an invite-only tier that IS priced showed
+ * its price with no invitation notice, and a genuinely free public tier would
+ * have shown "$0 / year" while a genuinely free invite-only tier showed prose.
+ * Invite-only is now communicated by the DB-driven `inviteOnly` badge alone, and
+ * the amount is ALWAYS the amount in the row — including a real `0`, which R6
+ * says renders as zero and means it. An unpriced tier never reaches this page:
+ * `resolveConsortiumPricing` omits it rather than inventing an amount.
  */
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/ui/page-header";
@@ -22,10 +41,15 @@ interface PricingTier {
   billingPeriod: string;
   inviteOnly: boolean;
   fromDb: boolean;
+  /** DB lifecycle: 'active' | 'frozen' | 'archived'. Archived rows never ship. */
+  lifecycleState?: string;
 }
 
 interface PricingResponse {
   tiers: PricingTier[];
+  /** R6 — set by the server when NO priced row resolves. */
+  unpriced?: boolean;
+  message?: string;
 }
 
 function formatMoneyMinor(amountMinor: number, currency: string): string {
@@ -90,17 +114,18 @@ export default function ConsortiumPricing() {
                         <Lock className="h-3 w-3" /> Invite only
                       </Badge>
                     )}
-                  </CardTitle>
-                  <p className="text-2xl font-bold">
-                    {t.inviteOnly && t.amountMinor === 0
-                      ? "By invitation"
-                      : formatMoneyMinor(t.amountMinor, t.currency)}
-                    {!(t.inviteOnly && t.amountMinor === 0) && (
-                      <span className="text-sm font-normal text-muted-foreground">
-                        {" "}
-                        / {periodLabel(t.billingPeriod)}
-                      </span>
+                    {t.lifecycleState === "frozen" && (
+                      <Badge variant="outline" data-testid={`pricing-frozen-${t.slug}`}>
+                        Not currently purchasable
+                      </Badge>
                     )}
+                  </CardTitle>
+                  <p className="text-2xl font-bold" data-testid={`pricing-amount-${t.slug}`}>
+                    {formatMoneyMinor(t.amountMinor, t.currency)}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      {" "}
+                      / {periodLabel(t.billingPeriod)}
+                    </span>
                   </p>
                 </CardHeader>
                 <CardContent className="mt-auto">
@@ -121,6 +146,18 @@ export default function ConsortiumPricing() {
                 </CardContent>
               </Card>
             ))}
+          </div>
+        )}
+        {!isLoading && !error && tiers.length === 0 && (
+          <div
+            className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+            data-testid="consortium-pricing-unpriced"
+          >
+            <p className="font-semibold">Pricing is not currently published.</p>
+            <p className="mt-1">
+              {data?.message ??
+                "No partner tier pricing resolves from the database. Pricing is served live from our platform and there is no fallback price list, so nothing is advertised until a tier is priced."}
+            </p>
           </div>
         )}
       </div>

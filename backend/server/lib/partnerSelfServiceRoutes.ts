@@ -22,6 +22,7 @@
  * Every value comes from the DB (rawDb()) or env; nothing is hardcoded. Money is
  * integer minor units. Reads are side-effect-free.
  */
+/* WAVE 45 */ import { purchasableCadences } from "./partnerTiers";
 import { createHash, randomBytes } from "node:crypto";
 import { quotePartnerSubscription } from "./partnerBillingStore";
 /* WAVE 11 / EN-6 — the single amount producer + the partner-scoped charge path. */
@@ -543,7 +544,45 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
       const pid = req.partnerContext!.partnerId;
       const tier = req.partnerContext!.tier;
       const body = (req.body ?? {}) as { cycle?: unknown; promotionCode?: unknown };
-      const cycle = body.cycle === "annual" ? "annual" : "monthly";
+      /* ── WAVE 45 (R3) — THE DEFAULT CYCLE IS CONFIGURATION, NOT "monthly" ──────
+       *
+       * This line used to read:
+       *     const cycle = body.cycle === "annual" ? "annual" : "monthly";
+       * so ANY request that omitted `cycle` — which is every client that had not
+       * been updated — silently bought a MONTHLY subscription. Under R3 the
+       * platform is ANNUAL ONLY, so that default was not merely stale: combined
+       * with the x12 annual derivation it was the difference between billing
+       * $240.00 and billing $5,988.00.
+       *
+       * Monthly is RETIRED, NOT DELETED. The monthly branch below still exists
+       * and still works; whether it can be reached is decided by
+       * partner_pricing_model_config, so re-opening monthly billing is a
+       * configuration change rather than a code change. An explicit request for a
+       * cadence the platform does not currently sell is REFUSED rather than
+       * quietly downgraded to one it does. */
+      const allowedCycles = purchasableCadences();
+      const requestedCycle = typeof body.cycle === "string" ? body.cycle : null;
+      if (requestedCycle && !allowedCycles.includes(requestedCycle)) {
+        return res.status(409).json({
+          ok: false,
+          error: "CYCLE_NOT_PURCHASABLE",
+          message:
+            `The "${requestedCycle}" billing cycle is not currently offered. ` +
+            `Available: ${allowedCycles.join(", ") || "(none configured)"}.`,
+          availableCycles: allowedCycles,
+        });
+      }
+      if (allowedCycles.length === 0) {
+        // Never fall back to a compiled-in cadence. Refuse and say so.
+        return res.status(409).json({
+          ok: false,
+          error: "NO_PURCHASABLE_CYCLE",
+          message:
+            "No billing cycle is currently purchasable. An admin must enable one in " +
+            "partner_pricing_model_config before a subscription can be created.",
+        });
+      }
+      const cycle = (requestedCycle ?? allowedCycles[0]) as "annual" | "monthly";
       try {
         // GROUP C (C3) — re-connect the per-partner subscription override on the
         // partner's OWN checkout. resolvePartnerEffectivePlan composes:
@@ -668,7 +707,45 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
         promotionCode?: unknown;
         returnPath?: unknown;
       };
-      const cycle = body.cycle === "annual" ? "annual" : "monthly";
+      /* ── WAVE 45 (R3) — THE DEFAULT CYCLE IS CONFIGURATION, NOT "monthly" ──────
+       *
+       * This line used to read:
+       *     const cycle = body.cycle === "annual" ? "annual" : "monthly";
+       * so ANY request that omitted `cycle` — which is every client that had not
+       * been updated — silently bought a MONTHLY subscription. Under R3 the
+       * platform is ANNUAL ONLY, so that default was not merely stale: combined
+       * with the x12 annual derivation it was the difference between billing
+       * $240.00 and billing $5,988.00.
+       *
+       * Monthly is RETIRED, NOT DELETED. The monthly branch below still exists
+       * and still works; whether it can be reached is decided by
+       * partner_pricing_model_config, so re-opening monthly billing is a
+       * configuration change rather than a code change. An explicit request for a
+       * cadence the platform does not currently sell is REFUSED rather than
+       * quietly downgraded to one it does. */
+      const allowedCycles = purchasableCadences();
+      const requestedCycle = typeof body.cycle === "string" ? body.cycle : null;
+      if (requestedCycle && !allowedCycles.includes(requestedCycle)) {
+        return res.status(409).json({
+          ok: false,
+          error: "CYCLE_NOT_PURCHASABLE",
+          message:
+            `The "${requestedCycle}" billing cycle is not currently offered. ` +
+            `Available: ${allowedCycles.join(", ") || "(none configured)"}.`,
+          availableCycles: allowedCycles,
+        });
+      }
+      if (allowedCycles.length === 0) {
+        // Never fall back to a compiled-in cadence. Refuse and say so.
+        return res.status(409).json({
+          ok: false,
+          error: "NO_PURCHASABLE_CYCLE",
+          message:
+            "No billing cycle is currently purchasable. An admin must enable one in " +
+            "partner_pricing_model_config before a subscription can be created.",
+        });
+      }
+      const cycle = (requestedCycle ?? allowedCycles[0]) as "annual" | "monthly";
       const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? req.protocol ?? "https";
       const host = req.get("host") ?? "localhost";
       try {

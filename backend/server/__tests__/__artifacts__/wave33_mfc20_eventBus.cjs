@@ -6234,8 +6234,8 @@ var init_parseUtil = __esm({
     init_errors2();
     init_en();
     makeIssue = (params) => {
-      const { data, path: path2, errorMaps, issueData } = params;
-      const fullPath = [...path2, ...issueData.path || []];
+      const { data, path: path5, errorMaps, issueData } = params;
+      const fullPath = [...path5, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -6543,11 +6543,11 @@ var init_types = __esm({
     init_parseUtil();
     init_util();
     ParseInputLazyPath = class {
-      constructor(parent, value, path2, key2) {
+      constructor(parent, value, path5, key2) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path2;
+        this._path = path5;
         this._key = key2;
       }
       get path() {
@@ -12592,8 +12592,8 @@ var init_applyWaveC2MfcStagesSchema = __esm({
 // server/lib/applyD25Slice3CollectiveEnvFallbackSchema.ts
 function applyD25Slice3CollectiveEnvFallbackSchema(db) {
   try {
-    const tableExists2 = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collective_subscription_configs'").get();
-    if (!tableExists2) return;
+    const tableExists3 = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collective_subscription_configs'").get();
+    if (!tableExists3) return;
     const cols = db.prepare("PRAGMA table_info(collective_subscription_configs)").all();
     if (cols.some((c) => c.name === "use_env_fallback")) return;
     db.exec(
@@ -12617,10 +12617,10 @@ var init_applyD25Slice3CollectiveEnvFallbackSchema = __esm({
 // server/lib/applyWaveC2PartnerAttributionsScopeSchema.ts
 function applyWaveC2PartnerAttributionsScopeSchema(db) {
   try {
-    const tableExists2 = db.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_attributions'`
     ).get();
-    if (!tableExists2) return;
+    if (!tableExists3) return;
     const existingCols = new Set(
       db.prepare(`PRAGMA table_info(partner_attributions)`).all().map((r) => r.name)
     );
@@ -12718,10 +12718,10 @@ function applyWaveC2AuthorityArtifactsSchema(db) {
     if (!parentExists) {
       return;
     }
-    const tableExists2 = db.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='authority_artifacts'`
     ).get();
-    if (!tableExists2) {
+    if (!tableExists3) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS authority_artifacts (
           id                       TEXT PRIMARY KEY NOT NULL,
@@ -12960,10 +12960,10 @@ var init_applyWaveC2MfEngagementSchema = __esm({
 // server/lib/applyWaveC2SoftCircleProvenanceSchema.ts
 function applyWaveC2PipelineSchema(db) {
   try {
-    const tableExists2 = db.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_deal_pipeline'`
     ).get();
-    if (!tableExists2) {
+    if (!tableExists3) {
       return;
     }
     const existingCols = new Set(
@@ -13204,10 +13204,10 @@ function applyWaveC2ClientScopeSchema(db) {
       );
       return;
     }
-    const tableExists2 = db.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_crm_contact_client_scope'`
     ).get();
-    if (!tableExists2) {
+    if (!tableExists3) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS partner_crm_contact_client_scope (
           id                       TEXT PRIMARY KEY NOT NULL,
@@ -13276,10 +13276,10 @@ function applyWaveC2PcrSpineSchema(db) {
       ["partner_portfolio_company", "idx_partner_portfolio_company_pcr"]
     ];
     for (const [table, indexName] of surfaceAlters) {
-      const tableExists2 = db.prepare(
+      const tableExists3 = db.prepare(
         `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`
       ).get(table);
-      if (!tableExists2) {
+      if (!tableExists3) {
         continue;
       }
       const cols = new Set(
@@ -13321,10 +13321,10 @@ function applyWaveC2ClassificationRequestsSchema(db) {
     if (!partnerOrgsExist || !usersExist) {
       return;
     }
-    const tableExists2 = db.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mfc_classification_requests'`
     ).get();
-    if (!tableExists2) {
+    if (!tableExists3) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS mfc_classification_requests (
           id                    TEXT PRIMARY KEY NOT NULL,
@@ -13952,20 +13952,20 @@ function getDb() {
   }
   const Database = _require("better-sqlite3");
   const sqliteDrizzle = _require("drizzle-orm/better-sqlite3").drizzle;
-  let path2;
+  let path5;
   if (url && url.startsWith("file:")) {
-    path2 = url.slice(5);
+    path5 = url.slice(5);
   } else if (url && url.startsWith("sqlite:")) {
-    path2 = url.slice(7);
+    path5 = url.slice(7);
   } else if (false) {
-    path2 = ":memory:";
+    path5 = ":memory:";
   } else if (process.env.SQLITE_PATH) {
-    path2 = process.env.SQLITE_PATH;
+    path5 = process.env.SQLITE_PATH;
   } else {
-    path2 = "./data.db";
+    path5 = "./data.db";
   }
-  log.info(`[db] Opening SQLite at: ${path2}`);
-  _rawSqlite = new Database(path2);
+  log.info(`[db] Opening SQLite at: ${path5}`);
+  _rawSqlite = new Database(path5);
   _rawSqlite.pragma("journal_mode = WAL");
   _rawSqlite.pragma("recursive_triggers = ON");
   _rawSqlite.pragma("foreign_keys = ON");
@@ -20063,6 +20063,10 @@ function getConfigInternal() {
   if (!_config) _config = buildConfig();
   return _config;
 }
+function getConfig() {
+  const c = getConfigInternal();
+  return { ...c, pass: "***" };
+}
 function getTransporter() {
   if (_transporter && !_transporterBroken) return _transporter;
   const c = getConfigInternal();
@@ -20170,10 +20174,67 @@ var init_emailTransport = __esm({
   }
 });
 
+// server/lib/emailTokenRedaction.ts
+function isPurelyAlphabetic(s) {
+  return /^[A-Za-z-]+$/.test(s);
+}
+function redactTokenMaterial(text2) {
+  if (text2 === null || text2 === void 0) return text2;
+  let out = String(text2);
+  const alreadyRedacted = (v) => v.startsWith(TOKEN_REDACTION_MARKER);
+  out = out.replace(
+    SECRET_QUERY_PARAM_RE,
+    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
+  );
+  out = out.replace(
+    SECRET_PATH_SEGMENT_RE,
+    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
+  );
+  out = out.replace(LONG_HEX_RUN_RE, TOKEN_REDACTION_MARKER);
+  out = out.replace(
+    LONG_B64URL_RUN_RE,
+    (m) => isPurelyAlphabetic(m) ? m : TOKEN_REDACTION_MARKER
+  );
+  return out;
+}
+function redactOutboxRow(row) {
+  let changed = false;
+  const next = { ...row };
+  const scrub = (v) => {
+    const r = redactTokenMaterial(v);
+    if (r !== v) changed = true;
+    return r;
+  };
+  if (typeof next.subject === "string") next.subject = scrub(next.subject);
+  if (typeof next.bodyHtmlRendered === "string") next.bodyHtmlRendered = scrub(next.bodyHtmlRendered);
+  if (next.bodyText !== void 0) next.bodyText = scrub(next.bodyText);
+  if (next.error !== void 0) next.error = scrub(next.error);
+  if (next.variables && typeof next.variables === "object") {
+    const vars = {};
+    for (const [k, v] of Object.entries(next.variables)) {
+      vars[k] = typeof v === "string" ? scrub(v) : v;
+    }
+    next.variables = vars;
+  }
+  if (changed) next.bodyRedacted = true;
+  return next;
+}
+var TOKEN_REDACTION_MARKER, SECRET_QUERY_PARAM_RE, SECRET_PATH_SEGMENT_RE, LONG_HEX_RUN_RE, LONG_B64URL_RUN_RE;
+var init_emailTokenRedaction = __esm({
+  "server/lib/emailTokenRedaction.ts"() {
+    "use strict";
+    TOKEN_REDACTION_MARKER = "[REDACTED:TOKEN]";
+    SECRET_QUERY_PARAM_RE = /([?&](?:token|tokens|auth_token|authtoken|access_token|refresh_token|reset_token|invite_token|invitetoken|redeem|redeem_token|code|secret|api_key|apikey|key|otp|nonce|signature|sig)=)([^&\s"'<>()\[\]{}]+)/gi;
+    SECRET_PATH_SEGMENT_RE = /((?:^|\/)(?:redeem|redeem-partner-invite|redeem-invite|set-password|reset-password|accept-invite|invite|activate|confirm|verify)\/)([A-Za-z0-9_\-.~]{16,})/gi;
+    LONG_HEX_RUN_RE = /(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/g;
+    LONG_B64URL_RUN_RE = /(?<![0-9A-Za-z_-])[A-Za-z0-9_-]{43,}(?![0-9A-Za-z_-])/g;
+  }
+});
+
 // server/emailStore.ts
 function persistOutbox(e) {
   try {
-    persistEntry(PERSIST_STORE, e.id, e);
+    persistEntry(PERSIST_STORE, e.id, redactOutboxRow(e));
   } catch {
   }
 }
@@ -20222,6 +20283,15 @@ async function tickQueue() {
   const nowMs = Date.now();
   for (const e of outbox2) {
     if (e.status !== "queued") continue;
+    if (transactionalInFlight.has(e.id)) continue;
+    if (e.bodyRedacted) {
+      e.status = "failed";
+      e.error = "token_bearing_body_not_resendable_reissue_required";
+      e.sentAt = null;
+      e.deliveredAt = null;
+      persistOutbox(e);
+      continue;
+    }
     const nextRetryMs = e._nextRetryMs ?? 0;
     if (nowMs < nextRetryMs) continue;
     e.attempts++;
@@ -20236,8 +20306,17 @@ async function tickQueue() {
       e.status = "sent";
       e.sentAt = now;
       e.error = null;
-      e.status = "delivered";
-      e.deliveredAt = now;
+      const observedMode = (() => {
+        try {
+          return String(getConfig().mode);
+        } catch {
+          return "smtp";
+        }
+      })();
+      if (observedMode === "console" || observedMode === "dry_run") {
+        e.status = "delivered";
+        e.deliveredAt = now;
+      }
     } else if (result.error === "rate_limited") {
       e.attempts--;
       e._nextRetryMs = nowMs + 1e3;
@@ -20277,7 +20356,7 @@ function seedDemo() {
     outbox2[5].error = "550 mailbox not found";
   }
 }
-var import_node_crypto4, PERSIST_STORE, templates, outbox2, templateCache, MAX_ATTEMPTS;
+var import_node_crypto4, PERSIST_STORE, templates, outbox2, templateCache, transactionalInFlight, MAX_ATTEMPTS;
 var init_emailStore = __esm({
   "server/emailStore.ts"() {
     "use strict";
@@ -20286,6 +20365,7 @@ var init_emailStore = __esm({
     init_demoGate();
     init_storePersistenceShim();
     init_connection();
+    init_emailTokenRedaction();
     PERSIST_STORE = "emailStoreOutbox";
     templates = [
       { id: "tpl_round_invitation", slug: "round_invitation", subject: "{{founder_name}} invited you to {{company_name}}'s {{round_name}}", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{founder_name}} of {{company_name}} has invited you to participate in {{round_name}} ({{instrument}}).</p><p>{{personal_message}}</p><p><a href="{{cta_url}}">View invitation</a> \xB7 expires {{expiry_date}}.</p>', bodyText: "Hi {{recipient_name}}, {{founder_name}} invited you. {{cta_url}}", variables: ["recipient_name", "founder_name", "company_name", "round_name", "instrument", "personal_message", "cta_url", "expiry_date"], category: "round" },
@@ -20313,6 +20393,7 @@ var init_emailStore = __esm({
     ];
     outbox2 = [];
     templateCache = /* @__PURE__ */ new Map();
+    transactionalInFlight = /* @__PURE__ */ new Set();
     MAX_ATTEMPTS = 5;
     if (DEMO_SEED_ENABLED) {
       seedDemo();
@@ -22976,21 +23057,338 @@ var init_migrate = __esm({
 });
 
 // server/lib/applyWave13SubscriptionShape.ts
+function candidatePaths(basename) {
+  const cwd = process.cwd();
+  return [
+    import_node_path.default.join(cwd, "server", "db", "migrations", basename),
+    import_node_path.default.join(cwd, "migrations", basename)
+  ];
+}
+function readWave13ShapeDdl() {
+  for (const p of candidatePaths(W13_SHAPE_MIGRATION)) {
+    try {
+      if (import_node_fs.default.existsSync(p)) return import_node_fs.default.readFileSync(p, "utf8");
+    } catch {
+    }
+  }
+  return null;
+}
+function partnerSubscriptionColumns(db) {
+  try {
+    return db.prepare("SELECT name FROM pragma_table_info('partner_subscription')").all().map((r) => String(r.name));
+  } catch {
+    return [];
+  }
+}
+function partnerSubscriptionShape(db) {
+  const cols = new Set(partnerSubscriptionColumns(db));
+  if (cols.size === 0) return "absent";
+  const canonical = cols.has("subject_kind") && cols.has("subject_id") && cols.has("cycle");
+  const legacy = cols.has("partner_id") || cols.has("cadence");
+  if (canonical && legacy) return "mixed";
+  if (canonical) return "canonical";
+  return "legacy";
+}
+function isIdempotentSqliteError2(msg) {
+  const m = msg.toLowerCase();
+  return m.includes("duplicate column name") || m.includes("already exists") || m.includes("unique constraint failed");
+}
+function rowCount(db) {
+  try {
+    const r = db.prepare("SELECT COUNT(*) AS n FROM partner_subscription").get();
+    return typeof r?.n === "number" ? r.n : Number(r?.n ?? 0);
+  } catch {
+    return null;
+  }
+}
+function applyWave13SubscriptionShape(db) {
+  const shapeBefore = partnerSubscriptionShape(db);
+  const rowsBefore = rowCount(db);
+  const ddl = readWave13ShapeDdl();
+  if (!ddl) {
+    const reason2 = `W13_SHAPE_DDL_NOT_FOUND: looked in ${candidatePaths(W13_SHAPE_MIGRATION).join(", ")}`;
+    log.error?.({ route: "applyWave13SubscriptionShape", code: "W13_SHAPE_DDL_NOT_FOUND", message: reason2 });
+    return {
+      shapeBefore,
+      shapeAfter: shapeBefore,
+      applied: false,
+      reason: reason2,
+      rowsBefore,
+      rowsAfter: rowsBefore,
+      statementsRun: 0,
+      statementsSkippedIdempotent: 0,
+      missingColumns: [...W13_CANONICAL_COLUMNS].filter(
+        (c) => !partnerSubscriptionColumns(db).includes(c)
+      )
+    };
+  }
+  let statementsRun = 0;
+  let statementsSkippedIdempotent = 0;
+  let applied = true;
+  let reason = "applied";
+  for (const stmt of splitStatements(ddl)) {
+    try {
+      db.exec(stmt);
+      statementsRun++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isIdempotentSqliteError2(msg)) {
+        statementsSkippedIdempotent++;
+        continue;
+      }
+      applied = false;
+      reason = `failed: ${msg}`;
+      log.error?.({
+        route: "applyWave13SubscriptionShape",
+        code: "W13_SHAPE_INSTALL_FAILED",
+        message: `${msg} \u2014 while applying ${W13_SHAPE_MIGRATION}`
+      });
+      break;
+    }
+  }
+  const shapeAfter = partnerSubscriptionShape(db);
+  const rowsAfter = rowCount(db);
+  const have = new Set(partnerSubscriptionColumns(db));
+  const missingColumns = [...W13_CANONICAL_COLUMNS].filter((c) => !have.has(c));
+  if (shapeAfter !== "canonical" || missingColumns.length > 0) {
+    log.error?.({
+      route: "applyWave13SubscriptionShape",
+      code: "W13_SHAPE_NOT_CANONICAL",
+      message: `partner_subscription is "${shapeAfter}" after heal` + (missingColumns.length ? `; missing: ${missingColumns.join(", ")}` : "")
+    });
+  }
+  if (rowsBefore !== null && rowsAfter !== null && rowsAfter < rowsBefore) {
+    log.error?.({
+      route: "applyWave13SubscriptionShape",
+      code: "W13_SHAPE_ROW_LOSS",
+      message: `partner_subscription row count fell from ${rowsBefore} to ${rowsAfter} during reshape`
+    });
+  }
+  if (shapeBefore === "legacy" && shapeAfter === "canonical") {
+    log.info?.(
+      `[wave13] partner_subscription reshaped legacy \u2192 canonical (subject_kind/subject_id), ${rowsAfter ?? 0} row(s) carried`
+    );
+  }
+  return {
+    shapeBefore,
+    shapeAfter,
+    applied,
+    reason,
+    rowsBefore,
+    rowsAfter,
+    statementsRun,
+    statementsSkippedIdempotent,
+    missingColumns
+  };
+}
+var import_node_fs, import_node_path, W13_SHAPE_MIGRATION, W13_CANONICAL_COLUMNS;
 var init_applyWave13SubscriptionShape = __esm({
   "server/lib/applyWave13SubscriptionShape.ts"() {
     "use strict";
+    import_node_fs = __toESM(require("node:fs"), 1);
+    import_node_path = __toESM(require("node:path"), 1);
     init_logger2();
     init_migrate();
+    W13_SHAPE_MIGRATION = "0169_wave13_partner_subscription_shape_reconcile.sql";
+    W13_CANONICAL_COLUMNS = [
+      "id",
+      "subject_kind",
+      "subject_id",
+      "tier_slug",
+      "cycle",
+      "status",
+      "amount_minor",
+      "currency",
+      "list_amount_minor",
+      "discount_minor",
+      "discount_code",
+      "price_derivation",
+      "payment_intent_id",
+      "merchant_order_id",
+      "created_at",
+      "activated_at",
+      "current_period_start",
+      "current_period_end",
+      "grace_until",
+      "suspended_at",
+      "cancelled_at",
+      "grandfathered_from",
+      "superseded_by",
+      "superseded_reason",
+      "updated_at",
+      "created_by"
+    ];
   }
 });
 
 // server/lib/applyWave5MoneySchema.ts
+function candidatePaths2() {
+  const cwd = process.cwd();
+  return [
+    import_node_path2.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME),
+    import_node_path2.default.join(cwd, "migrations", MIGRATION_BASENAME)
+  ];
+}
+function readWave5MoneyDdl() {
+  for (const p of candidatePaths2()) {
+    try {
+      if (import_node_fs2.default.existsSync(p)) return import_node_fs2.default.readFileSync(p, "utf8");
+    } catch {
+    }
+  }
+  return null;
+}
+function tableExists2(db, name) {
+  try {
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
+  } catch {
+    return false;
+  }
+}
+function triggerExists(db, name) {
+  try {
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name=?").get(name);
+  } catch {
+    return false;
+  }
+}
+function applyWave5MoneySchema(db) {
+  const ddl = readWave5MoneyDdl();
+  if (!ddl) {
+    const reason2 = `WAVE5_DDL_NOT_FOUND: looked in ${candidatePaths2().join(", ")}`;
+    log.error?.({ route: "applyWave5MoneySchema", code: "WAVE5_DDL_NOT_FOUND", message: reason2 });
+    return {
+      applied: false,
+      reason: reason2,
+      tablesPresent: [],
+      tablesMissing: [...WAVE5_TABLES],
+      triggersPresent: [],
+      triggersMissing: HOSTED_TRIGGERS.map((t) => ({ ...t, reason: "ddl_not_found" }))
+    };
+  }
+  let applied = true;
+  let reason = "applied";
+  try {
+    db.exec(ddl);
+  } catch (err) {
+    applied = false;
+    reason = `partial: ${err.message}`;
+    log.warn?.(
+      `[applyWave5MoneySchema] whole-script exec failed (${err.message}); falling back to per-statement install so the Wave 5 tables still land.`
+    );
+    try {
+      db.exec(stripHostedTriggers(ddl));
+      applied = true;
+      reason = `applied_without_hosted_triggers: ${err.message}`;
+    } catch (err2) {
+      log.error?.({
+        route: "applyWave5MoneySchema",
+        code: "WAVE5_INSTALL_FAILED",
+        message: err2.message
+      });
+      reason = `failed: ${err2.message}`;
+    }
+  }
+  const triggersPresent = [];
+  const triggersMissing = [];
+  for (const t of HOSTED_TRIGGERS) {
+    if (triggerExists(db, t.trigger)) {
+      triggersPresent.push(t.trigger);
+      continue;
+    }
+    if (!tableExists2(db, t.hostTable)) {
+      triggersMissing.push({ ...t, reason: `host table ${t.hostTable} absent` });
+      log.warn?.(
+        `[applyWave5MoneySchema] domain fence ${t.trigger} NOT attached: host table ${t.hostTable} does not exist yet. The column it fences is UNFENCED until this installer runs again after the table is created.`
+      );
+      continue;
+    }
+    const sql2 = extractStatement(ddl, t.trigger);
+    if (!sql2) {
+      triggersMissing.push({ ...t, reason: "statement not found in 0153" });
+      continue;
+    }
+    try {
+      db.exec(sql2);
+      triggersPresent.push(t.trigger);
+    } catch (err) {
+      triggersMissing.push({ ...t, reason: err.message });
+      log.warn?.(
+        `[applyWave5MoneySchema] domain fence ${t.trigger} failed to attach: ${err.message}`
+      );
+    }
+  }
+  applyWave13SubscriptionShape(db);
+  const tablesPresent = [];
+  const tablesMissing = [];
+  for (const t of WAVE5_TABLES) {
+    (tableExists2(db, t) ? tablesPresent : tablesMissing).push(t);
+  }
+  if (tablesMissing.length > 0) {
+    log.error?.({
+      route: "applyWave5MoneySchema",
+      code: "WAVE5_TABLES_MISSING",
+      message: `after install, ${tablesMissing.length} Wave 5 table(s) absent: ${tablesMissing.join(", ")}`
+    });
+  }
+  return { applied, reason, tablesPresent, tablesMissing, triggersPresent, triggersMissing };
+}
+function stripHostedTriggers(ddl) {
+  let out = ddl;
+  for (const t of HOSTED_TRIGGERS) {
+    const stmt = extractStatement(ddl, t.trigger);
+    if (stmt) out = out.replace(stmt, "");
+  }
+  return out;
+}
+function extractStatement(ddl, triggerName) {
+  const start = ddl.indexOf(`CREATE TRIGGER IF NOT EXISTS ${triggerName}`);
+  if (start < 0) return null;
+  const endIdx = ddl.indexOf("END;", start);
+  if (endIdx < 0) return null;
+  return ddl.slice(start, endIdx + 4);
+}
+function ensureWave5MoneySchema(db) {
+  if (_installed.has(db)) return;
+  applyWave5MoneySchema(db);
+  _installed.add(db);
+}
+var import_node_fs2, import_node_path2, MIGRATION_BASENAME, WAVE5_TABLES, HOSTED_TRIGGERS, _installed;
 var init_applyWave5MoneySchema = __esm({
   "server/lib/applyWave5MoneySchema.ts"() {
     "use strict";
+    import_node_fs2 = __toESM(require("node:fs"), 1);
+    import_node_path2 = __toESM(require("node:path"), 1);
     init_logger2();
     init_connection();
     init_applyWave13SubscriptionShape();
+    MIGRATION_BASENAME = "0153_wave5_money_captable.sql";
+    WAVE5_TABLES = [
+      "percent_policy_record",
+      "migration_supersession",
+      "collective_renewal_worker_config",
+      "partner_tier_price",
+      "partner_subscription",
+      "partner_invoice",
+      "partner_invoice_line",
+      "partner_promotion",
+      "partner_promotion_grant",
+      "partner_money_event",
+      "captable_commit_idempotency",
+      "spv_fee_hydration_state",
+      "collective_fee_mirror_reject",
+      "spv_fee_chain_rebuild",
+      "valuation_mark_policy"
+    ];
+    HOSTED_TRIGGERS = [
+      { trigger: "trg_fca_traction_growth_pct_ins", hostTable: "founder_collective_applications" },
+      { trigger: "trg_fca_traction_growth_pct_upd", hostTable: "founder_collective_applications" },
+      { trigger: "trg_captable_commits_discount_pct_ins", hostTable: "captable_commits" },
+      { trigger: "trg_captable_commits_discount_pct_upd", hostTable: "captable_commits" },
+      { trigger: "trg_contacts_commission_override_pct_ins", hostTable: "contacts" },
+      { trigger: "trg_contacts_commission_override_pct_upd", hostTable: "contacts" }
+    ];
+    _installed = /* @__PURE__ */ new WeakSet();
   }
 });
 
@@ -23332,6 +23730,179 @@ var init_percentPolicy = __esm({
   }
 });
 
+// server/lib/applyWave45PricingSchema.ts
+function candidatePaths3() {
+  const cwd = process.cwd();
+  return [
+    import_node_path3.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME2),
+    import_node_path3.default.join(cwd, "migrations", MIGRATION_BASENAME2)
+  ];
+}
+function readWave45PricingDdl() {
+  for (const p of candidatePaths3()) {
+    try {
+      if (import_node_fs3.default.existsSync(p)) return import_node_fs3.default.readFileSync(p, "utf8");
+    } catch {
+    }
+  }
+  return null;
+}
+function objectExists(db, name, type) {
+  try {
+    const row = db.prepare(`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+function applyWave45PricingSchema(db) {
+  const warnings = [];
+  try {
+    ensureWave5MoneySchema(db);
+  } catch (err) {
+    warnings.push(`wave5 prerequisite install failed: ${err.message}`);
+  }
+  const probe = () => ({
+    tablesPresent: WAVE45_TABLES.filter((t) => objectExists(db, t, "table")),
+    tablesMissing: WAVE45_TABLES.filter((t) => !objectExists(db, t, "table")),
+    triggersPresent: WAVE45_TRIGGERS.filter((t) => objectExists(db, t, "trigger")),
+    triggersMissing: WAVE45_TRIGGERS.filter((t) => !objectExists(db, t, "trigger"))
+  });
+  let state = probe();
+  if (state.tablesMissing.length === 0 && state.triggersMissing.length === 0) {
+    return { ran: false, reason: "already installed", warnings, ...state };
+  }
+  const ddl = readWave45PricingDdl();
+  if (!ddl) {
+    warnings.push(
+      `could not read ${MIGRATION_BASENAME2} from any of: ${candidatePaths3().join(", ")}`
+    );
+    log.error?.({ warnings }, "wave45 pricing schema install could not read its migration");
+    return { ran: false, reason: "ddl not found", warnings, ...state };
+  }
+  try {
+    db.exec(ddl);
+  } catch (err) {
+    warnings.push(`exec failed: ${err.message}`);
+    log.error?.({ err }, "wave45 pricing schema install failed");
+  }
+  state = probe();
+  if (state.tablesMissing.length > 0 || state.triggersMissing.length > 0) {
+    log.warn?.(
+      { tablesMissing: state.tablesMissing, triggersMissing: state.triggersMissing },
+      "wave45 pricing schema install incomplete"
+    );
+  }
+  return { ran: true, reason: "installed", warnings, ...state };
+}
+function ensureWave45PricingSchema(db) {
+  if (_installed2.has(db)) return;
+  applyWave45PricingSchema(db);
+  _installed2.add(db);
+}
+function wave45Db() {
+  if (getDbDriver() === "postgres") {
+    throw new Error(WAVE45_STORE_UNAVAILABLE);
+  }
+  getDb();
+  const db = rawDb();
+  ensureWave45PricingSchema(db);
+  return db;
+}
+var import_node_fs3, import_node_path3, MIGRATION_BASENAME2, WAVE45_STORE_UNAVAILABLE, WAVE45_TABLES, WAVE45_TRIGGERS, _installed2;
+var init_applyWave45PricingSchema = __esm({
+  "server/lib/applyWave45PricingSchema.ts"() {
+    "use strict";
+    import_node_fs3 = __toESM(require("node:fs"), 1);
+    import_node_path3 = __toESM(require("node:path"), 1);
+    init_logger2();
+    init_connection();
+    init_applyWave5MoneySchema();
+    MIGRATION_BASENAME2 = "0185_wave45_pricing_model_v3.sql";
+    WAVE45_STORE_UNAVAILABLE = "PARTNER_PRICING_STORE_UNAVAILABLE";
+    WAVE45_TABLES = [
+      "partner_tier_lifecycle",
+      "partner_tier_capability",
+      "partner_pricing_model_config",
+      "partner_grandfather_grant"
+    ];
+    WAVE45_TRIGGERS = [
+      "trg_ptp_frozen_no_price_update",
+      "trg_ptp_frozen_no_price_insert",
+      "trg_ptl_no_delete"
+    ];
+    _installed2 = /* @__PURE__ */ new WeakSet();
+  }
+});
+
+// server/lib/partnerTierCapabilityStore.ts
+function toResolution(v) {
+  return v === "configured" ? "configured" : v === "unlimited" ? "unlimited" : "not_configured";
+}
+function toValueKind(v) {
+  return v === "bool_flag" ? "bool_flag" : v === "percent_as_written" ? "percent_as_written" : "int_limit";
+}
+function mapRow(row, source) {
+  return {
+    tierSlug: row.tier_slug,
+    capabilityKey: row.capability_key,
+    valueKind: toValueKind(row.value_kind),
+    resolution: toResolution(row.resolution),
+    value: row.int_value,
+    boolValue: row.bool_value === null ? null : row.bool_value === 1,
+    percentValue: row.percent_value,
+    label: row.label,
+    notes: row.notes,
+    editable: row.editable === 1,
+    source,
+    missingRow: false
+  };
+}
+function resolveTierCapability(tierSlug, capabilityKey) {
+  const db = wave45Db();
+  let row;
+  try {
+    row = db.prepare(
+      `SELECT tier_slug, capability_key, value_kind, resolution, int_value, bool_value,
+                percent_value, label, notes, editable
+           FROM partner_tier_capability
+          WHERE tier_slug = ? AND capability_key = ?`
+    ).get(tierSlug, capabilityKey);
+  } catch {
+    row = void 0;
+  }
+  if (row) return mapRow(row, "tier");
+  return {
+    tierSlug,
+    capabilityKey,
+    valueKind: "int_limit",
+    resolution: "not_configured",
+    value: null,
+    boolValue: null,
+    percentValue: null,
+    label: capabilityKey,
+    notes: null,
+    editable: true,
+    source: "tier",
+    missingRow: true
+  };
+}
+var CAPABILITY_SEAT_LIMIT, CAPABILITY_TIER_SLUGS;
+var init_partnerTierCapabilityStore = __esm({
+  "server/lib/partnerTierCapabilityStore.ts"() {
+    "use strict";
+    init_applyWave45PricingSchema();
+    CAPABILITY_SEAT_LIMIT = "seat_limit";
+    CAPABILITY_TIER_SLUGS = [
+      "catalyst",
+      "builder",
+      "amplifier",
+      "nexus",
+      "founding_member"
+    ];
+  }
+});
+
 // server/lib/emailSender.ts
 var import_nodemailer2;
 var init_emailSender = __esm({
@@ -23340,6 +23911,7 @@ var init_emailSender = __esm({
     import_nodemailer2 = __toESM(require("nodemailer"), 1);
     init_logger2();
     init_adminPlatformStore();
+    init_emailTokenRedaction();
   }
 });
 
@@ -23493,16 +24065,41 @@ var init_roundInvitationsStore = __esm({
 });
 
 // server/adminContactsStore.ts
+var TIER_SEAT_LIMITS;
 var init_adminContactsStore = __esm({
   "server/adminContactsStore.ts"() {
     "use strict";
     init_adminPlatformStore();
+    init_partnerTierCapabilityStore();
     init_bridgeStore();
     init_demoGate();
     init_connection();
     init_schema();
     init_logger2();
     init_roundInvitationsStore();
+    TIER_SEAT_LIMITS = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (typeof prop !== "string") return void 0;
+          return resolveTierCapability(prop, CAPABILITY_SEAT_LIMIT).value;
+        },
+        has(_t, prop) {
+          return typeof prop === "string" && !resolveTierCapability(prop, CAPABILITY_SEAT_LIMIT).missingRow;
+        },
+        ownKeys() {
+          return [...CAPABILITY_TIER_SLUGS];
+        },
+        getOwnPropertyDescriptor() {
+          return { enumerable: true, configurable: true };
+        },
+        set() {
+          throw new Error(
+            "TIER_SEAT_LIMITS_READ_ONLY: seat limits are data. Use setTierCapability(tier, 'seat_limit', ...) so the change is audited and admin-visible."
+          );
+        }
+      }
+    );
   }
 });
 
@@ -23522,6 +24119,15 @@ var init_partnerFeeResolver = __esm({
     init_percentPolicy();
     init_adminContactsStore();
     init_partnerCommissionRateResolver();
+  }
+});
+
+// server/lib/spvDeploymentFeeSource.ts
+var init_spvDeploymentFeeSource = __esm({
+  "server/lib/spvDeploymentFeeSource.ts"() {
+    "use strict";
+    init_connection();
+    init_partnerFeeResolver();
   }
 });
 
@@ -23548,6 +24154,7 @@ var init_spvDeploymentFee = __esm({
   "server/lib/spvDeploymentFee.ts"() {
     "use strict";
     init_partnerFeeResolver();
+    init_spvDeploymentFeeSource();
     init_partnerTierResolver();
   }
 });
@@ -23563,6 +24170,17 @@ var init_spvEngineDeploymentFeeHook = __esm({
   }
 });
 
+// server/lib/applyWave50MoneyDefectSchema.ts
+var init_applyWave50MoneyDefectSchema = __esm({
+  "server/lib/applyWave50MoneyDefectSchema.ts"() {
+    "use strict";
+    init_logger2();
+    init_connection();
+    init_applyWave5MoneySchema();
+    init_spvEngineDeploymentFeeHook();
+  }
+});
+
 // server/lib/requirePartnerAuth.ts
 var init_requirePartnerAuth = __esm({
   "server/lib/requirePartnerAuth.ts"() {
@@ -23570,6 +24188,7 @@ var init_requirePartnerAuth = __esm({
     init_userContext();
     init_partnerWorkspaceStore();
     init_adminContactsStoreShim();
+    init_partnerTierCapabilityStore();
     init_partnerFeeResolver();
   }
 });
@@ -24023,6 +24642,8 @@ var init_spvEngineStore = __esm({
     init_ilpaCashflowLedger();
     init_bridgeStore();
     init_spvEngineDeploymentFeeHook();
+    init_spvDeploymentFeeSource();
+    init_applyWave50MoneyDefectSchema();
     init_spvFundStore();
     init_partnerWorkspaceStore();
     init_subscriptionStore();
@@ -24457,6 +25078,7 @@ var init_partnerWorkspaceStore = __esm({
     init_adminPlatformStore();
     init_bridgeStore();
     init_adminContactsStoreShim();
+    init_partnerTierCapabilityStore();
     init_connection();
     init_attributionProvenance();
     init_portable();
@@ -24510,6 +25132,31 @@ var init_partnerWorkspaceStore = __esm({
         audit(removedBy, `partner:${partnerId}`, "partner.team_member.removed", { userId });
         emit2("partner.team_member_removed", partnerId, { partnerId, userId, removedAt: m.removedAt, idempotencyKey: `${partnerId}|${userId}|${m.removedAt}` });
         return m;
+      },
+      /** WAVE 44 · DEFECT 1 — rollback compensation for the RAM projection.
+       *
+       * `add()` persists the row and THEN pushes it into the `teamMembers` array.
+       * The consortium-approval path now calls `upsertOwner` INSIDE the same
+       * transaction that approves the application, so if that transaction rolls
+       * back the durable row disappears while the RAM push would survive — the
+       * process would grant workspace access that the database does not record.
+       * The approval path calls this on rollback. It removes the projection entry
+       * ONLY (no DB write, no audit, no bridge event): the row it would delete no
+       * longer exists, so there is nothing to mark removed.
+       *
+       * Returns the number of projection rows dropped, so the caller can log a
+       * number rather than assume. */
+      dropFromProjectionAfterRollback(partnerId, userId) {
+        if (!partnerId || !userId) return 0;
+        let dropped = 0;
+        for (let i = teamMembers.length - 1; i >= 0; i -= 1) {
+          const m = teamMembers[i];
+          if (m.partnerId === partnerId && m.userId === userId) {
+            teamMembers.splice(i, 1);
+            dropped += 1;
+          }
+        }
+        return dropped;
       },
       listByPartner(partnerId) {
         requirePid(partnerId);

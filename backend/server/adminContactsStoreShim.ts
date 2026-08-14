@@ -9,6 +9,10 @@ import {
   PartnerTier,
   PartnerType,
   TIER_RANK,
+  /* WAVE 45 (R3): TIER_SEAT_LIMITS is no longer a compiled-in literal — it is a
+   * read-through view over partner_tier_capability. The NAME is re-exported so
+   * this shim's public surface is unchanged; the values now come from the DB and
+   * "unlimited" reads as null rather than as the magic number 9999. */
   TIER_SEAT_LIMITS,
   _testContacts,
 } from "./adminContactsStore";

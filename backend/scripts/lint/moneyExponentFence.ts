@@ -163,7 +163,24 @@ interface BaselineEntry {
 export const BASELINE: BaselineEntry[] = [
   {
     file: "client/src/pages/admin/AdminFeesConsolidated.tsx",
-    line: 1501,
+    /* WAVE 44 re-pin: 1501 → 1505. The site did not change; four lines of
+       comment were added ABOVE it when the broken "Payment ledger entries"
+       counter was fixed in the same file. Text byte-identical, justification
+       unchanged, no pattern/vocabulary/directory relaxed, baseline still ONE
+       entry, and that entry is still prose rather than code.
+
+       WAVE 46 re-pin: 1505 → 1549. Same site, byte-identical text (verified),
+       moved DOWN by 44 lines because R21/R22 appended two disclosure paragraphs
+       to the SPV-deployment-fee card ABOVE it (the "no fee configured" refusal
+       and the override-divergence notice). WAVE 46 did NOT enter, extend or
+       touch the lossy legacy mirror this prose DESCRIBES
+       (server/adminPlatformFeesRoutes.ts) — the prose is the only reason the
+       fence sees a `/ 100` here at all. The fence is UNCHANGED: no pattern
+       removed, no vocabulary token removed, no directory excluded, nothing
+       newly allowlisted, and the baseline is still exactly ONE entry that is
+       still prose rather than code. The fence's own BASELINE-STALE branch
+       demands this re-pin-with-justification rather than silence. */
+    line: 1549,
     text: "<code>Math.round(amountMinor / 100)</code> because that legacy table stores",
     why: "Not code — JSX documentation prose inside a <code> element, describing the legacy mirror write that WAVE 34 fixed at adminPlatformFeesRoutes.ts.",
   },

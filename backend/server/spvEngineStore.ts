@@ -33,6 +33,14 @@ import { projectDistribution, tryProject } from "./lib/ilpaCashflowLedger";
 import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
 // WAVE 8 ORP-029 — sibling module, so the engine store itself stays thin.
 import { chargeEngineSpvDeploymentFee } from "./lib/spvEngineDeploymentFeeHook";
+/* WAVE 46 / OWNER RULING R22 — "wire the fee to push-to-live, charged exactly
+ * once, on the transition to live, idempotently." The predicate lives in
+ * server/lib/spvDeploymentFeeSource.ts next to the fee it triggers. */
+import { isPushToLiveTransition } from "./lib/spvDeploymentFeeSource";
+/* WAVE 50 · ITEM 2 — the pre-latch exemption table (migration 0187 §2) is not in
+ * connection.ts's inline bootstrap, which is SACRED, so the self-heal installer
+ * is what makes it present on a `:memory:` test database. */
+import { ensureWave50MoneyDefectSchema } from "./lib/applyWave50MoneyDefectSchema";
 // Wave B v26.4.0-fix (BLOCK-B) — static import replaces the prior lazy
 // `require("./spvFundStore")`. Verified: NO circular dependency exists
 // (`spvFundStore.ts` does not import from `spvEngineStore` at all, and
@@ -498,6 +506,10 @@ export const spvEngineStore = {
     /* v25.50 REVISE R3 — same fail-closed guard as createSpv: a patch may not
        replace a valid mandate description with whitespace/empty or >1200 chars. */
     if (patch.terms !== undefined) assertValidMandateDescription(patch.terms);
+    /* WAVE 46 / R22 — capture the PRE-PATCH status before the mutation below.
+     * `s` is the live object from the identity map, so reading `s.status` after
+     * the assignment would compare a value with itself. */
+    const prevStatus = s.status;
     if (patch.status) s.status = patch.status;
     const scopeChanged = patch.distributionScope && patch.distributionScope !== s.distributionScope;
     const prevScope = s.distributionScope;
@@ -515,6 +527,28 @@ export const spvEngineStore = {
     spvById.set(s.id, s);
     emit("spv.updated", s.id, { partnerId, spvId, patch: Object.keys(patch) });
     if (scopeChanged) emit("spv.scope_changed", s.id, { partnerId, spvId, from: prevScope, to: s.distributionScope });
+    /* ── WAVE 46 / OWNER RULING R22 — CHARGE THE DEPLOYMENT FEE ON PUSH-TO-LIVE ─
+     *
+     * Wave 45 deliberately left this unwired pending the ruling; the ruling is
+     * now given. This is the edge a partner crosses when an SPV stops being a
+     * draft and becomes visible to the network — `listVisibleForContext` uses
+     * the same `status !== "draft"` notion of live, and
+     * `isPushToLiveTransition` also excludes `wound_down` so republishing a
+     * retired SPV is not treated as a first push.
+     *
+     * EXACTLY ONCE, idempotently, via the EXISTING `spv_deployment_fee_billing`
+     * latch (migration 0162) — no second latch was built. The Wave 8
+     * `markDeployed` trigger is RETAINED and funnels into the same latch, so
+     * `draft → open → … → deployed` charges once in total, not twice.
+     *
+     * DELIBERATELY AFTER persist + emit, matching `markDeployed`: a fee-config
+     * gap must never roll back the partner's status change. A gap is recorded
+     * as a durable `pending` row (with `SPV_DEPLOYMENT_FEE_UNCONFIGURED` as the
+     * reason when the authoritative price is missing) and is retryable at
+     * POST /api/admin/consortium-spv/:spvId/deployment-fee/retry. */
+    if (isPushToLiveTransition(prevStatus, s.status)) {
+      chargeEngineSpvDeploymentFee(s.id, s.sponsorPartnerId ?? partnerId);
+    }
     return s;
   },
 
@@ -2511,6 +2545,60 @@ export const spvEngineStore = {
  *  (pfnd_ → spvType='fund') into the canonical `spv` table. Deterministic
  *  migrated id `spv_mig_<sha1(legacyId)>` + INSERT-OR-IGNORE via migrated_from
  *  means re-running is a no-op. Nothing is dropped. */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 50 · ITEM 2 — RECORD THE PRE-LATCH EXEMPTION AT MIGRATION TIME
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Migration 0187 §2 backfills `spv_deployment_fee_exemption` from the rows that
+ * exist WHEN IT RUNS. This function is the forward half of the same rule: a
+ * legacy vehicle boot-migrated AFTER 0187 must be recorded too, or it inherits
+ * the exact defect 0187 repaired — no billing row, no `deployment_fee_minor`, and
+ * so a false $240 the first time someone relaunches it.
+ *
+ * The predicate is IDENTICAL to the migration's, deliberately: exempt only a
+ * vehicle that arrived ALREADY LIVE or already retired FROM live. A legacy row
+ * mapped to `draft` gets NO exemption, because its first push to live on this
+ * platform is a genuine first deployment and IS owed the fee.
+ *
+ * Recorded here rather than derived later because `spv.status` is mutated in
+ * place: after the first relaunch there is no longer any way to tell that this
+ * vehicle was live before the latch existed.
+ *
+ * Best-effort by design. A failure to write the exemption must not roll back a
+ * boot migration, and the fail-closed direction is "no exemption" — the vehicle
+ * is charged, which is recoverable, rather than silently freed, which is not. */
+function recordPreLatchDeploymentExemption(s: SpvDTO): void {
+  if (!s.migratedFrom) return;
+  // `draft` is EXCLUDED: never yet live, so never yet deployed.
+  if (s.status === "draft") return;
+  try {
+    ensureWave50MoneyDefectSchema();
+    const raw = rawDb() as any;
+    raw
+      .prepare(
+        `INSERT OR IGNORE INTO spv_deployment_fee_exemption
+           (spv_id, reason, migrated_from, status_at_record, note, recorded_at, recorded_by)
+         VALUES (?,?,?,?,?,?,?)`,
+      )
+      .run(
+        s.id,
+        "pre_latch_deployment",
+        s.migratedFrom,
+        s.status,
+        `WAVE 50 ITEM 2. Boot-migrated from legacy ${s.migratedFrom} already at status '${s.status}', ` +
+          `i.e. deployed before the spv_deployment_fee_billing latch (migration 0162) existed. ` +
+          `Relaunching it is not a first push to live, so the R3/R22 one-time deployment fee is not owed.`,
+        nowIso(),
+        "migrateLegacyPartnerSpvAndFunds",
+      );
+  } catch (err) {
+    log.warn(
+      `[spvEngineStore] WAVE 50 could not record pre-latch deployment-fee exemption for ${s.id} ` +
+        `(it will be treated as chargeable, which is the fail-closed direction): ${String(err)}`,
+    );
+  }
+}
+
 export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number } {
   let migratedSpvs = 0;
   let migratedFunds = 0;
@@ -2600,6 +2688,7 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
       };
       persistSpv(s);
       spvById.set(s.id, s);
+      recordPreLatchDeploymentExemption(s);
       migratedSpvs++;
     }
     for (const legacy of partnerFundsStore._listAll()) {
@@ -2635,6 +2724,7 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
       };
       persistSpv(s);
       spvById.set(s.id, s);
+      recordPreLatchDeploymentExemption(s);
       migratedFunds++;
     }
   } catch (err) {

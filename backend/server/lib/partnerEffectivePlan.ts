@@ -33,7 +33,7 @@
  */
 import { rawDb } from "../db/connection";
 import type { PartnerTier } from "../adminContactsStoreShim";
-import { resolveChargeTier } from "./partnerTiers";
+import { resolveChargeTier, tierPriceRejection } from "./partnerTiers";
 import {
   resolvePartnerFee,
   resolveCommissionRate,
@@ -190,7 +190,29 @@ export function resolvePartnerEffectivePlan(
   } else if (advertisedPrice) {
     effectivePrice = { amountMinor: advertisedPrice.amountMinor, currency: advertisedPrice.currency, source: "tier_advertised" };
   } else {
-    // FAIL-CLOSED: never silently $0 unless an explicit $0 override was set.
+    /* FAIL-CLOSED: never silently $0 unless an explicit $0 override was set.
+     *
+     * WAVE 50 · ITEM 3 — SAY WHICH FAILURE THIS IS. Item 3 moved the
+     * tier-level-zero refusal UPSTREAM, into the price classifier, so a
+     * misconfigured `0` no longer reaches this function as a zero at all: it
+     * arrives as an absence, indistinguishable from a genuinely missing row.
+     * That is the correct place to catch it (it also protects the advertised
+     * catalogue, which the downstream invoice guard never did), but collapsing
+     * both faults into one message would LOSE information Wave 47 already had:
+     * "the price is 0 and nobody authorised that" is a different operator action
+     * from "there is no price row". So the classifier is consulted for the
+     * reason, and a distinct code is raised. Nothing is converted into a price
+     * here; both branches still refuse. */
+    const rejection = tierPriceRejection(tier, cycle);
+    if (rejection) {
+      throw new EffectivePlanError(
+        rejection.kind === "unattested_zero" ? "tier_zero_unattested" : "tier_price_rejected",
+        `No effective subscription price for partner='${partnerId}' tier='${tier}' cycle='${cycle}': ` +
+          `the tier row was REJECTED (${rejection.kind}: ${rejection.reason}) and there is no ` +
+          `per-partner override. A tier-level 0 is not a price; either attest the tier as ` +
+          `genuinely free (free_attested + free_reason) or set a real price.`,
+      );
+    }
     throw new EffectivePlanError(
       "no_effective_price",
       `No effective subscription price for partner='${partnerId}' tier='${tier}' cycle='${cycle}': ` +

@@ -385,8 +385,11 @@ function OutboxTab() {
   return (
     <div className="space-y-4">
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-3">
-        {(["queued", "delivered", "bounced", "sent"] as const).map((k) => (
+      {/* WAVE 47 · R19 — "failed" APPENDED at the END of this list (never
+          inserted mid-list), and the grid widened to 5 to match. A send attempt
+          that never completed is not a bounce and was previously invisible. */}
+      <div className="grid grid-cols-5 gap-3">
+        {(["queued", "delivered", "bounced", "sent", "failed"] as const).map((k) => (
           <Card key={k} className="p-3" data-testid={`stat-outbox-${k}`}>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{k}</div>
             <div className="text-lg font-semibold mt-1">{stats[k] ?? 0}</div>
@@ -402,7 +405,8 @@ function OutboxTab() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
-            {["queued","sent","delivered","opened","clicked","bounced"].map((s) => (
+            {/* WAVE 47 · R19 — "failed" appended at the END of the filter list. */}
+            {["queued","sent","delivered","opened","clicked","bounced","failed"].map((s) => (
               <SelectItem key={s} value={s}>{s}</SelectItem>
             ))}
           </SelectContent>
@@ -519,6 +523,69 @@ function TransportTab() {
     },
   });
 
+  /* ============================================================
+   * WAVE 47 · R19 — A REAL TEST-SEND, not just a socket probe.
+   *
+   * "Test connection" above calls nodemailer's verify(): it opens a socket,
+   * greets the server and hangs up. It proved the platform could REACH Gmail —
+   * and the admin console had no way to prove it could SEND anything, which is
+   * how "Connection OK — 443ms" coexisted with an outbox that had never
+   * recorded a single email. This control sends an actual message through the
+   * real pipeline and reports the honest outbox status it produced.
+   *
+   * It calls the EXISTING POST /api/admin/email/send-test endpoint; no new
+   * server route was invented for it.
+   * ============================================================ */
+  const [testTo, setTestTo] = useState("");
+  const [lastSendTest, setLastSendTest] = useState<{
+    ok: boolean;
+    status?: string;
+    mode?: string;
+    outboxId?: string;
+    to?: string;
+    error?: string;
+  } | null>(null);
+
+  const sendTestMutation = useMutation({
+    mutationFn: (to: string) =>
+      fetch("/api/admin/email/send-test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to }),
+      }).then((r) => r.json()),
+    onSuccess: (d: any) => {
+      const status = String(d?.status ?? (d?.transportAccepted ? "sent" : "failed"));
+      const accepted = status === "sent";
+      setLastSendTest({
+        ok: accepted,
+        status,
+        mode: d?.mode,
+        outboxId: d?.outboxId,
+        to: d?.to,
+        error: d?.error ?? d?.fallback,
+      });
+      /* The row it created is in the Outbox tab; refresh so the admin sees it. */
+      qc.invalidateQueries({ queryKey: ["/api/admin/email/transport/outbox"] });
+      if (accepted) {
+        toast({
+          description:
+            `Accepted by the transport for ${d?.to ?? "recipient"}. ` +
+            `Recorded as "sent" — delivery to the mailbox is not confirmed.`,
+        });
+      } else {
+        toast({
+          title: "Test send failed",
+          description: String(d?.error ?? d?.fallback ?? "The transport refused the message."),
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (e: any) => {
+      setLastSendTest({ ok: false, status: "failed", error: String(e?.message ?? e) });
+      toast({ title: "Test send failed", description: String(e?.message ?? e), variant: "destructive" });
+    },
+  });
+
   const cfg = data?.config;
 
   return (
@@ -622,6 +689,57 @@ function TransportTab() {
           )}
         </div>
       </Card>
+
+      {/* WAVE 47 · R19 — appended at the END of this tab as a SIBLING Card.
+          Nothing above was replaced, reordered or wrapped. */}
+      <Card className="p-5 space-y-3">
+        <div className="text-sm font-semibold flex items-center gap-2">
+          <Send className="h-4 w-4" /> Send a real test email
+        </div>
+        <p className="text-xs text-muted-foreground">
+          "Test connection" only opens a socket. This sends an actual message
+          through the same pipeline the platform uses for invites and receipts,
+          and records it in the Outbox. A successful result means the transport
+          ACCEPTED the message — delivery to the mailbox is never claimed here,
+          because nothing in this process can observe it.
+        </p>
+        <div className="flex items-center gap-2">
+          <Input
+            data-testid="input-send-test-to"
+            value={testTo}
+            onChange={(e) => setTestTo(e.target.value)}
+            placeholder="you@example.com"
+            className="h-8 text-xs"
+          />
+          <Button
+            size="sm"
+            data-testid="button-send-test-email"
+            disabled={sendTestMutation.isPending || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(testTo.trim())}
+            onClick={() => sendTestMutation.mutate(testTo.trim())}
+          >
+            {sendTestMutation.isPending ? "Sending…" : "Send test email"}
+          </Button>
+        </div>
+        {lastSendTest && (
+          <div className="text-xs space-y-1" data-testid="send-test-result">
+            <div>
+              Result:{" "}
+              <span className="font-mono" data-testid="send-test-status">
+                {lastSendTest.status ?? "unknown"}
+              </span>
+              {lastSendTest.mode ? <span className="text-muted-foreground"> · mode {lastSendTest.mode}</span> : null}
+            </div>
+            {lastSendTest.outboxId ? (
+              <div className="text-muted-foreground">
+                Outbox row: <span className="font-mono">{lastSendTest.outboxId}</span>
+              </div>
+            ) : null}
+            {lastSendTest.error ? (
+              <div className="text-destructive" data-testid="send-test-error">{lastSendTest.error}</div>
+            ) : null}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -633,7 +751,7 @@ function TransportTab() {
 function DeliverabilityTab() {
   const { data } = useQuery<{
     ok: boolean; total: number;
-    stats: { queued: number; sent: number; delivered: number; bounced: number; opened?: number; clicked?: number };
+    stats: { queued: number; sent: number; delivered: number; bounced: number; opened?: number; clicked?: number; failed?: number };
     items: OutboxItem[];
   }>({
     queryKey: ["/api/admin/email/transport/outbox-deliverability"],

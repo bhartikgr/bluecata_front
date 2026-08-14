@@ -57,9 +57,54 @@ function fail(res: Response, err: unknown): void {
   res.status(500).json({ error: "ESIGN_FAILED", message: sanitizeErrorMessage(err) });
 }
 
-/** The owning partner of an SPV, or null if the SPV does not exist. */
+/** The owning partner of an SPV, or null if the SPV does not exist.
+ *
+ * WAVE 44 · DEFECT 2 — WHY THIS READS TWO TABLES.
+ * ------------------------------------------------
+ * The vehicle behind SpvDetailTabs is the CANONICAL ENGINE row in table `spv`
+ * (`server/db/connection.ts:5166`, owner column `sponsor_partner_id`). The
+ * legacy partner-workspace table `spvs` (connection.ts:4368, owner column
+ * `partner_id`) is a SECOND, best-effort mirror: `spvEngineStore.createSpv`
+ * shadow-persists into it keyed on the engine id, and that write is explicitly
+ * non-fatal (spvEngineStore.ts:448 logs a warning and continues).
+ *
+ * Two whole classes of vehicle therefore have NO `spvs` row addressable by the
+ * id the UI holds:
+ *   1. Boot-migrated SPVs. `migrateLegacySpvsIntoEngine` mints the engine id as
+ *      `spv_mig_<sha256(legacyId)>` (spvEngineStore.ts:2569) and keeps the
+ *      legacy id only in `migrated_from` — so `spvs` has a row, under a
+ *      DIFFERENT id.
+ *   2. Boot-migrated FUNDS, which come from `partner_funds` and never had a
+ *      `spvs` row at all (spvEngineStore.ts:2604).
+ * Every one of the other 15 tabs calls `/api/partner/me/spv/...`, which resolves
+ * through `spvEngineStore.getSpv` (the `spv` table), so they render. This one
+ * route resolved through the mirror alone and returned `404 not_found`, which
+ * the client maps to "We couldn't find what you were looking for."
+ * (client/src/lib/queryClient.ts:36) — an EXISTING vehicle reported as missing.
+ *
+ * The fence is unchanged and is still applied per seam: the engine row must be
+ * sponsored by the caller's partner, the legacy row must be owned by it, and a
+ * mismatch or a genuinely unknown id is still 404 (never 403, no id
+ * enumeration). This widens WHAT CAN BE FOUND, never WHO MAY SEE IT.
+ */
 function spvOwner(spvId: string): { partnerId: string; name: string } | null {
   const db: any = rawDb();
+  // (1) Canonical engine row — the id the SPV detail tabs actually hold.
+  try {
+    const engine = db
+      .prepare(
+        `SELECT sponsor_partner_id AS partnerId, name FROM spv WHERE id = ? AND archived_at IS NULL`,
+      )
+      .get(spvId);
+    if (engine && engine.partnerId) {
+      return { partnerId: String(engine.partnerId), name: String(engine.name ?? spvId) };
+    }
+  } catch {
+    // The engine table is absent on this database — fall through to the mirror
+    // rather than 500. No swallowed ownership decision: a null result below is
+    // still a hard 404.
+  }
+  // (2) Legacy partner-workspace mirror, for ids that only exist there.
   const row = db
     .prepare(`SELECT partner_id AS partnerId, name FROM spvs WHERE id = ? AND deleted_at IS NULL`)
     .get(spvId);

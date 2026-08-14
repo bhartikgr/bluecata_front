@@ -49,7 +49,11 @@ import { isNull, eq } from "drizzle-orm";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
-import { getById as getContactById, _registerSeedPartner, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
+import { getById as getContactById, _registerSeedPartner, TIER_RANK, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
+/* WAVE 45 (R3) — TIER_SEAT_LIMITS is gone; the seat cap is a partner_tier_capability
+ * row and may legitimately be "unlimited" or "not configured", neither of which is
+ * a number. describeCapability renders those honestly instead of as 0. */
+import { describeCapability, type CapabilityResolution } from "./lib/partnerTierCapabilityStore";
 import { getDb, rawDb } from "./db/connection";
 /* WAVE 33 / CP-PIPE-06 — STATIC import (Wave 32B: a lazy `require` that threw
    was swallowed into `[]`, dead in dev and live in the bundled build). */
@@ -955,6 +959,32 @@ export const partnerTeamStore = {
     audit(removedBy, `partner:${partnerId}`, "partner.team_member.removed", { userId });
     emit("partner.team_member_removed", partnerId, { partnerId, userId, removedAt: m.removedAt, idempotencyKey: `${partnerId}|${userId}|${m.removedAt}` });
     return m;
+  },
+
+  /** WAVE 44 · DEFECT 1 — rollback compensation for the RAM projection.
+   *
+   * `add()` persists the row and THEN pushes it into the `teamMembers` array.
+   * The consortium-approval path now calls `upsertOwner` INSIDE the same
+   * transaction that approves the application, so if that transaction rolls
+   * back the durable row disappears while the RAM push would survive — the
+   * process would grant workspace access that the database does not record.
+   * The approval path calls this on rollback. It removes the projection entry
+   * ONLY (no DB write, no audit, no bridge event): the row it would delete no
+   * longer exists, so there is nothing to mark removed.
+   *
+   * Returns the number of projection rows dropped, so the caller can log a
+   * number rather than assume. */
+  dropFromProjectionAfterRollback(partnerId: string, userId: string): number {
+    if (!partnerId || !userId) return 0;
+    let dropped = 0;
+    for (let i = teamMembers.length - 1; i >= 0; i -= 1) {
+      const m = teamMembers[i]!;
+      if (m.partnerId === partnerId && m.userId === userId) {
+        teamMembers.splice(i, 1);
+        dropped += 1;
+      }
+    }
+    return dropped;
   },
 
   listByPartner(partnerId: string): PartnerTeamMember[] {
@@ -3021,7 +3051,11 @@ export function partnerDashboardSnapshot(partnerId: string): {
   team: {
     activeSeats: number;
     pendingInvitations: number;
-    seatLimit: number;
+    /* WAVE 45 — null when no NUMERIC cap applies. Read `seatLimitResolution` to
+       learn which case it is; render `seatLimitDisplay` to a human. */
+    seatLimit: number | null;
+    seatLimitResolution: CapabilityResolution;
+    seatLimitDisplay: string;
     /* W-COLLECTIVE Wave 1 (v5 §F) — additive seat provenance. */
     distinctSeatUsers: number;
     duplicateSeatCount: number;
@@ -3067,7 +3101,8 @@ export function partnerDashboardSnapshot(partnerId: string): {
   const pendingInvitations = partnerInvitationStore.countPendingByPartner(partnerId);
   // W-V44 FIX R3 — surface the EFFECTIVE seat limit (per-partner override, else
   // tier default) so the partner dashboard and admin agree on the real cap.
-  const { seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
+  const { seatLimit, resolution: seatLimitResolution, capability: seatCapability } =
+    resolvePartnerSeatLimit(partnerId, tier);
 
   return {
     portfolio: {
@@ -3081,6 +3116,8 @@ export function partnerDashboardSnapshot(partnerId: string): {
       activeSeats,
       pendingInvitations,
       seatLimit,
+      seatLimitResolution,
+      seatLimitDisplay: describeCapability(seatCapability),
       /* Additive (v5 §F). Zero for the overwhelming majority of partners. */
       distinctSeatUsers: seats.distinctSeatUsers,
       duplicateSeatCount: seats.duplicateSeatCount,

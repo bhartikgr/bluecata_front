@@ -67,12 +67,23 @@
 # WAVE 38 · ROW 6 — THE FIFTH FIELD: RATIFICATION STATE.
 # A KNOWN_DRIFT row records that an edit to a sacred file is FROZEN. It did not
 # record whether a human ever agreed to it. WAIVER-5 (client/src/pages/founder/
-# Billing.tsx) was taken under DELEGATED authority and is still PENDING OWNER
-# RATIFICATION — and an operator reading `SACRED OK: 47/47` had no way to learn
-# that, because the summary line reported only how many rows were frozen. A
-# green line that conceals an unratified edit to a sacred file is exactly the
-# class of "check that passed while checking nothing" this codebase keeps
-# paying for.
+# Billing.tsx) was taken under DELEGATED authority on 2026-08-11 and was, for
+# four waves, PENDING OWNER RATIFICATION — and an operator reading
+# `SACRED OK: 47/47` had no way to learn that, because the summary line reported
+# only how many rows were frozen. A green line that conceals an unratified edit
+# to a sacred file is exactly the class of "check that passed while checking
+# nothing" this codebase keeps paying for.
+#
+# WAVE 48 · ITEM 2 (R13) — WAIVER-5 IS NOW OWNER-RATIFIED, 2026-08-13.
+# The owner ruled "Ratify" on the Wave 34 Billing.tsx exponent fix, so field 5
+# of that row reads RATIFIED and the pending set is now EMPTY. NOTHING ELSE
+# CHANGED: the file's bytes and its enforced hash
+# (ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f) are
+# untouched — a ratification records a DECISION, it does not re-open the file.
+# The machinery below is deliberately left fully in place: field 5 is still
+# mandatory on every row, an unknown value still aborts the run (exit 3), and
+# the pending set is still DERIVED, so the next waiver taken under delegated
+# authority is reported exactly as WAIVER-5 was.
 # Every row now carries field 5, one of:
 #     RATIFIED                      — an owner signed this waiver off
 #     PENDING-OWNER-RATIFICATION    — taken under delegated authority, unsigned
@@ -98,9 +109,52 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SPEC_ROOT="${SPEC_ROOT:-$(cd "$REPO_ROOT/.." 2>/dev/null && pwd)/spec}"
 BASE_MANIFEST="$REPO_ROOT/sacred_baseline/SACRED_SHA256.txt"
 
-EXPECTED_ENTRIES=47
+# ---------------------------------------------------------------------------
+# WAVE 50 · ITEM 0 — A HOLE IN THE PROTECTION MECHANISM ITSELF.
+#
+# Every wave brief since the beginning has told its author that SEVEN files are
+# sacred and read-only:
+#     server/db/connection.ts
+#     server/captableCommitStore.ts
+#     server/paymentGatewayAdapter.ts
+#     server/db/migrate.ts
+#     server/lib/rateLimit.ts
+#     server/lib/capTableMembership.ts
+#     client/src/pages/founder/Billing.tsx
+#
+# Wave 50 was told that THREE of the seven had no enforcement at all. That is
+# WRONG, and the correction is recorded here rather than acted on blindly,
+# because adding a row for an already-enforced path would have DOUBLE-COUNTED
+# the manifest and inflated the operator-facing number while protecting nothing
+# new — the same "a number that is not the number enforced" defect this file has
+# been repaired for three times already (W31-A3, Wave 38 Row 6, Wave 39).
+#
+# MEASURED, by mutating each file and running this gate (build_log/wave50/
+# W50_item0_enforcement_poles.txt):
+#     server/captableCommitStore.ts     ALREADY ENFORCED — base manifest row 1
+#                                       (e5045ecb…); mutation -> exit 1, named.
+#     server/paymentGatewayAdapter.ts   ALREADY ENFORCED — base manifest row 3
+#                                       (83757c54…); mutation -> exit 1, named.
+#     server/db/connection.ts           *** NOT ENFORCED ANYWHERE ***
+#                                       mutation -> SACRED OK: 47/47, exit 0.
+#
+# So the hole was real but it was ONE file wide, not three. `server/db/
+# connection.ts` is the process's single database handle — DB path resolution,
+# driver selection, WAL/pragma setup and the `rawDb` every store reads through.
+# It has been honoured voluntarily by every wave and nothing would have caught
+# an edit to it.
+#
+# It is added below as ADDED_WAVE50, one entry, at its CURRENT bytes
+# (d3dfc9ec…). The manifest therefore goes 47 -> 48. It is NOT a KNOWN_DRIFT
+# row: no waiver has been taken and the file has not been edited, so it carries
+# no pre-waiver hash and does not touch `unratified_waivers`, which stays 0.
+# From now on any change to it fails this gate exactly like every other sacred
+# file.
+# ---------------------------------------------------------------------------
+EXPECTED_ENTRIES=48
 BASE_EXPECTED=40
 ADDED_EXPECTED=7
+WAVE50_EXPECTED=1
 
 LIST_ONLY=0; JSON=0; QUIET=0
 for a in "$@"; do
@@ -213,16 +267,21 @@ KNOWN_DRIFT=(
 #   pre-WAIVER-3  f48b530c17d23bcccc00d768e874975ad7cbfab63b8a23cf4b3889719d557883  (bytes reviewed by FINAL REVIEW A; verified against finalA/install, finalB/snaprepo and reviewA/work_copy — all three agree)
 #   Wave 23       5790f11d1182be1c5af8b59a52a4314dd3e1ad5f9a6d0049986bc42d1ee1a44c  (ENFORCED)
 "server/db/migrate.ts|f48b530c17d23bcccc00d768e874975ad7cbfab63b8a23cf4b3889719d557883|5790f11d1182be1c5af8b59a52a4314dd3e1ad5f9a6d0049986bc42d1ee1a44c|WAIVER-3|RATIFIED"
-# WAIVER-5 — WAVE 34 TASK 1, DELEGATED AUTHORITY, **PENDING OWNER RATIFICATION**.
+# WAIVER-5 — WAVE 34 TASK 1, taken under DELEGATED AUTHORITY 2026-08-11,
+#   **OWNER-RATIFIED 2026-08-13** (WAVE 48 · ITEM 2, ruling R13: "Ratify").
+#   The ratification changes this row's field 5 ONLY. The waived file's content
+#   and its enforced hash are unchanged.
 #   Covers client/src/pages/founder/Billing.tsx. Recorded here rather than
 #   glossed: this edit was DIRECTED BY NAME AND BY LINE NUMBER in the Wave 34
 #   brief ("client/src/pages/founder/Billing.tsx:77, :79 ... These are INVOICING
 #   and BILLING — money rendered directly to a paying customer"), and the same
 #   brief's read-never-edit list does NOT name this file. The collision with the
 #   frozen manifest is therefore an oversight in the brief, not a licence, and
-#   it is flagged for the owner in build_log/WAVE34_REPORT.md rather than
-#   settled by a subagent. If the owner declines, restore the pre-wave bytes
-#   (hash below) and delete this row; nothing else in the wave depends on it.
+#   it was flagged for the owner in build_log/WAVE34_REPORT.md rather than
+#   settled by a subagent. The owner has now RATIFIED it (2026-08-13); the
+#   decline path is kept on record for lineage: restoring the pre-wave bytes
+#   (hash below) and deleting this row would undo it, and nothing else depends
+#   on it.
 #   REASON THE EDIT WAS MADE: `fmtMoney()` rendered every invoice figure with
 #   `(minor / 100).toFixed(2)` — a hardcoded ISO-4217 exponent of 2. JPY and KRW
 #   are exponent 0, so a ¥1,200,000 invoice displayed as "¥12,000.00" on the
@@ -238,7 +297,7 @@ KNOWN_DRIFT=(
 #   HASH LINEAGE (nothing erased):
 #     pre-WAVE-34  813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692
 #     Wave 34      ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f  (ENFORCED)
-"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f|WAIVER-5|PENDING-OWNER-RATIFICATION"
+"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f|WAIVER-5|RATIFIED"
 )
 
 # ---------------------------------------------------------------------------
@@ -261,6 +320,16 @@ ADDED_47=(
 "7a334701f46cb4aad4b55fa6e4771f47394b8b34d91d1527d77876abfa6bf3b3|spec/_v8_reuse_proof.sh"
 "623a009e1200befc7b92f2bd5dda17412ff2e09408e3ffa86f6f70f7ec17fbfe|spec/_v7_exclusion_classes.tsv"
 "20b4c93ea83a73f3033a1fc46b01ff03f90b860b542561d71a043849fe622399|spec/_v7_coverage_gap_baseline.txt"
+)
+
+# ---------------------------------------------------------------------------
+# WAVE 50 · ITEM 0 — the sacred file that was never in any manifest.
+# See the block above EXPECTED_ENTRIES for the measurement that established
+# this was the ONLY one of the seven missing. Frozen at its current, unedited
+# bytes; no waiver, so nothing is pending ratification.
+# ---------------------------------------------------------------------------
+ADDED_WAVE50=(
+"d3dfc9ec465b94926ca6cedf9ad5b6637729fe7293a38a7fc3b9adb4dada101c|server/db/connection.ts"
 )
 
 # W31-A3 — THE ENFORCED HASH IS NOW READ BY POSITION, NOT AS "THE LAST FIELD".
@@ -542,6 +611,35 @@ for e in "${ADDED_47[@]}"; do
   MANIFEST+=("${e%%|*}|${e##*|}|G-2")
 done
 
+WAVE50_COUNT=0
+for e in "${ADDED_WAVE50[@]}"; do
+  WAVE50_COUNT=$((WAVE50_COUNT+1))
+  W50_H="${e%%|*}"; W50_P="${e##*|}"
+  # Shape-check this row on the same terms as a KNOWN_DRIFT row: a lowercase
+  # 64-char sha256 and a repo-relative path. A malformed row must abort rather
+  # than become a manifest entry no file can ever match.
+  if ! printf '%s' "$W50_H" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "FAIL: ADDED_WAVE50 row '$e' hash is not a lowercase 64-char sha256." >&2; exit 3
+  fi
+  case "$W50_P" in
+    ""|/*|*..*) echo "FAIL: ADDED_WAVE50 row '$e' path is empty, absolute or contains '..'." >&2; exit 3 ;;
+  esac
+  # IDENTITY: refuse a path already covered by the base manifest or by ADDED_47.
+  # This is the check that stops the manifest number from being inflated by a
+  # duplicate row that protects nothing new — precisely the mistake the Wave 50
+  # brief would have had this file make for captableCommitStore.ts and
+  # paymentGatewayAdapter.ts, both of which are already base rows.
+  for m in "${MANIFEST[@]}"; do
+    if [ "$(printf '%s' "$m" | cut -d'|' -f2)" = "$W50_P" ]; then
+      echo "FAIL: ADDED_WAVE50 lists '$W50_P', which is ALREADY in the manifest." >&2
+      echo "      A duplicate row would raise the reported entry count while" >&2
+      echo "      protecting nothing new. Refusing to report an inflated number." >&2
+      exit 3
+    fi
+  done
+  MANIFEST+=("$W50_H|$W50_P|WAVE50")
+done
+
 TOTAL=${#MANIFEST[@]}
 
 # --- EXTRA_FROZEN (WAIVER-3, Wave 23) --------------------------------------
@@ -563,7 +661,7 @@ for e in "${KNOWN_DRIFT[@]}"; do
 done
 
 if [ "$LIST_ONLY" = "1" ]; then
-  printf '%s\n' "SACRED MANIFEST — $TOTAL entries ($BASE_COUNT base + $ADDED_COUNT added by G-2)"
+  printf '%s\n' "SACRED MANIFEST — $TOTAL entries ($BASE_COUNT base + $ADDED_COUNT added by G-2 + $WAVE50_COUNT added by WAVE 50)"
   for m in "${MANIFEST[@]}"; do
     IFS='|' read -r h p o <<<"$m"; printf '%s  %-70s  %s\n' "$h" "$p" "$o"
   done
@@ -617,6 +715,7 @@ STRUCT_OK=1
 [ "$TOTAL"      = "$EXPECTED_ENTRIES" ] || STRUCT_OK=0
 [ "$BASE_COUNT" = "$BASE_EXPECTED"    ] || STRUCT_OK=0
 [ "$ADDED_COUNT" = "$ADDED_EXPECTED"  ] || STRUCT_OK=0
+[ "$WAVE50_COUNT" = "$WAVE50_EXPECTED" ] || STRUCT_OK=0
 
 RC=0
 [ ${#FAILED[@]} -gt 0 ] && RC=1
@@ -655,7 +754,8 @@ echo "SACRED CHECK FAILED — build BLOCKED"
 echo "========================================================================"
 if [ "$STRUCT_OK" = "0" ]; then
   echo "manifest structure wrong: $TOTAL entries (expected $EXPECTED_ENTRIES)," \
-       "$BASE_COUNT base (expected $BASE_EXPECTED), $ADDED_COUNT added (expected $ADDED_EXPECTED)"
+       "$BASE_COUNT base (expected $BASE_EXPECTED), $ADDED_COUNT added (expected $ADDED_EXPECTED)," \
+       "$WAVE50_COUNT added by Wave 50 (expected $WAVE50_EXPECTED)"
 fi
 if [ ${#MISSING[@]} -gt 0 ]; then
   echo; echo "MISSING (${#MISSING[@]}):"

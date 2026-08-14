@@ -7,7 +7,11 @@
  *
  * Steps:
  *   1. Submit a consortium partner application (via submitApplication store function)
- *   2. Approve it via the admin review path (reviewApplication store function)
+ *   2. Approve it directly in the DB, advancing the application's hash chain
+ *      with the store's OWN canonical `computeHash`/`chainPayload` functions and
+ *      then verifying the row (WAVE 51 · ITEM 4 — it previously wrote a
+ *      `curr_hash` from a formula that existed nowhere else, and never advanced
+ *      `prev_hash`, leaving every fixture application reading as tampered).
  *   3. Mint / ensure the partner admin user exists and has a password
  *   4. Return the partner admin credentials + partnerId
  *
@@ -40,7 +44,7 @@
  *   // Then: login as fixture.partnerAdminEmail with fixture.partnerAdminPassword
  */
 
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { getDb, rawDb } from "../server/db/connection";
 import { submitApplication } from "../server/consortiumApplyStore";
 import { storeCredential } from "../server/userCredentialsStore";
@@ -149,9 +153,61 @@ async function approveApplicationDirect(appId: string, adminUserId: string): Pro
     `).run(userId, tenantId, app.contact_email, app.contact_name);
   }
 
-  // Update application to approved
-  const hash = createHash("sha256").update(`${appId}:approved:${now}`).digest("hex");
+  /* ══════════════════════════════════════════════════════════════════════════
+   * UPDATE APPLICATION TO APPROVED — WAVE 51 · ITEM 4.
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * WHAT THIS USED TO DO:
+   *
+   *     const hash = sha256(`${appId}:approved:${now}`);
+   *     UPDATE consortium_applications SET status='approved', …, curr_hash = ?
+   *
+   * That hash was computed by a formula found nowhere else in the tree. The
+   * authoritative formula, shared by the store that writes these rows
+   * (`consortiumApplyStore.computeHash` + `chainPayload`) and the verifier that
+   * reads them (`auditChainVerifier.payloadConsortiumApplications`), is
+   *
+   *     sha256( (prev_hash ?? "GENESIS") + "|" + JSON.stringify(chainPayload) )
+   *
+   * over ten specific fields in a specific order. So every application this
+   * fixture approved was left with a `curr_hash` that could not verify, and
+   * `prev_hash` was never advanced — the real approve path sets
+   * `prev_hash ← old curr_hash` (consortiumApplyStore.ts:1191). The row looked
+   * approved and read as tampered.
+   *
+   * THE FIX: the store's own exported chain functions, over the row's real
+   * post-update state, with the same prev-hash advance the real approve path
+   * performs — then VERIFY, and throw rather than leave an unverifiable row
+   * behind. A fixture that manufactures tamper evidence is not a fixture.
+   *
+   * NOTE on why this is not a call to `approveApplication()`: that function
+   * also runs the A8 provisioning cascade, and this script deliberately
+   * provisions its own `ac_<appId>` / `tenant_cp_<partnerId>` ids that its
+   * callers (DOM/E2E fixtures) depend on. What must be canonical is the CHAIN
+   * MATH, and that is what is imported here — no formula is restated. */
+  const priorCurrHash: string | null = app.curr_hash ?? null;
   try {
+    const { _consortiumApplyInternal } = await import("../server/consortiumApplyStore");
+    const { computeHash, chainPayload } = _consortiumApplyInternal;
+
+    /* The payload is built from the row as it WILL BE after the update, using
+     * the same ten fields in the same order as the store and the verifier. */
+    const postUpdate = {
+      id: app.id,
+      organizationName: app.organization_name,
+      contactEmail: app.contact_email,
+      expectedChapterId: app.expected_chapter_id ?? null,
+      partnerType: app.partner_type,
+      aumRange: app.aum_range,
+      status: "approved",
+      reviewedByUserId: adminUserId,
+      provisionedPartnerId: partnerId,
+      updatedAt: now,
+    } as any;
+
+    const nextPrevHash = priorCurrHash; // prev_hash ← old curr_hash, as the store does
+    const nextCurrHash = computeHash(nextPrevHash, chainPayload(postUpdate));
+
     db.prepare(`
       UPDATE consortium_applications
       SET status = 'approved',
@@ -159,11 +215,37 @@ async function approveApplicationDirect(appId: string, adminUserId: string): Pro
           reviewed_by_user_id = ?,
           reviewed_at = ?,
           updated_at = ?,
+          prev_hash = ?,
           curr_hash = ?
       WHERE id = ?
-    `).run(partnerId, adminUserId, now, now, hash, appId);
+    `).run(partnerId, adminUserId, now, now, nextPrevHash, nextCurrHash, appId);
   } catch (err) {
     throw new Error(`Failed to update application: ${(err as Error).message}`);
+  }
+
+  /* Both-poles guard, in the script itself: the row we just wrote must verify.
+   * If it does not, the fixture refuses — it does not hand a caller a partner
+   * whose application row reads as tampered. */
+  try {
+    const { verifyChainForTable } = await import("../server/lib/auditChainVerifier");
+    const vr = verifyChainForTable("consortium_applications", { withDetails: true });
+    const bad = (vr.details ?? []).find((d) => d.id === appId && !d.ok);
+    if (bad) {
+      throw new Error(
+        `chain_verify_failed for application ${appId}: ${bad.reason ?? "unknown"} — ` +
+          `refusing to report success. The approve update has been applied but its ` +
+          `hash does not verify; see build_log/wave51/AUDIT_CHAIN_REPAIR.md.`,
+      );
+    }
+  } catch (err) {
+    if ((err as Error).message.startsWith("chain_verify_failed")) throw err;
+    /* The verifier itself being unavailable is not proof of a bad row, but it
+     * is not proof of a good one either — say so instead of staying silent. */
+    console.error(
+      `[bootstrap_partner_fixture] WARNING: could not verify the application chain ` +
+        `after approve (${(err as Error).message}). The row was written with the ` +
+        `canonical hash functions, but this run carries no verification evidence.`,
+    );
   }
 
   // Critical: replicate the real /api/admin/consortium/applications/:id/approve path
@@ -292,7 +374,26 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
-  console.error(JSON.stringify({ ok: false, error: "UNHANDLED", message: err.message }));
-  process.exit(1);
-});
+/* WAVE 51 · ITEM 4 — run-only-when-run-directly guard, copied from the pattern
+ * already used by `scripts/create_partner_admin.ts`. Until now this file invoked
+ * `main()` at import time, which made its audit/chain behaviour impossible to
+ * test from the suite: importing it provisioned a partner and called
+ * `process.exit`. The chain fix in `approveApplicationDirect` above has to be
+ * PROVABLE at both poles, so the entrypoint is now guarded and the function is
+ * exported. Direct execution (`npx tsx scripts/bootstrap_partner_fixture.ts`)
+ * is unchanged. */
+const isDirect = (() => {
+  try {
+    return import.meta.url === `file://${process.argv[1]}`;
+  } catch {
+    return false;
+  }
+})();
+if (isDirect) {
+  main().catch((err) => {
+    console.error(JSON.stringify({ ok: false, error: "UNHANDLED", message: err.message }));
+    process.exit(1);
+  });
+}
+
+export { approveApplicationDirect, main as bootstrapPartnerFixtureMain };

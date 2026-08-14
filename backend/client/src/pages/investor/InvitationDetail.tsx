@@ -31,6 +31,16 @@ import { SoftCircleExpiryBanner } from "@/components/SoftCircleExpiryBanner";
 import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy, Minus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
+/* WAVE 43 · OWNER RULING R7 — the ONE close definition, shared with the server
+ * route that refuses the money. This page must never offer an action the API
+ * will reject. */
+import {
+  resolveCloseWindow,
+  countdownVerdict,
+  countdownCopy,
+  closedStatement,
+  NO_CLOSE_DATE_COPY,
+} from "@shared/roundClose";
 import { roundPhrase, nonEmpty, fullLegalName } from "@/lib/investorLabels";
 import {
   NOT_PROVIDED, ppsDisplay, computeIllustrativePosition,
@@ -66,7 +76,15 @@ type Inv = {
  terms?: RoundTerms;
  useOfProceeds?: UseOfProceedsEntry[];
  };
- state: string; receivedAt: string; expiresAt: string;
+ state: string; receivedAt: string;
+ /* WAVE 43 · R7 + R6 — nullable, as `round_invitations.expires_at` always was.
+  * The detail projection used to substitute `now + 14 days`, which meant THIS
+  * page — the one carrying the "Submit soft-circle" button — could never learn
+  * that a round had closed. */
+ expiresAt: string | null;
+ /** Round-level close inputs (R7 · S3: the earliest deadline wins). */
+ closeDate?: string | null;
+ roundState?: string | null;
  minTicket: number; targetAmount: number; raisedAmount: number;
  preMoney: number; postMoney: number;
  // v25.25 Avi-8 — priced rounds sometimes leave price_per_share NULL when
@@ -450,6 +468,38 @@ export default function InvitationDetail() {
  // W-FIX2 F1 — never silent-empty: distinguish "genuinely empty" from a failed
  // /securities or /dataroom fetch (or an unresolved companyId).
  const capTableUnavailable = !companyId || sec.isError;
+ /* WAVE 42 · R6-family honesty defect — live-audit finding F-9, VERDICT.
+  *
+  * The audit observed "Cap table temporarily unavailable … Please refresh
+  * shortly" firing IDENTICALLY on all three investor rounds and asked whether
+  * the cap-table scope guard was over-reaching. IT IS NOT. Traced end to end:
+  *
+  *   GET /api/companies/:id/securities
+  *     -> server/routes.ts  decideCapTableSinkAccess(ctx, cid)
+  *     -> server/lib/capTableSinkScope.ts: allow for an admin, or the founder of
+  *        the company, or an investor holding a position in it; otherwise refuse
+  *        with 404 CAP_TABLE_SINK_NOT_FOUND.
+  *
+  * WAVE 36 · ROW 1 deliberately REMOVED the `invitedRounds` disjunct, because a
+  * person merely INVITED to a round — holding nothing, owning nothing — could
+  * read the entire cap-table ledger. So the guard fires on all three rounds for
+  * the correct reason: in all three the investor is invited and holds nothing.
+  * The guard must NOT be weakened and is not touched here.
+  *
+  * THE ACTUAL DEFECT IS THIS MESSAGE. A permanent, deliberate authorisation
+  * refusal was dressed up as a transient network blip that the user was told to
+  * fix by refreshing. Refreshing will never work, and the user is left believing
+  * the platform is broken rather than understanding that they are not on this
+  * cap table. That is the same class of dishonesty as "$0" for an unknown
+  * valuation: the surface states something it does not know to be true.
+  *
+  * A cross-tenant / out-of-scope refusal is 404 by policy (it must not confirm
+  * the resource exists), so a 404 here means "deliberately not yours", while any
+  * other status really is a fault. Both messages are retained; the correct one
+  * is now chosen. */
+ const capTableRefusalStatus =
+  sec.isError ? Number((sec.error as { status?: number } | null)?.status ?? 0) : 0;
+ const capTableOutOfScope = capTableRefusalStatus === 404;
  const dataroomUnavailable = !companyId || dr.isError;
 
  // B6: check if investor has soft-circled (from local term-sheet store OR decision record)
@@ -463,6 +513,21 @@ export default function InvitationDetail() {
  // v24.3 — isConfirmed / wireInstr / copyAccountNumber were MOVED above the
  // `if (!inv.data) return` early return (see the v25.48 INV-CRASH fix comment)
  // to satisfy the Rules of Hooks. They are intentionally not redeclared here.
+
+ /* WAVE 43 · OWNER RULING R7 — resolve the close window ONCE for this page, from
+  * the identical inputs and the identical shared resolver
+  * `server/lib/roundCloseEnforcement.ts` uses before it admits or refuses a
+  * commitment. There is deliberately no second opinion computed anywhere on this
+  * page: the live audit's F-7 was two disagreeing definitions of "expired", and
+  * a third one here — on the surface that takes the money — would be the worst
+  * place of all to keep one. */
+ const closeWindow = resolveCloseWindow({
+  invitationExpiresAt: i.expiresAt ?? null,
+  roundCloseDate: i.closeDate ?? (i.round as { closeDate?: string | null }).closeDate ?? null,
+  roundState: i.roundState ?? i.round.state ?? null,
+ });
+ const closeVerdict = countdownVerdict(closeWindow, Date.now());
+ const roundClosed = closeVerdict.kind === "closed";
 
  // B5: handler for the Soft-Circle button — navigates to Your Decision tab + scrolls
  const handleSoftCircleClick = () => {
@@ -524,7 +589,10 @@ export default function InvitationDetail() {
          <StateBadge state={i.state} />
          <Badge variant="outline" className="text-[10px] capitalize">{i.round.type.replace("_", " ")}</Badge>
         </div>
-        <div className="text-sm text-muted-foreground mt-1">{i.company.sector} · invited {fmtDate(i.receivedAt)} · expires {fmtDate(i.expiresAt)}</div>
+        {/* WAVE 43 · R7/R6 — "expires —" told the investor nothing; a closed round
+            said the same thing as a round with no date. The window now states
+            itself in one sentence, and a missing date says it is missing. */}
+        <div className="text-sm text-muted-foreground mt-1" data-testid="text-invitation-window">{i.company.sector} · invited {fmtDate(i.receivedAt)} · {countdownCopy(closeVerdict)}{!roundClosed && closeWindow.deadlineIso ? <span data-testid="text-invitation-expires"> · expires {fmtDate(closeWindow.deadlineIso)}</span> : null}</div>
        </div>
        <div className="flex gap-2 shrink-0 flex-wrap">
         <Button variant="outline" onClick={() => setDeclineOpen(true)} data-testid="button-decline"><X className="h-4 w-4 mr-2" /> Decline</Button>
@@ -657,12 +725,33 @@ export default function InvitationDetail() {
      {/* TAB 2 — CAP TABLE */}
      <TabsContent value="captable" className="space-y-5">
       <TabIntro>See who else is on the cap table and what they own.</TabIntro>
-      {capTableUnavailable && (
+      {capTableUnavailable && !capTableOutOfScope && (
        <div
         data-testid="note-captable-unavailable"
         className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
        >
         Cap table temporarily unavailable — we couldn't load the shared holders right now. Your own position is still shown below. Please refresh shortly.
+       </div>
+      )}
+      {/* WAVE 42 · R6 / live-audit F-9 — appended as a SIBLING at the end of this
+          notice group, and the transient notice above is left BYTE-IDENTICAL.
+
+          A first attempt replaced that text node with a ternary so one <div>
+          could serve both cases. `npm run guard` correctly flagged it as a
+          removed copy string, because the guard only indexes literal text nodes
+          and the wording had moved into an expression. Rather than allowlist a
+          flagged item — the standing rule is that a real drop is never
+          allowlisted, and "it isn't really gone" is exactly the argument that
+          makes an allowlist worthless — the original text node is restored
+          verbatim, its condition narrowed to the transient case, and the honest
+          permanent-refusal wording added here as new copy. Guard result: 0
+          removed, +1 copy string, itemised in guard_delta_accounting.txt. */}
+      {capTableOutOfScope && (
+       <div
+        data-testid="note-captable-out-of-scope"
+        className="rounded-md border border-slate-300/60 bg-slate-50 dark:bg-slate-900/40 px-4 py-3 text-sm text-slate-700 dark:text-slate-300"
+       >
+        Shared cap table not available to you — you are not on this company&rsquo;s cap table, so only your own position is shown. This is deliberate under the R165 §4 redaction policy, not a fault: refreshing will not change it. The shared holder list opens to you once you hold a position in this company.
        </div>
       )}
       <Card>
@@ -1012,8 +1101,23 @@ export default function InvitationDetail() {
       <div ref={softCircleFormRef} />
 
       <div className="grid md:grid-cols-2 gap-5">
+       {!roundClosed && (
        <Card className="border-[hsl(0_100%_40%)]/40">
         <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base text-[hsl(0_100%_40%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
+        {/* WAVE 43 · OWNER RULING R7 — THE DEFECT THE AUDITOR PHOTOGRAPHED.
+
+            This card is where "Submit soft-circle ($250,000)" lived, fully
+            enabled, on two rounds whose windows had closed on 3 and 6 August —
+            ten days earlier. The form is no longer rendered on a closed round.
+            Not disabled: ABSENT, replaced by the statement of fact the ruling
+            requires. The server refuses the same commitment independently
+            (`POST /api/rounds/:id/soft-circle` and the decision PATCH both call
+            `evaluateCommitmentAdmission`), so this is the page telling the truth
+            rather than the page being the lock.
+
+            The late-acceptance path is named here explicitly, because the owner
+            ruled that late money IS allowed in — the investor must know the
+            route exists and that taking it will be recorded. */}
         <CardContent className="space-y-3">
          <div>
           <Label>Investment amount (USD)</Label>
@@ -1111,6 +1215,7 @@ export default function InvitationDetail() {
          </Button>
         </CardContent>
        </Card>
+       )}
 
        <Card>
         <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Pass on this round</CardTitle></CardHeader>
@@ -1129,6 +1234,24 @@ export default function InvitationDetail() {
          </Button>
         </CardContent>
        </Card>
+
+       {/* WAVE 43 · R7 — APPENDED AT THE END OF THIS SIBLING LIST ON PURPOSE.
+           The first attempt replaced the soft-circle Card's `CardContent` with a
+           ternary. That is a mid-list substitution: it renumbered every
+           `CardContent` under `TabsContent>div>Card`, and the silent-drop guard
+           correctly reported 11 vanished panel-body records for children that
+           had not moved an inch. The statement panel is therefore a NEW sibling
+           at the END of the grid, and the original Card is gated whole. */}
+       {roundClosed && (
+        <Card className="border-[hsl(7_61%_43%)]/40" data-testid="panel-round-closed">
+         <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base text-[hsl(7_61%_43%)]" data-testid="text-round-closed-statement">{closedStatement(closeVerdict.kind === "closed" ? closeVerdict.deadlineIso : null)}</CardTitle></CardHeader>
+         <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+           Soft-circles are no longer accepted on this round, and a submission would be refused by the server. If you still intend to participate, contact the founder: they can reopen the round or accept your commitment specifically. Either way it is recorded as <strong>accepted after close</strong>, attributed to the founder who accepted it, and shown that way to you, to them, and on the cap table.
+          </p>
+         </CardContent>
+        </Card>
+       )}
       </div>
 
       <Card>
@@ -1145,7 +1268,10 @@ export default function InvitationDetail() {
             : fmtDate(i.receivedAt)}
           </span>
          </li>
-         <li className="flex justify-between py-2"><span className="text-muted-foreground">Decision deadline</span><span className="font-medium">{fmtDate(i.expiresAt)}</span></li>
+         {/* WAVE 43 · R6 — the deadline shown is the EFFECTIVE one the server
+             enforces (earliest of invitation expiry and round close date), and
+             an absent deadline is stated rather than dashed. */}
+         <li className="flex justify-between py-2"><span className="text-muted-foreground">Decision deadline</span><span className="font-medium" data-testid="text-decision-deadline">{closeWindow.deadlineIso ? fmtDate(closeWindow.deadlineIso) : NO_CLOSE_DATE_COPY}</span></li>
         </ul>
        </CardContent>
       </Card>

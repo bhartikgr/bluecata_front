@@ -7,7 +7,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
-import { sendMail } from "./emailTransport";
+import { sendMail, getConfig } from "./emailTransport";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // v25.28 Phase C — outbox + delivery state persistence.
 // Before v25.28 every queued/sent/opened/clicked/bounced row was lost on PM2
@@ -20,10 +20,24 @@ import { persistEntry, hydrateEntries, softDeleteEntry } from "./lib/storePersis
 // or live DB (INSERT OR IGNORE by slug). `templateCache` is a boot-hydrated,
 // DB-first read cache — NOT canonical state.
 import { rawDb } from "./db/connection";
+/* WAVE 49 · C-1 — the Outbox must be OBSERVABLE without being a credential
+ * store. Wave 47 stored the rendered body on the row and `persistOutbox`
+ * serialised the whole row into `kv_emailStoreOutbox.payload_json`, so raw
+ * single-use `auth_redeem_tokens` links (partner invites, 14d; password resets,
+ * 24h) went to disk in plaintext and `GET /api/admin/email/outbox` handed them
+ * out. See `server/lib/emailTokenRedaction.ts` for the full argument. */
+import { redactTokenMaterial, redactOutboxRow } from "./lib/emailTokenRedaction";
 
 const PERSIST_STORE = "emailStoreOutbox";
 
-export type DeliveryStatus = "queued" | "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained";
+/* WAVE 47 · R19 — `failed` is APPENDED at the end of the union, never inserted.
+ * It is a distinct state from `bounced`, and the distinction is the honesty R6
+ * asks for: `bounced` means the recipient or relay REJECTED the message (a
+ * permanent, recipient-level verdict), `failed` means the attempt did not
+ * complete (timeout, connection refused, auth) and says nothing about the
+ * recipient. Collapsing the two would let a network outage look like a bad
+ * address, and vice versa. */
+export type DeliveryStatus = "queued" | "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained" | "failed";
 
 export interface EmailTemplate {
   id: string;
@@ -55,6 +69,23 @@ export interface OutboxEmail {
   error: string | null;
   campaignId?: string;
   batchId?: string;
+  /* WAVE 47 · R19 — appended, optional, so every existing row and every
+   * existing reader is unaffected. These three carry the provenance of a
+   * TRANSACTIONAL send (an invite, a notification, a receipt) that previously
+   * left no row at all: the semantic category, the id of the thing it is about,
+   * and which transport mode actually carried it. No secret is among them. */
+  category?: string;
+  refId?: string;
+  transportMode?: string;
+  /* WAVE 49 · C-1 — appended LAST, optional, so every existing row and every
+   * existing reader is unaffected. `true` means token material was removed from
+   * this row's subject/body/variables, which has one honest consequence: the row
+   * can no longer be re-sent FROM the row, because the secret it carried is gone
+   * by design. `tickQueue` and `retryOutboxItem` therefore refuse it with a typed
+   * reason instead of mailing the recipient a dead link. The row remains fully
+   * observable — recipient, subject, template, status, attempts and timestamps
+   * are all still there, which is everything R19 asked for. */
+  bodyRedacted?: boolean;
 }
 
 const templates: EmailTemplate[] = [
@@ -173,7 +204,23 @@ export function upsertTemplate(
  * on DB failure; we keep the in-memory copy so the queue keeps moving forward,
  * and the next successful write will pick it up. */
 function persistOutbox(e: OutboxEmail): void {
-  try { persistEntry(PERSIST_STORE, e.id, e); } catch { /* non-fatal */ }
+  /* WAVE 49 · C-1 — THE persistence chokepoint. Every enqueue path in this file
+   * (template, transactional, one-off, bulk) and every state transition ends
+   * here, so scrubbing HERE means no future caller can put a raw token on disk
+   * by forgetting to scrub at its own site. This is deliberately belt-and-braces
+   * with `enqueueTransactional`, which scrubs the in-memory row as well so the
+   * API response is clean too. */
+  try { persistEntry(PERSIST_STORE, e.id, redactOutboxRow(e)); } catch { /* non-fatal */ }
+}
+
+/* WAVE 49 · C-1 — the read-side projection. `GET /api/admin/email/outbox` and
+ * `GET /api/admin/email/transport/outbox` returned the raw `OutboxEmail`
+ * objects, which is the second half of the account-takeover vector: an admin did
+ * not need the DB file, the API handed the reset link over. Rows are projected
+ * through the same redactor the persistence path uses, so the response and the
+ * durable row agree, field for field. */
+export function projectOutboxForResponse(rows: OutboxEmail[]): OutboxEmail[] {
+  return rows.map((r) => redactOutboxRow(r));
 }
 
 /** Naive Handlebars-style {{var}} substitution. */
@@ -221,6 +268,131 @@ export function enqueueEmail(args: {
   return e;
 }
 
+/* ============================================================
+ * WAVE 47 · R19 — TRANSACTIONAL SENDS, RECORDED IN *THIS* OUTBOX.
+ *
+ * The defect this fixes: `server/lib/emailSender.ts` — the chokepoint for every
+ * invite, notification and receipt — dispatched straight to nodemailer and
+ * never touched this table. That is why Queued/Delivered/Bounced/Sent all read
+ * 0 while 30 partners were approved. So the fix POPULATES this outbox rather
+ * than adding a second one: same array, same `persistEntry` shim, same
+ * `kv_emailStoreOutbox` table, same admin reads, same retry/cancel actions.
+ *
+ * The pair below is deliberately TWO calls, not one:
+ *   1. `enqueueTransactional` writes a `queued` row BEFORE the transport is
+ *      touched, so a send that throws, hangs or crashes the process mid-flight
+ *      still leaves a durable trace;
+ *   2. `recordTransactionalOutcome` records what actually happened.
+ * A single "log it afterwards" call would lose exactly the sends that matter.
+ * ============================================================ */
+
+/* Ids of transactional rows `sendEmail` is dispatching right now. The queue
+ * worker must not also pick them up — that would send the same message twice.
+ * Process-local and NEVER persisted: a crash mid-send must leave the row
+ * visible to the worker again, not permanently claimed by a dead process. */
+const transactionalInFlight = new Set<string>();
+
+export function enqueueTransactional(args: {
+  to: string;
+  subject: string;
+  bodyHtml: string;
+  bodyText?: string | null;
+  category?: string;
+  refId?: string;
+  recipientUserId?: string;
+}): OutboxEmail {
+  /* ============================================================
+   * WAVE 49 · C-1 — RENDER AT DISPATCH, NEVER STORE THE SECRET.
+   *
+   * `sendEmail` hands the RAW body to the transport from its OWN local `msg`
+   * variable; it never reads the body back off this row. So the row does not
+   * need the secret at all, and the fix is to scrub before the row is even
+   * constructed — the raw token then exists only in the caller's stack frame for
+   * the duration of the dispatch and is never written to RAM-durable state, disk
+   * or an API response.
+   *
+   * R19's purpose is fully preserved: recipient, subject, template/category,
+   * status, attempt count, queuedAt, sentAt and deliveredAt are all recorded, so
+   * the row still proves a send happened and says what happened to it. What is
+   * removed is only the part that could be REPLAYED.
+   * ============================================================ */
+  const safeSubject = redactTokenMaterial(args.subject);
+  const safeBodyHtml = redactTokenMaterial(args.bodyHtml);
+  const safeBodyText = redactTokenMaterial(args.bodyText ?? null);
+  const redacted =
+    safeSubject !== args.subject ||
+    safeBodyHtml !== args.bodyHtml ||
+    safeBodyText !== (args.bodyText ?? null);
+  const e: OutboxEmail = {
+    id: `email_${randomBytes(6).toString("hex")}`,
+    /* The category doubles as the template slug so the admin Outbox tab's
+     * Template column shows something true ("partner_welcome") rather than a
+     * placeholder. These sends render their own body; they do not go through
+     * `findTemplate`, and inventing a template row for them would be a lie of a
+     * different kind. */
+    templateSlug: args.category ?? "transactional",
+    recipient: args.to,
+    recipientUserId: args.recipientUserId ?? "u_system_email",
+    variables: {},
+    subject: safeSubject,
+    bodyHtmlRendered: safeBodyHtml,
+    bodyText: safeBodyText,
+    status: "queued",
+    attempts: 0,
+    queuedAt: new Date().toISOString(),
+    sentAt: null,
+    deliveredAt: null,
+    openedAt: null,
+    clickedAt: null,
+    bouncedAt: null,
+    error: null,
+    category: args.category,
+    refId: args.refId,
+    ...(redacted ? { bodyRedacted: true } : {}),
+  };
+  outbox.push(e);
+  transactionalInFlight.add(e.id);
+  persistOutbox(e);
+  return e;
+}
+
+export function recordTransactionalOutcome(
+  id: string,
+  outcome: { accepted: boolean; mode: string; error?: string | null; permanent?: boolean },
+): OutboxEmail | null {
+  const e = outbox.find((x) => x.id === id);
+  transactionalInFlight.delete(id);
+  if (!e) return null;
+  const now = new Date().toISOString();
+  e.attempts++;
+  e.transportMode = outcome.mode;
+  if (outcome.accepted) {
+    /* R6 — `sent`, NOT `delivered`. Acceptance proves the transport took the
+     * message; it proves nothing about the mailbox. `deliveredAt` stays null
+     * until something that can actually observe delivery (a provider webhook)
+     * says otherwise. */
+    e.status = "sent";
+    e.sentAt = now;
+    e.error = null;
+  } else {
+    /* WAVE 49 · C-1 — the transport error string is durable and is returned to
+     * the admin. A relay that echoes the message, or a caller that puts the URL
+     * into its own error, would otherwise reintroduce the token here. */
+    e.error = redactTokenMaterial(outcome.error ?? "send_failed");
+    if (outcome.permanent) {
+      e.status = "bounced";
+      e.bouncedAt = now;
+    } else {
+      e.status = "failed";
+    }
+    /* A row that did not go must not carry a send/delivery timestamp. */
+    e.sentAt = null;
+    e.deliveredAt = null;
+  }
+  persistOutbox(e);
+  return e;
+}
+
 /** Maximum retry attempts before a message is marked bounced. */
 const MAX_ATTEMPTS = 5;
 
@@ -239,6 +411,25 @@ export async function tickQueue(): Promise<void> {
 
   for (const e of outbox) {
     if (e.status !== "queued") continue;
+    /* WAVE 47 · R19 — skip rows `sendEmail` is dispatching right now. Without
+     * this the worker would re-send a transactional message that is already in
+     * flight and the recipient would get it twice. */
+    if (transactionalInFlight.has(e.id)) continue;
+    /* WAVE 49 · C-1 — a row whose body was scrubbed of token material cannot be
+     * re-sent FROM the row: the secret is gone by design, so sending it would
+     * mail the recipient a `[REDACTED:TOKEN]` link. Refuse LOUDLY — the row is
+     * marked `failed` with a typed reason so an operator sees it and re-triggers
+     * the originating action (which mints a fresh token), instead of a recipient
+     * silently receiving a dead link. This branch only ever fires for rows that
+     * actually carried a token; ordinary queued rows tick exactly as before. */
+    if (e.bodyRedacted) {
+      e.status = "failed";
+      e.error = "token_bearing_body_not_resendable_reissue_required";
+      e.sentAt = null;
+      e.deliveredAt = null;
+      persistOutbox(e);
+      continue;
+    }
 
     // Check backoff — only attempt if past next retry window
     const nextRetryMs: number = (e as any)._nextRetryMs ?? 0;
@@ -257,9 +448,28 @@ export async function tickQueue(): Promise<void> {
       e.status = "sent";
       e.sentAt = now;
       e.error = null;
-      // Immediately transition to delivered for console/dry_run; real webhook would refine.
-      e.status = "delivered";
-      e.deliveredAt = now;
+      /* WAVE 47 · R19/R6 — the two lines below used to run UNCONDITIONALLY, so
+       * every accepted message immediately claimed `delivered`, including over
+       * real SMTP where acceptance by a relay is NOT delivery to a mailbox.
+       * They are now limited to the two modes where "delivered" is literally
+       * true because the message was never handed to a network: `console`
+       * writes it to stdout and `dry_run` discards it — in both cases the
+       * destination IS this process. For real `smtp` the row stops at `sent`
+       * and `deliveredAt` stays null until something that can observe delivery
+       * says otherwise. This boundary is argued, not silent: the two
+       * pre-existing sprint28 campaign tests that assert `delivered` after a
+       * tick run in console mode and still pass, unchanged. */
+      const observedMode = (() => {
+        try {
+          return String(getConfig().mode);
+        } catch {
+          return "smtp";
+        }
+      })();
+      if (observedMode === "console" || observedMode === "dry_run") {
+        e.status = "delivered";
+        e.deliveredAt = now;
+      }
     } else if (result.error === "rate_limited") {
       // Requeue without counting as a real attempt
       e.attempts--;
@@ -367,7 +577,16 @@ export function enqueueBulk(args: {
 export function retryOutboxItem(id: string): OutboxEmail | null {
   const e = outbox.find(x => x.id === id);
   if (!e) return null;
-  if (e.status !== "bounced" && e.status !== "queued") return null;
+  /* WAVE 47 · R19 — `failed` appended to the retryable set. The route above is
+   * labelled "Outbox retry (bounced or failed items)", but `failed` did not
+   * exist as a status until this wave, so a transient failure would have been
+   * un-retryable — the admin's only recovery for a timeout would have been to
+   * re-trigger the whole originating action. */
+  if (e.status !== "bounced" && e.status !== "queued" && e.status !== "failed") return null;
+  /* WAVE 49 · C-1 — see `tickQueue`. Re-queuing a scrubbed token-bearing row
+   * would send a dead link, so it is refused here too and the caller surfaces
+   * `item_not_retryable` rather than reporting a retry that cannot work. */
+  if (e.bodyRedacted) return null;
   // Reset to queued — keep attempts count so next tick increments correctly
   e.status = "queued";
   e.error = null;
@@ -481,7 +700,10 @@ export function registerEmailRoutes(app: Express): void {
     const { slug, recipient, variables } = req.body ?? {};
     if (!findTemplate(slug)) return res.status(404).json({ error: "unknown_template" });
     const e = enqueueEmail({ templateSlug: slug, recipient: recipient ?? "test@capavate.com", recipientUserId: "u_admin", variables: variables ?? {} });
-    res.json(e);
+    /* WAVE 49 · C-1 — projected. A template variable (`cta_url`, `edit_link`) is
+     * a perfectly ordinary place for a caller to put a redemption link, so the
+     * echo of a test-send is scrubbed on the same rule as every other read. */
+    res.json(projectOutboxForResponse([e])[0]);
   });
   app.get("/api/admin/email/outbox", (req: Request, res: Response) => {
     const status = String(req.query.status ?? "");
@@ -494,8 +716,15 @@ export function registerEmailRoutes(app: Express): void {
       opened: outbox.filter(e => e.status === "opened").length,
       clicked: outbox.filter(e => e.status === "clicked").length,
       bounced: outbox.filter(e => e.status === "bounced").length,
+      /* WAVE 47 · R19 — appended LAST, after `bounced`, so no existing key moves.
+       * The admin Outbox tab can now show attempts that never completed instead
+       * of leaving them out of every total. */
+      failed: outbox.filter(e => e.status === "failed").length,
     };
-    res.json({ ...stats, items: items.slice(-200) });
+    /* WAVE 49 · C-1 — projected, never raw. Before this the handler returned the
+     * `OutboxEmail` objects verbatim, which meant an admin could read any user's
+     * live password-reset link straight out of this response. */
+    res.json({ ...stats, items: projectOutboxForResponse(items.slice(-200)) });
   });
   app.post("/api/admin/email/tick", async (_req: Request, res: Response) => {
     await tickQueue();
@@ -520,7 +749,8 @@ export function registerEmailRoutes(app: Express): void {
     }
     const result = retryOutboxItem(req.params.id);
     if (!result) return res.status(400).json({ error: "item_not_retryable", status: item.status });
-    res.json({ ok: true, item: result });
+    // WAVE 49 · C-1 — projected, never raw (see GET /api/admin/email/outbox).
+    res.json({ ok: true, item: projectOutboxForResponse([result])[0] });
   });
 
   // Outbox cancel
@@ -533,7 +763,8 @@ export function registerEmailRoutes(app: Express): void {
     }
     const result = cancelOutboxItem(req.params.id);
     if (!result) return res.status(400).json({ error: "item_not_cancelable", status: item.status });
-    res.json({ ok: true, item: result });
+    // WAVE 49 · C-1 — projected, never raw (see GET /api/admin/email/outbox).
+    res.json({ ok: true, item: projectOutboxForResponse([result])[0] });
   });
 }
 
@@ -550,11 +781,20 @@ export function findOutboxItem(id: string): OutboxEmail | null {
   return outbox.find((x) => x.id === id) ?? null;
 }
 
-export function countOutboxByStatus(): { queued: number; sent: number; delivered: number; bounced: number } {
+export function countOutboxByStatus(): {
+  queued: number;
+  sent: number;
+  delivered: number;
+  bounced: number;
+  /* WAVE 47 · R19 — appended last. A failed send counted nowhere is a failed
+   * send nobody fixes; the admin Outbox tab now has a number for it. */
+  failed: number;
+} {
   return {
     queued: outbox.filter((e) => e.status === "queued").length,
     sent: outbox.filter((e) => e.status === "sent").length,
     delivered: outbox.filter((e) => e.status === "delivered").length,
     bounced: outbox.filter((e) => e.status === "bounced").length,
+    failed: outbox.filter((e) => e.status === "failed").length,
   };
 }

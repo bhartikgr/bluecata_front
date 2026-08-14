@@ -196,9 +196,103 @@ export function upsertTier(args: {
          deleted_at         = NULL`,
     )
     .run(key, amount, currency, updatedAt, args.updatedByUserId, billingPeriod);
+  /* ── WAVE 45 (R3) — ONE NUMBER, ONE SOURCE ────────────────────────────────
+   *
+   * This admin surface writes the consortium subscription price into
+   * `platform_fees`. Since WAVE 45 the price a partner is CHARGED, and the price
+   * the public /consortium/pricing page ADVERTISES, both resolve from
+   * `partner_tier_price` instead — that is the table the owner's flat $240.00
+   * annual fee lives in, and the only place a price may come from.
+   *
+   * Left alone, that would split one number across two tables: an admin could
+   * edit the price here and watch nothing change anywhere, which is exactly the
+   * defect this wave was sent to remove (and exactly the split already found
+   * between the SPV deployment fee's two sources). So the edit is PROJECTED onto
+   * the authoritative row. The admin surface is unchanged; its write now lands
+   * where the reads look.
+   *
+   * Three deliberate properties:
+   *   • the cadence written is the one the platform actually SELLS, read from
+   *     partner_pricing_model_config — not a compiled-in "monthly". Editing the
+   *     price of a cadence nobody can buy would be a silent no-op.
+   *   • a FROZEN tier's trigger will reject this UPDATE and the error propagates.
+   *     Freeze has to hold from every surface, including this one, or it is
+   *     decorative.
+   *   • only the five canonical slugs are projected. The eight orphan slugs from
+   *     migration 0153 are an open owner question (OQ-W45-1) and are not touched.
+   */
+  projectTierPriceToPartnerTierPrice(args.prefix, args.slug, amount, currency, args.updatedByUserId);
+
   const tier = getTier(args.prefix, args.slug);
   if (!tier) throw new Error("upsert_failed");
   return tier;
+}
+
+/** The five canonical capability tiers — the taxonomy every live partner is on. */
+const WAVE45_CANONICAL_SLUGS = new Set([
+  "catalyst",
+  "builder",
+  "amplifier",
+  "nexus",
+  "founding_member",
+]);
+
+function projectTierPriceToPartnerTierPrice(
+  prefix: TierFamily,
+  slug: string,
+  amountMinor: number,
+  currency: string,
+  updatedByUserId: string | null,
+): void {
+  if (prefix !== CONSORTIUM_SUBSCRIPTION_PREFIX) return;
+  if (!WAVE45_CANONICAL_SLUGS.has(slug)) return;
+
+  const db = rawDb();
+  // Before migration 0185 has run (or in a harness that builds a partial schema)
+  // there is nothing to project onto. Absence is not an error; a WRONG write
+  // would be.
+  const present = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'partner_tier_price'`)
+    .get() as { name: string } | undefined;
+  if (!present) return;
+
+  let cadence = "annual";
+  try {
+    const cfg = db
+      .prepare(
+        `SELECT annual_purchasable, monthly_purchasable FROM partner_pricing_model_config WHERE id = 'singleton'`,
+      )
+      .get() as { annual_purchasable: number; monthly_purchasable: number } | undefined;
+    if (cfg && cfg.annual_purchasable !== 1 && cfg.monthly_purchasable === 1) cadence = "monthly";
+  } catch {
+    // Config table absent — annual is the R3 model, and it is also the cadence
+    // the price rows are seeded on, so this default cannot silently mis-target.
+  }
+
+  const now = new Date().toISOString();
+  // NOTE: amountMinor is carried through as the integer it already is. No /100,
+  // no *100 — the value is in minor units on both sides of this write.
+  db.prepare(
+    `INSERT INTO partner_tier_price
+       (id, tier_slug, cadence, price_minor, currency, derivation, active, created_at, updated_at, updated_by)
+     VALUES (?, ?, ?, ?, ?, 'admin_set', 1, ?, ?, ?)
+     ON CONFLICT (tier_slug, cadence) DO UPDATE SET
+       price_minor = excluded.price_minor,
+       currency    = excluded.currency,
+       derivation  = 'admin_set',
+       active      = 1,
+       updated_at  = excluded.updated_at,
+       updated_by  = excluded.updated_by`,
+  ).run(
+    `ptp_${slug}_${cadence}`,
+    slug,
+    cadence,
+    amountMinor,
+    currency,
+    now,
+    now,
+    updatedByUserId ?? "admin",
+  );
 }
 
 /** Soft-delete one tier (sets deleted_at). Idempotent; returns true if a LIVE

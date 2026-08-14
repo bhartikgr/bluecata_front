@@ -18,7 +18,7 @@
  *
  * Note: we deliberately do NOT mock nodemailer here; we exercise the SMTP
  * code path using SMTP_MODE=dry_run, which bypasses the real send while
- * still returning delivered:true. This proves the wiring end-to-end without
+ * still returning transportAccepted:true (WAVE 48 · ITEM 4 rename). This proves the wiring end-to-end without
  * needing a real SMTP server.
  */
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
@@ -219,7 +219,7 @@ describe("v23.4.2 — admin SMTP diagnostic endpoints", () => {
       );
       expect(r.status).toBe(200);
       expect(r.body.to).toBe("ozan@example.com");
-      expect(r.body.delivered).toBe(true);
+      expect(r.body.transportAccepted).toBe(true);
       expect(r.body.mode).toBe("dry_run");
     });
   });

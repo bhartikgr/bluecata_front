@@ -31,8 +31,20 @@ import {
   useInvestorSpine,
   isPendingStage,
   isSoftCircledStage,
+  invitationCloseWindow,
   type NormalizedStage,
 } from "@/lib/investor/investorSpine";
+/* WAVE 43 · OWNER RULING R7 — the ONE canonical close definition, shared with
+ * the server that refuses the money. This surface no longer computes days from a
+ * raw millisecond delta and no longer decides "expired" a second, different way. */
+import {
+  countdownVerdict,
+  countdownCopy,
+  closedStatement,
+  isExpiredForFilter,
+  isClosedAt,
+  type CloseWindow,
+} from "@shared/roundClose";
 
 type Inv = {
   id: string;
@@ -40,7 +52,13 @@ type Inv = {
   round: { id: string; name: string; type: string };
   state: string;
   receivedAt: string;
-  expiresAt: string;
+  /* WAVE 43 · R6/R7 — nullable, as the database has always had it. The list
+   * projection used to fabricate `now + 14 days` when this was absent, so a
+   * window that had never been set looked permanently live. */
+  expiresAt: string | null;
+  /** The round-level half of the close window (R7 · S3: earliest wins). */
+  closeDate?: string | null;
+  roundState?: string | null;
   targetAmount: number;
   raisedAmount: number;
   minTicket: number;
@@ -64,20 +82,49 @@ type TabFilter = "all" | "pending" | "soft_circled" | "declined" | "expired";
  * declined/expired/revoked in their own tabs — no invitation is silently
  * dropped from all tabs. (funded is a holding, surfaced in Portfolio.)
  */
-function matchesTab(tab: Exclude<TabFilter, "all">, stage: NormalizedStage): boolean {
+function matchesTab(
+  tab: Exclude<TabFilter, "all">,
+  stage: NormalizedStage,
+  close: { win: CloseWindow; nowMs: number },
+): boolean {
+  const windowClosed = isClosedAt(close.win, close.nowMs);
   switch (tab) {
-    // "Active" (pending tab key) = the Ozan-locked pending set, byte-identical
-    // to spine.pendingInvitations: invited + viewed + accepted only.
+    /* "Active" (pending tab key) = the Ozan-locked pending set, byte-identical
+     * to spine.pendingInvitations: invited + viewed + accepted — and, since
+     * WAVE 43, only while the decision window is still OPEN. The spine's
+     * selectPendingInvitations excludes closed windows for exactly this reason,
+     * so this tab and the Dashboard badge still count the identical set (Wave 2
+     * FIX #3). An invitation the API would refuse is not "Active". */
     case "pending":
-      return isPendingStage(stage);
+      return isPendingStage(stage) && !windowClosed;
     // Soft-circle tab absorbs soft_circled + confirmed + signed (on/past the
     // soft-circle rung, short of funded) — nothing here is dropped.
     case "soft_circled":
       return isSoftCircledStage(stage);
     case "declined":
       return stage === "declined";
+    /* WAVE 43 · R7 — THE FIX FOR THE "Expired" TAB COUNTING 0.
+     *
+     * WAS: `stage === "expired" || stage === "revoked"`.
+     *
+     * THE FINDING, STATED PLAINLY: this file held TWO DIFFERENT DEFINITIONS OF
+     * "EXPIRED", and they disagreed about the very rows the auditor was looking
+     * at. The FILTER asked about STORED STATE (`stage`), which nothing rewrites
+     * when a deadline passes; the CARD asked about TIME (`expiresAt` vs now). So
+     * on 13 August the card printed "Window closed" on two rounds while the tab
+     * whose entire job is to collect closed rounds counted zero of them. Both
+     * questions are now asked through the ONE predicate in `@shared/roundClose`
+     * — the same one the server uses to refuse the money. */
     case "expired":
-      return stage === "expired" || stage === "revoked";
+      return isExpiredForFilter({
+        storedStageIsTerminalExpired: stage === "expired" || stage === "revoked",
+        // A commitment already on or past the soft-circle rung is real money on
+        // the ladder; re-bucketing it into "Expired" because a date passed would
+        // hide the investor's own commitment from them.
+        stageIsCommitted: isSoftCircledStage(stage) || stage === "funded",
+        win: close.win,
+        nowMs: close.nowMs,
+      });
   }
 }
 
@@ -116,15 +163,43 @@ export default function Invitations() {
   // B2 / Wave 2: counts derived from spine buckets (NOT exact `state === key`).
   // FIX #3: "pending" (label "Active") counts EXACTLY invited+viewed+accepted,
   // identical to spine.pendingInvitations that the Dashboard badge reads.
+  /* WAVE 43 · R7 — ONE instant for the whole render.
+   *
+   * The old code called `Date.now()` inside the card's own arithmetic, so every
+   * card was judged against a slightly different clock and the counts against
+   * none at all. Pinning it here means a row cannot be "open" in the tab count
+   * and "closed" on the card of the same render, and a test can supply a fixed
+   * date. Recomputed whenever the query data changes. */
+  const nowMs = useMemo(() => Date.now(), [spineInvs, allData]);
+
+  /* The canonical close window per row, resolved ONCE from the same shared
+   * module the server enforces with. Keyed by invitation id so the tab counts
+   * (which iterate the spine) and the card list (which iterates the enriched
+   * rows) read the identical window. */
+  const closeById = useMemo(() => {
+    const m = new Map<string, CloseWindow>();
+    for (const si of spineInvs) m.set(si.id, invitationCloseWindow(si.raw));
+    for (const row of allData) if (!m.has(row.id)) m.set(row.id, invitationCloseWindow(row));
+    return m;
+  }, [spineInvs, allData]);
+
+  /* A row whose window we could not resolve is judged against an empty window
+   * (no deadline, not closed) rather than being guessed closed — refusing a
+   * live invitation is worse than the tab it sits in being one render stale. */
+  const closeFor = (id: string): { win: CloseWindow; nowMs: number } => ({
+    win: closeById.get(id) ?? { deadlineIso: null, deadlineMs: null, source: "none", hardClosed: false },
+    nowMs,
+  });
+
   const tabCounts = useMemo<Record<TabFilter, number>>(() => {
     return {
       all: spineInvs.length,
-      pending: spineInvs.filter((si) => matchesTab("pending", si.stage)).length,
-      soft_circled: spineInvs.filter((si) => matchesTab("soft_circled", si.stage)).length,
-      declined: spineInvs.filter((si) => matchesTab("declined", si.stage)).length,
-      expired: spineInvs.filter((si) => matchesTab("expired", si.stage)).length,
+      pending: spineInvs.filter((si) => matchesTab("pending", si.stage, closeFor(si.id))).length,
+      soft_circled: spineInvs.filter((si) => matchesTab("soft_circled", si.stage, closeFor(si.id))).length,
+      declined: spineInvs.filter((si) => matchesTab("declined", si.stage, closeFor(si.id))).length,
+      expired: spineInvs.filter((si) => matchesTab("expired", si.stage, closeFor(si.id))).length,
     };
-  }, [spineInvs]);
+  }, [spineInvs, closeById, nowMs]);
 
   const filtered =
     activeTab === "all"
@@ -135,7 +210,7 @@ export default function Invitations() {
           // (e.g. mid-hydration), normalize its own state via the same bucket
           // predicate would still be spine-consistent, but during the gap we
           // simply hide it rather than mis-bucket.
-          return stage !== undefined && matchesTab(activeTab, stage);
+          return stage !== undefined && matchesTab(activeTab, stage, closeFor(i.id));
         });
 
   // DEF-050: removed the blanket invalidateQueries on every mount (was causing flicker).
@@ -207,7 +282,12 @@ export default function Invitations() {
             />
           )}
           {/* Cards */}
-          {!inv.isLoading && !inv.isError && filtered.map((i) => <InvitationCard key={i.id} inv={i} />)}
+          {!inv.isLoading && !inv.isError && filtered.map((i) => (
+            /* WAVE 43 · R7 — the window and the instant are passed DOWN so the
+               card cannot reach for its own clock and disagree with the tab that
+               is showing it. */
+            <InvitationCard key={i.id} inv={i} win={closeFor(i.id).win} nowMs={nowMs} />
+          ))}
           {/* Empty state */}
           {!inv.isLoading && !inv.isError && inv.isSuccess && filtered.length === 0 && (
             <div className="text-sm text-muted-foreground py-12 text-center">
@@ -222,12 +302,32 @@ export default function Invitations() {
   );
 }
 
-function InvitationCard({ inv: i }: { inv: Inv }) {
+function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; nowMs: number }) {
   const intel = useQuery<MaIntelligence>({ queryKey: ["/api/investor/ma/intelligence", i.company.id] });
   const pct = (i.raisedAmount / i.targetAmount) * 100;
   // Sprint 20 fix: pro-rata based on minTicket OR backend flag — not pct condition
   const proRata = i.hasProRata === true || i.minTicket >= 250_000;
-  const days = Math.max(0, Math.floor((new Date(i.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+  /* WAVE 43 · R7 + R6 + F-10 — THE COUNTDOWN.
+   *
+   * WAS: `const days = Math.max(0, Math.floor((new Date(i.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));`
+   *
+   * Three defects in one expression:
+   *   1. OFF BY ONE (F-10). `Math.floor` on an elapsed-millisecond delta
+   *      truncates the part-day, so on 13 August a 24 August deadline printed
+   *      "Closes in 10 days · Aug 24, 2026" — eleven calendar days away. The
+   *      count is now a CIVIL calendar difference in the VIEWER'S timezone, so
+   *      it agrees with the date printed beside it and cannot be skewed by a
+   *      23- or 25-hour DST day. Semantics S4 in shared/roundClose.ts.
+   *   2. `Math.max(0, ...)` COLLAPSED "closed" AND "no date recorded" INTO THE
+   *      SAME `0` (R6). A round with no close date rendered the identical muted
+   *      "Window closed" as a genuinely expired one. Those are now distinct
+   *      verdicts with distinct copy.
+   *   3. It knew nothing of the ROUND's own `closeDate` or `state`, so a card
+   *      could promise an open window on a round the API refuses. The window is
+   *      now resolved from both, earliest wins (S3).
+   */
+  const verdict = countdownVerdict(win, nowMs);
+  const windowClosed = verdict.kind === "closed";
   const maHigh = (intel.data?.acquirerFitScore ?? 0) >= 65;
   // Sprint 20 fix: use description from API response, not hardcoded map
   const description = i.company.description ?? "No description available.";
@@ -285,9 +385,21 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground mt-1.5">
                 <span>Min ticket {fmtUSD(i.minTicket, { compact: true })} · pre-money {fmtUSD(i.preMoney, { compact: true })}</span>
+                {/* WAVE 43 · R7 — the surface STATES THE FACT. The old muted
+                    "Window closed" caption rendered beside an enabled red CTA;
+                    it is replaced by the full sentence "This round closed on
+                    [date]", and the CTA below is gone rather than disabled. R6:
+                    a round with no close date says so; it never shows 0 days. */}
                 <span data-testid={`text-countdown-${i.id}`}>
-                  {days > 0 ? <>Closes in <span className="text-foreground font-medium">{days} day{days === 1 ? "" : "s"}</span> · {fmtDate(i.expiresAt)}</>
-                            : <span className="text-[hsl(7_61%_43%)] font-medium">Window closed</span>}
+                  {verdict.kind === "open" ? (
+                    <>Closes in <span className="text-foreground font-medium">{verdict.days} day{verdict.days === 1 ? "" : "s"}</span> · {fmtDate(verdict.deadlineIso)}</>
+                  ) : verdict.kind === "closes_today" ? (
+                    <span className="text-foreground font-medium">Closes today · {fmtDate(verdict.deadlineIso)}</span>
+                  ) : verdict.kind === "closed" ? (
+                    <span className="text-[hsl(7_61%_43%)] font-medium" data-testid={`text-closed-${i.id}`}>{closedStatement(verdict.deadlineIso)}</span>
+                  ) : (
+                    <span className="text-muted-foreground italic" data-testid={`text-no-close-date-${i.id}`}>{countdownCopy(verdict)}</span>
+                  )}
                 </span>
               </div>
             </div>
@@ -301,14 +413,55 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
               grow to fit (h-auto + vertical padding), shrink the text a touch,
               and keep the icon from pushing the text off-canvas. */}
           <div className="md:w-60 flex flex-col gap-2 shrink-0">
-            <Button className="w-full h-auto min-h-9 py-2 whitespace-normal text-center text-sm leading-snug bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`} asChild>
-              <Link href={`/investor/invitations/${i.id}`}>
-                <span className="inline-flex items-center justify-center gap-1.5">Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 shrink-0" /></span>
-              </Link>
-            </Button>
-            <Button variant="outline" className="w-full" data-testid={`button-decide-${i.id}`} asChild>
-              <Link href={`/investor/invitations/${i.id}?tab=decision`}>Decline</Link>
-            </Button>
+            {/* WAVE 43 · OWNER RULING R7 — "The UI must state the fact, not offer
+                the action."
+
+                WAS: the red "Review Deal and Soft-Circle" button below rendered
+                UNCONDITIONALLY. On 13 August two rounds whose windows closed on
+                3 and 6 August each showed it fully enabled, with a muted "Window
+                closed" caption sitting beside it. The auditor's sentence — "an
+                investor can commit $250,000 to a round that closed ten days ago"
+                — was literally true of this element.
+
+                A closed round now gets a STATEMENT plus a read-only route to the
+                record. The commit CTA is not disabled-but-present: it is not
+                offered. The server refuses the commitment either way
+                (server/lib/roundCloseEnforcement.ts) — this is the surface
+                telling the truth, not the enforcement. */}
+            {windowClosed ? (
+              <div
+                className="rounded-md border border-[hsl(7_61%_43%)]/40 bg-muted/40 p-3"
+                data-testid={`panel-round-closed-${i.id}`}
+              >
+                {/* WAVE 43 · R7 — the baseline copy string "Window closed" is
+                    RETAINED, not deleted: the guard is right that dropping a
+                    literal is a silent subtraction. It moved. It is now a muted
+                    caption INSIDE the closed-round panel, where no action is
+                    offered, instead of sitting beside an enabled red CTA — which
+                    is the precise arrangement the ruling forbids. */}
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground" data-testid={`chip-window-closed-${i.id}`}>Window closed</div>
+                <div className="text-sm font-medium text-[hsl(7_61%_43%)] mt-1" data-testid={`text-closed-statement-${i.id}`}>
+                  {closedStatement(verdict.kind === "closed" ? verdict.deadlineIso : null)}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  Soft-circles are no longer accepted. If you still intend to participate, contact the founder — a founder can accept a late commitment, and it is recorded as accepted after close.
+                </p>
+                <Button variant="outline" className="w-full mt-2.5" data-testid={`button-view-closed-${i.id}`} asChild>
+                  <Link href={`/investor/invitations/${i.id}`}>View round record</Link>
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Button className="w-full h-auto min-h-9 py-2 whitespace-normal text-center text-sm leading-snug bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`} asChild>
+                  <Link href={`/investor/invitations/${i.id}`}>
+                    <span className="inline-flex items-center justify-center gap-1.5">Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 shrink-0" /></span>
+                  </Link>
+                </Button>
+                <Button variant="outline" className="w-full" data-testid={`button-decide-${i.id}`} asChild>
+                  <Link href={`/investor/invitations/${i.id}?tab=decision`}>Decline</Link>
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </CardContent>

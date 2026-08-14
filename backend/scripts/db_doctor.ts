@@ -21,6 +21,11 @@
  */
 
 import { rawDb } from "../server/db/connection";
+import {
+  checkMigrationIntegrity,
+  formatMigrationIntegrity,
+  type MigrationIntegrityResult,
+} from "../server/lib/migrationIntegrity";
 
 /* ------------------------------------------------------------------ */
 /* CLI args                                                             */
@@ -71,6 +76,9 @@ interface DoctorResult {
   tablesMissing: string[];
   columnsMissing: { table: string; column: string }[];
   results: TableResult[];
+  /* WAVE 49 · C-3 — the migration-integrity verdict, see below. */
+  migrations: MigrationIntegrityResult | { error: string };
+  migrationsOk: boolean;
 }
 
 function runDoctor(): DoctorResult {
@@ -129,12 +137,43 @@ function runDoctor(): DoctorResult {
     });
   }
 
+  /* ====================================================================
+   * WAVE 49 · C-3 — COLUMNS ARE NOT MIGRATIONS.
+   *
+   * Everything above introspects a hand-list of tables and columns frozen
+   * in v23.4.1. Review C found a database on which that list passed while
+   * the `__drizzle_migrations_applied` ledger did not exist at all, none of
+   * Wave 48's 142 money type-floor triggers were installed, and
+   * `partner_invoice` — required by every partner approval — was absent.
+   * The column list cannot see any of that, because the tables it names
+   * are also created by connection.ts's inline boot DDL.
+   *
+   * `checkMigrationIntegrity` is defined against the migrations DIRECTORY,
+   * so it does not age: ledger present, highest applied id == highest file
+   * on disk, representative tables from 0167–0186, all 142 triggers, and
+   * each installed trigger's BODY equivalent to migration 0186 (A-6B).
+   * A failure here fails the whole doctor — exit 1.
+   * ================================================================== */
+  let migrations: MigrationIntegrityResult | { error: string };
+  let migrationsOk: boolean;
+  try {
+    const integrity = checkMigrationIntegrity({ db });
+    migrations = integrity;
+    migrationsOk = integrity.ok;
+  } catch (err) {
+    /* Unknown is not OK. See the same reasoning in server/index.ts. */
+    migrations = { error: (err as Error).message };
+    migrationsOk = false;
+  }
+
   return {
-    ok: tablesMissing.length === 0 && columnsMissing.length === 0,
+    ok: tablesMissing.length === 0 && columnsMissing.length === 0 && migrationsOk,
     tablesChecked: Object.keys(CRITICAL_COLUMNS).length,
     tablesMissing,
     columnsMissing,
     results,
+    migrations,
+    migrationsOk,
   };
 }
 
@@ -169,9 +208,29 @@ function printResults(result: DoctorResult) {
     }
   }
 
+  /* WAVE 49 · C-3 — migration integrity block. */
+  console.log("");
+  console.log("  ── migration integrity (WAVE 49 · C-3) ──");
+  if ("error" in result.migrations) {
+    console.log(`  ${FAIL} migration check could not run: ${result.migrations.error}`);
+    console.log(`  ${FAIL} schema state is UNKNOWN — treating as a failure, not as "current".`);
+  } else {
+    for (const line of formatMigrationIntegrity(result.migrations).split("\n")) {
+      const tag = /^\s*FAIL /.test(line) ? FAIL : /^\s*WARN /.test(line) ? WARN : "    ";
+      console.log(`  ${tag} ${line.replace(/^\s*(FAIL|WARN) /, "")}`);
+    }
+    console.log(
+      `  ${result.migrationsOk ? PASS : FAIL} migration integrity ` +
+        `${result.migrationsOk ? "verified" : "FAILED"}`,
+    );
+  }
+
   console.log("");
   if (result.ok) {
-    console.log(`  ${PASS} All ${result.tablesChecked} critical tables and columns present.`);
+    console.log(
+      `  ${PASS} All ${result.tablesChecked} critical tables and columns present, and the ` +
+        `migration ledger, recent-migration tables and money type-floor triggers verified.`,
+    );
     console.log("");
   } else {
     if (result.tablesMissing.length > 0) {

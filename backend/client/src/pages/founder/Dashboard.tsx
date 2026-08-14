@@ -55,6 +55,33 @@ type CompletionData = {
   sections: CompletionSection[];
 };
 
+/**
+ * WAVE 41 · OWNER RULING R9 — where each completion section is actually filled in.
+ *
+ * Keyed on the `section` strings declared in `COMPLETION_WEIGHTS`
+ * (server/companyProfileStore.ts:459-495), which is the single place those names
+ * are defined and the same place the percentages are computed. Keeping the key
+ * identical to the server's own label is deliberate: it makes a drift visible as
+ * a missing link (the label falls back to plain text) instead of as a link that
+ * quietly points at the wrong tab.
+ *
+ * The `?tab=` values resolve through `TAB_ALIAS` in
+ * client/src/pages/founder/Settings.tsx, so these are real, tested entry points
+ * and not invented URLs.
+ *
+ * "Financials" and "Preferences" only became legitimate destinations in THIS
+ * wave — before it, `SettingsFinancialsTab` and `SettingsPreferencesTab` were
+ * declared and mounted nowhere, which is exactly what made a "Financials 0%"
+ * bar a promise the product could not keep.
+ */
+const SECTION_TAB_HREF: Record<string, string> = {
+  "Public": "/founder/settings?tab=public-profile",
+  "Region": "/founder/settings?tab=region",
+  "Preferences": "/founder/settings?tab=preferences",
+  "Financials": "/founder/settings?tab=financials",
+  "M&A Prep": "/founder/settings?tab=mna-prep",
+};
+
 function ProfileCompletionCard({ companyId }: { companyId: string }) {
   const completion = useQuery<CompletionData>({
     queryKey: ["/api/founder/profile/completion", companyId],
@@ -114,7 +141,39 @@ function ProfileCompletionCard({ companyId }: { companyId: string }) {
             {(data?.sections ?? []).map(section => (
               <div key={section.name} data-testid={`row-section-${section.name.replace(/\s+/g, "-").toLowerCase()}`}>
                 <div className="flex justify-between text-xs mb-0.5">
-                  <span className="font-medium">{section.name}</span>
+                  {/* ── WAVE 41 · OWNER RULING R9 ────────────────────────────
+                      "The Dashboard's 'Financials 0%' progress category must then
+                      track a section that actually exists."
+
+                      This bar was already honest about the DATA — `sections`
+                      comes straight from the server's COMPLETION_WEIGHTS via
+                      GET /api/founder/profile/completion, so the percentage was
+                      never hardcoded. What was broken is that it was
+                      UNACTIONABLE: "Financials 0%" measured five profile columns
+                      (cashOnHandUsd, monthlyBurnUsd, runwayMonths,
+                      lastRaiseSizeUsd, arrUsd) that NO reachable surface could
+                      set, because SettingsFinancialsTab was mounted nowhere. A
+                      progress bar for something unreachable is worse than no
+                      progress bar: it asks the founder for work and gives them
+                      no way to do it.
+
+                      Now every section label is a link to the tab that fills it,
+                      and those tabs exist as of this wave. The mapping is keyed
+                      on the server's OWN section names, so a section added to
+                      COMPLETION_WEIGHTS still renders — it simply renders as
+                      plain text until someone gives it a destination, rather
+                      than silently disappearing or linking somewhere wrong. */}
+                  {SECTION_TAB_HREF[section.name] ? (
+                    <Link
+                      href={SECTION_TAB_HREF[section.name]}
+                      className="font-medium underline decoration-dotted hover:decoration-solid"
+                      data-testid={`link-section-${section.name.replace(/\s+/g, "-").toLowerCase()}`}
+                    >
+                      {section.name}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">{section.name}</span>
+                  )}
                   <span className="text-muted-foreground">{section.pct}%</span>
                 </div>
                 <Progress value={section.pct} className="h-1.5" />

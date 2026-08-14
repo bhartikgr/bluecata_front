@@ -660,11 +660,49 @@ export default function RoundNew() {
  // is carved out of the pre-money, diluting founders before new money lands,
  // which correctly LOWERS the price per share. With no pool it reduces to the
  // plain pre-money ÷ FD-shares. The engine remains source-of-truth on commit.
+ // ── WAVE 50 · ITEM 4 — A SHARE COUNT WAS BEING DIVIDED BY 100 ──────────────
+ //
+ // WHAT WAS WRONG. `addonPoolDraft.poolSize` is a SHARE COUNT, not a percent:
+ // its input is labelled "Pool size (shares)" (see the add-on pool card below)
+ // and it is sent as BOTH `poolSize` AND `sharesAuthorized` on the
+ // `option_pool` round payload. The genuine percent field is a DIFFERENT state
+ // key — `form.poolSize`, labelled "Pool size (% of fully-diluted)". This block
+ // read the share count and divided it by 100 as though it were a percentage.
+ //
+ // The damage was not merely "100,000 shares becomes 1,000". At any realistic
+ // pool size the guard `p >= 100` fired FIRST, so `poolTopUpPct` came out 0 and
+ // the pool dilution was SILENTLY DROPPED from the fully-diluted denominator
+ // below — which OVERPRICES the round (a higher PPS than the founder is
+ // actually offering). The `/ 100` branch was reachable only for pools of 1-99
+ // shares, where it was also wrong.
+ //
+ // THE MATH, STATED. For a pool of S shares carved out of the pre-money on a
+ // pre-pool fully-diluted base of F shares, the pool is
+ //     p = S / (F + S)
+ // of the post-carve fully-diluted total, and therefore
+ //     F / (1 - p) = F + S     exactly.
+ // So a SHARE COUNT ROUND-TRIPS UNCHANGED: the top-up added to the denominator
+ // is exactly the S shares the founder typed, with no percentage anywhere in
+ // the founder's input. That identity is what the Wave 50 test asserts.
+ //
+ // This requires the BASE share count before the percentage, so the base is
+ // hoisted out of `fdPreMoneyShares` into `basePreMoneyShares` and both read
+ // it. The `shares / (1 - poolTopUpPct)` expression and the `poolTopUpPct`
+ // name are preserved verbatim — wfix2b_f5_auto_pps.test.ts source-locks both.
+ const basePreMoneyShares = (() => {
+ const fd = Number(form.fdPreMoneyShares);
+ const shares = isFinite(fd) && fd > 0 ? fd : Number(form.sharesAuthorized);
+ return isFinite(shares) && shares > 0 ? shares : 0;
+ })();
  const poolTopUpPct = (() => {
  if (!addonPool) return 0;
- const p = Number(addonPoolDraft.poolSize);
- if (!isFinite(p) || p <= 0 || p >= 100) return 0;
- return p / 100;
+ // A SHARE COUNT. Never divided by 100, and deliberately NOT bounded at 100 —
+ // 100,000 is an ordinary pool, and the old `p >= 100` bail is what silently
+ // discarded every real pool.
+ const poolShares = Number(addonPoolDraft.poolSize);
+ if (!isFinite(poolShares) || poolShares <= 0) return 0;
+ if (basePreMoneyShares <= 0) return 0;
+ return poolShares / (basePreMoneyShares + poolShares);
  })();
  // Wave C v26.5.0 (Shadie Finding 1a) — prefer the founder-supplied
  // fully-diluted pre-money share count as the PPS base. Fall back to
@@ -674,8 +712,7 @@ export default function RoundNew() {
  // The local variable is deliberately named `shares` to preserve the
  // wfix2b_f5_auto_pps.test.ts source-lock on `shares / (1 - poolTopUpPct)`.
  const fdPreMoneyShares = (() => {
- const fd = Number(form.fdPreMoneyShares);
- const shares = isFinite(fd) && fd > 0 ? fd : Number(form.sharesAuthorized);
+ const shares = basePreMoneyShares;
  if (!isFinite(shares) || shares <= 0) return 0;
  return poolTopUpPct > 0 ? shares / (1 - poolTopUpPct) : shares;
  })();

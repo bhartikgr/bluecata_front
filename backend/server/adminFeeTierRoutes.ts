@@ -56,10 +56,13 @@ import {
   type SubscriptionTier,
 } from "./subscriptionTierStore";
 import {
-  getSpvDeploymentFee,
+  getSpvDeploymentFeeOrNull,
+  SpvDeploymentFeeUnconfiguredError,
   setSpvDeploymentFee,
   CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY,
 } from "./consortiumFeesStore";
+/* WAVE 46 / R22 — one-source disclosure. */
+import { listSpvDeploymentFeeSourceDivergences } from "./lib/spvDeploymentFeeSource";
 import {
   listSpvDeployments,
   recordSpvDeployment,
@@ -368,7 +371,36 @@ export function registerAdminFeeTierRoutes(app: Express): void {
     requireAdmin,
     (_req: Request, res: Response) => {
       try {
-        return res.json({ ok: true, spvDeploymentFee: getSpvDeploymentFee() });
+        /* WAVE 46 / R6 + R21 + R22 — the read is TOTAL. When the
+         * authoritative `platform_fees` row cannot answer we return an explicit
+         * `unconfigured` refusal instead of the $5,000 the store used to invent
+         * (see server/consortiumFeesStore.ts). The admin editor renders "Not
+         * provided" from this shape; it must never render a number this build
+         * made up, and it must never render $0.00 for an absent price. */
+        const spvDeploymentFee = getSpvDeploymentFeeOrNull();
+        if (!spvDeploymentFee) {
+          return res.json({
+            ok: true,
+            spvDeploymentFee: null,
+            unconfigured: true,
+            key: CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY,
+            message:
+              "No SPV deployment fee is configured. This platform has no " +
+              "compiled-in default, so SPV deployments will REFUSE to charge " +
+              "until an amount is set here.",
+          });
+        }
+        /* WAVE 46 / R22 — DISCLOSE, NEVER HIDE. Levels 1-2 of the resolver
+         * (per-partner and per-tier rows) are RETAINED per R3, so it remains
+         * possible for a charged amount to differ from this authoritative value
+         * — but only deliberately. Shipping the list here makes any divergence
+         * visible on the surface that owns the number instead of surfacing for
+         * the first time on an invoice. */
+        return res.json({
+          ok: true,
+          spvDeploymentFee,
+          divergences: listSpvDeploymentFeeSourceDivergences(),
+        });
       } catch (err) {
         log.error(
           "[adminFeeTierRoutes.spv-deployment.read] failed:",
@@ -395,7 +427,7 @@ export function registerAdminFeeTierRoutes(app: Express): void {
         });
       }
       const currency = parseCurrency(req.body as { currency?: unknown });
-      const prev = getSpvDeploymentFee();
+      const prev = getSpvDeploymentFeeOrNull();
       let updated;
       try {
         updated = setSpvDeploymentFee({
@@ -421,7 +453,9 @@ export function registerAdminFeeTierRoutes(app: Express): void {
           "consortium_spv_deployment_fee_updated",
           {
             key: CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY,
-            before: { amountMinor: prev.amountMinor, currency: prev.currency },
+            before: prev
+              ? { amountMinor: prev.amountMinor, currency: prev.currency }
+              : { amountMinor: null, currency: null, unconfigured: true },
             after: { amountMinor: updated.amountMinor, currency: updated.currency },
           },
         );
@@ -483,6 +517,18 @@ export function registerAdminFeeTierRoutes(app: Express): void {
           note,
         });
       } catch (err) {
+        /* WAVE 46 / R6 + R22 — an unconfigured authoritative fee is an operator
+         * error with a known remedy, not a server fault. Refuse with 409 and
+         * name the row to fill in. Previously this path froze a compiled-in
+         * $5,000 onto the deployment record without anyone asking for it. */
+        if (err instanceof SpvDeploymentFeeUnconfiguredError) {
+          return res.status(409).json({
+            ok: false,
+            error: err.code,
+            key: err.key,
+            message: err.message,
+          });
+        }
         log.error(
           "[adminFeeTierRoutes.spv-deployments.record] failed:",
           (err as Error).message,

@@ -231,34 +231,34 @@ describe("emailSender — sendMail call shape", () => {
  * ============================================================ */
 
 describe("emailSender — SMTP_MODE", () => {
-  it("disabled mode short-circuits and returns delivered=false", async () => {
+  it("disabled mode short-circuits and returns transportAccepted=false", async () => {
     setEnv({ SMTP_MODE: "disabled" });
     const r = await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
-    expect(r).toEqual({ delivered: false, mode: "disabled" });
+    expect(r).toEqual({ transportAccepted: false, mode: "disabled" });
     expect(sendMailMock).not.toHaveBeenCalled();
     expect(createdConfigs).toHaveLength(0);
   });
 
-  it("dry_run mode does not call sendMail and returns delivered=true", async () => {
+  it("dry_run mode does not call sendMail and returns transportAccepted=true", async () => {
     setEnv({ SMTP_MODE: "dry_run" });
     const r = await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
-    expect(r.delivered).toBe(true);
+    expect(r.transportAccepted).toBe(true);
     expect(r.mode).toBe("dry_run");
     expect(sendMailMock).not.toHaveBeenCalled();
   });
 
-  it("console mode does not call sendMail and returns delivered=true", async () => {
+  it("console mode does not call sendMail and returns transportAccepted=true", async () => {
     setEnv({ SMTP_MODE: "console" });
     const r = await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
-    expect(r.delivered).toBe(true);
+    expect(r.transportAccepted).toBe(true);
     expect(r.mode).toBe("console");
     expect(sendMailMock).not.toHaveBeenCalled();
   });
 
-  it("smtp mode with no SMTP_HOST returns delivered=false with copy-link fallback", async () => {
+  it("smtp mode with no SMTP_HOST returns transportAccepted=false with copy-link fallback", async () => {
     setEnv({ SMTP_MODE: "smtp" });
     const r = await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
-    expect(r.delivered).toBe(false);
+    expect(r.transportAccepted).toBe(false);
     expect(r.mode).toBe("smtp");
     expect(r.error).toBe("smtp_not_configured");
     expect(r.fallback).toMatch(/SMTP_HOST/i);
@@ -268,7 +268,7 @@ describe("emailSender — SMTP_MODE", () => {
     setEnv({ SMTP_HOST: "smtp.example.com", SMTP_USER: "u", SMTP_PASS: "p" });
     sendMailMock.mockRejectedValue(new Error("connection refused"));
     const r = await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
-    expect(r.delivered).toBe(false);
+    expect(r.transportAccepted).toBe(false);
     expect(r.error).toBe("smtp_send_failed");
     expect(r.fallback).toContain("connection refused");
   });

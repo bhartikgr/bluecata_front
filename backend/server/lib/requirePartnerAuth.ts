@@ -18,7 +18,10 @@
 import type { Request, Response, NextFunction } from "express";
 import { getUserContext } from "./userContext";
 import { partnerTeamStore, partnerInvitationStore } from "../partnerWorkspaceStore";
-import { getById as getContactById, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "../adminContactsStoreShim";
+import { getById as getContactById, TIER_RANK, type PartnerTier, type PartnerSubRole } from "../adminContactsStoreShim";
+/* WAVE 45 (R3) — seat caps are DB rows now; isWithinLimit is the ONLY correct
+ * way to compare, because "unlimited" and "not configured" are not numbers. */
+import { isWithinLimit } from "./partnerTierCapabilityStore";
 import { resolvePartnerSeatLimit } from "./partnerFeeResolver"; /* W-V44 FIX R3 */
 
 export interface PartnerContext {
@@ -229,10 +232,42 @@ export function assertSeatCapacity(
   const partner = getContactById(partnerId);
   if (!partner) throw new Error("PARTNER_NOT_FOUND");
   const tier: PartnerTier = (partner.tier as PartnerTier) ?? "catalyst";
-  // W-V44 FIX R3 — enforce the EFFECTIVE seat limit (per-partner override, else
-  // tier default) so an admin-granted individual seat allowance is honoured.
-  const { seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
-  if (counts.activeSeats + counts.pending >= seatLimit) {
+  // W-V44 FIX R3, rebased onto data by WAVE 45 — enforce the EFFECTIVE seat
+  // limit (per-partner override, else the tier capability row) so an
+  // admin-granted individual seat allowance is honoured.
+  //
+  // NOT a raw `>=` against a number. The previous code compared against a
+  // seatLimit that was 9999 for "unlimited", which happened to work only because
+  // no partner ever had 9999 seats. isWithinLimit() branches on the three-state
+  // resolution: configured (0 means zero), unlimited (always allowed), and
+  // not_configured (refused, and reported as unconfigured rather than as zero).
+  const { capability, seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
+  const verdict = isWithinLimit(capability, counts.activeSeats + counts.pending);
+
+  /* FE-19 MISS #16 — THE BOUNDARY IS EXCLUSIVE, AND THE OPERATOR IS PINNED.
+   *
+   * A mutation harness once changed `>=` to `>` here and 23 tests still passed
+   * while every paid tier sold one seat too many, so `wave19_fe19_partner_seat_
+   * integrity.test.ts` pins this comparison as SOURCE TEXT. WAVE 45 keeps the
+   * finite comparison exactly as written rather than hiding it inside a helper:
+   * a helper is invisible to that pin, and losing the pin is how the off-by-one
+   * came back. For a finite configured limit this is the whole policy. */
+  if (seatLimit !== null && counts.activeSeats + counts.pending >= seatLimit) {
     throw new Error("PARTNER_TIER_SEAT_LIMIT_REACHED");
+  }
+
+  /* The finite comparison above cannot express the other two states, which is
+   * the gap-2 defect: `unlimited` used to be the magic number 9999 (so it was a
+   * real ceiling), and `not_configured` was indistinguishable from 0 (so it
+   * either locked partners out or let everyone in, depending on the operator).
+   * isWithinLimit() judges those two cases. It must AGREE with the branch above
+   * on every finite limit; it is only ever reached when seatLimit is null. */
+  if (!verdict.within) {
+    // Error message preserved verbatim — the token is a cross-layer contract
+    // that `client/src/pages/partner/PartnerTeam.tsx` matches on to render its
+    // banner. The machine-readable reason rides alongside, never instead.
+    const err = new Error("PARTNER_TIER_SEAT_LIMIT_REACHED") as Error & { reason?: string };
+    err.reason = verdict.reason;
+    throw err;
   }
 }

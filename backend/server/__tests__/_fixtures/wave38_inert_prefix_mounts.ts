@@ -169,6 +169,56 @@ export const WAVE38_INERT_PREFIX_MOUNTS: Readonly<Record<string, readonly string
     "GET /api/admin/subscriptions/:companyId/history",
     "GET /api/admin/sync/drift",
     "GET /api/admin/sync/overview",
+    /* WAVE 44 — added by the telemetry counter fix. It sits in the identical
+       position to its three sibling telemetry routes below: registered by
+       registerAdminPlatformRoutes(app) at routes.ts:1090, i.e. BELOW the FIRST
+       `app.use("/api/admin", requireAdmin)` mount (routes.ts:611) which DOES gate
+       it, and ABOVE the benign duplicate mount pinned here (routes.ts:1300).
+       This is inventory bookkeeping for a documented-benign duplicate, not a
+       relaxation: the route's admin gate is proved by execution in
+       wave44_admin_telemetry_counts_gate.test.ts (anon 401, admin 200).
+
+       WAVE 44b — INDEPENDENTLY RE-VERIFIED AGAINST A LIVE SERVER, NOT AGAINST
+       THIS FILE'S OWN ARGUMENT. `tsx server/index.ts` was booted on port 5199
+       (the real index.ts stack: express.json -> cookie parser -> registerRoutes
+       -> applyRouteGuards) and probed with real curl requests carrying
+       production-shaped HMAC `cap_uid` session cookies minted by
+       `signSessionValue` — the same signer /api/auth/login uses, so no test
+       affordance is involved. Measured three ways, on the NEW route and on
+       three routes ALREADY pinned in this list:
+
+                                            ANON  FOUNDER  INVESTOR  ADMIN
+         GET /api/admin/telemetry/counts      401    403       403     200
+         GET /api/admin/dashboard/kpis        401    403       403     200
+         GET /api/admin/audit-chain-health    401    403       403     200
+         GET /api/admin/telemetry/events      401    403       403     200
+
+       Bodies: anon `{ok:false,error:"UNAUTHORIZED"}`; non-admin
+       `{ok:false,error:"ADMIN_REQUIRED"}`; admin 200 with the real counts. The
+       refusal bodies leak no numbers. IDENTICAL, cell for cell, to its
+       neighbours — so this entry is equivalence bookkeeping, not a re-baseline.
+       Re-run under DISABLE_DEV_BYPASS=1 (production identity posture): the
+       matrix is byte-identical, and `x-user-id: u_admin` alone -> 401 while
+       `?as=admin` alone -> 401, so neither dev affordance confers admin.
+
+       FALSIFICATION CONTROLS (the probe CAN observe the opposite): anonymous
+       GET /api/health, /api/pricing-public and /api/auth/me all returned 200,
+       so the harness is not blanket-401ing everything; and both non-admin
+       personas returned `isAuthed:true` from /api/auth/me, so their 403 is a
+       ROLE refusal and not a failed session. Decisively, an anonymous GET of a
+       NON-EXISTENT admin path (/api/admin/telemetry/does-not-exist) returned
+       401 while the admin session got 404 — a 401 on a path with no registered
+       route at all can only come from a PREFIX mount, never from inline route
+       middleware.
+
+       AND THE SWEEP'S OWN NUMBERS SAY THE SAME THING. Re-running this file's
+       matcher over the live router stack: requireAdmin#1 (routes.ts:611) is
+       claims=362 missed=0 and DOES cover `GET /api/admin/telemetry/counts`;
+       requireAdmin#2 (routes.ts:1300) claims the same 362 with missed=216. The
+       216 paths below are therefore NOT ungoverned routes — they are the routes
+       the benign duplicate was registered beneath. Raw transcripts:
+       build_log/WAVE44b_REPORT.md and build_log/wave44b/. */
+    "GET /api/admin/telemetry/counts",
     "GET /api/admin/telemetry/events",
     "GET /api/admin/telemetry/export.csv",
     "GET /api/admin/telemetry/schema",

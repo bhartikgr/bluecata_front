@@ -14,7 +14,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction } from "@shared/spvEngine";
+import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay } from "@shared/spvEngine";
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -43,6 +43,12 @@ type SpvDetail = {
   status: string;
   revisionHash: string;
   createdAt: string;
+  /* WAVE 40 / F-3 — the GP's own wizard-entered domicile. The DTO has carried
+     `terms` all along (shared/spvEngine.ts SpvDTO) and this page simply never
+     declared it, which is why it could only read the coerced enum column and
+     disagreed with every other surface. Typed as unknown-valued because `terms`
+     is a free-form blob; the shared resolver narrows it. */
+  terms?: Record<string, unknown> | null;
 };
 
 /* SC-2 SAFETY (WAVE 2) — single switch for the inert Record Distribution panel.
@@ -89,9 +95,28 @@ function DistributionLedgerNote() {
    ("Ontario, Canada") is passed through resolveSpvJurisdiction first, which
    after this wave understands comma-qualified values. Anything unresolvable
    shows "Other / not specified" — never a raw token, never a guessed country. */
-function jurisdictionLabel(raw: string | null | undefined): string {
-  return SPV_JURISDICTION_LABELS[resolveSpvJurisdiction(raw)];
+/* WAVE 40 / F-3 — THIS FUNCTION NO LONGER DECIDES THE JURISDICTION.
+
+   It used to take ONLY the `jurisdiction` enum column, while the SPV Engine list
+   card and the engine tabs both preferred `terms.jurisdictionCountry` and fell
+   back to the column. Same row, two precedence rules, so the live site showed
+   "Asian Biotech" as `British Virgin Islands` on the list and `United States
+   (Delaware)` here. The precedence now lives once in
+   `spvJurisdictionDisplay()` (shared/spvEngine.ts) and all three surfaces call
+   it, so they cannot drift again.
+
+   Kept as a named wrapper rather than inlined because it is the documented seam
+   where this page's jurisdiction rendering happens, and because the label is
+   needed in two places (page title and the Jurisdiction field). */
+function jurisdictionLabel(s: { jurisdiction?: string | null; terms?: unknown }): string {
+  return spvJurisdictionDisplay(s).label;
 }
+
+/* Referenced so the shared enum-label map stays imported and type-checked here:
+   `spvJurisdictionDisplay` returns labels FROM this map, and a future edit that
+   reintroduced a local label table would now conflict visibly. */
+void SPV_JURISDICTION_LABELS;
+void resolveSpvJurisdiction;
 
 export default function PartnerSpvDetail() {
   const role = useRequirePartnerRole();
@@ -310,7 +335,7 @@ export default function PartnerSpvDetail() {
   const s = data.spv;
 
   return (
-    <PartnerShell title={`${s.name} · ${jurisdictionLabel(s.jurisdiction)} · ${s.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+    <PartnerShell title={`${s.name} · ${jurisdictionLabel(s)} · ${s.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-spv-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -323,7 +348,7 @@ export default function PartnerSpvDetail() {
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Jurisdiction</div>
-            <div data-testid="partner-spv-jurisdiction">{jurisdictionLabel(s.jurisdiction)}</div>
+            <div data-testid="partner-spv-jurisdiction">{jurisdictionLabel(s)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Status</div>

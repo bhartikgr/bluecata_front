@@ -203,7 +203,11 @@ describe("CP-MSG-05 — the messaging limiter is keyed on the caller", () => {
      *
      * Wave 38 Row 6 appended field 5 (the ratification state) to every
      * KNOWN_DRIFT row so that an operator reading `SACRED OK: 47/47` learns
-     * that WAIVER-5 is still PENDING OWNER RATIFICATION. Row 6 updated the two
+     * whether a waived sacred edit was ever signed off. When Row 6 landed,
+     * WAIVER-5 was PENDING OWNER RATIFICATION; the owner RATIFIED it on
+     * 2026-08-13 (WAVE 48 - ITEM 2, ruling R13), and the assertion added at the
+     * end of this test is this file's own independent record of that.
+     * Row 6 updated the two
      * enforcement points it knew about - `scripts/sacred_check.sh` itself and
      * `server/__tests__/waveB_retirement_guard.test.ts`. THIS IS A THIRD ONE,
      * and nobody knew it existed until it broke: the four-field regex above
@@ -272,6 +276,32 @@ describe("CP-MSG-05 — the messaging limiter is keyed on the caller", () => {
        a row flipped the other way is the more dangerous direction and is
        covered by waveB_retirement_guard G-11 for WAIVER-5. */
     expect(ratification).toBe("RATIFIED");
+    /* WAVE 48 - ITEM 2 (R13). THIS FILE IS THE THIRD ENFORCEMENT POINT, and the
+       Wave 38 lesson is that a waiver's state recorded in only some readers is
+       how three separate incidents happened. So the owner's 2026-08-13
+       ratification of WAIVER-5 is recorded HERE too, independently: the
+       Billing.tsx row must exist (a deleted waiver is not a ratified one), it
+       must be tagged WAIVER-5, and its field 5 must read exactly RATIFIED. If a
+       future wave un-ratifies it or drops the row, this assertion fails here as
+       well as in waveB_retirement_guard G-11. */
+    const waiver5Row = check.match(/"client\/src\/pages\/founder\/Billing\.tsx\|([^"]*)"/);
+    expect(
+      waiver5Row,
+      "WAIVER-5's KNOWN_DRIFT row for client/src/pages/founder/Billing.tsx must " +
+        "still be present in scripts/sacred_check.sh: ratifying a waiver records " +
+        "a decision, it does not remove the freeze.",
+    ).toBeTruthy();
+    const w5Fields = (waiver5Row as RegExpMatchArray)[1].split("|");
+    expect(w5Fields.length + 1, "WAIVER-5 row must also carry EXACTLY 5 fields").toBe(5);
+    expect(w5Fields[2], "the Billing.tsx row must be governed by WAIVER-5").toBe("WAIVER-5");
+    expect(
+      w5Fields[3],
+      "WAIVER-5 was OWNER-RATIFIED 2026-08-13 (R13); field 5 must say so",
+    ).toBe("RATIFIED");
+    /* NEGATIVE POLE, so this is not a one-sided "everything is RATIFIED" check:
+       the closed vocabulary still has two members, and an unrecognised token
+       must not read as approval here either. */
+    expect(["RATIFIED", "PENDING-OWNER-RATIFICATION"]).toContain(w5Fields[3]);
     const actual = crypto
       .createHash("sha256")
       .update(fs.readFileSync("server/lib/rateLimit.ts"))

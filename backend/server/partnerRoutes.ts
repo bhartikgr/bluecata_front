@@ -70,6 +70,9 @@ import { log } from "./lib/logger"; /* w-partner F7 — non-fatal mirror warning
 /* w-partner F-new3 — the SAME resolver the seat gate enforces with
    (requirePartnerAuth.ts:207), so the banner can never disagree with the 403. */
 import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver";
+/* WAVE 45 (R3) — human rendering of a three-state capability, so a null cap is
+ * never displayed as 0. */
+import { describeCapability } from "./lib/partnerTierCapabilityStore";
 import { setSessionCookie } from "./lib/sessionCookie";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { getCompanyProfile } from "./companyProfileStore"; /* v25.15 NM5 — real snapshot data */
@@ -212,17 +215,28 @@ export function registerPartnerRoutes(app: Express): void {
     const partners = getAllContacts().filter((c) => c.kind === "consortium_partner");
     const rows = partners.map((p) => {
       const report = partnerTeamStore.seatReport(p.id);
-      const { seatLimit } = resolvePartnerSeatLimit(p.id, (p.tier as PartnerTier) ?? "catalyst");
+      const { seatLimit, resolution, capability } = resolvePartnerSeatLimit(
+        p.id,
+        (p.tier as PartnerTier) ?? "catalyst",
+      );
       return {
         partnerId: p.id,
         tier: p.tier ?? null,
+        /* WAVE 45 — null means "no numeric cap applies". `seatLimitResolution`
+           says WHICH of the two non-numeric cases it is, so a reader never has
+           to guess whether null meant unlimited or unconfigured (R6). */
         seatLimit,
+        seatLimitResolution: resolution,
+        seatLimitDisplay: describeCapability(capability),
         activeSeats: report.activeSeats,
         distinctSeatUsers: report.distinctSeatUsers,
         duplicateSeatCount: report.duplicateSeatCount,
         duplicateSeatIdsByUserId: report.duplicateSeatIdsByUserId,
         seatCountSource: report.source,
-        overLimit: report.activeSeats > seatLimit,
+        /* Only a CONFIGURED numeric cap can be exceeded. An unlimited tier is
+           never over limit; an unconfigured one has no limit to be over, and
+           reporting it as `true` would flag every such partner as in breach. */
+        overLimit: seatLimit === null ? false : report.activeSeats > seatLimit,
       };
     });
     const affected = rows.filter((r) => r.duplicateSeatCount > 0);
@@ -1461,13 +1475,24 @@ export function registerPartnerRoutes(app: Express): void {
        default). Resolved server-side from the same function the invite gate
        enforces with so the banner can never disagree with the 403; the client
        must not carry its own copy of TIER_SEAT_LIMITS. */
-    const { seatLimit } = resolvePartnerSeatLimit(pid, req.partnerContext!.tier);
+    const { seatLimit, resolution: seatLimitResolution, capability: seatCapability } =
+      resolvePartnerSeatLimit(pid, req.partnerContext!.tier);
     // v26.7.3 FIX-4 — expose the same server-owned, userId-deduplicated active
     // seat count used by dashboard and invite enforcement. The roster's existing
     // email-based display collapse remains intact (and still reports its cleanup
     // warning), but must not become the source of truth for the seat-limit banner.
     const activeSeats = partnerTeamStore.seatReport(pid).activeSeats;
-    res.json({ members, invitations, seatLimit, activeSeats, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
+    res.json({
+      members,
+      invitations,
+      seatLimit,
+      /* WAVE 45 — the banner must be able to say "Unlimited" or "Not
+         configured" instead of rendering a null as 0. */
+      seatLimitResolution,
+      seatLimitDisplay: describeCapability(seatCapability),
+      activeSeats,
+      meta: { duplicateSeatCount, duplicateSeatIdsByUserId },
+    });
   });
 
   /* v25.50 Phase 7 (7c) — edit a team member's partner-local contact info.

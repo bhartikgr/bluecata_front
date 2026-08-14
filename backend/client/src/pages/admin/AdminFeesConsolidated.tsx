@@ -564,6 +564,10 @@ interface PaymentRow {
   couponCode?: string | null;
   state?: string | null;
   createdAt?: string | null;
+  /* WAVE 44 · DEFECT 3 — `currency` is carried per row by GET
+     /api/admin/payments and is used INSTEAD of a hardcoded "USD" when
+     formatting, so a non-USD ledger entry is not mislabelled. */
+  currency?: string | null;
 }
 
 /* Shared fetcher — every read goes through the existing admin API. */
@@ -1131,9 +1135,18 @@ function ConsortiumPromotionsTab() {
   const tiersQ = useAdminQuery<{ ok?: boolean; tiers?: TierRow[] }>(
     "/api/admin/consortium/subscription-tiers",
   );
-  const spvQ = useAdminQuery<{ ok?: boolean; spvDeploymentFee?: TierRow }>(
-    "/api/admin/consortium/spv-deployment-fee",
-  );
+  const spvQ = useAdminQuery<{
+    ok?: boolean;
+    spvDeploymentFee?: TierRow | null;
+    unconfigured?: boolean;
+    divergences?: Array<{
+      scope: string;
+      subject: string;
+      amountMinor: number;
+      currency: string;
+      note: string;
+    }>;
+  }>("/api/admin/consortium/spv-deployment-fee");
   const ratesQ = useAdminQuery<{ ok?: boolean; rates?: Array<{ tier: string; rate: number; updatedAt?: string | null; updatedByUserId?: string | null }> }>(
     "/api/admin/partner/commission-rates",
   );
@@ -1142,7 +1155,13 @@ function ConsortiumPromotionsTab() {
   );
 
   const tiers = tiersQ.data?.tiers ?? [];
+  /* WAVE 46 / R6 — `null` now means "no price configured", NOT "$0". The route
+   * returns `{spvDeploymentFee: null, unconfigured: true}` and this page renders
+   * an explicit refusal below rather than an empty input that reads as free. */
   const spv = spvQ.data?.spvDeploymentFee ?? null;
+  /* WAVE 46 / R22 — retained deliberate overrides that shadow the authoritative
+   * value, disclosed on the surface that owns the number. */
+  const spvDivergences = spvQ.data?.divergences ?? [];
   const rates = ratesQ.data?.rates ?? [];
   const schedules = schedQ.data?.schedules ?? [];
 
@@ -1320,6 +1339,35 @@ function ConsortiumPromotionsTab() {
               Save
             </Button>
           </FieldWithSource>
+          {spvQ.data && !spv && (
+            <p
+              className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+              data-testid="spv-deployment-fee-unconfigured"
+            >
+              <strong>Not provided.</strong> No SPV deployment fee is configured.
+              This platform has no compiled-in default (WAVE 46 / R6 + R21
+              removed the $5,000 the read path used to substitute), so pushing an
+              SPV live will REFUSE to charge and record a retryable pending
+              obligation until an amount is saved here.
+            </p>
+          )}
+          {spvDivergences.length > 0 && (
+            <p
+              className="mt-3 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900"
+              data-testid="spv-deployment-fee-divergence"
+            >
+              <strong>Deliberate overrides in effect.</strong> This value is the
+              authoritative source for the SPV deployment fee (WAVE 46 / R22 —
+              the charge path reads this exact row), but{" "}
+              {spvDivergences.length} retained per-tier / per-partner override
+              row(s) take precedence for the subjects they name:{" "}
+              {spvDivergences
+                .map((d) => `${d.scope}:${d.subject} → ${d.amountMinor} minor`)
+                .join("; ")}
+              . Nothing is hidden: the tiered machinery is retained under R3, and
+              a divergence is disclosed rather than discovered on an invoice.
+            </p>
+          )}
         </div>
       </AppCard>
 
@@ -1732,7 +1780,18 @@ function LedgerInvoicesTab() {
   const invQ = useAdminQuery<{ ok?: boolean; invoices?: InvoiceRow[] }>(
     "/api/admin/invoices",
   );
-  const payQ = useAdminQuery<{ ok?: boolean; payments?: PaymentRow[]; entries?: PaymentRow[] }>(
+  /* WAVE 44 · DEFECT 3 — "Payment ledger 0" WAS A BROKEN COUNTER, NOT AN EMPTY
+   * LEDGER, and the table under it was dead for the same reason.
+   *
+   * GET /api/admin/payments has always answered
+   *   { ok, items, total, limit, offset }
+   * (server/paymentStore.ts:552). This component read `data.payments` and then
+   * `data.entries` — two keys the endpoint never emits — and fell through to
+   * `[]`. So `payments.length` was 0 for ANY database state, and the table below
+   * always rendered its "No ledger entries." empty row, beside 30+ invoices
+   * marked paid. `total` (the server's row count BEFORE pagination) is read too,
+   * so the counter cannot silently report only the first page. */
+  const payQ = useAdminQuery<{ ok?: boolean; items?: PaymentRow[]; total?: number }>(
     "/api/admin/payments",
   );
   const partnerPlQ = useAdminQuery<{ ok?: boolean; entries?: Array<Record<string, unknown> & { id?: string; status?: string }> }>(
@@ -1743,7 +1802,9 @@ function LedgerInvoicesTab() {
   );
 
   const invoices = invQ.data?.invoices ?? [];
-  const payments = payQ.data?.payments ?? payQ.data?.entries ?? [];
+  const payments = payQ.data?.items ?? [];
+  /* The ledger KPI reports the SERVER's total, not this page's slice. */
+  const paymentsTotal = payQ.data?.total ?? payments.length;
   const partnerPlEntries = partnerPlQ.data?.entries ?? [];
   const collPlEntries = collPlQ.data?.entries ?? [];
 
@@ -1801,7 +1862,7 @@ function LedgerInvoicesTab() {
           Ledger
         </SectionTitle>
         <div className="mt-4 grid gap-4 md:grid-cols-3">
-          <Stat label="Payment ledger entries" value={payments.length} testId="stat-payments" />
+          <Stat label="Payment ledger entries" value={paymentsTotal} testId="stat-payments" />
           <Stat
             label="Partner billing entries"
             value={(partnerPlQ.data?.entries ?? []).length}
@@ -1853,14 +1914,14 @@ function LedgerInvoicesTab() {
                         <code>{p.id}</code>
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMinor(p.amountCents ?? 0, "USD")}
+                        {formatMinor(p.amountCents ?? 0, p.currency ?? "USD")}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMinor(p.discountCents ?? 0, "USD")}
+                        {formatMinor(p.discountCents ?? 0, p.currency ?? "USD")}
                         {p.couponCode ? ` (${p.couponCode})` : ""}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMinor(p.netCents ?? 0, "USD")}
+                        {formatMinor(p.netCents ?? 0, p.currency ?? "USD")}
                       </TableCell>
                       <TableCell>{p.state ?? "—"}</TableCell>
                     </TableRow>

@@ -34,7 +34,14 @@ import {
 } from "@/lib/financialFieldCopy";
 import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { formatMinor } from "@/lib/currency";
+import { formatMinor, toMinor as toMinorUnits, fromMinor as fromMinorUnits } from "@/lib/currency";
+/* WAVE 41 · OWNER RULING R6 — the canonical honest-refusal placeholder, reused
+   rather than re-spelled. `NOT_PROVIDED` is pinned to exactly "Not provided" by
+   client/src/lib/__tests__/wave4Display.test.ts, so importing it (instead of
+   typing the string here) means a rename can never leave this file behind. The
+   live audit's finding was "no instance of 'Not reported' anywhere on founder
+   surfaces" — this import is the first one. */
+import { NOT_PROVIDED } from "@/lib/wave4Display";
 
 /* ── WAVE 15 / ORP-033 — shape of GET|PUT /api/founder/notification-preferences.
  * Declared locally and structurally (Record<string, boolean> for channels rather
@@ -121,6 +128,15 @@ export default function Settings() {
     "plan": "plan",
     "notifications": "notifications",
     "data": "data",
+    /* WAVE 41 / R9 — the four panels mounted this wave are deep-linkable too, so
+       the Dashboard progress bars can point straight at the section that fills
+       them. "financials" is the one the Dashboard's "Financials" category links
+       to; the aliases mirror the descriptive names used in those hrefs. */
+    "preferences": "preferences",
+    "financials": "financials",
+    "governance": "governance",
+    "mna-prep": "mna-prep",
+    "m&a-prep": "mna-prep",
     "privacy": "privacy",
     "public-profile": "public-profile",
     "public": "public-profile",
@@ -674,6 +690,47 @@ export default function Settings() {
             <TabsTrigger value="region" data-testid="tab-region"><MapPin className="h-3.5 w-3.5 mr-1" /> Region</TabsTrigger>
             <TabsTrigger value="legal" data-testid="tab-legal"><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Legal</TabsTrigger>
             <TabsTrigger value="delete" data-testid="tab-delete"><Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Workspace</TabsTrigger>
+            {/* ── WAVE 41 · OWNER RULING R9 ────────────────────────────────────
+                Owner, 2026-08-13, verbatim: "Yes, connect it, and governance and
+                M&A preparation should also be connected."
+
+                WHAT WAS WRONG. This file declared TWELVE <TabsContent> panels and
+                only SEVEN <TabsTrigger>s. `company`, `data`, `notifications`,
+                `plan` and `team` had no trigger at all, and the live company
+                walkthrough saw exactly seven tabs — the reachability gate's R2
+                rule reported all five. Separately `SettingsPreferencesTab`,
+                `SettingsFinancialsTab`, `SettingsGovernanceTab` and
+                `SettingsMnaPrepTab` were declared and mounted NOWHERE (v25.45
+                F16/F17/F18a/F19a removed their content blocks and left the
+                components `void`-referenced at the foot of the file). The
+                Founder Dashboard meanwhile renders a "Financials" progress
+                category off the server's own COMPLETION_WEIGHTS — a progress
+                bar for a section with no page anywhere to fill it in.
+
+                WHY A DEEP LINK WAS NOT ENOUGH. TAB_ALIAS (:116) does map
+                ?tab=company|team|plan|notifications|data onto those panels, so
+                each was reachable by hand-typed URL. That is precisely the
+                "route open, engine live, zero ways in" pattern this build treats
+                as a defect, not as reachability: no affordance in the product
+                leads to any of them.
+
+                WHY APPENDED, NOT INSERTED. The silent-drop guard keys a leaf
+                <TabsTrigger> on its own visible text and a <TabsList> container
+                on its structural path (extract-inventory.ts:1211-1221, the
+                WAVE 11 fix). Appending at the END as siblings therefore leaves
+                every existing trigger's identity and the list's own identity
+                byte-identical, and registers purely as ADDITIONS. Inserting
+                mid-list would shift structural ordinals and read as removals.
+                ZERO drops — see WAVE41_REPORT.md for the before/after counts. */}
+            <TabsTrigger value="company" data-testid="tab-company"><Building2 className="h-3.5 w-3.5 mr-1" /> Company</TabsTrigger>
+            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team</TabsTrigger>
+            <TabsTrigger value="plan" data-testid="tab-plan"><CreditCard className="h-3.5 w-3.5 mr-1" /> Plan</TabsTrigger>
+            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications</TabsTrigger>
+            <TabsTrigger value="data" data-testid="tab-data"><Database className="h-3.5 w-3.5 mr-1" /> Data</TabsTrigger>
+            <TabsTrigger value="preferences" data-testid="tab-preferences"><Settings2 className="h-3.5 w-3.5 mr-1" /> Preferences</TabsTrigger>
+            <TabsTrigger value="financials" data-testid="tab-financials"><TrendingUp className="h-3.5 w-3.5 mr-1" /> Financials</TabsTrigger>
+            <TabsTrigger value="governance" data-testid="tab-governance"><Gavel className="h-3.5 w-3.5 mr-1" /> Governance</TabsTrigger>
+            <TabsTrigger value="mna-prep" data-testid="tab-mna-prep"><Activity className="h-3.5 w-3.5 mr-1" /> M&amp;A Prep</TabsTrigger>
           </TabsList>
           {/* WAVE 8 / ORP-049 (DEF-049) — v25.45 F7 deleted the Settings →
                 Company TAB and left /founder/settings/company routed as a
@@ -1265,7 +1322,23 @@ export default function Settings() {
               The SettingsPreferencesTab / SettingsFinancialsTab /
               SettingsGovernanceTab / SettingsMnaPrepTab components remain defined
               below (retained for rollback per ROLLBACK_v25_45.md) but are no
-              longer mounted, so the fields cannot be edited from Settings. */}
+              longer mounted, so the fields cannot be edited from Settings.
+
+              == WAVE 41 · SUPERSEDED BY OWNER RULING R9 (2026-08-13) ==
+              The final sentence above is NO LONGER TRUE and the decision it
+              records is reversed. Owner, verbatim: "Yes, connect it, and
+              governance and M&A preparation should also be connected." All four
+              components are now mounted behind real tab triggers, appended at
+              the end of the tab strip and of this Tabs element (see the R9 block
+              at the TabsList and the four <TabsContent> panels at the end).
+
+              The v25.45 reasoning is left standing above rather than deleted,
+              because it documents WHY the columns survived the UI removal (they
+              were still read by companySyncFields / dscScoringEngine /
+              collectiveRoutes / partnerRoutes / admin CompanyDetail / the
+              Collective Deal Room, so no DROP COLUMN migration 0063/0064 was
+              applied) — which is exactly why R9 could be satisfied by remounting
+              rather than by rebuilding the fields from nothing. */}
 
           {/* DELETE — T11.2 dedicated tab */}
           {/* LEGAL & PRIVACY */}
@@ -1305,6 +1378,55 @@ export default function Settings() {
                 </Button>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* ── WAVE 41 · OWNER RULING R9 — the four previously-unmounted panels.
+              APPENDED at the END as siblings of the existing <TabsContent>
+              children, never inserted mid-list: a <TabsContent> is a guard
+              CONTAINER keyed on its structural path, so an appended child takes
+              a fresh ordinal and every existing panel keeps the ordinal it had.
+
+              `key={companyId}` on each, matching the v25.45.3 Bug I treatment
+              already applied to SettingsPublicProfileTab (:1246): it forces a
+              remount on active-company switch so form state from the previous
+              company can never be saved into the new company's row. These four
+              components all hydrate from useProfileData(companyId), so without
+              the key an unsaved edit would follow the founder across companies. */}
+          <TabsContent value="preferences" className="mt-4">
+            <TabIntro
+              title="Display &amp; communication preferences"
+              body="Currency, language, timezone and meeting defaults. These drive how amounts and dates are presented to you across Capavate and Collective."
+            />
+            <SettingsPreferencesTab key={companyId} companyId={companyId} />
+          </TabsContent>
+
+          {/* R9's headline item: the section the Dashboard's "Financials"
+              progress category measures. Before this wave that bar tracked
+              server COMPLETION_WEIGHTS fields (cashOnHandUsd, monthlyBurnUsd,
+              runwayMonths, lastRaiseSizeUsd, arrUsd) that no reachable surface
+              could set from Settings. */}
+          <TabsContent value="financials" className="mt-4">
+            <TabIntro
+              title="Financial metrics"
+              body="Cash, burn, runway, revenue and efficiency metrics. Percentages are entered as written — type 42.5 for 42.5%. An LTV/CAC ratio is a multiple: 3 means 3×, not 300%. Fields you have never filled in read “Not provided”, never 0."
+            />
+            <SettingsFinancialsTab key={companyId} companyId={companyId} />
+          </TabsContent>
+
+          <TabsContent value="governance" className="mt-4">
+            <TabIntro
+              title="Governance"
+              body="Board composition and directors of record. Investor diligence reads this section; a count you have never entered reads “Not provided” rather than 0 directors."
+            />
+            <SettingsGovernanceTab key={companyId} companyId={companyId} />
+          </TabsContent>
+
+          <TabsContent value="mna-prep" className="mt-4">
+            <TabIntro
+              title="M&amp;A / transaction preparation"
+              body="Readiness across IP, contracts, audit, data room, regulatory filings and ESG. Each score is only sent to Collective once you have set it — an untouched score is “Not provided”, not 0% ready."
+            />
+            <SettingsMnaPrepTab key={companyId} companyId={companyId} />
           </TabsContent>
         </Tabs>
       </PageBody>
@@ -1826,6 +1948,41 @@ export function SettingsFinancialsTab({ companyId }: { companyId: string | undef
   const stage = profile.stage as string | undefined;
   const visibleFields = getFieldsForStage(stage);
 
+  /* ══════════════════════════════════════════════════════════════════════════
+   * WAVE 50 · ITEM 5 — THE MINOR-UNIT FIELDS ON THIS TAB HAD A HARDCODED
+   * EXPONENT OF 2, WHICH CORRUPTS EVERY EXPONENT-0 CURRENCY.
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * WHAT WAS WRONG. Seven FINANCIAL_FIELD_COPY entries carry `minorUnits: true`.
+   * The hydrate path did `String(v / 100)` and the save path did
+   * `Math.round(n * 100)`. Those two are exact inverses OF EACH OTHER, so the
+   * form always looked self-consistent — and for JPY, KRW, ISK, VND and the
+   * rest of CURRENCY_EXPONENT_OVERRIDES' exponent-0 set the STORED number was
+   * 100x wrong. A ¥1,000 input became ¥100,000 in the database. Wave 41 mounted
+   * these fields; this is a defect in them, and the read-only "On record:" line
+   * further down already names it as inherited debt ("the editor above still
+   * divides by 100 ... that pair is inherited debt recorded in
+   * WAVE41_REPORT.md"). Wave 50 pays it.
+   *
+   * THE FIX. `toMinor` / `fromMinor` from `@/lib/currency`, both of which derive
+   * the exponent from `currencyExponent()` -> CURRENCY_EXPONENT_OVERRIDES (which
+   * MUST stay byte-identical to server/lib/currency.ts). NEVER a hardcoded
+   * `/ 100` or `* 100` — the money fence exists to keep it that way.
+   *
+   * WHERE THE CURRENCY COMES FROM — DYNAMIC, NOT A CONSTANT (R21). The company's
+   * own stored `defaultCurrency`, then the profile's `preferredCurrency`, and
+   * only then "USD". Nothing here invents a currency the company did not pick;
+   * the final "USD" is the same last-resort default `currencyExponent()` itself
+   * applies to an unknown code, not a business decision made in this file.
+   * Hoisted to ONE binding so the hydrate side, the save side and the readout
+   * cannot disagree — two independently-computed currencies on the two halves of
+   * a round trip would be a new way to reintroduce exactly this bug.
+   */
+  const fieldCurrency =
+    ((profile as { defaultCurrency?: string }).defaultCurrency ||
+      (profile as { preferredCurrency?: string }).preferredCurrency ||
+      "USD");
+
   // Accountant request dialog
   const [acctDialog, setAcctDialog] = useState<{ fieldKey: string } | null>(null);
   const [acctEmail, setAcctEmail] = useState("");
@@ -1840,9 +1997,14 @@ export function SettingsFinancialsTab({ companyId }: { companyId: string | undef
     for (const f of FINANCIAL_FIELD_COPY) {
       const v = profile[f.key as keyof typeof profile];
       if (v !== undefined && v !== null) {
-        // Convert from minor units for display
+        /* ── WAVE 50 · ITEM 5 — READ SIDE. Was `String((v as number) / 100)`.
+           `/ 100` is only correct for an exponent-2 currency. `fromMinor`
+           derives the divisor from the currency's ISO 4217 exponent via
+           CURRENCY_EXPONENT_OVERRIDES, so a stored ¥1000 hydrates as 1000 and
+           a stored $1000 hydrates as 10. See the block comment on
+           `fieldCurrency` above for the full accounting. */
         if (f.minorUnits && typeof v === "number") {
-          init[f.key] = String((v as number) / 100);
+          init[f.key] = String(fromMinorUnits(v as number, fieldCurrency));
         } else {
           init[f.key] = String(v);
         }
@@ -1869,7 +2031,15 @@ export function SettingsFinancialsTab({ companyId }: { companyId: string | undef
         if (isNaN(n)) continue;
         if (n < 0 && !f.allowsNegative) continue;
         if (f.minorUnits) {
-          patch[f.key] = Math.round(n * 100);
+          /* ── WAVE 50 · ITEM 5 — WRITE SIDE. Was `Math.round(n * 100)`, the
+             exact inverse of the read side's `/ 100` and wrong in the exact
+             same way: for an exponent-0 currency it multiplied by 100 twice
+             over the round trip. A ¥1,000 input stored 100000 (¥100,000) and
+             re-hydrated as 1000, so the FORM looked self-consistent while the
+             STORED number was 100x wrong — which is why Wave 41 mounted these
+             fields without noticing. `toMinor` is the exact inverse of
+             `fromMinor` at every exponent. */
+          patch[f.key] = toMinorUnits(n, fieldCurrency);
         } else if (AS_WRITTEN_DECIMAL_UNITS.has(f.unit)) {
           /* WAVE 35 - ROW 8. Was `Math.round(n * 100)`, which was ASYMMETRIC:
              the read path above only divides when `f.minorUnits` is set, and
@@ -1950,6 +2120,83 @@ export function SettingsFinancialsTab({ companyId }: { companyId: string | undef
                     placeholder={f.minorUnits ? "Enter in USD" : f.unit === "pct" ? "Enter %" : f.unit === "ratio" ? "Enter a multiple, e.g. 3.0" : "Enter value"}
                     data-testid={`input-financial-${f.key}`}
                   />
+                  {/* ── WAVE 41 · OWNER RULING R6 + the "ambiguous legacy value"
+                      instruction ────────────────────────────────────────
+                      The <Input> above is blank when nothing is stored, and blank
+                      is explicitly forbidden by R6 alongside 0 / $0 / 0.0%. It
+                      cannot itself carry the refusal — an editor has to be empty
+                      to be typed into — so the stored value is stated separately.
+
+                      The live audit found founder surfaces printing "$0"
+                      pre-money valuation and "0.0%" ownership where the truth was
+                      "not entered", and found NO instance of an explicit refusal
+                      anywhere on founder surfaces. This is the refusal for the
+                      fields in this wave's scope. A real stored 0 prints "0" and
+                      means it.
+
+                      AMBIGUITY IS SURFACED, NOT GUESSED. The brief notes legacy
+                      percent rows where "a stored 4250 is indistinguishable from a
+                      legitimate value". Under the binding policy
+                      (spec/PERCENT_POLICY_v2.md §1.1, owner ruling OR-1: 1=1%,
+                      100=100%) a stored 4250 in a `_pct` column means 4250%, and
+                      §1.1 also states "runtime magnitude-guessing is prohibited".
+                      So this readout NEVER divides by 100 to make an implausible
+                      number look plausible — that would be exactly the silent
+                      reinterpretation the brief forbids, and it would hide the
+                      corrupt row instead of reporting it. It prints the stored
+                      number as stored, and FLAGS a percent outside 0..100 as
+                      needing a human decision. */}
+                  {(() => {
+                    const stored = profile[f.key as keyof typeof profile];
+                    const isSet =
+                      stored !== null && stored !== undefined && stored !== "" &&
+                      Number.isFinite(Number(stored));
+                    if (!isSet) {
+                      return (
+                        <p className="text-xs text-muted-foreground mt-1.5" data-testid={`stored-financial-${f.key}`}>
+                          On record: <span className="font-medium">{NOT_PROVIDED}</span>
+                        </p>
+                      );
+                    }
+                    const n = Number(stored);
+                    /* usd_minor is integer minor units in the row; render it
+                       through the same major-unit lens the input edits in. */
+                    /* Rendered through `formatMinor`, which derives the number
+                       of minor digits from the currency's ISO 4217 exponent, NOT
+                       through a literal `/ 100`. The editor above still divides
+                       by 100 (pre-existing, and symmetric with its `* 100` on
+                       save) — that pair is inherited debt recorded in
+                       WAVE41_REPORT.md, not something this readout should copy.
+                       A hardcoded 2 decimals is wrong for every exponent-0
+                       currency: 1000 JPY would print as "10.00". */
+                    const shown = f.minorUnits
+                      /* WAVE 50 · ITEM 5 — was a hardcoded "USD". Wave 42
+                         correctly stopped hardcoding the EXPONENT here but left
+                         the CURRENCY CODE hardcoded, which is the same
+                         assumption one level up: a ¥ amount rendered through
+                         "USD" prints with two fraction digits regardless. Same
+                         resolved `fieldCurrency` the editor round-trips through. */
+                      ? formatMinor(n, fieldCurrency)
+                      : f.unit === "pct"
+                        ? `${n}%`
+                        : f.unit === "ratio"
+                          ? `${n}×`
+                          : f.unit === "months"
+                            ? `${n} months`
+                            : String(n);
+                    const percentOutOfRange = f.unit === "pct" && (n > 100 || n < -100);
+                    return (
+                      <p className="text-xs text-muted-foreground mt-1.5" data-testid={`stored-financial-${f.key}`}>
+                        On record: <span className="font-medium tabular-nums">{shown}</span>
+                        {percentOutOfRange && (
+                          <span className="ml-1 text-[hsl(7_61%_43%)]" data-testid={`stored-financial-ambiguous-${f.key}`}>
+                            {" — "}this is stored as {n}, i.e. {n}% under the percent-as-written policy. If you meant{" "}
+                            {n / 100}%, re-enter it; the value is shown exactly as stored and has not been reinterpreted.
+                          </span>
+                        )}
+                      </p>
+                    );
+                  })()}
                 </div>
                 <Button
                   variant="outline"
@@ -2048,6 +2295,16 @@ function SettingsGovernanceTab({ companyId }: { companyId: string | undefined })
         <CardContent className="space-y-4">
           <div className="space-y-1.5">
             <Label className="text-xs">Number of Directors</Label>
+            {/* ── WAVE 41 · OWNER RULING R6 — "0 directors" was a lie ──────────
+                The live audit found founder surfaces showing "0 directors" where
+                the truth was "not entered". The INPUT itself is correct to be
+                empty — an editor must be empty to be typed into, and pre-filling
+                it with 0 would be the defect. What was missing is the READOUT:
+                nothing on the surface distinguished "no answer yet" from "a board
+                of zero", and blank is explicitly forbidden by R6 alongside 0.
+
+                So the current stored value is stated in words next to the field.
+                A real, deliberate 0 renders "0" and means it, per R6. */}
             <Input
               type="number" min="0" step="1"
               value={directorCount}
@@ -2055,6 +2312,15 @@ function SettingsGovernanceTab({ companyId }: { companyId: string | undefined })
               placeholder="e.g., 5"
               data-testid="input-board-director-count"
             />
+            <p className="text-xs text-muted-foreground" data-testid="text-board-director-count-stored">
+              On record:{" "}
+              {profile.boardCompositionDirectors === null ||
+              profile.boardCompositionDirectors === undefined ? (
+                <span className="font-medium">{NOT_PROVIDED}</span>
+              ) : (
+                <span className="font-medium tabular-nums">{String(profile.boardCompositionDirectors)}</span>
+              )}
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Directors snapshot (optional JSON) <span className="text-muted-foreground">e.g., {JSON.stringify([{name:"Alice",role:"CEO"}])}</span></Label>
@@ -2090,14 +2356,50 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
   const { toast } = useToast();
   const profileQ = useProfileData(companyId);
   const profile = profileQ.data?.profile ?? {};
-  const [values, setValues] = useState<Record<string, number>>({});
+  /* ── WAVE 41 · OWNER RULING R6 — THE DEFECT THIS BLOCK FIXES ──────────────
+     Owner, 2026-08-13: "Apply it everywhere as this seems to be an investor
+     grade best practice globally." A metric never entered must render "Not
+     provided", never 0 / $0 / 0.0% / blank. A real zero renders 0 and means it.
+
+     The live audit found "six M&A readiness scores at 0% where the truth was
+     'not entered'". This component is where those six came from, and the state
+     type was the cause: `Record<string, number>` cannot represent "not
+     entered", so hydration collapsed it —
+
+         init[f.key] = profile[f.key as keyof typeof profile] as number ?? 0;
+
+     — and the readout printed `{values[f.key] ?? 0}%`, i.e. "0%".
+
+     THE SECOND, WORSE HALF, which the "0%" display was hiding. The save built
+     its patch as `{ ...values, transactionPrepStatus: txStatus }` — the WHOLE
+     map, every time. So a founder who opened this tab to set ONE score and
+     pressed Save wrote a literal `0` into all SIX columns. That is not a
+     cosmetic zero: it FABRICATES six data points the founder never gave, it is
+     indistinguishable afterwards from six deliberate "0% ready" answers, and
+     `isPresent` in server/companyProfileStore.ts:497-501 counts `0` as PRESENT
+     — so it also silently inflated the M&A Prep completion score by up to 12 of
+     its 14 weight points. Reproduced before fixing; see WAVE41_REPORT.md.
+
+     THE FIX. `number | null`, where `null` means "never entered" and is a state
+     the type can actually hold. Hydration maps absent -> null and preserves a
+     stored 0 as 0. Only NON-NULL entries reach the patch, so an untouched score
+     is never written. Touching a slider sets a number, which is the founder's
+     act of entering it — including deliberately entering 0. */
+  const [values, setValues] = useState<Record<string, number | null>>({});
   const [txStatus, setTxStatus] = useState("not_pursuing");
   // v25.45.3 Bug I audit: re-hydrate on [companyId, profileQ.data].
   useEffect(() => {
     if (!profileQ.data) return;
-    const init: Record<string, number> = {};
+    const init: Record<string, number | null> = {};
     for (const f of MNA_PREP_FIELDS) {
-      init[f.key] = profile[f.key as keyof typeof profile] as number ?? 0;
+      const stored = profile[f.key as keyof typeof profile];
+      /* R6: absent -> null ("Not provided"). A stored 0 is a real, deliberate
+         zero and survives as 0. Non-finite garbage is treated as not-entered
+         rather than coerced, so a bad row cannot masquerade as 0% ready. */
+      init[f.key] =
+        stored === null || stored === undefined || !Number.isFinite(Number(stored))
+          ? null
+          : Number(stored);
     }
     setValues(init);
     setTxStatus(profile.transactionPrepStatus ?? "not_pursuing");
@@ -2105,7 +2407,14 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
   }, [companyId, profileQ.data]);
   const saveMut = useMutation({
     mutationFn: async () => {
-      const patch: Record<string, unknown> = { ...values, transactionPrepStatus: txStatus };
+      /* R6 + "no dead promises": send ONLY scores that have a value. Spreading
+         `...values` sent `null`/`0` for untouched fields and manufactured data. */
+      const patch: Record<string, unknown> = { transactionPrepStatus: txStatus };
+      for (const f of MNA_PREP_FIELDS) {
+        const v = values[f.key];
+        if (v === null || v === undefined) continue;
+        patch[f.key] = v;
+      }
       const result = await saveProfilePatch(companyId!, patch);
       if (!result.ok) throw new Error(result.error);
     },
@@ -2139,8 +2448,26 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
                 <Label className="text-sm font-semibold">{f.label}</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">{f.description}</p>
               </div>
-              <span className="text-2xl font-bold ml-4 tabular-nums" data-testid={`value-mna-${f.key}`}>{values[f.key] ?? 0}%</span>
+              {/* R6 honest refusal. Was `{values[f.key] ?? 0}%` — "0%" for a
+                  score never entered. `0%` and "not entered" are different
+                  claims to a buyer reading a readiness scorecard. */}
+              {values[f.key] === null || values[f.key] === undefined ? (
+                <span
+                  className="text-sm font-medium ml-4 text-muted-foreground"
+                  data-testid={`value-mna-${f.key}`}
+                >
+                  {NOT_PROVIDED}
+                </span>
+              ) : (
+                <span className="text-2xl font-bold ml-4 tabular-nums" data-testid={`value-mna-${f.key}`}>{values[f.key]}%</span>
+              )}
             </div>
+            {/* The slider THUMB must sit somewhere, and 0 is the only honest
+                resting position for an unset 0..100 score — but the READOUT
+                above says "Not provided", and nothing is written until the
+                founder moves it, so the thumb position never becomes stored data
+                by itself. Moving the slider IS the act of entering a value, 0
+                included. */}
             <Slider
               min={0}
               max={100}
@@ -2165,11 +2492,28 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
   );
 }
 
-/* v25.45 F16/F17/F18a/F19a — these tab components are retained for rollback
- * (ROLLBACK_v25_45.md) but no longer mounted in the Settings tab strip. The
- * void-references below keep them clearly "intentionally retained" without
- * remounting them, and keep their imports/SACRED-store field references alive. */
-void SettingsPreferencesTab;
-void SettingsFinancialsTab;
-void SettingsGovernanceTab;
-void SettingsMnaPrepTab;
+/* WAVE 41 · OWNER RULING R9 — the four `void` references that used to sit here
+ * are DELETED, because all four components are now genuinely mounted.
+ *
+ * The removed lines were:
+ *     void SettingsPreferencesTab;
+ *     void SettingsFinancialsTab;
+ *     void SettingsGovernanceTab;
+ *     void SettingsMnaPrepTab;
+ * under the v25.45 F16/F17/F18a/F19a comment "retained for rollback
+ * (ROLLBACK_v25_45.md) but no longer mounted in the Settings tab strip".
+ *
+ * WHY THEY HAD TO GO, and not merely because they became redundant. `void X` is
+ * the idiom this tree uses to silence an unused declaration, and the
+ * reachability gate deliberately does NOT count it as a mount
+ * (scripts/reachability/reachability_gate.ts:17-22). Leaving them would leave
+ * four statements whose only purpose is to assert that these components are
+ * intentionally unreachable — the opposite of what is now true, and precisely
+ * the "dead promise" shape the owner's standing rule forbids. A future reader
+ * would have had two contradictory claims in one file.
+ *
+ * This removes no functionality: a `void` expression evaluates its operand and
+ * discards the result, so these four statements had no runtime effect whatever.
+ * They are not routes, nav entries, buttons, panels or copy, so they are outside
+ * every silent-drop guard class — confirmed by the guard run recorded in
+ * WAVE41_REPORT.md, which shows ZERO drops across all nine classes. */

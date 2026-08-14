@@ -29,6 +29,12 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useEntitlement } from "@/lib/entitlement";
+/* WAVE 43 · R7 — the ONE canonical definition of "this round is closed", shared
+ * with the server's refusal. The spine normalizes STORED STATE; nothing in this
+ * file previously knew that a decision window can pass without anybody
+ * rewriting that state, which is exactly why the "Expired" tab counted 0 while
+ * two expired rounds sat on the screen (live audit F-7). */
+import { resolveCloseWindow, isClosedAt, type CloseWindow } from "@shared/roundClose";
 
 /* ==================================================================== */
 /* Canonical ladder                                                     */
@@ -227,10 +233,64 @@ export function toSpineInvitations<T extends RawInvitationLike>(raw: T[] | null 
   }));
 }
 
+/**
+ * WAVE 43 · R7 — resolve an invitation's close window from the raw row.
+ *
+ * The raw shape carries the invitation's own `expiresAt` and (added by this
+ * wave to `GET /api/investor/invitations`) the round's `closeDate` and `state`.
+ * `resolveCloseWindow` takes the EARLIEST deadline present and treats a
+ * `state: "closed"` round as closed regardless of dates — the identical
+ * resolution `server/lib/roundCloseEnforcement.ts` performs before it refuses
+ * money, so no surface reading the spine can disagree with the API.
+ *
+ * A row with no deadline at all yields a window with `deadlineMs === null`,
+ * which `isClosedAt` reports as NOT closed. Absence of a date is not evidence
+ * of expiry; R6's explicit "No close date recorded" is a display rule, not a
+ * reason to hide a live invitation.
+ */
+export function invitationCloseWindow(raw: RawInvitationLike): CloseWindow {
+  const asStr = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+  return resolveCloseWindow({
+    invitationExpiresAt: asStr(raw.expiresAt),
+    roundCloseDate: asStr(raw.closeDate),
+    roundState: asStr(raw.roundState),
+  });
+}
+
+/** True when this invitation's decision window has passed at `nowMs`. */
+export function isInvitationWindowClosed(
+  raw: RawInvitationLike,
+  nowMs: number = Date.now(),
+): boolean {
+  return isClosedAt(invitationCloseWindow(raw), nowMs);
+}
+
+/**
+ * WAVE 43 · R7 — `pending` now means "on a forward rung AND the window is still
+ * open".
+ *
+ * WAS: `invitations.filter((i) => isPendingStage(i.stage))`.
+ *
+ * An invitation whose window closed on 3 August was still counted as pending on
+ * 13 August, because `normalizeLadderState` reads only the stored `state` string
+ * and nothing rewrites that string when a deadline passes (the sole writer is
+ * the expiry guard inside `roundInvitationsStore.redeemInvitation`, a path an
+ * already-redeemed investor never re-enters). So the Dashboard badge invited the
+ * investor to act on a round that would refuse them.
+ *
+ * FIXED HERE, IN THE SPINE, DELIBERATELY — not in the Invitations page. The
+ * "Active" tab is required to count the identical set as the Dashboard badge
+ * (Wave 2 FIX #3, asserted by
+ * client/src/pages/investor/__tests__/wave2Rewire.regression.test.ts). Excluding
+ * closed windows in the page alone would have made the tab honest and left the
+ * badge lying, and broken that parity assertion. One change here keeps both
+ * surfaces honest and keeps them equal.
+ */
 export function selectPendingInvitations<T extends RawInvitationLike>(
   invitations: SpineInvitation<T>[],
+  nowMs: number = Date.now(),
 ): SpineInvitation<T>[] {
-  return invitations.filter((i) => isPendingStage(i.stage));
+  return invitations.filter((i) => isPendingStage(i.stage) && !isInvitationWindowClosed(i.raw, nowMs));
 }
 
 /**

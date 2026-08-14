@@ -34,14 +34,51 @@ export default function AdminTelemetry() {
  useSprint3((s) => s.telemetryTick);
  const events = defaultTelemetryStore.list();
 
+ /* WAVE 44 · DEFECT 3 — the three session-local event tallies that used to be
+  * computed here (eventsToday / eventsThisWeek / total, filtered out of
+  * `defaultTelemetryStore.list()`) are GONE, not merely unread: they are
+  * replaced by `durableCounts` below, which counts the durable
+  * `telemetry_events` table. Leaving them computed-but-unrendered would be a
+  * dead variable, and leaving them RENDERED was the defect. `verifyChain()`
+  * stays — the hash-chain KPI is a genuine property of the client chain. */
  const stats = useMemo(() => {
- const today = new Date(); today.setHours(0, 0, 0, 0);
- const weekAgo = new Date(today.getTime() - 7 * 24 * 3600 * 1000);
- const eventsToday = events.filter((e) => new Date(e.timestamp) >= today).length;
- const eventsThisWeek = events.filter((e) => new Date(e.timestamp) >= weekAgo).length;
  const chain = defaultTelemetryStore.verifyChain();
- return { eventsToday, eventsThisWeek, total: events.length, chain };
+ return { chain };
  }, [events]);
+
+ /* WAVE 44 · DEFECT 3 — EVENTS TODAY / THIS WEEK / ALL-TIME read the DURABLE
+  * record, not this browser tab's RAM.
+  *
+  * The three KPIs were derived from `defaultTelemetryStore`, which is
+  * `private events: TelemetryEvent[] = []`
+  * inside the browser (packages/telemetry/src/recorder.ts:57). It is never
+  * hydrated from the server, so on a fresh page load those three numbers are
+  * structurally 0 — exactly what the auditor saw on a platform with 65
+  * companies and paid invoices. The counter was broken; the data was not
+  * missing. The durable table `telemetry_events` holds the real record.
+  *
+  * R6: when the server cannot measure, the KPI says so instead of printing 0.
+  * The client store still drives the funnel, cohort and explorer sections below
+  * (they need per-event fields this count endpoint does not carry) — a separate,
+  * still-open item recorded in build_log/WAVE44_REPORT.md, not a silent
+  * substitution. */
+ const eventCountsQ = useQuery<{
+  ok?: boolean;
+  measured?: boolean;
+  today: number | null;
+  thisWeek: number | null;
+  allTime: number | null;
+  reason?: string;
+ }>({ queryKey: ["/api/admin/telemetry/counts"] });
+ const durableCounts = useMemo(() => {
+  const d = eventCountsQ.data;
+  if (eventCountsQ.isLoading) return { today: "…", thisWeek: "…", allTime: "…" };
+  if (eventCountsQ.isError || !d || d.measured === false) {
+   /* Not "0" — 0 would claim nothing was ever recorded. */
+   return { today: "not measured", thisWeek: "not measured", allTime: "not measured" };
+  }
+  return { today: d.today ?? 0, thisWeek: d.thisWeek ?? 0, allTime: d.allTime ?? 0 };
+ }, [eventCountsQ.data, eventCountsQ.isLoading, eventCountsQ.isError]);
 
  const funnel = useMemo(() => funnelDropoff(events), [events]);
 
@@ -121,9 +158,9 @@ export default function AdminTelemetry() {
  "Cohort benchmarks anonymise telemetry by sector × stage × region (k-anonymity ≥ 5) to give founders honest peer comparisons without ever exposing a single company's identity.",
  }}
  stats={[
- { label: "Events today", value: stats.eventsToday },
- { label: "This week", value: stats.eventsThisWeek },
- { label: "All-time", value: stats.total },
+ { label: "Events today", value: durableCounts.today },
+ { label: "This week", value: durableCounts.thisWeek },
+ { label: "All-time", value: durableCounts.allTime },
  { label: "Hash chain", value: stats.chain.valid ? "Unbroken" : `Broken @ ${stats.chain.brokenAt}`, tone: stats.chain.valid ? "positive" : "critical" },
  { label: "Cohorts", value: allCohorts.length, hint: "Active benchmark sets" },
  ]}

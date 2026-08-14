@@ -1012,24 +1012,113 @@ export function assertInvoiceConserved(invoiceId: string): number {
   return sum;
 }
 
-/** CP-COM-04 — the pending/paid split, computed from the LINES. */
-export function commissionSplit(partnerId: string): { pendingMinor: number; paidMinor: number } {
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 50 · ITEM 6 — `commissionSplit` WAS SUMMING MINOR UNITS ACROSS CURRENCIES
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ * WHAT WAS WRONG. This function SUMmed `l.amount_minor` over a partner's WHOLE
+ * commission history grouped ONLY by `l.settlement_state`. `partner_invoice_line`
+ * carries no currency — the currency lives on the parent `partner_invoice` — so
+ * the join happily added USD, EUR, GBP and CAD minor units together and returned
+ * one bare number. Adding 1000 (JPY minor units, i.e. ¥1,000) to 1000 (USD minor
+ * units, i.e. $10.00) and reporting 2000 is not an approximation; it is
+ * meaningless. Live currency overrides are USD/EUR/GBP and one live SPV is
+ * CAD-denominated (R5), so this was reachable on real data, and its one consumer
+ * is a partner-facing surface: GET /api/partner/me/commission-summary
+ * (server/lib/wave14MoneyRoutes.ts:352).
+ *
+ * WHY THIS SHAPE AND NOT A NEW ONE. `commissionPositionByKind` below — Wave 21 ·
+ * Item 2, in THIS FILE, ~240 lines down — already solved exactly this problem and
+ * established the house shape: group by `i.currency` as well, accumulate into
+ * `CurrencyBuckets`, expose an authoritative `byCurrency[]`, and collapse to a
+ * scalar ONLY when the whole position is a single currency, otherwise emit an
+ * explicit `MoneyScalar` refusal `{available:false, reason:"needs_fx_conversion",
+ * currencies:[...]}`. Wave 21 fixed the sibling and left this one. Inventing a
+ * second convention here would leave the same route reading two different shapes,
+ * so this reuses the same helpers (`addToBucket`, `normalizeCurrency`,
+ * `singleCurrencyScalar`) and the same field names.
+ *
+ * BOTH POLES, DELIBERATELY. A guard that refused everything would pass a
+ * one-sided test and break real billing, so:
+ *   • SINGLE-currency history  -> `pendingMinor`/`paidMinor`/`currency` are REAL
+ *     numbers, exactly as before. Every existing caller and test keeps working.
+ *   • MIXED-currency history   -> those three are `null` and `byCurrency[]` is
+ *     authoritative. NEVER a single blended number, and never a fabricated "USD".
+ *   • NO lines at all          -> a scalar 0, because 0 is 0 in every currency.
+ *
+ * `pendingMinor` and `paidMinor` widen from `number` to `number | null`. That is
+ * the point: a derived figure must never be more available than its inputs.
+ *
+ * 'waived' and 'failed' remain in NEITHER total, matching the sibling: a waived
+ * commission is not owed and a failed one is not settled. Both stay visible on
+ * the invoice, so nothing is dropped — only kept out of these two sums.
+ *
+ * NOT TOUCHED: `assertInvoiceConserved` above (Review B classified it CORRECT;
+ * `InvoiceLine` has no currency field and conservation is per-invoice, so it is
+ * single-currency by construction) and `server/paymentGatewayAdapter.ts`, which
+ * is SACRED and is not on this path.
+ */
+/** CP-COM-04 — the pending/paid split, computed from the LINES, PER CURRENCY. */
+export function commissionSplit(partnerId: string): {
+  /** null when `mixed` — never a cross-currency sum. */
+  pendingMinor: number | null;
+  paidMinor: number | null;
+  /** null when `mixed` — never a fabricated default. */
+  currency: string | null;
+  mixed: boolean;
+  /** Explicit renderable state; authoritative over the scalars above. */
+  pending: MoneyScalar;
+  paid: MoneyScalar;
+  /** Authoritative per-currency breakdown. */
+  byCurrency: Array<{ currency: string; pendingMinor: number; paidMinor: number }>;
+  currencies: string[];
+} {
   const rows = db()
     .prepare(
-      `SELECT l.settlement_state AS s, SUM(l.amount_minor) AS t
+      `SELECT l.settlement_state AS s, i.currency AS c, SUM(l.amount_minor) AS t
          FROM partner_invoice_line l
          JOIN partner_invoice i ON i.id = l.invoice_id
         WHERE i.partner_id = ? AND l.entry_kind = 'commission'
-        GROUP BY l.settlement_state`,
+        GROUP BY l.settlement_state, i.currency`,
     )
-    .all(partnerId);
-  let pendingMinor = 0;
-  let paidMinor = 0;
+    .all(partnerId) as Array<{ s: string; c: string; t: number }>;
+
+  const pendingBuckets: CurrencyBuckets = {};
+  const paidBuckets: CurrencyBuckets = {};
+  const currencies = new Set<string>();
+
   for (const r of rows) {
-    if (r.s === "paid") paidMinor += Number(r.t ?? 0);
-    else if (r.s === "pending") pendingMinor += Number(r.t ?? 0);
+    const cur = normalizeCurrency(r.c) || "USD";
+    currencies.add(cur);
+    const amt = Number(r.t ?? 0);
+    if (r.s === "paid") addToBucket(paidBuckets, cur, amt);
+    else if (r.s === "pending") addToBucket(pendingBuckets, cur, amt);
   }
-  return { pendingMinor, paidMinor };
+
+  const currencyKeys = Array.from(
+    new Set([...Object.keys(pendingBuckets), ...Object.keys(paidBuckets)]),
+  ).sort();
+  const byCurrency = currencyKeys.map((currency) => ({
+    currency,
+    pendingMinor: pendingBuckets[currency] ?? 0,
+    paidMinor: paidBuckets[currency] ?? 0,
+  }));
+
+  const oneCurrency = currencies.size <= 1;
+  const soleCurrency = currencies.size === 1 ? Array.from(currencies)[0]! : "USD";
+  const pending = singleCurrencyScalar(pendingBuckets, oneCurrency ? soleCurrency : undefined);
+  const paid = singleCurrencyScalar(paidBuckets, oneCurrency ? soleCurrency : undefined);
+
+  return {
+    pendingMinor: pending.available ? pending.minor : null,
+    paidMinor: paid.available ? paid.minor : null,
+    currency: oneCurrency ? soleCurrency : null,
+    mixed: currencies.size > 1,
+    pending,
+    paid,
+    byCurrency,
+    currencies: Array.from(currencies).sort(),
+  };
 }
 
 /**

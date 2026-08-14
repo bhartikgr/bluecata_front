@@ -285,7 +285,7 @@ export function resolveCommissionRate(partnerId: string, tier: PartnerTier): Res
 export function resolvePartnerSeatLimit(
   partnerId: string,
   tier: PartnerTier,
-): { seatLimit: number; source: "override" | "tier" } {
+): ReturnType<typeof resolveEffectiveSeatLimit> {
   const row = rawDb()
     .prepare(
       `SELECT arrangement_json FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`,

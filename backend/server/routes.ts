@@ -377,6 +377,26 @@ import { registerRoundInitialShareholdersRoutes } from "./lib/roundInitialShareh
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
+/* WAVE 43 · OWNER RULING R7 — an expired round must stop accepting money.
+ * The refusal, the deliberate late-acceptance doors, and the derived
+ * "accepted after close" marker. */
+import {
+  evaluateCommitmentAdmission,
+  roundClosedBody,
+  resolveWindowFor,
+  markLateCommitments,
+  withLateMark,
+  ACCEPTED_AFTER_CLOSE_LABEL,
+  type LateMark as Wave43LateMark,
+} from "./lib/roundCloseEnforcement";
+import {
+  grantReopen as grantRoundReopen,
+  grantLateCommitment as grantRoundLateCommitment,
+  revokeGrant as revokeLateAcceptanceGrant,
+  consumeGrant as consumeLateAcceptanceGrant,
+  listForRound as listLateAcceptancesForRound,
+} from "./lib/roundLateAcceptanceStore";
+import { closedStatement as roundClosedStatement } from "../shared/roundClose";
 import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
@@ -2221,7 +2241,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
     }
     type InterimKind = "committed" | "funded" | "soft_circle";
-    type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null };
+    type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null;
+      /* WAVE 43 · OWNER RULING R7 — "a late commitment is labelled as
+       * accepted-after-close everywhere it appears … and on the cap table."
+       * DERIVED at projection time from the append-only late-acceptance ledger.
+       * `captableCommitStore.ts` IS SACRED and was NOT touched: no column was
+       * added to the commit ledger, no membership row was rewritten. The mark
+       * reaches the cap table by JOIN, which is also the safer design — a stored
+       * boolean can be overwritten by a later commit path, a ledger row cannot. */
+      acceptedAfterClose?: boolean; lateAcceptance?: Wave43LateMark | null };
     // Shared share-derivation: prefer a valid ledger share count; else derive
     // floor(amount / effectivePps) via the cent-unit decimal.js/BigInt method.
     const deriveShares = (amount: number, sharesStr: unknown, roundId?: string): number => {
@@ -2298,6 +2326,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        a co-LP's identity, email and amount can no longer be read out of any of
        the three arrays. A genuine counterparty of a real operating company sees
        exactly what they saw before (`allow` passes the list through). */
+    /* WAVE 43 · R7 — attach the accepted-after-close mark BEFORE scoping, so a
+     * row that survives the scope filter carries its mark, and the two concerns
+     * stay independent.
+     *
+     * Two lookups because the three arrays are keyed differently:
+     *   · soft_circle rows carry `softCircleId` — marked by commitment id.
+     *   · committed / funded rows come from the SACRED commit ledger and carry
+     *     only `invitationId` — marked by the grant's invitation, per round.
+     *     A commitment that entered late and was subsequently promoted to
+     *     committed or funded must NOT shed the mark on promotion; that is
+     *     precisely the record "looking like it arrived on time".
+     *
+     * Fail-open on the ledger being unavailable: an unmarked cap table is bad,
+     * a cap table that will not load is worse, and the refusal is already
+     * enforced upstream at the money route. */
+    try {
+      const scMarks = markLateCommitments(
+        soft_circle.map((r) => ({ id: String(r.softCircleId ?? "") })).filter((r) => r.id),
+      );
+      for (const r of soft_circle) {
+        const m = r.softCircleId ? scMarks.get(String(r.softCircleId)) ?? null : null;
+        r.acceptedAfterClose = m !== null;
+        r.lateAcceptance = m;
+      }
+      const roundIds = Array.from(new Set([...committed, ...funded].map((r) => String(r.roundId ?? "")).filter(Boolean)));
+      const byInvitation = new Map<string, Wave43LateMark>();
+      for (const roundId of roundIds) {
+        for (const g of listLateAcceptancesForRound(roundId)) {
+          if (g.kind !== "late_commitment" || !g.invitationId || g.revokedAt) continue;
+          byInvitation.set(`${roundId}::${g.invitationId}`, {
+            acceptedAfterClose: true,
+            closedAt: g.closedAt,
+            acceptedByUserId: g.acceptedByUserId,
+            acceptedByName: g.acceptedByName,
+            acceptedAt: g.acceptedAt,
+            reason: g.reason,
+            kind: g.kind,
+            label: ACCEPTED_AFTER_CLOSE_LABEL,
+          });
+        }
+      }
+      for (const r of [...committed, ...funded]) {
+        const m = r.invitationId ? byInvitation.get(`${String(r.roundId ?? "")}::${String(r.invitationId)}`) ?? null : null;
+        r.acceptedAfterClose = m !== null;
+        r.lateAcceptance = m;
+      }
+    } catch { /* fail-open: see comment above */ }
     const scopedCommitted = scopeCapTableRows(access, committed, (r) => r.investorId);
     const scopedFunded = scopeCapTableRows(access, funded, (r) => r.investorId);
     const scopedSoftCircle = scopeCapTableRows(access, soft_circle, (r) => r.investorId);
@@ -2599,7 +2674,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // it is committed/wired on this round, or the investor is committed on this
     // round / in the company committed cap table. Never mutates existing fields.
     const sets = committedActivitySetsForRound(rid);
-    res.json(merged.map((s: any) => ({ ...s, active: isSoftCircleActive(s, sets) })));
+    /* WAVE 43 · OWNER RULING R7 — "a late commitment is labelled as
+     * accepted-after-close everywhere it appears, for founder, investor, and on
+     * the cap table." This is the FOUNDER's list. The mark is DERIVED from the
+     * append-only `round_late_acceptances` ledger and joined here; it is not a
+     * column on the soft-circle row, so no writer can forget to set it and no
+     * later write can quietly clear it.
+     *
+     * `withLateMark` adds `acceptedAfterClose`, `acceptedAfterCloseLabel`,
+     * `closedAt`, `lateAcceptedBy`, `lateAcceptedAt` and never touches an
+     * existing field. A row with no grant is returned verbatim — false is not
+     * fabricated onto commitments that arrived on time. */
+    const lateMarks = markLateCommitments(merged.map((s: any) => ({ id: String(s.id) })));
+    res.json(merged.map((s: any) => withLateMark({ ...s, active: isSoftCircleActive(s, sets) }, lateMarks)));
   });
 
   /* ====================================================================
@@ -2919,11 +3006,72 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
         state: inv.state,
         receivedAt: inv.createdAt ?? inv.sentAt ?? new Date().toISOString(),
-        expiresAt: inv.expiresAt ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+        /* WAVE 43 · R7 + R6 — THE FABRICATED EXPIRY IS GONE.
+         *
+         * WAS: `inv.expiresAt ?? new Date(Date.now() + 14 * 86400000).toISOString()`.
+         *
+         * An invitation with no recorded expiry was handed a deadline invented
+         * at request time — fourteen days from whenever the investor happened to
+         * load the page. It therefore APPEARED to have a live window on every
+         * single request, forever, and the countdown counted down from a number
+         * the database has never contained. That is both an R6 violation (a
+         * value fabricated where the honest answer is "not recorded") and, worse
+         * under R7, an expiry that can never arrive. Null now travels, and the
+         * client renders "No close date recorded".
+         *
+         * `round_invitations.expires_at` is nullable and `roundInvitationsStore`
+         * preserves that null faithfully (:328). The information was destroyed
+         * HERE, in the projection. */
+        expiresAt: (inv.expiresAt ?? null) as string | null,
+        /* WAVE 43 · R7 — the round-level half of the close window, so the client
+         * can resolve the SAME deadline the server enforces (earliest of the
+         * two) instead of guessing from the invitation alone. Without these the
+         * card could show an open window on a round the API will refuse. */
+        closeDate: (round?.closeDate ?? null) as string | null,
+        roundState: (round?.state ?? null) as string | null,
         targetAmount: round?.targetAmount ?? 0,
         raisedAmount: round?.raisedAmount ?? 0,
-        minTicket: (round?.minTicket ?? 0) as number,
-        preMoney: (round?.preMoney ?? 0) as number,
+        /* WAVE 42 · OWNER RULING R6 — "no surface may render 0 when it means
+         * 'we do not know'." Owner, 2026-08-13: "Apply it everywhere as this
+         * seems to be an investor grade best practice globally."
+         *
+         * WAS: `(round?.minTicket ?? 0) as number` / `(round?.preMoney ?? 0)`.
+         * Live audit 2026-08-13 finding F-4 (HIGH): the investor company-detail
+         * card rendered "Pre-money $0" for a round whose valuation had simply
+         * never been entered, while SIBLING fields on the same card correctly
+         * read "Not set". An investor reads "$0 pre-money" as "this company is
+         * worth nothing" — a materially misleading statement about someone
+         * else's company, published by us.
+         *
+         * `rounds.pre_money` / `post_money` / `min_ticket` are NULLABLE, and
+         * roundsStore.ts:112 faithfully preserves that null. The information was
+         * destroyed HERE, in the projection, and the client could not recover
+         * it. This is the exact pattern already applied to the sibling field
+         * `pricePerShare` in the DETAIL handler below (v25.25 Avi-8), which was
+         * fixed for the same reason and never propagated to its four siblings.
+         *
+         * A GENUINE ZERO IS STILL 0. This is a `?? 0` -> `?? null` change only:
+         * a founder who deliberately entered a $0 min ticket still transmits 0,
+         * and both poles are asserted in
+         * server/__tests__/wave42_r6_valuation_serializer.test.ts. */
+        minTicket: (round?.minTicket ?? null) as number | null,
+        preMoney: (round?.preMoney ?? null) as number | null,
+        /* WAVE 42 · R6 — ADDITIVE. `client/src/pages/investor/CompanyDetail.tsx`
+         * reads its "Headline round terms" card from THIS list endpoint and
+         * renders `myInv.postMoney` and `myInv.pricePerShare`, but the LIST
+         * projection never emitted either — so both arrived `undefined` and
+         * rendered as a bare em-dash with no explanation. That is the same R6
+         * defect in its "blank" form, which the ruling rejects alongside `$0`.
+         * Projected here with honest nulls (never `?? 0`) so the card can say
+         * "Not provided". Nothing is removed; two fields are added, matching the
+         * DETAIL handler's shape below. */
+        postMoney: (round?.postMoney ?? null) as number | null,
+        pricePerShare: (round?.pricePerShare ?? null) as number | null,
+        /* R5 — "not all SPVs are US based". The card formatted every figure as
+         * USD because the round's own currency was never sent. A CAD round
+         * displayed as "$1.2M" with a US dollar symbol is a misstatement of
+         * denomination, so the currency travels with the money. */
+        currency: (round?.currency ?? null) as string | null,
       };
     });
     res.json(enriched);
@@ -2965,16 +3113,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       },
       state: modern.state,
       receivedAt: modern.createdAt ?? modern.sentAt ?? new Date().toISOString(),
-      expiresAt: modern.expiresAt ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+      /* WAVE 43 · R7 + R6 — the SECOND copy of the fabricated fourteen-day
+       * expiry (the list handler above carried the first, with the full
+       * reasoning). Same invention, same consequence: an invitation with no
+       * recorded deadline claimed a live window on every request forever, so the
+       * detail page — THE page with the "Submit soft-circle" button — could never
+       * report the round closed. Honest null now travels, plus the round-level
+       * `closeDate` and `state` so this surface resolves the SAME window the
+       * money route enforces. */
+      expiresAt: (modern.expiresAt ?? null) as string | null,
+      /* `closeDate` was ALREADY projected further down this same literal (it is
+       * left where it is), so only the round's lifecycle state is added here. */
+      roundState: (round?.state ?? null) as string | null,
       targetAmount: round?.targetAmount ?? 0,
       raisedAmount: round?.raisedAmount ?? 0,
-      minTicket: (round?.minTicket ?? 0) as number,
-      preMoney: (round?.preMoney ?? 0) as number,
+      /* WAVE 42 · R6 / live-audit F-4 — see the identical change in the LIST
+       * handler above for the full reasoning. `?? 0` -> `?? null`: a valuation
+       * that was never entered must not be published as "$0". A deliberate 0
+       * still travels as 0. */
+      minTicket: (round?.minTicket ?? null) as number | null,
+      preMoney: (round?.preMoney ?? null) as number | null,
       /* v25.8 Bug 2 fix — the investor InvitationDetail.tsx expects these
        * additional round fields. Without them the page renders
        * "price/share: undefined" while post-money valuation shows. Avi
        * caught this. We now project the full round shape the client expects. */
-      postMoney: (round?.postMoney ?? 0) as number,
+      /* WAVE 42 · R6 / live-audit F-4 — `?? 0` -> `?? null`. Post-money was the
+       * second field on the misleading card: "Post-money $0" for an unpriced
+       * round. The v25.25 note immediately below already established that this
+       * projection must surface honest null; R6 finishes the job. */
+      postMoney: (round?.postMoney ?? null) as number | null,
       /* v25.25 Avi-8 — was `?? 0`, which coalesced a genuinely-unset PPS to
          zero and rendered "$0.00" in the client (misleading). Surface honest
          null so the new client guards in InvitationDetail.tsx show
@@ -3021,7 +3188,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         confirmedAt: r.confirmedAt ?? null,
         wireFundedAt: r.wireFundedAt ?? null,
       }));
-      return res.json(projected);
+      /* WAVE 43 · R7 — the INVESTOR's own list carries the same mark as the
+       * founder's. The owner's ruling admits the money and forbids the record
+       * from looking punctual; an investor who is shown their commitment with no
+       * mark, while the founder sees it marked, is exactly that lie told once. */
+      const lateMarks = markLateCommitments(projected.map((p) => ({ id: String(p.id) })));
+      return res.json(projected.map((p) => withLateMark(p, lateMarks)));
     } catch (err) {
       /* If the underlying store is unavailable, return [] rather than 500 so
        * the investor's dashboard at least loads. */
@@ -4078,11 +4250,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const callerIsAuthorized = !!ctx.isAdmin || ownsThisRoundsCompany;
     const bodyInvestorUserId = typeof body.investorUserId === "string" && body.investorUserId ? body.investorUserId : null;
     const effectiveInvestorUserId = (callerIsAuthorized && bodyInvestorUserId) ? bodyInvestorUserId : ctx.userId;
+    /* WAVE 43 · R7 — ENFORCE THE CLOSE ON THE SERVER.
+     *
+     * F-7: this route accepted a $250,000 soft-circle against a round whose
+     * decision window had closed ten days earlier. The button being disabled
+     * would have been cosmetic; this is the refusal. It runs AFTER the
+     * archive/ownership gates (so a stranger cannot learn a round's close date
+     * from a 409 that a 404 should have hidden) and BEFORE any write.
+     *
+     * A closed round with a deliberate founder grant is admitted and marked —
+     * the money is allowed in, but the record never looks like it arrived on
+     * time. See server/lib/roundCloseEnforcement.ts. */
+    const wave43InvitationId = typeof body.invitationId === "string" ? body.invitationId : null;
+    const wave43Admission = evaluateCommitmentAdmission({ roundId: id, invitationId: wave43InvitationId });
+    if (!wave43Admission.allow) {
+      return res.status(wave43Admission.status).json(roundClosedBody(wave43Admission));
+    }
     try {
       const sc = softCircleCreate({
         roundId: id,
         companyId: cid,
-        invitationId: typeof body.invitationId === "string" ? body.invitationId : null,
+        invitationId: wave43InvitationId,
         investorUserId: effectiveInvestorUserId,
         investorEmail: typeof body.investorEmail === "string" ? body.investorEmail : null,
         investorName: typeof body.investorName === "string" && body.investorName ? body.investorName : (effectiveInvestorUserId ?? "investor"),
@@ -4091,13 +4279,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: typeof body.status === "string" ? body.status : "intent",
         collectiveVisible: body.collectiveVisible !== false,
       });
+      /* WAVE 43 · R7 — bind the founder's single-use grant to the commitment it
+       * admitted. Done AFTER the commitment exists so a failed create never
+       * burns the grant, and NOT best-effort: if the binding cannot be written
+       * the commitment would look like it arrived on time, which is the one
+       * outcome the ruling forbids. The commitment is left in place (deleting
+       * accepted money is worse) and the caller is told the record is
+       * incomplete. */
+      if (wave43Admission.late && wave43Admission.grant.kind === "late_commitment") {
+        try {
+          consumeLateAcceptanceGrant(wave43Admission.grant.id, sc.id);
+        } catch (bindErr) {
+          log.error(
+            "[wave43] late-acceptance binding failed for soft-circle",
+            sc.id,
+            (bindErr as Error).message,
+          );
+          return res.status(500).json({
+            ok: false,
+            error: "LATE_MARK_NOT_RECORDED",
+            message:
+              "The commitment was created but could not be marked as accepted after close. Contact support before treating it as on time.",
+            softCircle: sc,
+          });
+        }
+      }
       // D3: Wire source attribution
       try {
         const srcType = (body.sourceType === "partner" || body.sourceType === "collective") ? body.sourceType : "direct";
         const srcId = typeof body.sourceId === "string" ? body.sourceId : null;
         setSoftCircleSource(sc.id, srcType as "direct" | "partner" | "collective", srcId);
       } catch { /* best-effort */ }
-      return res.json({ ok: true, softCircle: sc });
+      return res.json({
+        ok: true,
+        softCircle: sc,
+        acceptedAfterClose: wave43Admission.late,
+        closedAt: wave43Admission.late ? wave43Admission.grant.closedAt : null,
+      });
     } catch (err) {
       return res.status(400).json({ ok: false, error: (err as Error).message });
     }
@@ -4127,6 +4345,238 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sc = softCircleValidate(scId);
     if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
     return res.json({ ok: true, scId, validated: true, softCircle: sc });
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════
+   * WAVE 43 · OWNER RULING R7 — THE FOUNDER'S EXPLICIT, AUDITED
+   * LATE-ACCEPTANCE PATH.
+   *
+   *   "Accepting late commitments should be allowed."
+   *   "This is the whole point: the money is allowed in, but the record must
+   *    never look like it arrived on time."
+   *
+   * Two capabilities, deliberately separate:
+   *   POST /api/rounds/:id/reopen           — reopen the round for everyone
+   *   POST /api/rounds/:id/late-acceptance  — admit ONE named commitment
+   *
+   * DELIBERATE BY CONSTRUCTION. Both require `confirm: true` in the body and a
+   * non-empty `reason`. Neither has a default that grants anything, and neither
+   * can be reached by a GET — reading a round can never grant permission to
+   * fund it. The read endpoint below is strictly a read.
+   *
+   * ATTRIBUTED BY CONSTRUCTION. `acceptedByUserId` is taken from the session
+   * via `getUserContext`; a body-supplied actor is ignored, so a founder cannot
+   * attribute an override to somebody else.
+   *
+   * REFUSED WHEN THE ROUND IS STILL OPEN. Granting a late acceptance to an open
+   * round would create a record asserting a close that had not happened — a lie
+   * in the audit trail, and a grant that would silently pre-authorize a future
+   * commitment. 409, with the honest reason.
+   * ══════════════════════════════════════════════════════════════════════ */
+
+  /* CROSS-TENANT REFUSALS ARE 404, NOT 403.
+   *
+   * The shared `requireFounderOwnsRound` answers a non-owner with 403, which
+   * on these four routes would confirm that a round with this id exists and
+   * that it has a close window worth overriding. These routes are new, so they
+   * get the correct posture without changing the shared helper's behaviour for
+   * the dozens of older routes that depend on it: ownership is resolved
+   * silently first and a non-owner is told only that there is no such round.
+   * An owner then falls through to the shared helper, so the archive gate and
+   * every other rule it enforces still apply verbatim. */
+  function requireFounderOwnsRoundOr404(
+    req: import("express").Request,
+    res: import("express").Response,
+  ): { ok: boolean; companyId?: string; userId?: string } {
+    const roundId = paramStr(req.params.id);
+    const cid = roundId ? companyIdForRound(roundId) : null;
+    const ctx = getUserContext(req);
+    const owns = !!cid && (
+      !!ctx?.isAdmin
+      || (Array.isArray(ctx?.founder?.companies) && ctx!.founder!.companies.some((c) => c.companyId === cid))
+    );
+    if (!owns) {
+      res.status(404).json({ ok: false, error: "round_not_found" });
+      return { ok: false };
+    }
+    return requireFounderOwnsRound(req, res);
+  }
+
+  /** READ-ONLY: the round's close window and every grant against it. No writes. */
+  app.get("/api/rounds/:id/close-status", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundOr404(req, res);
+    if (!check.ok) return;
+    const roundId = paramStr(req.params.id);
+    const nowMs = Date.now();
+    const resolved = resolveWindowFor(roundId, null, nowMs);
+    return res.json({
+      ok: true,
+      roundId,
+      closed: resolved.closed,
+      // R6: no close date is an explicit fact, not a 0-day countdown.
+      hasCloseDate: !resolved.noCloseDate,
+      closedAt: resolved.win.deadlineIso,
+      closeSource: resolved.win.source,
+      statement: resolved.closed ? roundClosedStatement(resolved.win.deadlineIso) : null,
+      lateAcceptanceLabel: ACCEPTED_AFTER_CLOSE_LABEL,
+      grants: listLateAcceptancesForRound(roundId),
+    });
+  });
+
+  /** REOPEN the round until an explicit instant. */
+  app.post("/api/rounds/:id/reopen", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundOr404(req, res);
+    if (!check.ok) return;
+    const ctx = getUserContext(req);
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
+    const roundId = paramStr(req.params.id);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.confirm !== true) {
+      return res.status(400).json({
+        ok: false,
+        error: "CONFIRMATION_REQUIRED",
+        message: "Reopening a closed round is deliberate. Send confirm: true.",
+      });
+    }
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (!reason) {
+      return res.status(400).json({
+        ok: false,
+        error: "REASON_REQUIRED",
+        message: "Record why this round is being reopened. It goes on the audit trail.",
+      });
+    }
+    const untilRaw = typeof body.reopenUntil === "string" ? body.reopenUntil.trim() : "";
+    const untilMs = untilRaw ? Date.parse(untilRaw) : NaN;
+    if (!Number.isFinite(untilMs)) {
+      return res.status(400).json({
+        ok: false,
+        error: "REOPEN_UNTIL_REQUIRED",
+        message: "Give the reopened window an explicit end (ISO timestamp). An open-ended reopen is how a close stops meaning anything.",
+      });
+    }
+    const nowMs = Date.now();
+    if (untilMs <= nowMs) {
+      return res.status(400).json({
+        ok: false,
+        error: "REOPEN_UNTIL_IN_PAST",
+        message: "The reopened window must end in the future.",
+      });
+    }
+    const resolved = resolveWindowFor(roundId, null, nowMs);
+    if (!resolved.closed) {
+      return res.status(409).json({
+        ok: false,
+        error: "ROUND_NOT_CLOSED",
+        message: "This round is still open. There is nothing to reopen.",
+        closedAt: resolved.win.deadlineIso,
+      });
+    }
+    try {
+      const grant = grantRoundReopen({
+        roundId,
+        companyId: check.companyId ?? companyIdForRound(roundId),
+        acceptedByUserId: ctx.userId,
+        acceptedByName: ctx.identity?.name ?? ctx.identity?.email ?? null,
+        // The deadline being overridden. `state`-closed rounds with no date fall
+        // back to now, which is the honest answer: the close instant is unknown
+        // and this is when the override happened.
+        closedAt: resolved.win.deadlineIso ?? new Date(nowMs).toISOString(),
+        reason,
+        reopenUntil: new Date(untilMs).toISOString(),
+      });
+      emitMutation({ aggregate: "round", id: roundId, change: "update" });
+      return res.json({
+        ok: true,
+        grant,
+        message: `Round reopened until ${grant.reopenUntil}. Commitments made now are still recorded as "${ACCEPTED_AFTER_CLOSE_LABEL}".`,
+      });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  /** ACCEPT ONE named investor's late commitment WITHOUT reopening the round. */
+  app.post("/api/rounds/:id/late-acceptance", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundOr404(req, res);
+    if (!check.ok) return;
+    const ctx = getUserContext(req);
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
+    const roundId = paramStr(req.params.id);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.confirm !== true) {
+      return res.status(400).json({
+        ok: false,
+        error: "CONFIRMATION_REQUIRED",
+        message: "Accepting a commitment after close is deliberate. Send confirm: true.",
+      });
+    }
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (!reason) {
+      return res.status(400).json({
+        ok: false,
+        error: "REASON_REQUIRED",
+        message: "Record why this commitment is being accepted after close. It goes on the audit trail.",
+      });
+    }
+    const invitationId = typeof body.invitationId === "string" ? body.invitationId.trim() : "";
+    if (!invitationId) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVITATION_REQUIRED",
+        message: "Name the invitation being admitted. A grant that names nobody would reopen the round to everybody.",
+      });
+    }
+    /* CROSS-TENANT / WRONG-ROUND IS 404, NOT 403 — never confirm that an
+     * invitation exists somewhere else. */
+    const inv = roundInvitationsGet(invitationId);
+    if (!inv || inv.roundId !== roundId) {
+      return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    }
+    const nowMs = Date.now();
+    const resolved = resolveWindowFor(roundId, invitationId, nowMs);
+    if (!resolved.closed) {
+      return res.status(409).json({
+        ok: false,
+        error: "ROUND_NOT_CLOSED",
+        message: "This window is still open. The investor can commit normally; no override is needed.",
+        closedAt: resolved.win.deadlineIso,
+      });
+    }
+    try {
+      const grant = grantRoundLateCommitment({
+        roundId,
+        invitationId,
+        companyId: check.companyId ?? companyIdForRound(roundId),
+        acceptedByUserId: ctx.userId,
+        acceptedByName: ctx.identity?.name ?? ctx.identity?.email ?? null,
+        closedAt: resolved.win.deadlineIso ?? new Date(nowMs).toISOString(),
+        reason,
+      });
+      emitMutation({ aggregate: "round", id: roundId, change: "update" });
+      return res.json({
+        ok: true,
+        grant,
+        message: `One commitment from this invitation will be admitted and permanently labelled "${ACCEPTED_AFTER_CLOSE_LABEL}".`,
+      });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  /** WITHDRAW a grant. Forward-only: the history stays readable. */
+  app.post("/api/rounds/:id/late-acceptance/:grantId/revoke", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundOr404(req, res);
+    if (!check.ok) return;
+    const roundId = paramStr(req.params.id);
+    const grantId = paramStr(req.params.grantId);
+    // Child-ownership guard: owning the path round does not prove the grant
+    // belongs to it (the v25.48 BUG-B lesson). Cross-round is 404.
+    const mine = listLateAcceptancesForRound(roundId).find((g) => g.id === grantId);
+    if (!mine) return res.status(404).json({ ok: false, error: "grant_not_found" });
+    const grant = revokeLateAcceptanceGrant(grantId);
+    emitMutation({ aggregate: "round", id: roundId, change: "update" });
+    return res.json({ ok: true, grant });
   });
 
   // Term-sheet send + PDF — requireAuth
@@ -5952,6 +6402,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ["/api/investor/invitations/:id/soft-circle", "soft_circle"],
   ] as const) {
     app.post(path, requireAuth, async (req, res) => {
+      // WAVE 43 · R7 — set when a closed round admitted this decision through a
+      // deliberate founder grant; reported on the response.
+      let wave43Late: { closedAt: string; grantKind: string } | null = null;
       try {
         const ctx = req.userContext;
         if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
@@ -5991,6 +6444,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (!amt || amt <= 0) return res.status(400).json({ ok: false, error: "amount_required" });
           patch.amount = amt;
           if (typeof req.body?.currency === "string") patch.currency = req.body.currency;
+          /* WAVE 43 · R7 — ENFORCE THE CLOSE HERE TOO.
+           *
+           * This is the second of three money-entry paths. Guarding only the
+           * canonical one would have left a documented "integration partner /
+           * mobile client" endpoint funding closed rounds, which is the same
+           * defect with a different URL. Runs after the ownership check above
+           * (so an unauthorized caller still gets 403/404, never a close date)
+           * and before applyDecisionAction writes anything. */
+          const admission = evaluateCommitmentAdmission({ roundId: inv.roundId, invitationId: invId });
+          if (!admission.allow) {
+            return res.status(admission.status).json(roundClosedBody(admission));
+          }
+          /* NOTE ON BINDING: unlike the canonical PATCH handler, this shortcut
+           * writes ONLY the decision record — it does not mirror into
+           * `soft_circles` — so there is no commitment row to bind the grant
+           * to, and the grant is deliberately NOT consumed here. It stays open
+           * for the commitment that eventually carries the money, and this
+           * response states the lateness explicitly so no caller can read a
+           * bare `ok: true` as "accepted on time". */
+          wave43Late = admission.late
+            ? { closedAt: admission.grant.closedAt, grantKind: admission.grant.kind }
+            : null;
         }
         const result = yds.applyDecisionAction(rec, patch);
         if (!result.ok) return res.status(409).json({ ok: false, error: result.error });
@@ -5998,7 +6473,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (typeof yds._persistRecord === "function") {
           try { yds._persistRecord(rec); } catch { /* non-fatal */ }
         }
-        return res.json({ ok: true, invitationId: invId, action, state: rec.state ?? null });
+        return res.json({
+          ok: true,
+          invitationId: invId,
+          action,
+          state: rec.state ?? null,
+          // WAVE 43 · R7 — visible in the API, not only in the UI.
+          acceptedAfterClose: wave43Late !== null,
+          closedAt: wave43Late?.closedAt ?? null,
+        });
       } catch (err) {
         return res.status(500).json({ ok: false, error: "internal_error", message: (err as Error).message });
       }

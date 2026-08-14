@@ -262,6 +262,49 @@ const JURISDICTION_ALIASES: Record<string, SpvJurisdiction> = {
  * `default: return "delaware"` in PartnerSpvEngine.deriveEngineJurisdiction
  * and is the single place the coercion policy is expressed.
  */
+/**
+ * WAVE 40 / F-3 — THE ONE PLACE THE DISPLAY JURISDICTION IS DECIDED.
+ *
+ * The live audit found "Asian Biotech" showing `British Virgin Islands` on the
+ * SPV Engine list card and `United States (Delaware)` on its own detail page.
+ * Both surfaces read the SAME stored row (the list via GET
+ * /api/partner/me/spv, the standalone page via GET /api/partner/me/spvs/:id,
+ * both served from spvEngineStore), so this was never a data-fetch difference:
+ * it was FIELD PRECEDENCE implemented twice, differently.
+ *
+ *   • PartnerSpvEngine.jurisdictionLabelFor  → terms.jurisdictionCountry, then
+ *                                              the `jurisdiction` enum column
+ *   • SpvDetailTabs                          → same country-first order
+ *   • PartnerSpvDetail.jurisdictionLabel     → the enum COLUMN ONLY
+ *
+ * A vehicle whose column still says "delaware" while the GP typed "British
+ * Virgin Islands" in the wizard therefore reads two different domiciles on two
+ * screens. The column is the legacy coerced value; `terms.jurisdictionCountry`
+ * is what the GP actually chose, so country-first is the correct order — and it
+ * is now expressed ONCE, here, and called by all three surfaces.
+ *
+ * NOT ALL SPVs ARE US-BASED, and nothing in this function may pretend
+ * otherwise: there is no "delaware" fallback on any path. An unmappable
+ * free-text country is returned AS TYPED rather than flattened, and a row with
+ * neither value resolves to "Other / not specified".
+ *
+ * The stale column itself is a DATA defect, not a rendering one; it is repaired
+ * by scripts/backfill_spv_jurisdiction.ts, which has to be run against
+ * production. This function makes every surface agree in the meantime instead of
+ * showing a US domicile for a BVI vehicle.
+ */
+export function spvJurisdictionDisplay(source: {
+  jurisdiction?: string | null;
+  terms?: unknown;
+}): { code: SpvJurisdiction; label: string } {
+  const country = (source.terms as { jurisdictionCountry?: unknown } | null | undefined)
+    ?.jurisdictionCountry;
+  const countryText = typeof country === "string" ? country.trim() : "";
+  const code = resolveSpvJurisdiction(countryText || source.jurisdiction);
+  if (code === SPV_JURISDICTION_UNKNOWN && countryText) return { code, label: countryText };
+  return { code, label: SPV_JURISDICTION_LABELS[code] };
+}
+
 export function resolveSpvJurisdiction(input: string | null | undefined): SpvJurisdiction {
   const raw = String(input ?? "").trim();
   if (!raw) return SPV_JURISDICTION_UNKNOWN;

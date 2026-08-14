@@ -63,6 +63,10 @@ import type { UserContext } from "./lib/userContext";
 // sees the new commitment without a refresh hack.
 import { createSoftCircle as softCircleCreate } from "./softCircleStore";
 import { setSoftCircleSource } from "./track4Routes";
+// WAVE 43 · R7 — the server-side close enforcement. See
+// server/lib/roundCloseEnforcement.ts for why a disabled button is not enough.
+import { evaluateCommitmentAdmission, roundClosedBody } from "./lib/roundCloseEnforcement";
+import { consumeGrant as consumeLateAcceptanceGrant } from "./lib/roundLateAcceptanceStore";
 import { log } from "./lib/logger";
 // v26.1.x ENH-1 — STATIC imports (ESM-safe). The prior lazy require() of the
 // persistence shim threw under tsx ("Unexpected token ')'") and silently
@@ -732,6 +736,29 @@ export function registerYourDecisionRoutes(app: Express): void {
       rec.viewedAt = new Date().toISOString();
     }
 
+    /* WAVE 43 · R7 — ENFORCE THE CLOSE ON THE CANONICAL CLIENT PATH.
+     *
+     * This is the handler the investor UI actually calls, and F-7's $250,000
+     * commitment to a round that closed on 3 August came through here. The
+     * check runs AFTER auth + ownership (so a stranger gets 401/403/404 and
+     * never learns a round's close date) and BEFORE applyDecisionAction mutates
+     * the record — a refusal must leave the ladder exactly where it was.
+     *
+     * ONLY the money action is gated. `view`, `accept` and `decline` still work
+     * on a closed round: refusing everything would pass a one-sided test and
+     * break the funnel, and an investor must still be able to read and decline
+     * a round that closed. R7 is about MONEY. */
+    let wave43Admission: ReturnType<typeof evaluateCommitmentAdmission> | null = null;
+    if (parsed.data.action === "soft_circle") {
+      wave43Admission = evaluateCommitmentAdmission({
+        roundId: rec.roundId,
+        invitationId: rec.invitationId ?? invId,
+      });
+      if (!wave43Admission.allow) {
+        return res.status(wave43Admission.status).json(roundClosedBody(wave43Admission));
+      }
+    }
+
     const result = applyDecisionAction(rec, parsed.data);
     if (!result.ok) return res.status(409).json({ error: result.error });
     /* v25.11 NC1 fix — write the updated decision to the DB so the state
@@ -744,6 +771,7 @@ export function registerYourDecisionRoutes(app: Express): void {
     // mirror it into the soft-circle store so founders can see it on
     // /founder/rounds/:id (RoundDetail) without a refresh hack. Best-effort
     // only; never fail the decision PATCH if the mirror write fails.
+    let wave43LateMarkError: string | null = null;
     if (parsed.data.action === "soft_circle" && typeof parsed.data.amount === "number" && parsed.data.amount > 0) {
       try {
         const investorName = ctx.identity?.name || ctx.identity?.screenName || ctx.userId || "Investor";
@@ -760,6 +788,24 @@ export function registerYourDecisionRoutes(app: Express): void {
           status: "intent",
           collectiveVisible: true,
         });
+        /* WAVE 43 · R7 — bind the founder's single-use grant to the commitment
+         * it admitted, so the record says "accepted after close" everywhere
+         * this commitment appears. NOT best-effort, unlike the mirror around
+         * it: an unmarked late commitment is precisely what the ruling forbids,
+         * so a binding failure is logged at error level and surfaced on the
+         * response rather than swallowed. */
+        if (wave43Admission?.allow && wave43Admission.late && wave43Admission.grant.kind === "late_commitment") {
+          try {
+            consumeLateAcceptanceGrant(wave43Admission.grant.id, newSc.id);
+          } catch (bindErr) {
+            wave43LateMarkError = (bindErr as Error).message;
+            log.error(
+              "[wave43] late-acceptance binding failed for soft-circle",
+              newSc.id,
+              wave43LateMarkError,
+            );
+          }
+        }
         // D3: attribute to collective channel (investor acting via their decision surface)
         try { setSoftCircleSource(newSc.id, "collective", ctx.userId ?? null); } catch { /* best-effort */ }
       } catch (err) {
@@ -791,6 +837,17 @@ export function registerYourDecisionRoutes(app: Express): void {
       },
       req,
     });
-    res.json({ ok: true, record: rec, telemetry: env });
+    res.json({
+      ok: true,
+      record: rec,
+      telemetry: env,
+      // WAVE 43 · R7 — the API states lateness; the UI is not the only place it
+      // is visible, and `lateMarkError` makes a failed binding impossible to
+      // mistake for a clean on-time acceptance.
+      acceptedAfterClose: Boolean(wave43Admission?.allow && wave43Admission.late),
+      closedAt:
+        wave43Admission?.allow && wave43Admission.late ? wave43Admission.grant.closedAt : null,
+      lateMarkError: wave43LateMarkError,
+    });
   });
 }

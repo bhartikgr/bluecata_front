@@ -1,0 +1,12 @@
+import { chromium } from "playwright";
+const b = await chromium.launch({ executablePath: "/home/user/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome", args:["--no-sandbox"] });
+const ctx = await b.newContext({ baseURL: "http://localhost:5199", viewport:{width:1400,height:1000} });
+await ctx.request.post("/api/auth/login",{headers:{"content-type":"application/json"},data:{email:"w40partner@fixture.example.com",password:"W40Fix!pass1"},failOnStatusCode:false});
+const p = await ctx.newPage();
+await p.goto("/collective/partner/spvs/spv_2d33f58f90fb8ad9",{waitUntil:"domcontentloaded"});
+await p.waitForTimeout(4000);
+console.log(JSON.stringify({ standalone: await p.locator('[data-testid="partner-spv-jurisdiction"]').innerText().catch(()=>null) }));
+await p.goto("/collective/partner/spv-engine",{waitUntil:"domcontentloaded"});
+await p.waitForTimeout(4000);
+console.log(JSON.stringify({ listCard: await p.locator('[data-testid="spv-row-jurisdiction-spv_2d33f58f90fb8ad9"]').innerText().catch(()=>null) }));
+await b.close();

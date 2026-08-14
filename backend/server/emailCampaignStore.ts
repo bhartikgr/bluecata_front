@@ -922,7 +922,7 @@ import {
   testConnection as testTransportConnection,
 } from "./emailTransport";
 // V9 (Patch v8): replaced private _testEmail.outbox reach-ins with public accessors.
-import { _testEmail, listOutbox, findOutboxItem, countOutboxByStatus } from "./emailStore";
+import { _testEmail, listOutbox, findOutboxItem, countOutboxByStatus, projectOutboxForResponse } from "./emailStore";
 
 export function registerEmailTransportRoutes(app: Express): void {
   // ── GET /api/admin/email/transport/config ───────────────────
@@ -990,7 +990,10 @@ export function registerEmailTransportRoutes(app: Express): void {
     res.json({
       ok: true,
       total: items.length,
-      items: page,
+      /* WAVE 49 · C-1 — this is the SECOND admin outbox reader, and Review C only
+       * named the first. It returned raw rows too, so it was an equally good
+       * source for a live password-reset link. Projected on the same rule. */
+      items: projectOutboxForResponse(page),
       nextCursor,
       stats: countOutboxByStatus(),
     });
@@ -1011,10 +1014,17 @@ export function registerEmailTransportRoutes(app: Express): void {
     if (item.status !== "bounced" && item.status !== "queued") {
       return res.status(400).json({ error: "item_not_retryable", status: item.status });
     }
+    /* WAVE 49 · C-1 — a scrubbed token-bearing row cannot be re-sent from the
+     * row (the secret is gone by design), so this reader refuses it for the same
+     * reason `retryOutboxItem` does, rather than queueing a dead link. */
+    if (item.bodyRedacted) {
+      return res.status(400).json({ error: "item_not_retryable", status: item.status, reason: "token_bearing_body_not_resendable_reissue_required" });
+    }
     item.status = "queued";
     item.error = null;
     (item as any)._nextRetryMs = 0;
-    res.json({ ok: true, item });
+    // WAVE 49 · C-1 — projected, never raw.
+    res.json({ ok: true, item: projectOutboxForResponse([item])[0] });
   });
 
   // ── POST /api/admin/email/transport/outbox/:id/cancel ───────
@@ -1034,7 +1044,8 @@ export function registerEmailTransportRoutes(app: Express): void {
     }
     item.status = "bounced";
     item.error = "canceled_by_admin";
-    res.json({ ok: true, item });
+    // WAVE 49 · C-1 — projected, never raw.
+    res.json({ ok: true, item: projectOutboxForResponse([item])[0] });
   });
 }
 

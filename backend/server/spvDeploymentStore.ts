@@ -83,6 +83,17 @@ export interface RecordSpvDeploymentResult {
  * Record an SPV deployment. Idempotent on spv_id — if a row already exists it is
  * returned unchanged (created:false). The fee is DB-resolved from the flat
  * consortium SPV deployment fee at record time and frozen onto the row.
+ *
+ * WAVE 46 / R6 + R22 — `getSpvDeploymentFee()` now THROWS
+ * `SpvDeploymentFeeUnconfiguredError` when the authoritative `platform_fees` row
+ * cannot answer, instead of returning the compiled-in $5,000 this store used to
+ * freeze onto the row. A deployment record is a permanent money artifact; if
+ * there is no price there is nothing honest to freeze, so we refuse before the
+ * INSERT and leave no row behind. The route turns that into a 409 naming the
+ * key. NOTE this table (`spv_deployments`) is a SECOND per-SPV record of the same
+ * obligation, distinct from `partner_billing_entries` and from the
+ * `spv_deployment_fee_billing` latch — reported as an open instance of the
+ * multi-surface class in build_log/WAVE46_REPORT.md §5.
  */
 export function recordSpvDeployment(args: {
   spvId: string;

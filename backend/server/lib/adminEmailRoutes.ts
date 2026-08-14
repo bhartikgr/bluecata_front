@@ -138,7 +138,8 @@ export function registerAdminEmailRoutes(app: Express): void {
       try {
         appendAdminAudit(actor, "smtp.send_test", "email.send-test", {
           to,
-          delivered: result.delivered,
+          /* WAVE 48 · ITEM 4 — renamed from `delivered`; same value. */
+          transportAccepted: result.transportAccepted,
           mode: result.mode,
           error: result.error ?? null,
         });

@@ -31,6 +31,25 @@ import {
  Eye, Download, Hash, Megaphone, ChevronRight,
 } from "lucide-react";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes, safeToFixed } from "@/lib/format";
+/* WAVE 43 · OWNER RULING R7 — the ONE close definition, shared with the server
+ * that refuses the money. This page carries the THIRD "Submit soft-circle"
+ * button in the investor app; it gated only on STORED decision state, which no
+ * clock ever advances. */
+import {
+  resolveCloseWindow,
+  countdownVerdict,
+  closedStatement,
+  isClosedAt,
+  NO_CLOSE_DATE_COPY,
+} from "@shared/roundClose";
+/* WAVE 42 · OWNER RULING R6 — "no surface may render 0 when it means 'we do not
+ * know'." `fmtUSD` returns a bare em-dash for null, which the ruling rejects
+ * alongside `$0` ("never `$0`, `0.00%`, `0` or a blank"), so the valuation
+ * fields on this page go through the shared honest-refusal helpers in
+ * `@/lib/moneyDisplay` instead. `ppsDisplay` is the pre-existing Wave 4 helper
+ * for price-per-share and is reused rather than reimplemented. */
+import { moneyMajorOrNotProvided } from "@/lib/moneyDisplay";
+import { ppsDisplay } from "@/lib/wave4Display";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
@@ -52,9 +71,22 @@ type Inv = {
  id: string;
  company: { id: string; name: string; sector: string };
  round: { id: string; name: string; type: string; state: string };
- state: string; receivedAt: string; expiresAt: string;
+ /* WAVE 43 · R6/R7 — nullable; the list projection no longer fabricates
+  * `now + 14 days` for an invitation with no recorded deadline, and the
+  * round-level close inputs travel alongside it (S3: earliest wins). */
+ state: string; receivedAt: string; expiresAt: string | null;
+ closeDate?: string | null; roundState?: string | null;
  minTicket: number; targetAmount: number; raisedAmount: number;
- preMoney: number; postMoney: number; pricePerShare: number;
+ /* WAVE 42 · OWNER RULING R6 — these five were declared non-nullable, which was
+  * simply untrue: `rounds.pre_money` / `post_money` / `min_ticket` /
+  * `price_per_share` are all NULLABLE columns. The non-null declaration is what
+  * let the server's `?? 0` look correct to the type checker and is the reason
+  * live audit finding F-4 shipped: this card published "Pre-money $0" for a
+  * company whose valuation had never been entered. Widened to `| null` so the
+  * unknown case is now a case the renderer is FORCED to handle. */
+ preMoney: number | null; postMoney: number | null; pricePerShare: number | null;
+ /* R5 — the round's own denomination, so a CAD round is not shown with a US $. */
+ currency?: string | null;
 };
 type DecisionRecord = {
  invitationId: string; roundId: string; companyId: string;
@@ -111,7 +143,14 @@ export default function InvestorCompanyDetail({
 
  // Find the matching open invitation for this investor (preview maps companyId → invitation).
  const invitations = useQuery<Inv[]>({ queryKey: ["/api/investor/invitations"] });
- const myInv = asArray(invitations.data).find((i) => i.company.id === id) ?? null;
+ /* WAVE 42 · R6 — `asArray(...)` with no type argument returns `unknown[]`, so
+    `myInv` was structurally typed as `{}` and every field read on it was
+    unchecked. That is precisely how the F-4 lie survived review: the type
+    checker had no opinion about `myInv.preMoney`, so nothing objected when the
+    server started sending a fabricated `0` for it. Parameterised with the `Inv`
+    type declared above so the widened `number | null` valuation fields are now
+    actually enforced at every read on this page. */
+ const myInv = asArray<Inv>(invitations.data).find((i) => i.company.id === id) ?? null;
 
  // DEF-024 fix: pass ?companyId= so the server doesn't return 400
  const dr = useQuery<DR[]>({
@@ -374,11 +413,21 @@ export default function InvestorCompanyDetail({
  <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Layers className="h-4 w-4" /> Headline round terms</CardTitle></CardHeader>
  <CardContent className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
  <Stat label="Round" v={myInv.round.name} />
- <Stat label="Pre-money" v={fmtUSD(myInv.preMoney, { compact: true })} />
- <Stat label="Post-money" v={fmtUSD(myInv.postMoney, { compact: true })} />
- <Stat label="Round size" v={fmtUSD(myInv.targetAmount, { compact: true })} />
- <Stat label="Min ticket" v={fmtUSD(myInv.minTicket, { compact: true })} />
- <Stat label="Price / share" v={`$${safeToFixed(myInv.pricePerShare, 4)}`} />
+                {/* WAVE 42 · R6 / live-audit F-4 (HIGH) — these four read `$0`
+                    for a never-entered valuation while sibling fields on this
+                    same card correctly read "Not set". An investor reads "$0
+                    pre-money" as "this company is worth nothing". A genuine 0
+                    still renders as $0 and means it — `moneyMajorOrNotProvided`
+                    refuses only on null/undefined/non-finite, never on 0. */}
+ <Stat label="Pre-money" v={moneyMajorOrNotProvided(myInv.preMoney, myInv.currency, { compact: true })} />
+ <Stat label="Post-money" v={moneyMajorOrNotProvided(myInv.postMoney, myInv.currency, { compact: true })} />
+ <Stat label="Round size" v={moneyMajorOrNotProvided(myInv.targetAmount, myInv.currency, { compact: true })} />
+ <Stat label="Min ticket" v={moneyMajorOrNotProvided(myInv.minTicket, myInv.currency, { compact: true })} />
+                {/* WAVE 42 · R6 — was `$${safeToFixed(pps, 4)}`, which rendered
+                    the literal string "$—" for an unpriced round (a $ sign glued
+                    to a dash). `ppsDisplay` is the established Wave 4 helper and
+                    says "Not set", which is what an unpriced round IS. */}
+ <Stat label="Price / share" v={ppsDisplay(myInv.pricePerShare, 4)} />
  </CardContent>
  </Card>
  ) : <EmptyTab text="No active round invitation for this company." />}
@@ -593,6 +642,23 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  const allowed = YOUR_DECISION_TRANSITIONS[state] ?? [];
  const banner = STATE_BANNER[state];
 
+ /* WAVE 43 · OWNER RULING R7 — the close window, resolved by the SAME shared
+  * resolver the server uses. The gate below asked only
+  * `["funded","declined","expired","revoked","signed"].includes(state)`, i.e. the
+  * STORED decision state — and nothing in this system rewrites that state when a
+  * deadline passes (live audit F-7). An invitation sitting at `accepted` on a
+  * round that closed on 3 August therefore still rendered the full soft-circle
+  * form with an enabled "Submit soft-circle" button. Time is now consulted as
+  * well as state. */
+ const closeWindow = resolveCloseWindow({
+  invitationExpiresAt: inv.expiresAt ?? null,
+  roundCloseDate: inv.closeDate ?? null,
+  roundState: inv.roundState ?? null,
+ });
+ const nowMs = Date.now();
+ const roundClosed = isClosedAt(closeWindow, nowMs);
+ const closeVerdict = countdownVerdict(closeWindow, nowMs);
+
  const [decisionRadio, setDecisionRadio] = useState<"accept" | "decline" | "soft_circle">("soft_circle");
 
  return (
@@ -615,7 +681,7 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  </Card>
 
  {/* Action selector + form */}
- {!["funded", "declined", "expired", "revoked", "signed"].includes(state) && (
+ {!roundClosed && !["funded", "declined", "expired", "revoked", "signed"].includes(state) && (
  <Card>
  <CardHeader className="pb-3"><CardTitle className="text-base">Make your decision</CardTitle></CardHeader>
  <CardContent className="space-y-4">
@@ -729,9 +795,10 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  <div className="text-sm text-muted-foreground mb-3">Read-only summary. Full document available in the Documents tab.</div>
  <div className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
  <Stat label="Round name" v={inv.round.name} />
- <Stat label="Pre-money" v={fmtUSD(inv.preMoney, { compact: true })} />
- <Stat label="Round size" v={fmtUSD(inv.targetAmount, { compact: true })} />
- <Stat label="Min ticket" v={fmtUSD(inv.minTicket, { compact: true })} />
+                {/* WAVE 42 · R6 / F-4 — same defect, term-sheet preview copy. */}
+ <Stat label="Pre-money" v={moneyMajorOrNotProvided(inv.preMoney, inv.currency, { compact: true })} />
+ <Stat label="Round size" v={moneyMajorOrNotProvided(inv.targetAmount, inv.currency, { compact: true })} />
+ <Stat label="Min ticket" v={moneyMajorOrNotProvided(inv.minTicket, inv.currency, { compact: true })} />
  {/* DEF-025 fix: source liquidation pref + pro-rata from round data */}
  <Stat label="Liquidation pref" v={(myInv?.round as any)?.terms?.liquidationPref ?? "Per round terms"} />
  <Stat label="Pro-rata" v={(myInv?.round as any)?.terms?.proRataMinimum ?? "Per round terms"} />
@@ -751,15 +818,39 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  <span className="text-muted-foreground">{fmtDate(h.ts)}</span>
  </li>
  ))}
- <li className="flex justify-between py-2"><span className="text-muted-foreground">Decision deadline</span><span className="font-medium">{fmtDate(inv.expiresAt)}</span></li>
  {decision.data?.amount && (
  <li className="flex items-center gap-2 text-xs font-mono text-muted-foreground pt-1">
  <Hash className="h-3 w-3" /> Recorded {decision.data.currency} {fmtNum(decision.data.amount)} · {decision.data.softCircleType}
  </li>
  )}
+ {/* WAVE 43 · R6 — the EFFECTIVE deadline the server enforces, and an
+     explicit statement when none was ever recorded (never a bare dash that
+     reads as "none" and never a fabricated date). */}
+ <li className="flex justify-between py-2"><span className="text-muted-foreground">Decision deadline</span><span className="font-medium" data-testid="text-decision-deadline">{closeWindow.deadlineIso ? fmtDate(closeWindow.deadlineIso) : NO_CLOSE_DATE_COPY}</span></li>
  </ul>
  </CardContent>
  </Card>
+
+ {/* WAVE 43 · OWNER RULING R7 — "The UI must state the fact, not offer the
+     action." A closed round gets the statement instead of the decision form.
+     The refusal itself lives on the server (the decision PATCH calls
+     `evaluateCommitmentAdmission` for `soft_circle`), so this panel cannot be
+     the only thing standing between a closed round and $250,000.
+
+     Deliberately NOT hidden for `accept`/`decline`: the server still admits
+     those on a closed round, because an investor formally passing after the
+     window shut is a true record, and "the money is allowed in" only concerns
+     money. The form as a whole is state-gated as before, so this block replaces
+     it wholesale rather than disabling one radio. */}
+ {roundClosed && !["funded", "declined", "revoked", "signed"].includes(state) && (
+  <Card className="border-[hsl(7_61%_43%)]/40" data-testid="panel-round-closed">
+   <CardHeader className="pb-3"><CardTitle className="text-base text-[hsl(7_61%_43%)]" data-testid="text-round-closed-statement">{closedStatement(closeVerdict.kind === "closed" ? closeVerdict.deadlineIso : null)}</CardTitle></CardHeader>
+   <CardContent className="text-xs text-muted-foreground space-y-1.5">
+    <p>Soft-circles are no longer accepted on this round and a submission would be refused by the server.</p>
+    <p>The founder can still admit your commitment deliberately — by reopening the round, or by accepting your commitment specifically. It is then recorded and shown everywhere as <strong>accepted after close</strong>, with the name of the founder who accepted it and when.</p>
+   </CardContent>
+  </Card>
+ )}
  </div>
  );
 }

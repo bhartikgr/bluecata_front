@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # The semantic-gate half of C-2 was already built: spec/_v8_coverage.py
 # enforces H1..H6 and is a SACRED file (hash pinned in scripts/sacred_check.sh
-# ADDED_47, 21711b0b…). It cannot be edited without breaking sacred 47/47, and
+# ADDED_47, 21711b0b…). It cannot be edited without breaking sacred 48/48 (47/47 before Wave 50), and
 # it is not edited here. The CI half was NOT built, and the way it was missing
 # was actively misleading:
 #

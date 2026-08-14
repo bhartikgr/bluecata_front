@@ -2190,6 +2190,64 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
 
   /* ====== Telemetry power ====== */
+
+  /* WAVE 44 · DEFECT 3 — THE COUNTER, NOT THE DATA, WAS ZERO.
+   *
+   * /admin/telemetry printed EVENTS TODAY 0 · THIS WEEK 0 · ALL-TIME 0 on a
+   * platform with 65 companies and paid invoices. Those three numbers were
+   * computed from `defaultTelemetryStore` (packages/telemetry/src/recorder.ts:57
+   * — `private events: TelemetryEvent[] = []`), a BROWSER-LOCAL array that is
+   * never hydrated from the server. It starts empty on every page load, so the
+   * three KPIs could only ever read 0 unless the operator happened to trigger an
+   * event in that same tab. The durable record — `telemetry_events`, written by
+   * sprint10Telemetry.emitSync — was never consulted.
+   *
+   * This endpoint counts the DURABLE table, and it answers R6 explicitly: when
+   * the table cannot be read it returns `measured: false` with a reason instead
+   * of the number 0, so "nothing was recorded" and "we did not measure" are
+   * never the same rendering. Counts are COUNT(*) over the table, so they are
+   * not capped by the 5,000-row Explorer read.
+   */
+  app.get("/api/admin/telemetry/counts", (_req: Request, res: Response) => {
+    const nowMs = Date.now();
+    const startOfToday = new Date(nowMs);
+    startOfToday.setHours(0, 0, 0, 0);
+    const weekAgo = new Date(startOfToday.getTime() - 7 * 24 * 3600 * 1000);
+    try {
+      const db = rawDb();
+      const one = (sql: string, ...params: unknown[]): number => {
+        const row = db.prepare(sql).get(...(params as never[])) as { n?: number } | undefined;
+        return Number(row?.n ?? 0);
+      };
+      const allTime = one(`SELECT COUNT(*) AS n FROM telemetry_events`);
+      const today = one(`SELECT COUNT(*) AS n FROM telemetry_events WHERE occurred_at >= ?`, startOfToday.toISOString());
+      const thisWeek = one(`SELECT COUNT(*) AS n FROM telemetry_events WHERE occurred_at >= ?`, weekAgo.toISOString());
+      res.json({
+        ok: true,
+        measured: true,
+        source: "telemetry_events",
+        today,
+        thisWeek,
+        allTime,
+        windowStartToday: startOfToday.toISOString(),
+        windowStartWeek: weekAgo.toISOString(),
+        asOf: new Date(nowMs).toISOString(),
+      });
+    } catch (err) {
+      /* NOT ZERO. A read failure is reported as unmeasured, with the reason. */
+      res.status(200).json({
+        ok: false,
+        measured: false,
+        source: "telemetry_events",
+        reason: `telemetry_events unreadable: ${(err as Error).message}`,
+        today: null,
+        thisWeek: null,
+        allTime: null,
+        asOf: new Date(nowMs).toISOString(),
+      });
+    }
+  });
+
   app.get("/api/admin/telemetry/events", (req: Request, res: Response) => {
     const eventType = String(req.query.eventType ?? "");
     const actor = String(req.query.actor ?? "");

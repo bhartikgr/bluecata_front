@@ -19,6 +19,10 @@ import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip } from "@/components/HelpTip";
 import { Send, Upload, Eye, Repeat, Ban, Calendar, Plus, ArrowLeft, FileText, Check, Cpu, ArrowRight, Lock, Info, Crown, Users, ListChecks, GitBranch, Wallet, Layers, AlertTriangle, Sparkles, FilePlus2, Download, Hash, ShieldCheck, X } from "lucide-react";
 import CloseRoundPanel from "@/components/CloseRoundPanel";
+/* WAVE 43 · OWNER RULING R7 — the founder's deliberate, audited late-acceptance
+ * surface (reopen the round · accept one specific late commitment). The close
+ * itself is enforced server-side; this is the only way back in. */
+import { RoundCloseLateAcceptance } from "@/components/founder/RoundCloseLateAcceptance";
 import { emit } from "@/lib/sprint3";
 import { fmtUSD, fmtPct, fmtDate, timeAgo, fmtNum, safeToFixed } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
@@ -54,7 +58,16 @@ type Round = {
 // W-INVEST BUG B — `active` is an additive, server-computed flag: the investor
 // is committed/funded on this round OR already in the company committed cap table.
 type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string; resentAt?: string | null; active?: boolean };
-type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string; active?: boolean };
+/* WAVE 43 · R7 — `acceptedAfterClose` and `lateAcceptance` are DERIVED by the
+ * server from the append-only `round_late_acceptances` ledger and joined onto
+ * this projection (`GET /api/rounds/:id/soft-circles`). They are not columns on
+ * the commitment, so no write path can forget or clear them. */
+type SoftCircleLateAcceptance = {
+ closedAt: string; acceptedByUserId: string; acceptedByName: string | null;
+ acceptedAt: string; reason: string | null; kind: string; label: string;
+};
+type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string; active?: boolean;
+ acceptedAfterClose?: boolean; lateAcceptance?: SoftCircleLateAcceptance | null };
 // v24.3 — wire-transfer instructions published by the founder per round.
 type WireInstructions = {
  roundId: string;
@@ -603,6 +616,20 @@ export default function RoundDetail() {
  </TabsContent>
 
  <TabsContent value="soft">
+ {/* WAVE 43 · R7 — the close status and the two late-acceptance doors sit at the
+     top of the soft-circle book, which is where a founder looks when an investor
+     says "I still want in". */}
+ <RoundCloseLateAcceptance
+  roundId={id}
+  /* `asArray` erases the element type to `unknown`; the typed query data is
+     used directly so the mapping stays type-checked. */
+  invitations={(invs.data ?? []).map((inv) => ({
+   id: inv.id,
+   investorName: inv.investorName,
+   investorEmail: inv.investorEmail,
+   state: inv.state,
+  }))}
+ />
  {/* v24.3 — Wire Transfer Instructions. Founder publishes the company's
      bank details so investors with a signed (confirmed) soft-circle know
      where to send the funds. Addresses Avi's main v24.3 complaint. */}
@@ -671,6 +698,25 @@ export default function RoundDetail() {
      <StateBadge state={s.status} />
      {s.active && (
        <Badge variant="outline" className="gap-1 bg-emerald-500/10 border-emerald-500/40 text-emerald-700 text-[10px]" data-testid={`badge-sc-active-${s.id}`}>Active</Badge>
+     )}
+     {/* WAVE 43 · OWNER RULING R7 — "the money is allowed in, but the record
+         must never look like it arrived on time." The mark is rendered
+         wherever the commitment appears; this is the founder's copy of it,
+         carrying the attribution so the founder sees whose decision it was. */}
+     {s.acceptedAfterClose && (
+       <Tooltip>
+         <TooltipTrigger asChild>
+           <Badge variant="outline" className="gap-1 bg-amber-500/10 border-amber-500/50 text-amber-800 text-[10px] cursor-help" data-testid={`badge-sc-late-${s.id}`}>
+             {s.lateAcceptance?.label ?? "Accepted after close"}
+           </Badge>
+         </TooltipTrigger>
+         <TooltipContent className="max-w-xs text-xs leading-relaxed">
+           Accepted after this round closed on {fmtDate(s.lateAcceptance?.closedAt)}
+           {s.lateAcceptance?.acceptedByName ? <> by {s.lateAcceptance.acceptedByName}</> : null}
+           {s.lateAcceptance?.acceptedAt ? <> on {fmtDate(s.lateAcceptance.acceptedAt)}</> : null}.
+           {s.lateAcceptance?.reason ? <> Reason: “{s.lateAcceptance.reason}”</> : null}
+         </TooltipContent>
+       </Tooltip>
      )}
    </div>
  </td>

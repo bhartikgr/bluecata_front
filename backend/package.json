@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "26.16.0",
+  "version": "26.17.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -21,7 +21,9 @@
     "docs:package": "python3 scripts/build_package_docs.py",
     "docs:verify": "python3 scripts/build_package_docs.py --verify",
     "docs:falsify": "bash scripts/__tests__/package_docs_falsify.sh",
-    "preflight": "npm run sacred && npm run lint:money-exponent-fence && npm run guard:snapshot:verify && npm run guard:test && npm run guard && npm run coverage:ci && npm run docs:verify",
+    "reachability": "tsx scripts/reachability/reachability_gate.ts",
+    "reachability:poles": "node scripts/reachability/prove_poles_wave41.mjs",
+    "preflight": "npm run sacred && npm run lint:money-exponent-fence && npm run guard:snapshot:verify && npm run guard:test && npm run guard && npm run reachability && npm run coverage:ci && npm run docs:verify",
     "lint:no-button-in-link": "eslint --config eslint.config.js \"client/src/**/*.tsx\"",
   "lint:classification-scope-fence": "tsx scripts/lint/partnerClassificationScopeFence.ts",
   "lint:fund-metrics-fence": "tsx scripts/lint/fundMetricsWinnerFence.ts",

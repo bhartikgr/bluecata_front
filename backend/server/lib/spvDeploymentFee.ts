@@ -17,7 +17,24 @@
  * NO hardcoded fee values here.
  */
 import crypto from "crypto";
-import { resolvePartnerFee, FeeResolutionError } from "./partnerFeeResolver";
+import { FeeResolutionError } from "./partnerFeeResolver";
+/* WAVE 46 / OWNER RULING R22 — ONE SOURCE FOR THIS FEE.
+ *
+ * The amount no longer comes from `resolvePartnerFee` directly. It comes from
+ * `resolveSpvDeploymentFee`, which keeps levels 1-2 of that resolver (deliberate
+ * per-partner and per-tier overrides — RETAINED per R3 so tiered pricing can be
+ * reinstated) and replaces level 3 with THE ROW THE ADMIN CONSOLE WRITES:
+ * `platform_fees` key `consortium.spv_deployment_fee`.
+ *
+ * Before this wave the console's number ($240.00 live) was never read here, and
+ * the only `spv_deployment` rows that exist on a fresh deploy are the four
+ * SEEDED $0 platform-default bands — so this path billed $0.00 while the console
+ * advertised $240. See server/lib/spvDeploymentFeeSource.ts for the full
+ * derivation. There is still no fee amount compiled into this file. */
+import {
+  resolveSpvDeploymentFee,
+  SpvDeploymentFeeUnconfiguredError,
+} from "./spvDeploymentFeeSource";
 /* WAVE 3F / ITEM 2 — the tier comes from the canonical durable partner record
  * and FAILS CLOSED. See server/lib/partnerTierResolver.ts and migration 0161. */
 import { resolveCanonicalPartnerTier } from "./partnerTierResolver";
@@ -118,11 +135,21 @@ export function chargeSpvDeploymentFee(args: {
     return { charged: false, reason: "already_charged" };
   }
 
-  // ---- Resolve the fee (DB-direct, fail-closed) ----
+  // ---- Resolve the fee (DB-direct, fail-closed, ONE SOURCE — R22) ----
   let resolved;
   try {
-    resolved = resolvePartnerFee(partnerId, tier, "spv_deployment", { sizeMinor: committedMinor });
+    resolved = resolveSpvDeploymentFee(partnerId, tier, {
+      sizeMinor: committedMinor,
+      raw: rawTx,
+    });
   } catch (err) {
+    /* R6/R22 — the authoritative row cannot answer. We refuse rather than
+     * charging $0 (what the seeded bands used to do) or the historical $5,000
+     * seed. Same graceful degradation as a band gap: no stamp, no ledger row, a
+     * durable reason the caller records as `pending` for admin retry. */
+    if (err instanceof SpvDeploymentFeeUnconfiguredError) {
+      return { charged: false, reason: err.code };
+    }
     if (err instanceof FeeResolutionError) {
       // Fail-closed at resolution means a genuine config gap. We do NOT charge a
       // guessed amount; we record the gap reason and leave the SPV un-stamped so

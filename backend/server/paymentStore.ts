@@ -477,6 +477,11 @@ export function registerPaymentRoutes(app: Express): void {
         id?: string; intentId?: string; customerId?: string;
         amountCents?: number; currency?: string; state?: string;
         kind?: string; ts?: string; plan?: string; periodEnd?: string;
+        /* WAVE 44 · DEFECT 3 — additive: these two ARE persisted on the durable
+           entry (PaymentEntry.couponCode / .discountCents) and were being parsed
+           away here, so the admin ledger table had no discount column data to
+           render. Reading them changes no write path. */
+        discountCents?: number; couponCode?: string;
       };
       const parsed: RawEntry[] = [];
       for (const r of rows) {
@@ -534,11 +539,33 @@ export function registerPaymentRoutes(app: Express): void {
         // subscription activation time. Null when neither is known.
         const paymentDate =
           e.state === "succeeded" && e.ts ? e.ts : (sub?.activated_at ?? null);
+        /* WAVE 44 · DEFECT 3 — the admin Ledger & Invoices table reads
+         * `amountCents` / `discountCents` / `netCents` / `couponCode` per row
+         * (client/src/pages/admin/AdminFeesConsolidated.tsx:559). Only `amount`
+         * was ever emitted, so every row that DID reach the table would have
+         * rendered blank money. `amountCents` is emitted ALONGSIDE the existing
+         * `amount` key (nothing renamed, no consumer broken).
+         *
+         * MONEY: integer minor units throughout. `net = amount - discount` is
+         * integer subtraction in the entry's OWN currency — no division, no
+         * multiplication, no cross-currency arithmetic, and no default currency
+         * substituted for a missing one (`currency` is passed through as-is so
+         * the client renders each row in its own currency, including
+         * exponent-0 currencies such as JPY where minor units ARE whole yen).
+         * A missing `discountCents` means NO DISCOUNT WAS RECORDED on this
+         * entry, which is a real zero, not an unmeasured one. */
+        const amountMinor = typeof e.amountCents === "number" ? e.amountCents : null;
+        const discountMinor = typeof e.discountCents === "number" ? e.discountCents : 0;
+        const netMinor = amountMinor === null ? null : amountMinor - discountMinor;
         return {
           id: e.id,
           intentId: e.intentId,
           customerId: e.customerId,
           amount: e.amountCents,
+          amountCents: amountMinor,
+          discountCents: discountMinor,
+          netCents: netMinor,
+          couponCode: e.couponCode ?? null,
           currency: e.currency,
           state: e.state,
           kind: e.kind,

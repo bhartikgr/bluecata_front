@@ -139,8 +139,21 @@ export function __resetDeploymentFeeBillingLatchForTest(): void {
   _billingTableReady = false;
 }
 
-function ensureBillingTable(raw: any): boolean {
+/* Exported for WAVE 50 ITEM 2's self-heal installer
+ * (server/lib/applyWave50MoneyDefectSchema.ts), whose §2 backfill reads this
+ * table in a NOT EXISTS and must not run before it exists. `raw` stays optional
+ * so the installer need not thread a handle it does not otherwise use; every
+ * existing internal caller passes one and is unaffected. */
+export function ensureBillingTable(raw?: any): boolean {
   if (_billingTableReady) return true;
+  if (!raw) {
+    try {
+      raw = rawDb();
+    } catch (err) {
+      log.warn(`[spv-engine-fee] billing table bootstrap: raw handle unavailable: ${String(err)}`);
+      return false;
+    }
+  }
   try {
     const present = raw
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
@@ -324,6 +337,49 @@ export function resolveEngineCommittedMinor(rawTx: any, spvId: string): number {
  * @param spvId     `spv.id` (the ENGINE table, not the legacy `spvs`).
  * @param partnerId the sponsoring partner (`spv.sponsor_partner_id`).
  */
+export const DEPLOYMENT_FEE_EXEMPTION_TABLE = "spv_deployment_fee_exemption";
+
+export interface DeploymentFeeExemptionRow {
+  spvId: string;
+  reason: string;
+  migratedFrom: string;
+  statusAtRecord: string;
+  note: string;
+  recordedAt: string;
+  recordedBy: string;
+}
+
+/**
+ * WAVE 50 · ITEM 2 — read the exemption row for `spvId`, or null.
+ *
+ * A MISSING TABLE RETURNS NULL, i.e. "not exempt", which is the FAIL-CLOSED
+ * direction for money: an install that never ran 0187 keeps charging exactly as
+ * Wave 46 did rather than silently exempting every vehicle in the system. The
+ * missing table is logged once by the installer, not swallowed here.
+ */
+export function lookupDeploymentFeeExemption(raw: any, spvId: string): DeploymentFeeExemptionRow | null {
+  try {
+    const r = raw
+      .prepare(
+        `SELECT spv_id, reason, migrated_from, status_at_record, note, recorded_at, recorded_by
+           FROM ${DEPLOYMENT_FEE_EXEMPTION_TABLE} WHERE spv_id = ?`,
+      )
+      .get(spvId) as any;
+    if (!r) return null;
+    return {
+      spvId: r.spv_id,
+      reason: r.reason,
+      migratedFrom: r.migrated_from,
+      statusAtRecord: r.status_at_record,
+      note: r.note,
+      recordedAt: r.recorded_at,
+      recordedBy: r.recorded_by,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function chargeEngineSpvDeploymentFee(spvId: string, partnerId: string): EngineDeploymentFeeResult {
   if (!spvId || !partnerId) return { charged: false, reason: "MISSING_IDENTIFIERS" };
   let raw: any;
@@ -336,6 +392,46 @@ export function chargeEngineSpvDeploymentFee(spvId: string, partnerId: string): 
     log.warn(`[spv-engine-fee] raw handle unavailable (non-sqlite driver?): ${String(err)}`);
     return { charged: false, reason: "RAW_DB_UNAVAILABLE" };
   }
+  /* ══════════════════════════════════════════════════════════════════════════
+   * WAVE 50 · ITEM 2 — A VEHICLE DEPLOYED BEFORE THE LATCH EXISTED IS NOT OWED
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * Wave 46 wired this charge to the not-live -> live edge and argued a re-push
+   * after a wind-down "is stopped by the idempotency latch rather than by the
+   * trigger condition". That is true only for a vehicle the latch has SEEN. For
+   * an SPV migrated out of `partner_spvs`/`partner_funds` all three latch layers
+   * are ABSENCES — no `spv_deployment_fee_billing` row (that table is migration
+   * 0162, which postdates these rows), no `partner_billing_entries` row of kind
+   * `spv_deployment_fee`, and `spv.deployment_fee_minor IS NULL` — so a legacy
+   * `wound_down` vehicle relaunched to `open` was charged a FALSE $240 for a
+   * deployment that already happened off-platform.
+   *
+   * The exemption is checked HERE, before `openBillingRecord`, so no `pending`
+   * obligation is ever written for a vehicle that is not owed one: a pending row
+   * is the retry queue, and enqueuing a charge nobody owes would just move the
+   * false charge to whoever works that queue.
+   *
+   * It is a ROW (`spv_deployment_fee_exemption`, migration 0187) and not a
+   * predicate on `spv.migrated_from`, because `migrated_from IS NOT NULL` alone
+   * must NOT exempt: a legacy row that arrived in `draft` and is pushed live for
+   * the first time on this platform IS a genuine first deployment and must be
+   * charged. The distinguishing fact — "it was already live when it entered the
+   * canonical table" — lives in a column that is mutated in place, so it is
+   * recorded rather than re-derived.
+   *
+   * It is deliberately NOT expressed as a `charged` row in the billing table,
+   * whose CHECK admits only `pending|charged`: `charged` would claim money was
+   * collected when none was. */
+  const exemption = lookupDeploymentFeeExemption(raw, spvId);
+  if (exemption) {
+    log.info(
+      `[spv-engine-fee] ${spvId} is EXEMPT (${exemption.reason}): migrated from ` +
+        `${exemption.migratedFrom} already at status '${exemption.statusAtRecord}', i.e. deployed ` +
+        `before the ${DEPLOYMENT_FEE_BILLING_TABLE} latch existed. No charge, and no pending obligation.`,
+    );
+    return { charged: false, reason: "pre_latch_deployment_exempt" };
+  }
+
   /* WAVE 3F / ITEM 4 — the obligation is DURABLE BEFORE the attempt. If the
    * process dies mid-charge, the SPV is still recorded as owing the fee. */
   openBillingRecord(raw, spvId, partnerId);

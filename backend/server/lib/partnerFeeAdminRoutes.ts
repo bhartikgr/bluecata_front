@@ -18,7 +18,13 @@ import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.m
  * partner-attributed companies and materialise idempotent partner_billing_entries
  * rows (settled via the EXISTING mark-paid endpoint). Auto-trigger deferred. */
 import { listRevShareCandidates, materializeRevShareEntries } from "./partnerRevShare";
-import { resolveEffectiveSeatLimit, TIER_SEAT_LIMITS, type PartnerTier } from "../adminContactsStore"; /* W-V44 FIX R3 */
+import { resolveEffectiveSeatLimit, type PartnerTier } from "../adminContactsStore"; /* W-V44 FIX R3 */
+/* WAVE 45 (R3) — the tier default is a DB row now, not TIER_SEAT_LIMITS. */
+import {
+  resolveTierCapability,
+  describeCapability,
+  CAPABILITY_SEAT_LIMIT,
+} from "./partnerTierCapabilityStore";
 /* WAVE 16 / CP-BRG-07 — every fee write in THIS file is an input to
  * `buildFeeScheduleAggregate`, so each one publishes the invalidation frame the
  * partner Fee Schedule tab listens for. The frame carries only the revision;
@@ -448,10 +454,20 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     let tier: PartnerTier = "catalyst";
     try { tier = ((JSON.parse(row.metadata_json || "{}") as { tier?: PartnerTier }).tier) ?? "catalyst"; } catch { /* default */ }
     const seat = resolveEffectiveSeatLimit(tier, row.arrangement_json);
+    /* WAVE 45 — the tier default is read from partner_tier_capability so the
+       console shows what an admin can actually edit. `*Display` carries the
+       human form ("Unlimited" / "Not configured") so the UI never renders a
+       null as 0, and `*Resolution` carries the machine form. */
+    const tierCap = resolveTierCapability(tier, CAPABILITY_SEAT_LIMIT);
     const seats = {
       tier,
-      tierDefault: TIER_SEAT_LIMITS[tier],
+      tierDefault: tierCap.resolution === "configured" ? tierCap.value : null,
+      tierDefaultResolution: tierCap.resolution,
+      tierDefaultDisplay: describeCapability(tierCap),
+      tierDefaultEditable: tierCap.editable,
       effective: seat.seatLimit,
+      effectiveResolution: seat.resolution,
+      effectiveDisplay: describeCapability(seat.capability),
       source: seat.source,
     };
     res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct, arrangement, seats });

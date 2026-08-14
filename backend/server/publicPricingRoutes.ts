@@ -42,6 +42,9 @@ import type { Express, Request, Response } from "express";
 import * as pricingModel from "./pricingModelStore";
 /* WAVE 34 · TASK 2 — ISO-4217 exponent for the public price display strings. */
 import { fromMinor } from "./lib/currency";
+/* WAVE 50 · ITEM 1 — the annual fee is a `platform_fees` row, read directly so
+ * that an absent row stays absent instead of becoming a $0. */
+import { rawDb } from "./db/connection";
 import * as collectiveConfig from "./collectiveSubscriptionConfigStore";
 
 /* =================================================================== */
@@ -70,17 +73,103 @@ const SLUGS = {
   academyOneTime: ["academy-one-time", "entrepreneur-academy", "global-entrepreneur-academy"],
 } as const;
 
-/** Static fallback — byte-identical to the values that used to be hardcoded
- *  in the JSX, so a cold-start / empty-admin-catalog / DB-error install
- *  degrades to today's known-correct marketing copy instead of showing
- *  "undefined" or a blank pricing section. */
-const STATIC_FALLBACK: PublicPricingPayload = {
-  capavate_annual: { price_minor: 84000, currency: "USD", display: "$840/year per company" },
-  academy_one_time: { price_minor: 150000, currency: "USD", display: "$1,500 one-time" },
-  investors_free: { display: "Free. Always." },
-  partners_custom: { display: "Custom pricing" },
-  as_of: new Date(0).toISOString(),
-};
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 50 · ITEM 1 — THE ANNUAL FEE HAD A SECOND SOURCE, AND IT WAS LIVE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * WHAT WAS HERE. A `STATIC_FALLBACK` object literal holding a `price_minor`, a
+ * currency and a pre-formatted display string for BOTH the founder annual fee and
+ * the academy one-time fee, described as a cold-start degradation path. The
+ * amounts are not repeated in this comment, deliberately: after this wave the
+ * only place either number exists is a database row, and a comment carrying a
+ * copy of a price is how a second source starts.
+ *
+ * WHY THAT DESCRIPTION WAS WRONG, AND THIS IS THE REPRODUCTION. `kv_pricingModelStore`
+ * holds ZERO rows in both `data.db` and `test.db`. `resolvePublicPricingPayload()`
+ * reads that store, finds nothing, and took the fallback — so those constants were
+ * not a dormant safety net, they were THE LIVE ANSWER served to every visitor of
+ * GET /api/pricing-public. `server/pricingModelStore.ts` (~:161-182) records that
+ * these very figures, "Free, Pro, Capavate Annual", were a hardcoded seed deleted
+ * in v25.27 because "all source-baked pricing is removed"; this object was a
+ * surviving copy of it. Two sources for one price violates R22 ("every price must
+ * resolve from one read"); a compiled-in price violates R21 ("100% dynamic.
+ * Nothing static or hard coded").
+ *
+ * THE ANNUAL FEE IS A REAL PRICE FOR A REAL PRODUCT. It appears on 30+ live paid
+ * invoices and matches the "Capavate Annual Administrative Fee". The HARDCODING is
+ * the defect, not the number. So the amount was MOVED — not deleted, not changed —
+ * into `platform_fees` by migration 0187 §3, under the keys below, and is resolved
+ * from there. `platform_fees` is the admin-editable table R22 already made
+ * authoritative for the SPV deployment fee ("the value the owner edits is
+ * authoritative; the charge path must read the SAME row"), and it already holds the
+ * legitimate `consortium.spv_deployment_fee` seed this wave confirmed and did not
+ * touch.
+ *
+ * WHAT REPLACES THE FALLBACK WHEN THE ROW IS EMPTY: an explicit R6 REFUSAL, never
+ * a price. Note the refusal carries NO `price_minor` and NO `currency` — a zero
+ * here would render "$0/year", which is R6's exact prohibition and would be worse
+ * than the hardcoding it replaced.
+ *
+ * `platformFeesStore.getFee()` is deliberately NOT used: it returns
+ * `{ amountMinor: 0 }` for an unknown key, which erases the difference between
+ * "free" and "we have no row". This reads the row directly so absence stays
+ * absence.
+ *
+ * OBSERVATION FOR THE OWNER, recorded rather than silently decided: the founder
+ * annual fee has two plausible homes in this tree — `platform_fees` (admin-edited,
+ * R22's precedent, chosen here) and `kv_pricingModelStore` (the richer pricing-model
+ * catalogue this route prefers when populated). This wave did not restructure the
+ * catalogue; the read order below still prefers a live pricing model when one
+ * exists, so seeding one later supersedes this row without a code change.
+ */
+export const PUBLIC_FEE_KEYS = {
+  capavateAnnual: "founder.capavate_annual",
+  academyOneTime: "founder.academy_one_time",
+} as const;
+
+/** Read one `platform_fees` row, or null. NULL/absent stays absent — never 0. */
+function readPlatformFee(key: string): { amountMinor: number; currency: string } | null {
+  try {
+    const row: any = rawDb()
+      .prepare(`SELECT amount_minor, currency FROM platform_fees WHERE key = ? AND deleted_at IS NULL`)
+      .get(key);
+    if (!row) return null;
+    if (row.amount_minor === null || row.amount_minor === undefined) return null;
+    const amountMinor = Number(row.amount_minor);
+    if (!Number.isFinite(amountMinor) || amountMinor < 0) return null;
+    return { amountMinor, currency: String(row.currency || "USD").toUpperCase() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * R6 refusal text for a price we cannot resolve. Deliberately not a number and
+ * not a blank: a marketing surface that cannot quote must SAY it cannot quote.
+ */
+export const PRICE_UNAVAILABLE_DISPLAY = "Pricing unavailable — please contact us";
+
+/** Non-price marketing copy. These carry NO amount, so they are not prices and
+ *  R21/R22 do not apply to them: investors are never billed (there is no
+ *  investor pricing model to read), and Consortium Partner pricing is bespoke
+ *  per contact and is deliberately never a single public number. */
+const STATIC_COPY = {
+  investors_free: { display: "Free. Always." } as PublicPriceEntry,
+  partners_custom: { display: "Custom pricing" } as PublicPriceEntry,
+} as const;
+
+/** The last-resort payload. It contains NO prices — only the copy above and
+ *  explicit refusals — so no code path in this file can quote a compiled-in
+ *  amount. */
+function refusalPayload(): PublicPricingPayload {
+  return {
+    capavate_annual: { display: PRICE_UNAVAILABLE_DISPLAY },
+    academy_one_time: { display: PRICE_UNAVAILABLE_DISPLAY },
+    investors_free: STATIC_COPY.investors_free,
+    partners_custom: STATIC_COPY.partners_custom,
+    as_of: new Date(0).toISOString(),
+  };
+}
 
 /* =================================================================== */
 /*  5-minute server-side cache                                         */
@@ -184,13 +273,24 @@ export function resolvePublicPricingPayload(): PublicPricingPayload {
     findBySlug(liveFounderModels, SLUGS.capavateAnnual) ??
     liveFounderModels.find((m) => m.cadence === "annual" || m.cadenceOptions?.some((c) => c.cadence === "annual"));
 
+  /* WAVE 50 · ITEM 1 — ONE READ, THEN A REFUSAL. A live pricing model still wins
+   * when one exists (that is the richer catalogue and this route's first choice);
+   * otherwise the admin-editable `platform_fees` row; otherwise an explicit R6
+   * refusal. There is no third branch holding a number. */
+  const annualFeeRow = founderModel ? null : readPlatformFee(PUBLIC_FEE_KEYS.capavateAnnual);
   const capavate_annual: PublicPriceEntry = founderModel
     ? {
         price_minor: priceMinorForCadence(founderModel, "annual"),
         currency: founderModel.currency || "USD",
         display: formatAnnual(priceMinorForCadence(founderModel, "annual"), founderModel.currency || "USD"),
       }
-    : STATIC_FALLBACK.capavate_annual;
+    : annualFeeRow
+      ? {
+          price_minor: annualFeeRow.amountMinor,
+          currency: annualFeeRow.currency,
+          display: formatAnnual(annualFeeRow.amountMinor, annualFeeRow.currency),
+        }
+      : { display: PRICE_UNAVAILABLE_DISPLAY };
 
   // --- academy_one_time: live add_on model tagged as one-time, matched by
   //     marketing slug first, else any live "add_on" with a one_time cadence.
@@ -199,18 +299,25 @@ export function resolvePublicPricingPayload(): PublicPricingPayload {
     findBySlug(liveAddOnModels, SLUGS.academyOneTime) ??
     liveAddOnModels.find((m) => m.cadence === "one_time" || m.cadenceOptions?.some((c) => c.cadence === "one_time"));
 
+  const academyFeeRow = academyModel ? null : readPlatformFee(PUBLIC_FEE_KEYS.academyOneTime);
   const academy_one_time: PublicPriceEntry = academyModel
     ? {
         price_minor: priceMinorForCadence(academyModel, "one_time"),
         currency: academyModel.currency || "USD",
         display: formatOneTime(priceMinorForCadence(academyModel, "one_time"), academyModel.currency || "USD"),
       }
-    : STATIC_FALLBACK.academy_one_time;
+    : academyFeeRow
+      ? {
+          price_minor: academyFeeRow.amountMinor,
+          currency: academyFeeRow.currency,
+          display: formatOneTime(academyFeeRow.amountMinor, academyFeeRow.currency),
+        }
+      : { display: PRICE_UNAVAILABLE_DISPLAY };
 
   // --- investors_free: always free by product design (there is no
   //     investor-facing pricing model to read — investors are invited by
   //     their companies, never billed). Static by definition, not a bug.
-  const investors_free: PublicPriceEntry = STATIC_FALLBACK.investors_free;
+  const investors_free: PublicPriceEntry = STATIC_COPY.investors_free;
 
   // --- partners_custom: Consortium Partner pricing is bespoke per contact
   //     (contacts.fee_override_json / contacts.arrangement_json — never a
@@ -219,7 +326,7 @@ export function resolvePublicPricingPayload(): PublicPricingPayload {
   //     partnerTiers.ts amounts here (those are commercial, negotiated, and
   //     partner-routes territory — partnerConsortiumRoutes.ts is sacred and
   //     untouched by this slice).
-  const partners_custom: PublicPriceEntry = STATIC_FALLBACK.partners_custom;
+  const partners_custom: PublicPriceEntry = STATIC_COPY.partners_custom;
 
   return {
     capavate_annual,
@@ -257,7 +364,11 @@ export default function registerPublicPricingRoutes(app: Express): void {
       // read (e.g. fresh boot with a DB hiccup).
       // eslint-disable-next-line no-console
       console.error("[pricing-public] resolvePublicPricingPayload failed, serving cached/fallback:", err);
-      const degraded = cachedPayload ?? STATIC_FALLBACK;
+      // WAVE 50 · ITEM 1 — the degraded path now refuses rather than quoting a
+      // compiled-in amount. Last-known-good cache is still preferred over the
+      // refusal, because a real price read a minute ago is better information
+      // than "unavailable"; what is gone is the hardcoded number underneath it.
+      const degraded = cachedPayload ?? refusalPayload();
       res.set("Cache-Control", "public, max-age=60"); // shorter TTL while degraded
       res.json(degraded);
     }

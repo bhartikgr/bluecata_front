@@ -44,6 +44,16 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { appendAdminAudit } from "./adminPlatformStore";
+/* WAVE 45 (R3) — seat limits moved from a compiled-in literal into
+ * partner_tier_capability. See resolveEffectiveSeatLimit below. */
+import {
+  resolveEffectiveSeatCapability,
+  resolveTierCapability,
+  CAPABILITY_SEAT_LIMIT,
+  CAPABILITY_TIER_SLUGS,
+  type CapabilityResolution,
+  type ResolvedCapability,
+} from "./lib/partnerTierCapabilityStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
@@ -232,48 +242,102 @@ export const TIER_RANK: Record<PartnerTier, number> = {
   nexus: 4,
   founding_member: 5,
 };
-export const TIER_SEAT_LIMITS: Record<PartnerTier, number> = {
-  catalyst: 2,
-  builder: 10,
-  amplifier: 25,
-  nexus: 9999,
-  founding_member: 9999,
-};
+/**
+ * WAVE 45 (R3) — `TIER_SEAT_LIMITS` HAS BEEN DELETED, NOT DEPRECATED.
+ *
+ * It used to live here as a compiled-in literal:
+ *   { catalyst: 2, builder: 10, amplifier: 25, nexus: 9999, founding_member: 9999 }
+ *
+ * Two defects. (1) No admin could change it, while the console displayed it as
+ * though it were configuration — "Team seat limit — Effective: 2 (from catalyst
+ * tier default: 2)" was reporting a source-code constant. (2) "Unlimited" was
+ * the magic number 9999, so nexus partners were really capped at 9999 and
+ * "nobody has decided yet" could not be expressed at all.
+ *
+ * Under R3 the five tiers ARE the capability levels, so seat limits are data:
+ * `partner_tier_capability` (migration 0185), read through
+ * server/lib/partnerTierCapabilityStore.ts. The constant is removed rather than
+ * left in place unused, so no future edit can reach for it.
+ *
+ * Callers that want the tier default should call
+ * `resolveTierCapability(tier, CAPABILITY_SEAT_LIMIT)` and branch on
+ * `resolution`; callers enforcing a cap should use `isWithinLimit()`.
+ *
+ * THE NAME SURVIVES AS A READ-THROUGH VIEW, NOT AS DATA.
+ * `server/__tests__/wv44_fixes.test.ts` asserts things like
+ * `expect(r.seatLimit).toBe(TIER_SEAT_LIMITS.catalyst)` — a contract worth
+ * keeping, because it says "the resolver and the tier default agree" without
+ * naming a number. Deleting the export would have broken that test, and the one
+ * thing this wave may not do is weaken a test to make its own change fit. So the
+ * export remains, backed by a Proxy that reads `partner_tier_capability` on every
+ * property access. It holds no values of its own: change the DB and this changes
+ * with it, which is precisely what the old literal could not do. `unlimited`
+ * reads as `null`, never as 9999.
+ */
+export const TIER_SEAT_LIMITS: Record<string, number | null> = new Proxy(
+  {} as Record<string, number | null>,
+  {
+    get(_t, prop: string | symbol): number | null | undefined {
+      if (typeof prop !== "string") return undefined;
+      // Never throws: a seat read sits on the partner login path.
+      return resolveTierCapability(prop, CAPABILITY_SEAT_LIMIT).value;
+    },
+    has(_t, prop: string | symbol): boolean {
+      return typeof prop === "string" && !resolveTierCapability(prop, CAPABILITY_SEAT_LIMIT).missingRow;
+    },
+    ownKeys(): ArrayLike<string | symbol> {
+      return [...CAPABILITY_TIER_SLUGS];
+    },
+    getOwnPropertyDescriptor(): PropertyDescriptor {
+      return { enumerable: true, configurable: true };
+    },
+    set(): boolean {
+      // A write here would be a compiled-in price/limit by the back door.
+      throw new Error(
+        "TIER_SEAT_LIMITS_READ_ONLY: seat limits are data. " +
+          "Use setTierCapability(tier, 'seat_limit', ...) so the change is audited and admin-visible.",
+      );
+    },
+  },
+);
 
 /**
- * W-V44 FIX R3 — resolve a partner's EFFECTIVE seat limit.
+ * W-V44 FIX R3, rebased onto data by WAVE 45 — resolve a partner's EFFECTIVE
+ * seat limit.
  *
- * Mirrors the price model (tier base + optional per-partner override). Seats
- * remain bundled into the tier (there is NO per-seat pricing); this only lets
- * an admin grant an individual partner a different seat cap without changing
- * their tier or price. Precedence:
+ * Precedence is unchanged:
  *   1. per-partner override  (contacts.arrangement_json -> { "seatLimit": n })
- *   2. tier default          (TIER_SEAT_LIMITS[tier])
+ *   2. tier capability row   (partner_tier_capability, DB, admin-editable)
  *
- * The override is read from the per-partner `arrangement_json` blob (the same
- * non-price arrangement column that holds quota + rev-share — seat limit is an
+ * The override still lives in the per-partner `arrangement_json` blob (the same
+ * non-price arrangement column that holds quota + rev-share — a seat limit is an
  * arrangement concern, NOT a price, so it does NOT go in fee_override_json).
- * A `seatLimit` integer key is used; no schema change is needed. A non-integer
- * / <0 override is ignored (falls back to the tier default). We accept the raw
- * json to keep this module free of a DB dependency; callers pass
- * contacts.arrangement_json (string | null).
+ *
+ * WHY `seatLimit` IS NOW `number | null`
+ *   Because "unlimited" is not a number. Returning 9999 for an unlimited tier
+ *   made every caller's `used >= seatLimit` comparison silently correct-looking
+ *   and silently wrong. `null` forces callers to consult `resolution`, and
+ *   `isWithinLimit()` in the capability store does that correctly:
+ *     configured     -> compare (0 genuinely means zero seats)
+ *     unlimited      -> always within
+ *     not_configured -> refuse, and say it is unconfigured rather than zero (R6)
  */
 export function resolveEffectiveSeatLimit(
   tier: PartnerTier,
   arrangementJson: string | null | undefined,
-): { seatLimit: number; source: "override" | "tier" } {
-  const tierLimit = TIER_SEAT_LIMITS[tier];
-  if (!arrangementJson) return { seatLimit: tierLimit, source: "tier" };
-  try {
-    const parsed = JSON.parse(arrangementJson) as Record<string, unknown>;
-    const raw = parsed?.seatLimit;
-    if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0) {
-      return { seatLimit: raw, source: "override" };
-    }
-  } catch {
-    // Malformed override json must not break seat resolution.
-  }
-  return { seatLimit: tierLimit, source: "tier" };
+): {
+  seatLimit: number | null;
+  source: "override" | "tier";
+  resolution: CapabilityResolution;
+  capability: ResolvedCapability;
+} {
+  const cap = resolveEffectiveSeatCapability(tier, arrangementJson);
+  return {
+    seatLimit: cap.resolution === "configured" ? cap.value : null,
+    source: cap.source === "partner_override" ? "override" : "tier",
+    resolution: cap.resolution,
+    capability: cap,
+  };
 }
 export type PartnerType =
   | "angel_network"
@@ -653,6 +717,69 @@ export function getConsortiumPartnerDisplayName(partnerId: string): string | nul
   if (!c || c.kind !== "consortium_partner") return null;
   const name = (c.displayName || c.legalName || "").trim();
   return name || null;
+}
+
+/* ============================================================================
+ * WAVE 44 · DEFECT 1 — read-only partner-identity resolution for approval.
+ *
+ * `upsertConsortiumPartner` above deduplicates by lower-cased email and, when
+ * the caller's `preferredId` disagrees with the existing row's id, only writes a
+ * `contact.preferredId.mismatch` audit line and returns the EXISTING contact.
+ * The consortium approval path took that return value, ignored the id, and
+ * stored its own freshly minted id as `provisioned_partner_id` — an id that
+ * exists in no contacts row. /api/admin/partners reads contacts, so the partner
+ * was invisible while the application claimed `status: approved`.
+ *
+ * The approval path now RESOLVES identity with this function BEFORE it writes
+ * anything, so it can either reuse the real id or refuse. Strictly read-only:
+ * no insert, no update, no audit, no bridge event — safe to call before a
+ * transaction is opened.
+ * ========================================================================== */
+export function findActiveConsortiumPartnerContactByEmail(
+  email: string,
+): { id: string; legalName: string; displayName: string; status: string } | null {
+  const emailLc = String(email ?? "").trim().toLowerCase();
+  if (!emailLc) return null;
+  const match = (c: AdminContact | any): boolean =>
+    !!c &&
+    c.kind === "consortium_partner" &&
+    String(c.email ?? "").toLowerCase() === emailLc &&
+    String(c.status ?? "active") === "active";
+  // DB-first (authoritative), cache only as the fallback when the read throws —
+  // the same precedence getAllContacts uses.
+  let found: any = null;
+  try {
+    found = readAllContactsFromDb().find(match) ?? null;
+  } catch {
+    found = null;
+  }
+  if (!found) {
+    found = Array.from(contacts.values()).find(match) ?? null;
+  }
+  if (!found) return null;
+  return {
+    id: String(found.id),
+    legalName: String(found.legalName ?? ""),
+    displayName: String(found.displayName ?? found.legalName ?? ""),
+    status: String(found.status ?? "active"),
+  };
+}
+
+/** WAVE 44 · DEFECT 1 — rollback safety for the contacts RAM cache.
+ *
+ * `createContact` writes `contacts.set(id, contact)` INSIDE its own
+ * `db.transaction` callback. When that call is nested inside an OUTER
+ * transaction (the consortium approval now provisions the partner contact
+ * inside the same transaction that approves the application), better-sqlite3
+ * makes the inner transaction a SAVEPOINT: if the outer transaction rolls back,
+ * the contacts ROW disappears but the cache entry would survive, leaving the
+ * process claiming a partner that the database does not have. The approval path
+ * calls this on rollback so the cache cannot outlive the row. */
+export function dropContactFromCacheAfterRollback(id: string): void {
+  const key = String(id ?? "").trim();
+  if (!key) return;
+  contacts.delete(key);
+  revisions.delete(key);
 }
 
 export function getContactStats() {
