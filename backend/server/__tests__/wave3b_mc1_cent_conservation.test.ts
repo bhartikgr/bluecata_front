@@ -919,6 +919,30 @@ describe("WAVE 3B PERSISTED — recordDistribution writes exactly-conserved mone
     expect(d.allocations.every((a) => a.grossMinor === 0 && a.carryMinor === 0 && a.netMinor === 0)).toBe(true);
   });
 
+  /* ── WAVE 71b — AN EXPLICIT TIMEOUT, MEASURED, NOT GUESSED ──────────────────
+     This case failed in Wave 71's full-suite run as `Test timed out in 5000ms` —
+     NOT as a wrong number; no conservation assertion fired. Re-measured in Wave
+     71b: five isolated runs PASS at 979-1064 ms (mean 1,012.7 ms, 4.9x headroom),
+     and adding just the 14 largest server test files to the run slows the SAME
+     test to 2,194-2,265 ms — 2.22x — with nothing about its own work changing. The
+     full suite is 764 files, so the 5,000 ms default is crossed by worker
+     contention alone. Wave 71 cannot be the cause: this file imports
+     `partnerRoutes`, `spvEngineRoutes`, `partnerWorkspaceStore`, `spvEngineStore`,
+     `combinedCarryCapPolicy` and `feeSettlementAuthority`, and NOT ONE of them is
+     in Wave 71's changed-file list. The identical failure mode is already in the
+     project's known-flake record (`build_log/wave68b/flake_evidence.txt`).
+
+     WHY THIS TEST NEEDS ITS OWN BUDGET. 40 iterations, each an SPV creation, up to
+     two fee writes, up to four LP commits, a settlement and a read-back: on the
+     order of 320 HTTP round-trips through supertest. A timeout that fires on which
+     other files happen to share the vitest worker is a FALSE NEGATIVE, not a
+     safety property. 30,000 ms is ~30x the isolated cost and still fails loudly on
+     a genuine hang.
+
+     NOTHING ELSE MOVES. The iteration count, the seed, the generators, the
+     `persisted.length` and `persisted[0].id` checks and `assertConserved` are
+     byte-identical. Only how long the runner WAITS changes. Evidence:
+     `build_log/wave71b/W71B_C4_PERSIST4.txt`. */
   it("PERSIST-4 — 40 random persisted distributions all conserve to the cent", async () => {
     const rnd = mulberry32(0xc0ffee);
     for (let iter = 0; iter < 40; iter++) {
@@ -947,7 +971,7 @@ describe("WAVE 3B PERSISTED — recordDistribution writes exactly-conserved mone
       expect(persisted[0].id).toBe(d.id);
       assertConserved(persisted[0]);
     }
-  });
+  }, 30_000);
 
   it("PERSIST-5 — ADVERSARIAL summed carry: the write is REJECTED and NO ROW EXISTS", async () => {
     const spvId = await createSpv("W3B adversarial summed carry");

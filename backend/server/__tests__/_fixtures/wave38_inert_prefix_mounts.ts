@@ -68,6 +68,33 @@ export const WAVE38_INERT_PREFIX_MOUNTS: Readonly<Record<string, readonly string
   // BENIGN documented duplicate (server/routes.ts) of the earlier requireAdmin mount, which already covers every admin route with zero missed.
   "requireAdmin#2": [
     "DELETE /api/admin/companies/:id/consortium-partner",
+    /* WAVE 57c · ITEM 2 — TWO LAYERS, ONE PATH, RECORDED RATHER THAN RE-BASED.
+
+       `DELETE /api/admin/compliance-hold/:tenantId` and
+       `POST   /api/admin/compliance-hold` each now carry TWO route layers: the
+       audit/actor-binding hook from `server/lib/complianceHoldAuditGuard.ts`,
+       registered in `server/routes.ts` immediately before
+       `registerCaptableCommitRoutes(app)`, and the original handler inside
+       SACRED `server/captableCommitStore.ts` (:1352 and :1366). `sweep()`
+       enumerates LAYERS, not unique paths, so each signature legitimately
+       appears twice — exactly as `"POST /api/admin/bridge/drain"` already does
+       a few lines below, for the same reason.
+
+       WHY THIS PIN MOVED AT ALL, stated plainly so the next reader can judge it:
+       R37 order #2 requires the compliance-hold release to be audited with a
+       bound actor, and says that if the fix needs an edit to the sacred file it
+       must STOP and become an owner question. The registration-order hook is the
+       one mechanism that satisfies both, and it necessarily adds a layer. The
+       alternatives were: edit a sacred file (forbidden), or leave a
+       financial-control release unaudited (forbidden by R35).
+
+       WHAT DID NOT CHANGE, and is what this pin actually protects: `requireAdmin#2`
+       is the BENIGN documented DUPLICATE mount. Case (13b) in
+       wave28_item1_prefix_middleware_ordering.test.ts asserts that the EARLIEST
+       `requireAdmin` mount misses ZERO routes, and it is green — so neither new
+       layer escapes the admin gate. The hook additionally fails closed on
+       identity itself. No route became less guarded. */
+    "DELETE /api/admin/compliance-hold/:tenantId",
     "DELETE /api/admin/compliance-hold/:tenantId",
     "DELETE /api/admin/compliance/holds/:id",
     "DELETE /api/admin/partners/:id/attributions/:companyId",
@@ -248,6 +275,9 @@ export const WAVE38_INERT_PREFIX_MOUNTS: Readonly<Record<string, readonly string
     "POST /api/admin/bridge/drain",
     "POST /api/admin/bridge/emit",
     "POST /api/admin/companies/:id/consortium-partner",
+    /* WAVE 57c · ITEM 2 — second layer: the audit hook. See the note above the
+       DELETE pair. */
+    "POST /api/admin/compliance-hold",
     "POST /api/admin/compliance-hold",
     "POST /api/admin/compliance/holds",
     "POST /api/admin/consortium-spv/:spvId/deployment-fee/retry",

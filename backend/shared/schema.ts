@@ -518,6 +518,14 @@ export const auditLog = sqliteTable("audit_log", {
   createdAt: text("created_at").notNull(),
   // v12 (DB-2): symmetric soft-delete column — never used in practice (append-only).
   deletedAt: text("deleted_at"),
+  /* REPAIR WAVE 1 · ITEM 1 (migration 0188) — WHICH HASH FORMULA SIGNED THIS ROW.
+     Appended at the END as a sibling; nothing above it moved.
+       1 = legacy body  prevHash|id|eventType|entity|ts|payload           (actor NOT bound)
+       2 = actor-bound  prevHash|id|eventType|entity|ts|payload|actorId
+     Every pre-existing row is 1 by DB default and keeps verifying byte-for-byte
+     unchanged. The verifier recomputes each row under the version THE ROW
+     DECLARES — never under a date, a build number or a code constant. */
+  hashVersion: integer("hash_version").notNull().default(1),
 });
 
 /* ----- Sprint 28: Production tables added in Pass 4 ----- */

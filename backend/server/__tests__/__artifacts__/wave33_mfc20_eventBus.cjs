@@ -287,11 +287,11 @@ var init_foreign_keys = __esm({
       onDelete;
       getName() {
         const { name, columns, foreignColumns } = this.reference();
-        const columnNames = columns.map((column) => column.name);
+        const columnNames2 = columns.map((column) => column.name);
         const foreignColumnNames = foreignColumns.map((column) => column.name);
         const chunks = [
           this.table[TableName],
-          ...columnNames,
+          ...columnNames2,
           foreignColumns[0].table[TableName],
           ...foreignColumnNames
         ];
@@ -2007,11 +2007,11 @@ var init_foreign_keys2 = __esm({
       onDelete;
       getName() {
         const { name, columns, foreignColumns } = this.reference();
-        const columnNames = columns.map((column) => column.name);
+        const columnNames2 = columns.map((column) => column.name);
         const foreignColumnNames = foreignColumns.map((column) => column.name);
         const chunks = [
           this.table[TableName],
-          ...columnNames,
+          ...columnNames2,
           foreignColumns[0].table[TableName],
           ...foreignColumnNames
         ];
@@ -3112,12 +3112,12 @@ var init_dialect = __esm({
       }
       buildUpdateSet(table, set) {
         const tableColumns = table[Table.Symbol.Columns];
-        const columnNames = Object.keys(tableColumns).filter(
+        const columnNames2 = Object.keys(tableColumns).filter(
           (colName) => set[colName] !== void 0 || tableColumns[colName]?.onUpdateFn !== void 0
         );
-        const setSize = columnNames.length;
+        const setSize = columnNames2.length;
         return sql.join(
-          columnNames.flatMap((colName, i) => {
+          columnNames2.flatMap((colName, i) => {
             const col = tableColumns[colName];
             const onUpdateFnResult = col.onUpdateFn?.();
             const value = set[colName] ?? (is(onUpdateFnResult, SQL) ? onUpdateFnResult : sql.param(onUpdateFnResult, col));
@@ -6234,8 +6234,8 @@ var init_parseUtil = __esm({
     init_errors2();
     init_en();
     makeIssue = (params) => {
-      const { data, path: path5, errorMaps, issueData } = params;
-      const fullPath = [...path5, ...issueData.path || []];
+      const { data, path: path7, errorMaps, issueData } = params;
+      const fullPath = [...path7, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -6543,11 +6543,11 @@ var init_types = __esm({
     init_parseUtil();
     init_util();
     ParseInputLazyPath = class {
-      constructor(parent, value, path5, key2) {
+      constructor(parent, value, path7, key2) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path5;
+        this._path = path7;
         this._key = key2;
       }
       get path() {
@@ -10468,7 +10468,15 @@ var init_schema = __esm({
       hash: text("hash").notNull(),
       createdAt: text("created_at").notNull(),
       // v12 (DB-2): symmetric soft-delete column — never used in practice (append-only).
-      deletedAt: text("deleted_at")
+      deletedAt: text("deleted_at"),
+      /* REPAIR WAVE 1 · ITEM 1 (migration 0188) — WHICH HASH FORMULA SIGNED THIS ROW.
+         Appended at the END as a sibling; nothing above it moved.
+           1 = legacy body  prevHash|id|eventType|entity|ts|payload           (actor NOT bound)
+           2 = actor-bound  prevHash|id|eventType|entity|ts|payload|actorId
+         Every pre-existing row is 1 by DB default and keeps verifying byte-for-byte
+         unchanged. The verifier recomputes each row under the version THE ROW
+         DECLARES — never under a date, a build number or a code constant. */
+      hashVersion: integer("hash_version").notNull().default(1)
     });
     sessions = sqliteTable("sessions", {
       id: text("id").primaryKey(),
@@ -13952,20 +13960,20 @@ function getDb() {
   }
   const Database = _require("better-sqlite3");
   const sqliteDrizzle = _require("drizzle-orm/better-sqlite3").drizzle;
-  let path5;
+  let path7;
   if (url && url.startsWith("file:")) {
-    path5 = url.slice(5);
+    path7 = url.slice(5);
   } else if (url && url.startsWith("sqlite:")) {
-    path5 = url.slice(7);
+    path7 = url.slice(7);
   } else if (false) {
-    path5 = ":memory:";
+    path7 = ":memory:";
   } else if (process.env.SQLITE_PATH) {
-    path5 = process.env.SQLITE_PATH;
+    path7 = process.env.SQLITE_PATH;
   } else {
-    path5 = "./data.db";
+    path7 = "./data.db";
   }
-  log.info(`[db] Opening SQLite at: ${path5}`);
-  _rawSqlite = new Database(path5);
+  log.info(`[db] Opening SQLite at: ${path7}`);
+  _rawSqlite = new Database(path7);
   _rawSqlite.pragma("journal_mode = WAL");
   _rawSqlite.pragma("recursive_triggers = ON");
   _rawSqlite.pragma("foreign_keys = ON");
@@ -15204,7 +15212,21 @@ function applyV2547Schema(db) {
 function applyV2545_4Schema(db) {
   const platformFeesAddColumns = [
     `ALTER TABLE platform_fees ADD COLUMN billing_period TEXT`,
-    `ALTER TABLE platform_fees ADD COLUMN deleted_at TEXT`
+    `ALTER TABLE platform_fees ADD COLUMN deleted_at TEXT`,
+    /* REPAIR WAVE 1 · ITEM 1 — WAIVER-6, owner-approved 2026-08-14.
+     *
+     * `audit_log.hash_version` records WHICH hash formula signed each row, so
+     * the actor-bound v2 body can be introduced without invalidating a single
+     * pre-existing row. Migration 0188 adds this column on the numbered-runner
+     * path (production / Postgres); this line is the inline-SQLite parity edit
+     * so dev and test agree with `shared/schema.ts`. Without it,
+     * `auditChainVerifier.test.ts` cannot even load — 20 assertions covering
+     * the audit chain silently stop running.
+     *
+     * Additive only. DEFAULT 1 means every row that already exists keeps its
+     * v1 (actor-unbound) meaning, which is exactly what preserves history.
+     * The matching fresh-DB column is on the CREATE TABLE below. */
+    `ALTER TABLE audit_log ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1`
   ];
   for (const sql2 of platformFeesAddColumns) {
     try {
@@ -16434,6 +16456,11 @@ function buildProductionTableStatements() {
       payload_json TEXT,
       prev_hash TEXT,
       hash TEXT NOT NULL,
+      /* REPAIR WAVE 1 \xB7 ITEM 1 \u2014 WAIVER-6, owner-approved 2026-08-14.
+         Fresh-DB parity for migration 0188 / shared/schema.ts. DEFAULT 1 keeps
+         every existing row's v1 (actor-unbound) hash valid. See the matching
+         ALTER in platformFeesAddColumns for pre-existing databases. */
+      hash_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       deleted_at TEXT
     );`,
@@ -19998,444 +20025,6 @@ var init_canonicalPlanResolver = __esm({
   }
 });
 
-// server/partnerCompanyRelationshipStore.ts
-var init_partnerCompanyRelationshipStore = __esm({
-  "server/partnerCompanyRelationshipStore.ts"() {
-    "use strict";
-    init_connection();
-    init_logger2();
-  }
-});
-
-// server/lib/money.ts
-var B_ZERO, B_ONE, B_TWO, B_TEN_K, CARRY_FRACTION_SCALE, B_SCALE, B_TEN;
-var init_money = __esm({
-  "server/lib/money.ts"() {
-    "use strict";
-    init_currency();
-    B_ZERO = BigInt(0);
-    B_ONE = BigInt(1);
-    B_TWO = BigInt(2);
-    B_TEN_K = BigInt(1e4);
-    CARRY_FRACTION_SCALE = 1e9;
-    B_SCALE = BigInt(CARRY_FRACTION_SCALE);
-    B_TEN = BigInt(10);
-  }
-});
-
-// server/lib/roundClosePendingLapse.ts
-var init_roundClosePendingLapse = __esm({
-  "server/lib/roundClosePendingLapse.ts"() {
-    "use strict";
-    init_connection();
-    init_adminPlatformStore();
-    init_eventBus();
-  }
-});
-
-// server/emailTransport.ts
-function readMode() {
-  const raw = (process.env.SMTP_MODE ?? "").toLowerCase();
-  if (raw === "smtp" || raw === "console" || raw === "dry_run") return raw;
-  return "console";
-}
-function buildConfig() {
-  const host = process.env.SMTP_HOST ?? "";
-  const rawMode = readMode();
-  let mode = rawMode;
-  if (!host && mode === "smtp") {
-    log.warn("[emailTransport] SMTP_HOST is not set \u2014 falling back to 'console' mode.");
-    mode = "console";
-  }
-  return {
-    host,
-    port: parseInt(process.env.SMTP_PORT ?? "587", 10),
-    secure: (process.env.SMTP_SECURE ?? "false").toLowerCase() === "true",
-    user: process.env.SMTP_USER ?? "",
-    pass: process.env.SMTP_PASS ?? "",
-    // real value stored internally
-    fromAddress: process.env.SMTP_FROM ?? "Capavate <no-reply@capavate.com>",
-    replyTo: process.env.SMTP_REPLY_TO || null,
-    mode
-  };
-}
-function getConfigInternal() {
-  if (!_config) _config = buildConfig();
-  return _config;
-}
-function getConfig() {
-  const c = getConfigInternal();
-  return { ...c, pass: "***" };
-}
-function getTransporter() {
-  if (_transporter && !_transporterBroken) return _transporter;
-  const c = getConfigInternal();
-  _transporter = import_nodemailer.default.createTransport({
-    host: c.host,
-    port: c.port,
-    secure: c.secure,
-    auth: {
-      user: c.user,
-      pass: c.pass
-    }
-  });
-  _transporterBroken = false;
-  return _transporter;
-}
-function consumeToken() {
-  const now = Date.now();
-  const elapsed = now - _bucket.lastRefill;
-  _bucket.tokens = Math.min(_bucket.capacity, _bucket.tokens + elapsed * _bucket.refillRate);
-  _bucket.lastRefill = now;
-  if (_bucket.tokens >= 1) {
-    _bucket.tokens -= 1;
-    return true;
-  }
-  _rateLimitedCount++;
-  return false;
-}
-function cacheIdempotencyResult(key2, result) {
-  if (_idempotencyCache.has(key2)) return;
-  _idempotencyCache.set(key2, result);
-  _idempotencyOrder.push(key2);
-  if (_idempotencyOrder.length > IDEM_MAX) {
-    const evicted = _idempotencyOrder.shift();
-    _idempotencyCache.delete(evicted);
-  }
-}
-async function sendMail(args) {
-  if (args.idempotencyKey) {
-    const cached = _idempotencyCache.get(args.idempotencyKey);
-    if (cached) return cached;
-  }
-  if (!consumeToken()) {
-    const result2 = { ok: false, error: "rate_limited" };
-    return result2;
-  }
-  const c = getConfigInternal();
-  let result;
-  try {
-    if (c.mode === "dry_run") {
-      result = { ok: true, messageId: `dry_${(0, import_node_crypto3.randomBytes)(8).toString("hex")}` };
-    } else if (c.mode === "console") {
-      const msgId = `console_${(0, import_node_crypto3.randomBytes)(8).toString("hex")}`;
-      log.info(
-        `[emailTransport][console] to=${args.to} subject="${args.subject}" msgId=${msgId}`
-      );
-      result = { ok: true, messageId: msgId };
-    } else {
-      const transporter = getTransporter();
-      const replyTo = args.replyTo ?? c.replyTo ?? void 0;
-      const info = await transporter.sendMail({
-        from: c.fromAddress,
-        to: args.to,
-        subject: args.subject,
-        html: args.html,
-        text: args.text,
-        replyTo,
-        headers: args.headers
-      });
-      result = { ok: true, messageId: info.messageId };
-    }
-  } catch (err) {
-    const msg = err.message ?? "send_failed";
-    if (c.mode === "smtp" && /auth|credentials|535|534|530/i.test(msg)) {
-      _transporterBroken = true;
-      _transporter = null;
-    }
-    result = { ok: false, error: msg };
-  }
-  if (args.idempotencyKey) {
-    cacheIdempotencyResult(args.idempotencyKey, result);
-  }
-  return result;
-}
-var import_nodemailer, import_node_crypto3, _config, _transporter, _transporterBroken, _bucket, _rateLimitedCount, _idempotencyCache, _idempotencyOrder, IDEM_MAX;
-var init_emailTransport = __esm({
-  "server/emailTransport.ts"() {
-    "use strict";
-    import_nodemailer = __toESM(require("nodemailer"), 1);
-    import_node_crypto3 = require("node:crypto");
-    init_logger2();
-    _config = null;
-    _transporter = null;
-    _transporterBroken = false;
-    _bucket = {
-      tokens: 30,
-      lastRefill: Date.now(),
-      capacity: 30,
-      refillRate: 30 / 1e3
-      // 30 per second
-    };
-    _rateLimitedCount = 0;
-    _idempotencyCache = /* @__PURE__ */ new Map();
-    _idempotencyOrder = [];
-    IDEM_MAX = 1e3;
-  }
-});
-
-// server/lib/emailTokenRedaction.ts
-function isPurelyAlphabetic(s) {
-  return /^[A-Za-z-]+$/.test(s);
-}
-function redactTokenMaterial(text2) {
-  if (text2 === null || text2 === void 0) return text2;
-  let out = String(text2);
-  const alreadyRedacted = (v) => v.startsWith(TOKEN_REDACTION_MARKER);
-  out = out.replace(
-    SECRET_QUERY_PARAM_RE,
-    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
-  );
-  out = out.replace(
-    SECRET_PATH_SEGMENT_RE,
-    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
-  );
-  out = out.replace(LONG_HEX_RUN_RE, TOKEN_REDACTION_MARKER);
-  out = out.replace(
-    LONG_B64URL_RUN_RE,
-    (m) => isPurelyAlphabetic(m) ? m : TOKEN_REDACTION_MARKER
-  );
-  return out;
-}
-function redactOutboxRow(row) {
-  let changed = false;
-  const next = { ...row };
-  const scrub = (v) => {
-    const r = redactTokenMaterial(v);
-    if (r !== v) changed = true;
-    return r;
-  };
-  if (typeof next.subject === "string") next.subject = scrub(next.subject);
-  if (typeof next.bodyHtmlRendered === "string") next.bodyHtmlRendered = scrub(next.bodyHtmlRendered);
-  if (next.bodyText !== void 0) next.bodyText = scrub(next.bodyText);
-  if (next.error !== void 0) next.error = scrub(next.error);
-  if (next.variables && typeof next.variables === "object") {
-    const vars = {};
-    for (const [k, v] of Object.entries(next.variables)) {
-      vars[k] = typeof v === "string" ? scrub(v) : v;
-    }
-    next.variables = vars;
-  }
-  if (changed) next.bodyRedacted = true;
-  return next;
-}
-var TOKEN_REDACTION_MARKER, SECRET_QUERY_PARAM_RE, SECRET_PATH_SEGMENT_RE, LONG_HEX_RUN_RE, LONG_B64URL_RUN_RE;
-var init_emailTokenRedaction = __esm({
-  "server/lib/emailTokenRedaction.ts"() {
-    "use strict";
-    TOKEN_REDACTION_MARKER = "[REDACTED:TOKEN]";
-    SECRET_QUERY_PARAM_RE = /([?&](?:token|tokens|auth_token|authtoken|access_token|refresh_token|reset_token|invite_token|invitetoken|redeem|redeem_token|code|secret|api_key|apikey|key|otp|nonce|signature|sig)=)([^&\s"'<>()\[\]{}]+)/gi;
-    SECRET_PATH_SEGMENT_RE = /((?:^|\/)(?:redeem|redeem-partner-invite|redeem-invite|set-password|reset-password|accept-invite|invite|activate|confirm|verify)\/)([A-Za-z0-9_\-.~]{16,})/gi;
-    LONG_HEX_RUN_RE = /(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/g;
-    LONG_B64URL_RUN_RE = /(?<![0-9A-Za-z_-])[A-Za-z0-9_-]{43,}(?![0-9A-Za-z_-])/g;
-  }
-});
-
-// server/emailStore.ts
-function persistOutbox(e) {
-  try {
-    persistEntry(PERSIST_STORE, e.id, redactOutboxRow(e));
-  } catch {
-  }
-}
-function renderTemplate(html, vars) {
-  return html.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key2) => {
-    return key2 in vars ? String(vars[key2]) : `{{${key2}}}`;
-  });
-}
-function findTemplate(slug) {
-  const cached = templateCache.get(slug);
-  if (cached) return cached;
-  if (templateCache.size > 0) return null;
-  return templates.find((t) => t.slug === slug) ?? null;
-}
-function enqueueEmail(args) {
-  const t = findTemplate(args.templateSlug);
-  if (!t) throw new Error(`unknown_template: ${args.templateSlug}`);
-  const e = {
-    id: `email_${(0, import_node_crypto4.randomBytes)(6).toString("hex")}`,
-    templateSlug: args.templateSlug,
-    recipient: args.recipient,
-    recipientUserId: args.recipientUserId,
-    variables: args.variables,
-    subject: renderTemplate(t.subject, args.variables),
-    bodyHtmlRendered: renderTemplate(t.bodyHtml, args.variables),
-    bodyText: renderTemplate(t.bodyText, args.variables),
-    status: "queued",
-    attempts: 0,
-    queuedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    sentAt: null,
-    deliveredAt: null,
-    openedAt: null,
-    clickedAt: null,
-    bouncedAt: null,
-    error: null
-  };
-  outbox2.push(e);
-  persistOutbox(e);
-  return e;
-}
-function backoffMs(attempts) {
-  return Math.min(5 * 6e4, Math.pow(2, attempts) * 1e3);
-}
-async function tickQueue() {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const nowMs = Date.now();
-  for (const e of outbox2) {
-    if (e.status !== "queued") continue;
-    if (transactionalInFlight.has(e.id)) continue;
-    if (e.bodyRedacted) {
-      e.status = "failed";
-      e.error = "token_bearing_body_not_resendable_reissue_required";
-      e.sentAt = null;
-      e.deliveredAt = null;
-      persistOutbox(e);
-      continue;
-    }
-    const nextRetryMs = e._nextRetryMs ?? 0;
-    if (nowMs < nextRetryMs) continue;
-    e.attempts++;
-    const result = await sendMail({
-      to: e.recipient,
-      subject: e.subject,
-      html: e.bodyHtmlRendered,
-      text: e.bodyText ?? void 0,
-      idempotencyKey: `outbox_${e.id}_attempt_${e.attempts}`
-    });
-    if (result.ok) {
-      e.status = "sent";
-      e.sentAt = now;
-      e.error = null;
-      const observedMode = (() => {
-        try {
-          return String(getConfig().mode);
-        } catch {
-          return "smtp";
-        }
-      })();
-      if (observedMode === "console" || observedMode === "dry_run") {
-        e.status = "delivered";
-        e.deliveredAt = now;
-      }
-    } else if (result.error === "rate_limited") {
-      e.attempts--;
-      e._nextRetryMs = nowMs + 1e3;
-    } else {
-      e.error = result.error ?? "send_failed";
-      if (e.attempts >= MAX_ATTEMPTS) {
-        e.status = "bounced";
-        e.bouncedAt = now;
-      } else {
-        e._nextRetryMs = nowMs + backoffMs(e.attempts);
-      }
-    }
-    persistOutbox(e);
-  }
-}
-function seedDemo() {
-  if (outbox2.length > 0) return;
-  enqueueEmail({ templateSlug: "round_invitation", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", founder_name: "Maya Chen", company_name: "NovaPay AI", round_name: "Seed Extension", instrument: "SAFE", personal_message: "Strategic round; pro-rata reserved.", cta_url: "https://app.capavate.com/i/abc123", expiry_date: "2026-06-30" } });
-  enqueueEmail({ templateSlug: "soft_circle_submitted", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { investor_name: "Aisha Patel", committed_amount: "$250,000", currency: "USD", round_name: "Seed Extension" } });
-  enqueueEmail({ templateSlug: "round_closed", recipient: "team@hydra.vc", recipientUserId: "u_aisha_patel", variables: { company_name: "NovaPay AI", round_name: "Seed Extension", amount_closed: "$4.0M", security_type: "SAFE", cap_table_cta: "https://app.capavate.com/cap" } });
-  enqueueEmail({ templateSlug: "collective_welcome", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", deal_room_cta: "/collective/#/deals", profile_cta: "/collective/#/profile", receipt_link: "/billing/receipts/r123" } });
-  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "verified", action_required: "" } });
-  enqueueEmail({ templateSlug: "form_d_reminder", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { recipient_name: "Maya", filing_deadline: "2026-05-23", edgar_link: "https://efts.sec.gov" } });
-  tickQueue();
-  tickQueue();
-  if (outbox2[0]) {
-    outbox2[0].status = "opened";
-    outbox2[0].openedAt = (/* @__PURE__ */ new Date()).toISOString();
-  }
-  if (outbox2[1]) {
-    outbox2[1].status = "clicked";
-    outbox2[1].clickedAt = (/* @__PURE__ */ new Date()).toISOString();
-  }
-  if (outbox2[5]) {
-    outbox2[5].status = "bounced";
-    outbox2[5].bouncedAt = (/* @__PURE__ */ new Date()).toISOString();
-    outbox2[5].error = "550 mailbox not found";
-  }
-}
-var import_node_crypto4, PERSIST_STORE, templates, outbox2, templateCache, transactionalInFlight, MAX_ATTEMPTS;
-var init_emailStore = __esm({
-  "server/emailStore.ts"() {
-    "use strict";
-    import_node_crypto4 = require("node:crypto");
-    init_emailTransport();
-    init_demoGate();
-    init_storePersistenceShim();
-    init_connection();
-    init_emailTokenRedaction();
-    PERSIST_STORE = "emailStoreOutbox";
-    templates = [
-      { id: "tpl_round_invitation", slug: "round_invitation", subject: "{{founder_name}} invited you to {{company_name}}'s {{round_name}}", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{founder_name}} of {{company_name}} has invited you to participate in {{round_name}} ({{instrument}}).</p><p>{{personal_message}}</p><p><a href="{{cta_url}}">View invitation</a> \xB7 expires {{expiry_date}}.</p>', bodyText: "Hi {{recipient_name}}, {{founder_name}} invited you. {{cta_url}}", variables: ["recipient_name", "founder_name", "company_name", "round_name", "instrument", "personal_message", "cta_url", "expiry_date"], category: "round" },
-      { id: "tpl_invitation_accepted", slug: "invitation_accepted", subject: "{{investor_name}} accepted the {{round_name}} invitation", bodyHtml: "<p>{{investor_name}} ({{investor_email}}) accepted {{company_name}} {{round_name}} \u2014 committed {{committed_amount}}.</p>", bodyText: "{{investor_name}} accepted.", variables: ["investor_name", "investor_email", "company_name", "round_name", "committed_amount"], category: "round" },
-      { id: "tpl_invitation_declined", slug: "invitation_declined", subject: "{{investor_name}} declined the {{round_name}} invitation", bodyHtml: "<p>{{investor_name}} declined the {{round_name}} invitation. Note: {{decline_note}}</p>", bodyText: "{{investor_name}} declined.", variables: ["investor_name", "company_name", "round_name", "decline_note"], category: "round" },
-      { id: "tpl_soft_circle_submitted", slug: "soft_circle_submitted", subject: "{{investor_name}} soft-circled {{committed_amount}} {{currency}}", bodyHtml: "<p>{{investor_name}} soft-circled {{committed_amount}} {{currency}} on {{round_name}}.</p>", bodyText: "Soft circle received.", variables: ["investor_name", "committed_amount", "currency", "round_name"], category: "round" },
-      { id: "tpl_invitation_expiry_warning", slug: "invitation_expiry_warning", subject: "Reminder: {{round_name}} invitation expires {{expiry_date}}", bodyHtml: '<p>Your {{company_name}} {{round_name}} invitation expires on {{expiry_date}}. <a href="{{cta_url}}">Continue</a>.</p>', bodyText: "Reminder.", variables: ["company_name", "round_name", "expiry_date", "cta_url"], category: "round" },
-      { id: "tpl_round_closed", slug: "round_closed", subject: "{{round_name}} closed at {{amount_closed}}", bodyHtml: '<p>{{company_name}} {{round_name}} ({{security_type}}) closed at {{amount_closed}}. <a href="{{cap_table_cta}}">View cap table</a>.</p>', bodyText: "Round closed.", variables: ["company_name", "round_name", "amount_closed", "security_type", "cap_table_cta"], category: "round" },
-      { id: "tpl_notification_digest", slug: "notification_digest", subject: "Your daily Capavate digest", bodyHtml: "<p>Hi {{recipient_name}},</p><p>{{batch_summary}}</p>", bodyText: "Daily digest.", variables: ["recipient_name", "batch_summary"], category: "system" },
-      { id: "tpl_collective_welcome", slug: "collective_welcome", subject: "Welcome to Capavate Collective", bodyHtml: '<p>Welcome, {{recipient_name}}. <a href="{{deal_room_cta}}">Open the deal room</a>. <a href="{{profile_cta}}">Complete your profile</a>. <a href="{{receipt_link}}">Receipt</a>.</p>', bodyText: "Welcome.", variables: ["recipient_name", "deal_room_cta", "profile_cta", "receipt_link"], category: "membership" },
-      { id: "tpl_membership_review", slug: "membership_review", subject: "Your Capavate Collective application is under review", bodyHtml: '<p>{{recipient_name}}, your application is under review. Timeline: {{timeline}}. <a href="{{edit_link}}">Edit application</a>.</p>', bodyText: "Under review.", variables: ["recipient_name", "timeline", "edit_link"], category: "membership" },
-      { id: "tpl_membership_approved", slug: "membership_approved", subject: "Your Collective membership is approved", bodyHtml: "<p>{{recipient_name}}, your membership is approved. Next steps: {{next_steps}}.</p>", bodyText: "Approved.", variables: ["recipient_name", "next_steps"], category: "membership" },
-      { id: "tpl_membership_rejected", slug: "membership_rejected", subject: "Your Collective application", bodyHtml: "<p>{{recipient_name}}, application not approved at this time. Notes: {{next_steps}}.</p>", bodyText: "Rejected.", variables: ["recipient_name", "next_steps"], category: "membership" },
-      { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your KYC status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, your KYC status is now {{new_status}}. {{action_required}}</p>", bodyText: "KYC update.", variables: ["recipient_name", "new_status", "action_required"], category: "compliance" },
-      { id: "tpl_form_d_reminder", slug: "form_d_reminder", subject: "Form D filing deadline: {{filing_deadline}}", bodyHtml: '<p>{{recipient_name}}, your Form D 15-day deadline is {{filing_deadline}}. <a href="{{edgar_link}}">EDGAR portal</a>.</p>', bodyText: "Form D reminder.", variables: ["recipient_name", "filing_deadline", "edgar_link"], category: "compliance" },
-      { id: "tpl_emi_notification_reminder", slug: "emi_notification_reminder", subject: "EMI grant: HMRC 92-day deadline", bodyHtml: '<p>{{recipient_name}}, EMI grant {{grant_date}} requires HMRC notification by {{hmrc_deadline}}. <a href="{{ers_url}}">ERS online service</a>.</p>', bodyText: "EMI reminder.", variables: ["recipient_name", "grant_date", "hmrc_deadline", "ers_url"], category: "compliance" },
-      { id: "tpl_83b_election", slug: "83b_election", subject: "83(b) election due in 30 days", bodyHtml: "<p>{{recipient_name}}, an early option exercise occurred {{exercise_date}}; the 83(b) election deadline is {{deadline_date}}.</p>", bodyText: "83(b) reminder.", variables: ["recipient_name", "exercise_date", "deadline_date"], category: "compliance" },
-      // v25.47 APD-025 — 6 new templates (21 total). Brand: Capavate.
-      { id: "tpl_collective_member_subscribed", slug: "collective_member_subscribed", subject: "Your Capavate Collective membership is active", bodyHtml: '<p>Hi {{recipient_name}},</p><p>Your Collective membership ({{tier_name}}, {{amount}}/{{billing_period}}) is now active. <a href="{{receipt_link}}">View receipt</a>.</p>', bodyText: "Your Collective membership ({{tier_name}}) is active.", variables: ["recipient_name", "tier_name", "amount", "billing_period", "receipt_link"], category: "membership" },
-      { id: "tpl_consortium_partner_subscribed", slug: "consortium_partner_subscribed", subject: "Your Capavate Consortium partnership ({{tier_name}}) is active", bodyHtml: '<p>Hi {{recipient_name}},</p><p>Your Consortium partner subscription ({{tier_name}}, {{amount}}/{{billing_period}}) is active. <a href="{{receipt_link}}">View receipt</a>.</p>', bodyText: "Your Consortium partnership ({{tier_name}}) is active.", variables: ["recipient_name", "tier_name", "amount", "billing_period", "receipt_link"], category: "membership" },
-      { id: "tpl_spv_deployed", slug: "spv_deployed", subject: "SPV {{spv_id}} deployed", bodyHtml: '<p>Hi {{recipient_name}},</p><p>SPV {{spv_id}} has been deployed. Deployment fee: {{fee_amount}}. <a href="{{cta_url}}">View details</a>.</p>', bodyText: "SPV {{spv_id}} deployed. Fee {{fee_amount}}.", variables: ["recipient_name", "spv_id", "fee_amount", "cta_url"], category: "system" },
-      { id: "tpl_post_flagged", slug: "post_flagged", subject: "A post was flagged for review", bodyHtml: '<p>Post {{post_id}} was flagged{{#if reason}} ({{reason}}){{/if}} by {{actor}}. <a href="{{cta_url}}">Review</a>.</p>', bodyText: "Post {{post_id}} flagged by {{actor}}.", variables: ["post_id", "reason", "actor", "cta_url"], category: "system" },
-      { id: "tpl_post_hidden", slug: "post_hidden", subject: "Your post was hidden by a moderator", bodyHtml: "<p>Hi {{recipient_name}},</p><p>Your post was hidden by a moderator{{#if reason}}: {{reason}}{{/if}}. Contact support if you believe this was in error.</p>", bodyText: "Your post was hidden{{#if reason}}: {{reason}}{{/if}}.", variables: ["recipient_name", "reason"], category: "system" },
-      { id: "tpl_pulse_digest", slug: "pulse_digest", subject: "Your Capavate Pulse digest", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{digest_summary}}</p><p><a href="{{cta_url}}">Open Pulse</a>.</p>', bodyText: "Pulse digest: {{digest_summary}}", variables: ["recipient_name", "digest_summary", "cta_url"], category: "system" }
-    ];
-    outbox2 = [];
-    templateCache = /* @__PURE__ */ new Map();
-    transactionalInFlight = /* @__PURE__ */ new Set();
-    MAX_ATTEMPTS = 5;
-    if (DEMO_SEED_ENABLED) {
-      seedDemo();
-    }
-  }
-});
-
-// server/lib/resolveCompanyIdParam.ts
-var init_resolveCompanyIdParam = __esm({
-  "server/lib/resolveCompanyIdParam.ts"() {
-    "use strict";
-    init_userContext();
-  }
-});
-
-// server/lib/htmlEscape.ts
-var init_htmlEscape = __esm({
-  "server/lib/htmlEscape.ts"() {
-    "use strict";
-  }
-});
-
-// server/companyProfileStore.ts
-var import_node_module2, require2;
-var init_companyProfileStore = __esm({
-  "server/companyProfileStore.ts"() {
-    "use strict";
-    import_node_module2 = require("node:module");
-    init_adminPlatformStore();
-    init_bridgeStore();
-    init_emailStore();
-    init_connection();
-    init_schema();
-    init_logger2();
-    init_resolveCompanyIdParam();
-    init_authMiddleware();
-    init_userContext();
-    init_htmlEscape();
-    require2 = (0, import_node_module2.createRequire)(__importMetaUrl);
-  }
-});
-
 // packages/cap-table-engine/src/types.ts
 var init_types2 = __esm({
   "packages/cap-table-engine/src/types.ts"() {
@@ -20444,15 +20033,22 @@ var init_types2 = __esm({
 });
 
 // packages/cap-table-engine/src/primitives/bigDecimal.ts
-var import_decimal, ZERO, ONE, HUNDRED;
+function D(v) {
+  if (v instanceof import_decimal.default) return v;
+  return new Decimal(v);
+}
+var import_decimal, Decimal, ZERO, ONE, HUNDRED;
 var init_bigDecimal = __esm({
   "packages/cap-table-engine/src/primitives/bigDecimal.ts"() {
     "use strict";
     import_decimal = __toESM(require("decimal.js"), 1);
-    import_decimal.default.set({ precision: 38, rounding: import_decimal.default.ROUND_HALF_EVEN });
-    ZERO = new import_decimal.default(0);
-    ONE = new import_decimal.default(1);
-    HUNDRED = new import_decimal.default(100);
+    Decimal = import_decimal.default.clone({
+      precision: 38,
+      rounding: import_decimal.default.ROUND_HALF_EVEN
+    });
+    ZERO = new Decimal(0);
+    ONE = new Decimal(1);
+    HUNDRED = new Decimal(100);
   }
 });
 
@@ -20476,6 +20072,54 @@ var init_fx = __esm({
   "packages/cap-table-engine/src/primitives/fx.ts"() {
     "use strict";
     init_bigDecimal();
+  }
+});
+
+// packages/cap-table-engine/src/primitives/roundingPolicy.ts
+var ROUNDING_DIRECTIONS, ROUNDING_SITES;
+var init_roundingPolicy = __esm({
+  "packages/cap-table-engine/src/primitives/roundingPolicy.ts"() {
+    "use strict";
+    init_bigDecimal();
+    init_shareCount();
+    ROUNDING_DIRECTIONS = {
+      investor_shares: {
+        site: "investor_shares",
+        direction: "floor",
+        authorityBacked: true,
+        authority: "Orrick UK Founder Series (ROUNDDOWN on shares); YC post-money safe primer Appendix II",
+        disclosure: "Share counts are rounded DOWN to whole shares. No fraction of a share is ever issued, so a small cash residual is left unapplied and is disclosed separately."
+      },
+      safe_conversion_shares: {
+        site: "safe_conversion_shares",
+        direction: "floor",
+        authorityBacked: true,
+        authority: "YC post-money safe primer Appendix II",
+        disclosure: "Shares issued on conversion of a SAFE or note are rounded DOWN to whole shares."
+      },
+      subscription_amount: {
+        site: "subscription_amount",
+        direction: "ceil",
+        authorityBacked: true,
+        authority: 'Orrick UK Founder Series \u2014 ROUNDUP on the subscription amount "so that shares are fully paid up"',
+        disclosure: "The subscription amount actually applied is rounded UP to the smallest currency unit, so the shares issued are fully paid up. The difference between the amount committed and the amount applied is the residual, and its treatment is recorded, not assumed."
+      },
+      pool_topup_shares: {
+        site: "pool_topup_shares",
+        direction: "ceil",
+        authorityBacked: false,
+        authority: "DEVIATION \u2014 no authority located for ceiling the pool top-up; recorded as pre-existing engine behaviour by WAVE 52c",
+        disclosure: "Option-pool top-up shares are rounded UP to whole shares. This over-delivers the pool target by at most one share and that one share dilutes existing holders. This is a deviation from the round-down rule used everywhere else and is stated, not hidden."
+      },
+      safe_company_capitalization: {
+        site: "safe_company_capitalization",
+        direction: "nearest",
+        authorityBacked: false,
+        authority: "DEVIATION \u2014 the post-money SAFE company-capitalization intermediate rounds to the NEAREST whole share; recorded as pre-existing engine behaviour by WAVE 52c",
+        disclosure: "The company-capitalization figure used to price a post-money SAFE is rounded to the NEAREST whole share as an intermediate step. This is a deviation from the round-down rule and is stated, not hidden."
+      }
+    };
+    ROUNDING_SITES = Object.keys(ROUNDING_DIRECTIONS);
   }
 });
 
@@ -22126,6 +21770,17 @@ var init_registry = __esm({
   }
 });
 
+// packages/cap-table-engine/src/primitives/timeElapsed.ts
+var INTEREST_YEAR_DAYS, MS_PER_YEAR;
+var init_timeElapsed = __esm({
+  "packages/cap-table-engine/src/primitives/timeElapsed.ts"() {
+    "use strict";
+    init_bigDecimal();
+    INTEREST_YEAR_DAYS = "365.25";
+    MS_PER_YEAR = D(INTEREST_YEAR_DAYS).mul(24).mul(3600).mul(1e3);
+  }
+});
+
 // packages/cap-table-engine/src/captable/compute.ts
 var init_compute = __esm({
   "packages/cap-table-engine/src/captable/compute.ts"() {
@@ -22142,6 +21797,7 @@ var init_compute = __esm({
     init_narrowBasedWeightedAverage();
     init_esopTopUp();
     init_registry();
+    init_timeElapsed();
   }
 });
 
@@ -22219,6 +21875,7 @@ var init_src = __esm({
     init_shareCount();
     init_hash();
     init_fx();
+    init_roundingPolicy();
     init_safeToPreferred();
     init_noteToPreferred();
     init_optionExercise();
@@ -22230,10 +21887,497 @@ var init_src = __esm({
     init_liquidationWaterfall();
     init_esopTopUp();
     init_compute();
+    init_compute();
     init_views();
     init_registry();
     init_ledger2();
     init_reconcile2();
+    init_timeElapsed();
+  }
+});
+
+// shared/roundMathEngineAdapter.ts
+var import_decimal2, DiscountDec, MATURITY_MONTHS_MAX, EXPIRY_YEARS_MAX, MATURITY_DATE_NOT_WRITABLE, EXPIRY_DATE_NOT_WRITABLE;
+var init_roundMathEngineAdapter = __esm({
+  "shared/roundMathEngineAdapter.ts"() {
+    "use strict";
+    import_decimal2 = __toESM(require("decimal.js"), 1);
+    init_src();
+    DiscountDec = import_decimal2.default.clone({ precision: 38, toExpNeg: -40, toExpPos: 40 });
+    MATURITY_MONTHS_MAX = 600;
+    EXPIRY_YEARS_MAX = 50;
+    MATURITY_DATE_NOT_WRITABLE = {
+      error: "maturity_date_not_writable",
+      field: "maturityDate",
+      message: `Capavate records a round's maturity as Maturity (months) \u2014 the number of months from issue \u2014 and computes the maturity date from it every time it is read. The absolute date cannot be stored directly, because two spellings of one date can disagree and nothing could then say which one is true. Set it on Founder -> Rounds -> the round -> Edit terms -> Maturity (months), which accepts 0 to ${MATURITY_MONTHS_MAX} months (owner ruling R71; the bound is R50).`
+    };
+    EXPIRY_DATE_NOT_WRITABLE = {
+      error: "expiry_date_not_writable",
+      field: "expiryDate",
+      /* Under 240 characters for the same measured reason as the cap refusal above. */
+      message: `Capavate records a warrant's expiry as Expiry (years) and computes the date from it on every read. Storing the date as well would let two spellings of one date disagree. Set it on Edit terms -> Expiry (years), which accepts 0 to ${EXPIRY_YEARS_MAX}.`
+    };
+  }
+});
+
+// server/lib/founderOwnershipEngine.ts
+var import_decimal3;
+var init_founderOwnershipEngine = __esm({
+  "server/lib/founderOwnershipEngine.ts"() {
+    "use strict";
+    import_decimal3 = require("decimal.js");
+    init_roundMathEngineAdapter();
+  }
+});
+
+// server/partnerCompanyRelationshipStore.ts
+var init_partnerCompanyRelationshipStore = __esm({
+  "server/partnerCompanyRelationshipStore.ts"() {
+    "use strict";
+    init_connection();
+    init_logger2();
+  }
+});
+
+// server/lib/money.ts
+var B_ZERO, B_ONE, B_TWO, B_TEN_K, CARRY_FRACTION_SCALE, B_SCALE, B_TEN;
+var init_money = __esm({
+  "server/lib/money.ts"() {
+    "use strict";
+    init_currency();
+    B_ZERO = BigInt(0);
+    B_ONE = BigInt(1);
+    B_TWO = BigInt(2);
+    B_TEN_K = BigInt(1e4);
+    CARRY_FRACTION_SCALE = 1e9;
+    B_SCALE = BigInt(CARRY_FRACTION_SCALE);
+    B_TEN = BigInt(10);
+  }
+});
+
+// server/lib/roundStoredTerms.ts
+var SENIORITY_RANK_MAX, SENIORITY_NOT_WRITABLE_MESSAGE, OPTION_POOL_POST_PERCENT_MAX, OPTION_POOL_POST_PERCENT_CEILING_MESSAGE;
+var init_roundStoredTerms = __esm({
+  "server/lib/roundStoredTerms.ts"() {
+    "use strict";
+    init_roundsStore();
+    SENIORITY_RANK_MAX = 99;
+    SENIORITY_NOT_WRITABLE_MESSAGE = `seniority is a preference class's RANK in the exit payment order, recorded as a whole number: 0 is the most senior, then 1, 2, \u2026 up to ${SENIORITY_RANK_MAX}. It must be an integer in [0, ${SENIORITY_RANK_MAX}] \u2014 it is never rounded, and a fraction is a typing error rather than a ranking. Send null to remove it, which returns the class to having no recorded seniority; the exit waterfall then refuses with seniority_not_on_record rather than assuming an order.`;
+    OPTION_POOL_POST_PERCENT_MAX = 50;
+    OPTION_POOL_POST_PERCENT_CEILING_MESSAGE = `An option pool of ${OPTION_POOL_POST_PERCENT_MAX}% of fully-diluted shares or more is not an employee option plan, and Capavate will not model one. It is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is solved as T = (P x (E + u + N) - 100 x u) / (100 - P), so the cost of each extra point of pool rises as P approaches 100: at 15% a pool is worth roughly its own size in dilution, and at 99% the arithmetic is legal but produces a 46-digit share count that is not a cap table. Typical Series A pools are 10-20% (Carta; Cooley GO). If you genuinely need a reserve at or above ${OPTION_POOL_POST_PERCENT_MAX}%, that is a capital-structure decision to record deliberately, not a percentage to type into this field.`;
+  }
+});
+
+// server/lib/roundClosePendingLapse.ts
+var init_roundClosePendingLapse = __esm({
+  "server/lib/roundClosePendingLapse.ts"() {
+    "use strict";
+    init_connection();
+    init_adminPlatformStore();
+    init_eventBus();
+  }
+});
+
+// server/emailTransport.ts
+function readMode() {
+  const raw = (process.env.SMTP_MODE ?? "").toLowerCase();
+  if (raw === "smtp" || raw === "console" || raw === "dry_run") return raw;
+  return "console";
+}
+function buildConfig() {
+  const host = process.env.SMTP_HOST ?? "";
+  const rawMode = readMode();
+  let mode = rawMode;
+  if (!host && mode === "smtp") {
+    log.warn("[emailTransport] SMTP_HOST is not set \u2014 falling back to 'console' mode.");
+    mode = "console";
+  }
+  return {
+    host,
+    port: parseInt(process.env.SMTP_PORT ?? "587", 10),
+    secure: (process.env.SMTP_SECURE ?? "false").toLowerCase() === "true",
+    user: process.env.SMTP_USER ?? "",
+    pass: process.env.SMTP_PASS ?? "",
+    // real value stored internally
+    fromAddress: process.env.SMTP_FROM ?? "Capavate <no-reply@capavate.com>",
+    replyTo: process.env.SMTP_REPLY_TO || null,
+    mode
+  };
+}
+function getConfigInternal() {
+  if (!_config) _config = buildConfig();
+  return _config;
+}
+function getConfig() {
+  const c = getConfigInternal();
+  return { ...c, pass: "***" };
+}
+function getTransporter() {
+  if (_transporter && !_transporterBroken) return _transporter;
+  const c = getConfigInternal();
+  _transporter = import_nodemailer.default.createTransport({
+    host: c.host,
+    port: c.port,
+    secure: c.secure,
+    auth: {
+      user: c.user,
+      pass: c.pass
+    }
+  });
+  _transporterBroken = false;
+  return _transporter;
+}
+function consumeToken() {
+  const now = Date.now();
+  const elapsed = now - _bucket.lastRefill;
+  _bucket.tokens = Math.min(_bucket.capacity, _bucket.tokens + elapsed * _bucket.refillRate);
+  _bucket.lastRefill = now;
+  if (_bucket.tokens >= 1) {
+    _bucket.tokens -= 1;
+    return true;
+  }
+  _rateLimitedCount++;
+  return false;
+}
+function cacheIdempotencyResult(key2, result) {
+  if (_idempotencyCache.has(key2)) return;
+  _idempotencyCache.set(key2, result);
+  _idempotencyOrder.push(key2);
+  if (_idempotencyOrder.length > IDEM_MAX) {
+    const evicted = _idempotencyOrder.shift();
+    _idempotencyCache.delete(evicted);
+  }
+}
+async function sendMail(args) {
+  if (args.idempotencyKey) {
+    const cached = _idempotencyCache.get(args.idempotencyKey);
+    if (cached) return cached;
+  }
+  if (!consumeToken()) {
+    const result2 = { ok: false, error: "rate_limited" };
+    return result2;
+  }
+  const c = getConfigInternal();
+  let result;
+  try {
+    if (c.mode === "dry_run") {
+      result = { ok: true, messageId: `dry_${(0, import_node_crypto3.randomBytes)(8).toString("hex")}` };
+    } else if (c.mode === "console") {
+      const msgId = `console_${(0, import_node_crypto3.randomBytes)(8).toString("hex")}`;
+      log.info(
+        `[emailTransport][console] to=${args.to} subject="${args.subject}" msgId=${msgId}`
+      );
+      result = { ok: true, messageId: msgId };
+    } else {
+      const transporter = getTransporter();
+      const replyTo = args.replyTo ?? c.replyTo ?? void 0;
+      const info = await transporter.sendMail({
+        from: c.fromAddress,
+        to: args.to,
+        subject: args.subject,
+        html: args.html,
+        text: args.text,
+        replyTo,
+        headers: args.headers
+      });
+      result = { ok: true, messageId: info.messageId };
+    }
+  } catch (err) {
+    const msg = err.message ?? "send_failed";
+    if (c.mode === "smtp" && /auth|credentials|535|534|530/i.test(msg)) {
+      _transporterBroken = true;
+      _transporter = null;
+    }
+    result = { ok: false, error: msg };
+  }
+  if (args.idempotencyKey) {
+    cacheIdempotencyResult(args.idempotencyKey, result);
+  }
+  return result;
+}
+var import_nodemailer, import_node_crypto3, _config, _transporter, _transporterBroken, _bucket, _rateLimitedCount, _idempotencyCache, _idempotencyOrder, IDEM_MAX;
+var init_emailTransport = __esm({
+  "server/emailTransport.ts"() {
+    "use strict";
+    import_nodemailer = __toESM(require("nodemailer"), 1);
+    import_node_crypto3 = require("node:crypto");
+    init_logger2();
+    _config = null;
+    _transporter = null;
+    _transporterBroken = false;
+    _bucket = {
+      tokens: 30,
+      lastRefill: Date.now(),
+      capacity: 30,
+      refillRate: 30 / 1e3
+      // 30 per second
+    };
+    _rateLimitedCount = 0;
+    _idempotencyCache = /* @__PURE__ */ new Map();
+    _idempotencyOrder = [];
+    IDEM_MAX = 1e3;
+  }
+});
+
+// server/lib/emailTokenRedaction.ts
+function isPurelyAlphabetic(s) {
+  return /^[A-Za-z-]+$/.test(s);
+}
+function redactTokenMaterial(text2) {
+  if (text2 === null || text2 === void 0) return text2;
+  let out = String(text2);
+  const alreadyRedacted = (v) => v.startsWith(TOKEN_REDACTION_MARKER);
+  out = out.replace(
+    SECRET_QUERY_PARAM_RE,
+    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
+  );
+  out = out.replace(
+    SECRET_PATH_SEGMENT_RE,
+    (m, prefix, value) => alreadyRedacted(value) ? m : `${prefix}${TOKEN_REDACTION_MARKER}`
+  );
+  out = out.replace(LONG_HEX_RUN_RE, TOKEN_REDACTION_MARKER);
+  out = out.replace(
+    LONG_B64URL_RUN_RE,
+    (m) => isPurelyAlphabetic(m) ? m : TOKEN_REDACTION_MARKER
+  );
+  return out;
+}
+function redactOutboxRow(row) {
+  let changed = false;
+  const next = { ...row };
+  const scrub = (v) => {
+    const r = redactTokenMaterial(v);
+    if (r !== v) changed = true;
+    return r;
+  };
+  if (typeof next.subject === "string") next.subject = scrub(next.subject);
+  if (typeof next.bodyHtmlRendered === "string") next.bodyHtmlRendered = scrub(next.bodyHtmlRendered);
+  if (next.bodyText !== void 0) next.bodyText = scrub(next.bodyText);
+  if (next.error !== void 0) next.error = scrub(next.error);
+  if (next.variables && typeof next.variables === "object") {
+    const vars = {};
+    for (const [k, v] of Object.entries(next.variables)) {
+      vars[k] = typeof v === "string" ? scrub(v) : v;
+    }
+    next.variables = vars;
+  }
+  if (changed) next.bodyRedacted = true;
+  return next;
+}
+var TOKEN_REDACTION_MARKER, SECRET_QUERY_PARAM_RE, SECRET_PATH_SEGMENT_RE, LONG_HEX_RUN_RE, LONG_B64URL_RUN_RE;
+var init_emailTokenRedaction = __esm({
+  "server/lib/emailTokenRedaction.ts"() {
+    "use strict";
+    TOKEN_REDACTION_MARKER = "[REDACTED:TOKEN]";
+    SECRET_QUERY_PARAM_RE = /([?&](?:token|tokens|auth_token|authtoken|access_token|refresh_token|reset_token|invite_token|invitetoken|redeem|redeem_token|code|secret|api_key|apikey|key|otp|nonce|signature|sig)=)([^&\s"'<>()\[\]{}]+)/gi;
+    SECRET_PATH_SEGMENT_RE = /((?:^|\/)(?:redeem|redeem-partner-invite|redeem-invite|set-password|reset-password|accept-invite|invite|activate|confirm|verify)\/)([A-Za-z0-9_\-.~]{16,})/gi;
+    LONG_HEX_RUN_RE = /(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/g;
+    LONG_B64URL_RUN_RE = /(?<![0-9A-Za-z_-])[A-Za-z0-9_-]{43,}(?![0-9A-Za-z_-])/g;
+  }
+});
+
+// server/emailStore.ts
+function persistOutbox(e) {
+  try {
+    persistEntry(PERSIST_STORE, e.id, redactOutboxRow(e));
+  } catch {
+  }
+}
+function renderTemplate(html, vars) {
+  return html.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key2) => {
+    return key2 in vars ? String(vars[key2]) : `{{${key2}}}`;
+  });
+}
+function findTemplate(slug) {
+  const cached = templateCache.get(slug);
+  if (cached) return cached;
+  if (templateCache.size > 0) return null;
+  return templates.find((t) => t.slug === slug) ?? null;
+}
+function enqueueEmail(args) {
+  const t = findTemplate(args.templateSlug);
+  if (!t) throw new Error(`unknown_template: ${args.templateSlug}`);
+  const e = {
+    id: `email_${(0, import_node_crypto4.randomBytes)(6).toString("hex")}`,
+    templateSlug: args.templateSlug,
+    recipient: args.recipient,
+    recipientUserId: args.recipientUserId,
+    variables: args.variables,
+    subject: renderTemplate(t.subject, args.variables),
+    bodyHtmlRendered: renderTemplate(t.bodyHtml, args.variables),
+    bodyText: renderTemplate(t.bodyText, args.variables),
+    status: "queued",
+    attempts: 0,
+    queuedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    sentAt: null,
+    deliveredAt: null,
+    openedAt: null,
+    clickedAt: null,
+    bouncedAt: null,
+    error: null
+  };
+  outbox2.push(e);
+  persistOutbox(e);
+  return e;
+}
+function backoffMs(attempts) {
+  return Math.min(5 * 6e4, Math.pow(2, attempts) * 1e3);
+}
+async function tickQueue() {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const nowMs = Date.now();
+  for (const e of outbox2) {
+    if (e.status !== "queued") continue;
+    if (transactionalInFlight.has(e.id)) continue;
+    if (e.bodyRedacted) {
+      e.status = "failed";
+      e.error = "token_bearing_body_not_resendable_reissue_required";
+      e.sentAt = null;
+      e.deliveredAt = null;
+      persistOutbox(e);
+      continue;
+    }
+    const nextRetryMs = e._nextRetryMs ?? 0;
+    if (nowMs < nextRetryMs) continue;
+    e.attempts++;
+    const result = await sendMail({
+      to: e.recipient,
+      subject: e.subject,
+      html: e.bodyHtmlRendered,
+      text: e.bodyText ?? void 0,
+      idempotencyKey: `outbox_${e.id}_attempt_${e.attempts}`
+    });
+    if (result.ok) {
+      e.status = "sent";
+      e.sentAt = now;
+      e.error = null;
+      const observedMode = (() => {
+        try {
+          return String(getConfig().mode);
+        } catch {
+          return "smtp";
+        }
+      })();
+      if (observedMode === "console" || observedMode === "dry_run") {
+        e.status = "delivered";
+        e.deliveredAt = now;
+      }
+    } else if (result.error === "rate_limited") {
+      e.attempts--;
+      e._nextRetryMs = nowMs + 1e3;
+    } else {
+      e.error = result.error ?? "send_failed";
+      if (e.attempts >= MAX_ATTEMPTS) {
+        e.status = "bounced";
+        e.bouncedAt = now;
+      } else {
+        e._nextRetryMs = nowMs + backoffMs(e.attempts);
+      }
+    }
+    persistOutbox(e);
+  }
+}
+function seedDemo() {
+  if (outbox2.length > 0) return;
+  enqueueEmail({ templateSlug: "round_invitation", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", founder_name: "Maya Chen", company_name: "NovaPay AI", round_name: "Seed Extension", instrument: "SAFE", personal_message: "Strategic round; pro-rata reserved.", cta_url: "https://app.capavate.com/i/abc123", expiry_date: "2026-06-30" } });
+  enqueueEmail({ templateSlug: "soft_circle_submitted", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { investor_name: "Aisha Patel", committed_amount: "$250,000", currency: "USD", round_name: "Seed Extension" } });
+  enqueueEmail({ templateSlug: "round_closed", recipient: "team@hydra.vc", recipientUserId: "u_aisha_patel", variables: { company_name: "NovaPay AI", round_name: "Seed Extension", amount_closed: "$4.0M", security_type: "SAFE", cap_table_cta: "https://app.capavate.com/cap" } });
+  enqueueEmail({ templateSlug: "collective_welcome", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", deal_room_cta: "/collective/#/deals", profile_cta: "/collective/#/profile", receipt_link: "/billing/receipts/r123" } });
+  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "verified", action_required: "" } });
+  enqueueEmail({ templateSlug: "form_d_reminder", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { recipient_name: "Maya", filing_deadline: "2026-05-23", edgar_link: "https://efts.sec.gov" } });
+  tickQueue();
+  tickQueue();
+  if (outbox2[0]) {
+    outbox2[0].status = "opened";
+    outbox2[0].openedAt = (/* @__PURE__ */ new Date()).toISOString();
+  }
+  if (outbox2[1]) {
+    outbox2[1].status = "clicked";
+    outbox2[1].clickedAt = (/* @__PURE__ */ new Date()).toISOString();
+  }
+  if (outbox2[5]) {
+    outbox2[5].status = "bounced";
+    outbox2[5].bouncedAt = (/* @__PURE__ */ new Date()).toISOString();
+    outbox2[5].error = "550 mailbox not found";
+  }
+}
+var import_node_crypto4, PERSIST_STORE, templates, outbox2, templateCache, transactionalInFlight, MAX_ATTEMPTS;
+var init_emailStore = __esm({
+  "server/emailStore.ts"() {
+    "use strict";
+    import_node_crypto4 = require("node:crypto");
+    init_emailTransport();
+    init_demoGate();
+    init_storePersistenceShim();
+    init_connection();
+    init_emailTokenRedaction();
+    PERSIST_STORE = "emailStoreOutbox";
+    templates = [
+      { id: "tpl_round_invitation", slug: "round_invitation", subject: "{{founder_name}} invited you to {{company_name}}'s {{round_name}}", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{founder_name}} of {{company_name}} has invited you to participate in {{round_name}} ({{instrument}}).</p><p>{{personal_message}}</p><p><a href="{{cta_url}}">View invitation</a> \xB7 expires {{expiry_date}}.</p>', bodyText: "Hi {{recipient_name}}, {{founder_name}} invited you. {{cta_url}}", variables: ["recipient_name", "founder_name", "company_name", "round_name", "instrument", "personal_message", "cta_url", "expiry_date"], category: "round" },
+      { id: "tpl_invitation_accepted", slug: "invitation_accepted", subject: "{{investor_name}} accepted the {{round_name}} invitation", bodyHtml: "<p>{{investor_name}} ({{investor_email}}) accepted {{company_name}} {{round_name}} \u2014 committed {{committed_amount}}.</p>", bodyText: "{{investor_name}} accepted.", variables: ["investor_name", "investor_email", "company_name", "round_name", "committed_amount"], category: "round" },
+      { id: "tpl_invitation_declined", slug: "invitation_declined", subject: "{{investor_name}} declined the {{round_name}} invitation", bodyHtml: "<p>{{investor_name}} declined the {{round_name}} invitation. Note: {{decline_note}}</p>", bodyText: "{{investor_name}} declined.", variables: ["investor_name", "company_name", "round_name", "decline_note"], category: "round" },
+      { id: "tpl_soft_circle_submitted", slug: "soft_circle_submitted", subject: "{{investor_name}} soft-circled {{committed_amount}} {{currency}}", bodyHtml: "<p>{{investor_name}} soft-circled {{committed_amount}} {{currency}} on {{round_name}}.</p>", bodyText: "Soft circle received.", variables: ["investor_name", "committed_amount", "currency", "round_name"], category: "round" },
+      { id: "tpl_invitation_expiry_warning", slug: "invitation_expiry_warning", subject: "Reminder: {{round_name}} invitation expires {{expiry_date}}", bodyHtml: '<p>Your {{company_name}} {{round_name}} invitation expires on {{expiry_date}}. <a href="{{cta_url}}">Continue</a>.</p>', bodyText: "Reminder.", variables: ["company_name", "round_name", "expiry_date", "cta_url"], category: "round" },
+      { id: "tpl_round_closed", slug: "round_closed", subject: "{{round_name}} closed at {{amount_closed}}", bodyHtml: '<p>{{company_name}} {{round_name}} ({{security_type}}) closed at {{amount_closed}}. <a href="{{cap_table_cta}}">View cap table</a>.</p>', bodyText: "Round closed.", variables: ["company_name", "round_name", "amount_closed", "security_type", "cap_table_cta"], category: "round" },
+      { id: "tpl_notification_digest", slug: "notification_digest", subject: "Your daily Capavate digest", bodyHtml: "<p>Hi {{recipient_name}},</p><p>{{batch_summary}}</p>", bodyText: "Daily digest.", variables: ["recipient_name", "batch_summary"], category: "system" },
+      { id: "tpl_collective_welcome", slug: "collective_welcome", subject: "Welcome to Capavate Collective", bodyHtml: '<p>Welcome, {{recipient_name}}. <a href="{{deal_room_cta}}">Open the deal room</a>. <a href="{{profile_cta}}">Complete your profile</a>. <a href="{{receipt_link}}">Receipt</a>.</p>', bodyText: "Welcome.", variables: ["recipient_name", "deal_room_cta", "profile_cta", "receipt_link"], category: "membership" },
+      { id: "tpl_membership_review", slug: "membership_review", subject: "Your Capavate Collective application is under review", bodyHtml: '<p>{{recipient_name}}, your application is under review. Timeline: {{timeline}}. <a href="{{edit_link}}">Edit application</a>.</p>', bodyText: "Under review.", variables: ["recipient_name", "timeline", "edit_link"], category: "membership" },
+      { id: "tpl_membership_approved", slug: "membership_approved", subject: "Your Collective membership is approved", bodyHtml: "<p>{{recipient_name}}, your membership is approved. Next steps: {{next_steps}}.</p>", bodyText: "Approved.", variables: ["recipient_name", "next_steps"], category: "membership" },
+      { id: "tpl_membership_rejected", slug: "membership_rejected", subject: "Your Collective application", bodyHtml: "<p>{{recipient_name}}, application not approved at this time. Notes: {{next_steps}}.</p>", bodyText: "Rejected.", variables: ["recipient_name", "next_steps"], category: "membership" },
+      { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your KYC status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, your KYC status is now {{new_status}}. {{action_required}}</p>", bodyText: "KYC update.", variables: ["recipient_name", "new_status", "action_required"], category: "compliance" },
+      { id: "tpl_form_d_reminder", slug: "form_d_reminder", subject: "Form D filing deadline: {{filing_deadline}}", bodyHtml: '<p>{{recipient_name}}, your Form D 15-day deadline is {{filing_deadline}}. <a href="{{edgar_link}}">EDGAR portal</a>.</p>', bodyText: "Form D reminder.", variables: ["recipient_name", "filing_deadline", "edgar_link"], category: "compliance" },
+      { id: "tpl_emi_notification_reminder", slug: "emi_notification_reminder", subject: "EMI grant: HMRC 92-day deadline", bodyHtml: '<p>{{recipient_name}}, EMI grant {{grant_date}} requires HMRC notification by {{hmrc_deadline}}. <a href="{{ers_url}}">ERS online service</a>.</p>', bodyText: "EMI reminder.", variables: ["recipient_name", "grant_date", "hmrc_deadline", "ers_url"], category: "compliance" },
+      { id: "tpl_83b_election", slug: "83b_election", subject: "83(b) election due in 30 days", bodyHtml: "<p>{{recipient_name}}, an early option exercise occurred {{exercise_date}}; the 83(b) election deadline is {{deadline_date}}.</p>", bodyText: "83(b) reminder.", variables: ["recipient_name", "exercise_date", "deadline_date"], category: "compliance" },
+      // v25.47 APD-025 — 6 new templates (21 total). Brand: Capavate.
+      { id: "tpl_collective_member_subscribed", slug: "collective_member_subscribed", subject: "Your Capavate Collective membership is active", bodyHtml: '<p>Hi {{recipient_name}},</p><p>Your Collective membership ({{tier_name}}, {{amount}}/{{billing_period}}) is now active. <a href="{{receipt_link}}">View receipt</a>.</p>', bodyText: "Your Collective membership ({{tier_name}}) is active.", variables: ["recipient_name", "tier_name", "amount", "billing_period", "receipt_link"], category: "membership" },
+      { id: "tpl_consortium_partner_subscribed", slug: "consortium_partner_subscribed", subject: "Your Capavate Consortium partnership ({{tier_name}}) is active", bodyHtml: '<p>Hi {{recipient_name}},</p><p>Your Consortium partner subscription ({{tier_name}}, {{amount}}/{{billing_period}}) is active. <a href="{{receipt_link}}">View receipt</a>.</p>', bodyText: "Your Consortium partnership ({{tier_name}}) is active.", variables: ["recipient_name", "tier_name", "amount", "billing_period", "receipt_link"], category: "membership" },
+      { id: "tpl_spv_deployed", slug: "spv_deployed", subject: "SPV {{spv_id}} deployed", bodyHtml: '<p>Hi {{recipient_name}},</p><p>SPV {{spv_id}} has been deployed. Deployment fee: {{fee_amount}}. <a href="{{cta_url}}">View details</a>.</p>', bodyText: "SPV {{spv_id}} deployed. Fee {{fee_amount}}.", variables: ["recipient_name", "spv_id", "fee_amount", "cta_url"], category: "system" },
+      { id: "tpl_post_flagged", slug: "post_flagged", subject: "A post was flagged for review", bodyHtml: '<p>Post {{post_id}} was flagged{{#if reason}} ({{reason}}){{/if}} by {{actor}}. <a href="{{cta_url}}">Review</a>.</p>', bodyText: "Post {{post_id}} flagged by {{actor}}.", variables: ["post_id", "reason", "actor", "cta_url"], category: "system" },
+      { id: "tpl_post_hidden", slug: "post_hidden", subject: "Your post was hidden by a moderator", bodyHtml: "<p>Hi {{recipient_name}},</p><p>Your post was hidden by a moderator{{#if reason}}: {{reason}}{{/if}}. Contact support if you believe this was in error.</p>", bodyText: "Your post was hidden{{#if reason}}: {{reason}}{{/if}}.", variables: ["recipient_name", "reason"], category: "system" },
+      { id: "tpl_pulse_digest", slug: "pulse_digest", subject: "Your Capavate Pulse digest", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{digest_summary}}</p><p><a href="{{cta_url}}">Open Pulse</a>.</p>', bodyText: "Pulse digest: {{digest_summary}}", variables: ["recipient_name", "digest_summary", "cta_url"], category: "system" }
+    ];
+    outbox2 = [];
+    templateCache = /* @__PURE__ */ new Map();
+    transactionalInFlight = /* @__PURE__ */ new Set();
+    MAX_ATTEMPTS = 5;
+    if (DEMO_SEED_ENABLED) {
+      seedDemo();
+    }
+  }
+});
+
+// server/lib/resolveCompanyIdParam.ts
+var init_resolveCompanyIdParam = __esm({
+  "server/lib/resolveCompanyIdParam.ts"() {
+    "use strict";
+    init_userContext();
+  }
+});
+
+// server/lib/htmlEscape.ts
+var init_htmlEscape = __esm({
+  "server/lib/htmlEscape.ts"() {
+    "use strict";
+  }
+});
+
+// server/companyProfileStore.ts
+var import_node_module2, require2;
+var init_companyProfileStore = __esm({
+  "server/companyProfileStore.ts"() {
+    "use strict";
+    import_node_module2 = require("node:module");
+    init_adminPlatformStore();
+    init_bridgeStore();
+    init_emailStore();
+    init_connection();
+    init_schema();
+    init_logger2();
+    init_resolveCompanyIdParam();
+    init_authMiddleware();
+    init_userContext();
+    init_htmlEscape();
+    require2 = (0, import_node_module2.createRequire)(__importMetaUrl);
   }
 });
 
@@ -22246,6 +22390,7 @@ var init_roundCarryForwardEngine = __esm({
     init_roundsStore();
     init_companyProfileStore();
     init_multiCompanyStore();
+    init_roundMathEngineAdapter();
     init_src();
     rounds3 = new Proxy(rounds2, {
       get(target, prop, receiver) {
@@ -22276,6 +22421,8 @@ var init_roundCarryForwardRoutes = __esm({
     init_authMiddleware();
     init_userContext();
     init_roundsStore();
+    init_roundMathEngineAdapter();
+    init_roundStoredTerms();
     init_roundClosePendingLapse();
     init_multiCompanyStore();
     init_roundCarryForwardEngine();
@@ -22357,12 +22504,61 @@ var init_roundsStore = __esm({
       "expiryDate",
       "sharesAuthorized",
       "poolSize",
+      /* WAVE 58 · R27 — the option pool is a PERCENTAGE of fully diluted.
+           `optionPoolPostPercent` is PERCENT-AS-WRITTEN (R16 / OR-1): the stored value
+           is `"15"` for 15%, with no conversion at any layer. `optionPoolMode` is the
+           pre-money / post-money PLACEMENT, which decides who pays for the pool.
+      
+           ADDITIVE ONLY, and NO MIGRATION. Both keys live in `extras_json`, which
+           `POST /api/rounds` already stashes for any non-column field and which
+           `rowToRound` already re-spreads on hydrate. Listing them here is what lets
+           `PATCH /api/rounds/:id/terms` round-trip them instead of rejecting them as
+           UNKNOWN_FIELD. Nothing existing is renamed, re-typed or reinterpreted:
+           `poolSize` above keeps its meaning and its stored values exactly. */
+      "optionPoolPostPercent",
+      "optionPoolMode",
       "mfn",
       "proRata",
       "liquidationPreference",
       "antiDilutionType",
       "useOfProceeds",
-      "cap"
+      "cap",
+      /* WAVE 70 · D5 — THE SAFE CAP CONVENTION, MADE STORABLE. ADDITIVE, NO MIGRATION.
+         `shared/roundMathEngineAdapter.ts:892` hardcoded `type: "post_money_cap"` for
+         every SAFE that ever reached the engine, so `pre_money_cap` — implemented and
+         tested in the engine, and producing different, correct results ($1.00 and
+         2,000,000 shares vs $0.80 and 2,500,000 on identical terms) — was unreachable
+         through the platform. §11 request 5 of the document already sent to Shadie
+         asks her to test exactly that comparison.
+         `safeType` takes the engine's own vocabulary, `"post_money_cap"` /
+         `"pre_money_cap"`. It lives in `extras_json`, which `POST /api/rounds`
+         already stashes for any non-column field and which `rowToRound` already
+         re-spreads on hydrate, so listing it here is only what lets
+         `PATCH /api/rounds/:id/terms` round-trip it instead of rejecting it as
+         UNKNOWN_FIELD — exactly the precedent set for `optionPoolPostPercent` above.
+         Nothing existing is renamed, re-typed or reinterpreted, and NO MIGRATION IS
+         ADDED: the migration count stays 173 with 0192 highest.
+         WHILE IT IS UNSET the adapter reads the market default (YC v1.2 post-money)
+         and STATES THAT ASSUMPTION on screen rather than choosing silently. */
+      "safeType",
+      /* WAVE 81 · ITEM 2 (D4) — `seniority`. ADDITIVE, NO MIGRATION.
+           The RANK of a preference class in the exit payment order. It lives in
+           `extras_json`, which `POST /api/rounds` already stashes for any non-column
+           field and which `rowToRound` already re-spreads on hydrate, and
+           `server/lib/roundStoredTerms.ts` has read it since Wave 79 — so the platform
+           could already HOLD it and only the write path threw it away. Listing it here
+           is what lets `PATCH /api/rounds/:id/terms` round-trip it instead of the route
+           silently discarding it, exactly the precedent set by `optionPoolPostPercent`
+           (Wave 58b), `safeType` (Wave 70), `liquidationPreference` (Wave 75) and
+           Wave 80's four. Migrations stay at 173 with 0192 highest.
+      
+           EVERY WRITER THAT CAN NOW REACH IT VALIDATES IT. Adding a key here makes it
+           reachable through `updateRound` from `PATCH /api/founder/rounds/:id` too,
+           which hands every patch key straight to this function — so that route was
+           given the SAME imported fence in the same wave (`validateSeniorityRankStored`,
+           declared once in `server/lib/roundStoredTerms.ts`). Wave 76 was caught by
+           exactly the opposite order of operations; it is not repeated here. */
+      "seniority"
     ]);
     UPDATE_ROUND_EXTRAS_KEYS = Array.from(UPDATE_EXTRAS_WHITELIST);
   }
@@ -23442,11 +23638,11 @@ function call(valueDate, minor, txnType = "capital_call_investment") {
 function dist(valueDate, minor, txnType = "distribution_gain_loss") {
   return { valueDate, amountMinor: Math.abs(minor), txnType, currency: USD };
 }
-var import_decimal2, USD, ILPA_FIXTURES;
+var import_decimal4, USD, ILPA_FIXTURES;
 var init_ilpa = __esm({
   "packages/math-fns/src/ilpa.ts"() {
     "use strict";
-    import_decimal2 = __toESM(require("decimal.js"), 1);
+    import_decimal4 = __toESM(require("decimal.js"), 1);
     USD = "USD";
     ILPA_FIXTURES = [
       {
@@ -23582,13 +23778,13 @@ var init_ilpa = __esm({
 });
 
 // packages/math-fns/src/index.ts
-var import_decimal3;
+var import_decimal5;
 var init_src2 = __esm({
   "packages/math-fns/src/index.ts"() {
     "use strict";
-    import_decimal3 = __toESM(require("decimal.js"), 1);
+    import_decimal5 = __toESM(require("decimal.js"), 1);
     init_ilpa();
-    import_decimal3.default.set({ precision: 40, rounding: import_decimal3.default.ROUND_HALF_UP });
+    import_decimal5.default.set({ precision: 40, rounding: import_decimal5.default.ROUND_HALF_UP });
   }
 });
 
@@ -23687,12 +23883,53 @@ var init_percentPolicy = __esm({
         max: 1,
         rationale: "Fraction. 1 is a legitimate 100%-off VIP grant and is OWNER-CLOSED (P-2); it must not be rewritten to 0.01."
       }),
+      /* ═══════════════════════════════════════════════════════════════════════
+             WAVE 58f · F0 — THIS ENTRY SAID "fraction, [0,1]". THAT WAS WRONG.
+             ═══════════════════════════════════════════════════════════════════════
+             `captable_commits.discount_pct` is PERCENT-AS-WRITTEN under owner ruling
+             R30, and always has been in practice:
+               · `shared/schema.ts:1425` — `discountPct: text("discount_pct"),
+                 // Decimal-as-string (e.g. "20" = 20%)`.
+               · THE WRITER — `server/captableCommitStore.ts:575` (SACRED, unmodified)
+                 writes `round.discount` VERBATIM, and `rounds.extras_json` holds
+                 percent-as-written (live stores `"discount": 20`).
+               · THE READERS — `server/routes.ts:2127` and
+                 `server/captableSnapshotsStore.ts:109` take `Number(discountPct)`
+                 into the securities shape, after which
+                 `roundMathEngineAdapter.toWireDiscount` divides by 100 EXACTLY ONCE
+                 to reach the engine wire. A stored `0.2` therefore prices as a 0.2%
+                 discount, not 20% — R16 forbids reading the unit off the magnitude.
+      
+             WHAT THE OLD ENTRY WAS AGREEING WITH. Migration 0153's two triggers,
+             which aborted any `discount_pct` outside a fraction [0,1]. Reproduced by
+             execution in Wave 58f: `'20'` -> `RAISE(ABORT,
+             'DISCOUNT_PCT_OUT_OF_DOMAIN:expected fraction 0..1')`. Those triggers are
+             corrected by `migrations/0190_wave58f_discount_pct_domain.sql`, so this
+             entry is corrected with them — a policy record that contradicts the
+             column it describes is how the contradiction survived two waves.
+      
+             THIS CHANGE IS INERT AT RUNTIME AND SAID SO HONESTLY. VERIFIED: the key
+             `"captable.discountPct"` has NO caller anywhere in the tree — no
+             `normalisePercentField`, no `assertStoredFraction`, no route. It fenced
+             nothing before and it fences nothing now. It is documentation, and it is
+             corrected so the written record and the enforced record agree.
+      
+             NOTE ON `assertStoredFraction`. That helper throws
+             `PERCENT_FIELD_UNKNOWN:<field>:not_a_fraction_field` for any
+             `percent_as_written` field. That is the CORRECT outcome here: this column
+             is not a fraction, and a future caller must not be handed one.
+      
+             The upper bound is `< 100`, matching `DISCOUNT_STORED_PERCENT_MAX` in
+             `shared/roundMathEngineAdapter.ts` — but `max` here is INCLUSIVE, so the
+             exact shared bound is asserted against this file by the Wave 58f test
+             rather than restated as a second rule (R21). 100% or more would price the
+             shares at or below zero. */
       "captable.discountPct": Object.freeze({
         field: "captable.discountPct",
-        inputForm: "fraction",
+        inputForm: "percent_as_written",
         min: 0,
-        max: 1,
-        rationale: "SAFE/note discount, fraction. Fenced at the table by 0153 triggers (P-11)."
+        max: 99.999999999,
+        rationale: "SAFE/note discount, PERCENT-AS-WRITTEN under owner ruling R30: '20' means 20%. Fenced at the table by migration 0190's triggers, which CORRECT 0153's fraction-domain [0,1] fence (P-11) \u2014 that fence aborted the platform's own canonical value and would have failed the first SAFE commit carrying a discount."
       }),
       /**
        * WAVE 10 / EN-5 — the hurdle AFTER `normaliseSpvTermsHurdle` has run.
@@ -23730,7 +23967,7 @@ var init_percentPolicy = __esm({
   }
 });
 
-// server/lib/applyWave45PricingSchema.ts
+// server/lib/applyWave56TierDomainSchema.ts
 function candidatePaths3() {
   const cwd = process.cwd();
   return [
@@ -23738,10 +23975,156 @@ function candidatePaths3() {
     import_node_path3.default.join(cwd, "migrations", MIGRATION_BASENAME2)
   ];
 }
-function readWave45PricingDdl() {
+function readWave56TierDomainDdl() {
   for (const p of candidatePaths3()) {
     try {
       if (import_node_fs3.default.existsSync(p)) return import_node_fs3.default.readFileSync(p, "utf8");
+    } catch {
+    }
+  }
+  return null;
+}
+function objectSql(db, type, name) {
+  try {
+    const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
+    return typeof row?.sql === "string" ? row.sql : null;
+  } catch {
+    return null;
+  }
+}
+function probe(db) {
+  const tablesStillPinned = [];
+  for (const { table, removedCheck } of WAVE56_REBUILT_TABLES) {
+    const sql2 = objectSql(db, "table", table);
+    if (sql2 !== null && sql2.includes(removedCheck)) tablesStillPinned.push(table);
+  }
+  const triggersMissing = WAVE56_TRIGGERS.filter((t) => objectSql(db, "trigger", t) === null);
+  const rankTablePresent = objectSql(db, "table", WAVE56_RANK_TABLE) !== null;
+  return { tablesStillPinned, triggersMissing, rankTablePresent };
+}
+function ensureTierCurrentExists(db) {
+  if (objectSql(db, "table", "partner_tier_current") !== null) return;
+  db.exec(`
+CREATE TABLE IF NOT EXISTS partner_tier_current (
+  partner_id      TEXT PRIMARY KEY NOT NULL,
+  tier            TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  effective_from  TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_partner_tier_current_tier ON partner_tier_current (tier);
+`);
+}
+function applyWave56TierDomainSchema(db) {
+  const warnings = [];
+  if (objectSql(db, "table", "partner_tier_lifecycle") === null) {
+    return {
+      ran: false,
+      reason: "partner_tier_lifecycle absent \u2014 Wave 45 install has not run",
+      warnings: ["wave56 tier-domain install skipped: partner_tier_lifecycle absent"],
+      ...probe(db)
+    };
+  }
+  let state = probe(db);
+  if (state.tablesStillPinned.length === 0 && state.triggersMissing.length === 0 && state.rankTablePresent) {
+    return { ran: false, reason: "already installed", warnings, ...state };
+  }
+  const ddl = readWave56TierDomainDdl();
+  if (!ddl) {
+    warnings.push(`could not read ${MIGRATION_BASENAME2} from any of: ${candidatePaths3().join(", ")}`);
+    log.error?.({ warnings }, "wave56 tier-domain install could not read its migration");
+    return { ran: false, reason: "ddl not found", warnings, ...state };
+  }
+  try {
+    ensureTierCurrentExists(db);
+  } catch (err) {
+    warnings.push(`partner_tier_current pre-create failed: ${err.message}`);
+  }
+  const anyDb = db;
+  try {
+    if (typeof anyDb.transaction === "function") {
+      anyDb.transaction(() => {
+        db.exec(ddl);
+      })();
+    } else {
+      try {
+        db.exec("BEGIN");
+        db.exec(ddl);
+        db.exec("COMMIT");
+      } catch (inner) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+        }
+        throw inner;
+      }
+    }
+  } catch (err) {
+    warnings.push(`exec failed (rolled back): ${err.message}`);
+    log.error?.({ err }, "wave56 tier-domain install failed and was rolled back");
+    return { ran: true, reason: "failed and rolled back", warnings, ...probe(db) };
+  }
+  state = probe(db);
+  if (state.tablesStillPinned.length > 0 || state.triggersMissing.length > 0 || !state.rankTablePresent) {
+    log.warn?.(
+      { tablesStillPinned: state.tablesStillPinned, triggersMissing: state.triggersMissing, rankTablePresent: state.rankTablePresent },
+      "wave56 tier-domain install incomplete"
+    );
+  }
+  const displacedMissing = WAVE56_DISPLACED_TRIGGERS.filter((t) => objectSql(db, "trigger", t) === null);
+  if (displacedMissing.length > 0) {
+    warnings.push(`DISPLACED MONEY-FREEZE TRIGGERS NOT RESTORED: ${displacedMissing.join(", ")}`);
+    log.error?.({ displacedMissing }, "wave56 tier-domain install did not restore money-freeze triggers");
+  }
+  return { ran: true, reason: "installed", warnings, ...state };
+}
+function ensureWave56TierDomainSchema(db) {
+  if (_installed2.has(db)) return;
+  applyWave56TierDomainSchema(db);
+  _installed2.add(db);
+}
+var import_node_fs3, import_node_path3, MIGRATION_BASENAME2, WAVE56_REBUILT_TABLES, WAVE56_TRIGGERS, WAVE56_DISPLACED_TRIGGERS, WAVE56_RANK_TABLE, _installed2;
+var init_applyWave56TierDomainSchema = __esm({
+  "server/lib/applyWave56TierDomainSchema.ts"() {
+    "use strict";
+    import_node_fs3 = __toESM(require("node:fs"), 1);
+    import_node_path3 = __toESM(require("node:path"), 1);
+    init_logger2();
+    MIGRATION_BASENAME2 = "0191_wave56_tier_domain_dynamic.sql";
+    WAVE56_REBUILT_TABLES = [
+      { table: "partner_tier_lifecycle", removedCheck: "tier_slug IN (" },
+      { table: "partner_tier_capability", removedCheck: "tier_slug IN (" },
+      { table: "partner_tier_current", removedCheck: "tier IN (" }
+    ];
+    WAVE56_TRIGGERS = [
+      "trg_ptc_tier_must_exist_insert",
+      "trg_ptc_tier_must_exist_update",
+      "trg_ptcur_tier_must_exist_insert",
+      "trg_ptcur_tier_must_exist_update",
+      "trg_ptr_tier_must_exist_insert"
+    ];
+    WAVE56_DISPLACED_TRIGGERS = [
+      "trg_ptp_frozen_no_price_update",
+      "trg_ptp_frozen_no_price_insert",
+      "trg_ptl_no_delete"
+    ];
+    WAVE56_RANK_TABLE = "partner_tier_rank";
+    _installed2 = /* @__PURE__ */ new WeakSet();
+  }
+});
+
+// server/lib/applyWave45PricingSchema.ts
+function candidatePaths4() {
+  const cwd = process.cwd();
+  return [
+    import_node_path4.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME3),
+    import_node_path4.default.join(cwd, "migrations", MIGRATION_BASENAME3)
+  ];
+}
+function readWave45PricingDdl() {
+  for (const p of candidatePaths4()) {
+    try {
+      if (import_node_fs4.default.existsSync(p)) return import_node_fs4.default.readFileSync(p, "utf8");
     } catch {
     }
   }
@@ -23762,20 +24145,20 @@ function applyWave45PricingSchema(db) {
   } catch (err) {
     warnings.push(`wave5 prerequisite install failed: ${err.message}`);
   }
-  const probe = () => ({
+  const probe2 = () => ({
     tablesPresent: WAVE45_TABLES.filter((t) => objectExists(db, t, "table")),
     tablesMissing: WAVE45_TABLES.filter((t) => !objectExists(db, t, "table")),
     triggersPresent: WAVE45_TRIGGERS.filter((t) => objectExists(db, t, "trigger")),
     triggersMissing: WAVE45_TRIGGERS.filter((t) => !objectExists(db, t, "trigger"))
   });
-  let state = probe();
+  let state = probe2();
   if (state.tablesMissing.length === 0 && state.triggersMissing.length === 0) {
     return { ran: false, reason: "already installed", warnings, ...state };
   }
   const ddl = readWave45PricingDdl();
   if (!ddl) {
     warnings.push(
-      `could not read ${MIGRATION_BASENAME2} from any of: ${candidatePaths3().join(", ")}`
+      `could not read ${MIGRATION_BASENAME3} from any of: ${candidatePaths4().join(", ")}`
     );
     log.error?.({ warnings }, "wave45 pricing schema install could not read its migration");
     return { ran: false, reason: "ddl not found", warnings, ...state };
@@ -23786,7 +24169,7 @@ function applyWave45PricingSchema(db) {
     warnings.push(`exec failed: ${err.message}`);
     log.error?.({ err }, "wave45 pricing schema install failed");
   }
-  state = probe();
+  state = probe2();
   if (state.tablesMissing.length > 0 || state.triggersMissing.length > 0) {
     log.warn?.(
       { tablesMissing: state.tablesMissing, triggersMissing: state.triggersMissing },
@@ -23796,9 +24179,14 @@ function applyWave45PricingSchema(db) {
   return { ran: true, reason: "installed", warnings, ...state };
 }
 function ensureWave45PricingSchema(db) {
-  if (_installed2.has(db)) return;
+  if (_installed3.has(db)) return;
   applyWave45PricingSchema(db);
-  _installed2.add(db);
+  try {
+    ensureWave56TierDomainSchema(db);
+  } catch (err) {
+    log.error?.({ err }, "wave56 tier-domain install threw during wave45 ensure");
+  }
+  _installed3.add(db);
 }
 function wave45Db() {
   if (getDbDriver() === "postgres") {
@@ -23809,16 +24197,17 @@ function wave45Db() {
   ensureWave45PricingSchema(db);
   return db;
 }
-var import_node_fs3, import_node_path3, MIGRATION_BASENAME2, WAVE45_STORE_UNAVAILABLE, WAVE45_TABLES, WAVE45_TRIGGERS, _installed2;
+var import_node_fs4, import_node_path4, MIGRATION_BASENAME3, WAVE45_STORE_UNAVAILABLE, WAVE45_TABLES, WAVE45_TRIGGERS, _installed3;
 var init_applyWave45PricingSchema = __esm({
   "server/lib/applyWave45PricingSchema.ts"() {
     "use strict";
-    import_node_fs3 = __toESM(require("node:fs"), 1);
-    import_node_path3 = __toESM(require("node:path"), 1);
+    import_node_fs4 = __toESM(require("node:fs"), 1);
+    import_node_path4 = __toESM(require("node:path"), 1);
     init_logger2();
     init_connection();
     init_applyWave5MoneySchema();
-    MIGRATION_BASENAME2 = "0185_wave45_pricing_model_v3.sql";
+    init_applyWave56TierDomainSchema();
+    MIGRATION_BASENAME3 = "0185_wave45_pricing_model_v3.sql";
     WAVE45_STORE_UNAVAILABLE = "PARTNER_PRICING_STORE_UNAVAILABLE";
     WAVE45_TABLES = [
       "partner_tier_lifecycle",
@@ -23831,7 +24220,15 @@ var init_applyWave45PricingSchema = __esm({
       "trg_ptp_frozen_no_price_insert",
       "trg_ptl_no_delete"
     ];
-    _installed2 = /* @__PURE__ */ new WeakSet();
+    _installed3 = /* @__PURE__ */ new WeakSet();
+  }
+});
+
+// server/lib/partnerTierDomain.ts
+var init_partnerTierDomain = __esm({
+  "server/lib/partnerTierDomain.ts"() {
+    "use strict";
+    init_connection();
   }
 });
 
@@ -23892,6 +24289,7 @@ var init_partnerTierCapabilityStore = __esm({
   "server/lib/partnerTierCapabilityStore.ts"() {
     "use strict";
     init_applyWave45PricingSchema();
+    init_partnerTierDomain();
     CAPABILITY_SEAT_LIMIT = "seat_limit";
     CAPABILITY_TIER_SLUGS = [
       "catalyst",
@@ -24108,6 +24506,7 @@ var init_partnerCommissionRateResolver = __esm({
   "server/lib/partnerCommissionRateResolver.ts"() {
     "use strict";
     init_connection();
+    init_partnerTierDomain();
   }
 });
 
@@ -24145,6 +24544,7 @@ var init_partnerTierResolver = __esm({
     "use strict";
     init_connection();
     init_logger2();
+    init_partnerTierDomain();
     init_adminContactsStoreShim();
   }
 });
@@ -24398,12 +24798,12 @@ var init_hashChain = __esm({
 });
 
 // server/paymentStore.ts
-var import_decimal4, PAYMENT_KINDS, paymentChain, paymentChargeSchema;
+var import_decimal6, PAYMENT_KINDS, paymentChain, paymentChargeSchema;
 var init_paymentStore = __esm({
   "server/paymentStore.ts"() {
     "use strict";
     init_zod();
-    import_decimal4 = __toESM(require("decimal.js"), 1);
+    import_decimal6 = __toESM(require("decimal.js"), 1);
     init_hashChain();
     init_trace();
     init_sprint10Telemetry();
@@ -24724,7 +25124,7 @@ function getLedger() {
     return [];
   }
 }
-var import_decimal5;
+var import_decimal7;
 var init_captableCommitStore = __esm({
   "server/captableCommitStore.ts"() {
     "use strict";
@@ -24740,7 +25140,7 @@ var init_captableCommitStore = __esm({
     init_roundsStore();
     init_logger2();
     init_investorComplianceRoutes();
-    import_decimal5 = __toESM(require("decimal.js"), 1);
+    import_decimal7 = __toESM(require("decimal.js"), 1);
     init_roundsStore();
   }
 });
@@ -24798,6 +25198,98 @@ var init_rateLimit = __esm({
   }
 });
 
+// server/lib/applyRepair1AuditActorBindingSchema.ts
+function candidatePaths5() {
+  const cwd = process.cwd();
+  return [
+    import_node_path5.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME4),
+    import_node_path5.default.join(cwd, "migrations", MIGRATION_BASENAME4)
+  ];
+}
+function readRepair1Ddl() {
+  for (const p of candidatePaths5()) {
+    try {
+      if (import_node_fs5.default.existsSync(p)) return import_node_fs5.default.readFileSync(p, "utf8");
+    } catch {
+    }
+  }
+  return null;
+}
+function executableStatements(ddl) {
+  const stripped = ddl.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n");
+  return stripped.split(";").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+function columnNames(db, table) {
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all().map((r) => String(r.name));
+  } catch {
+    return [];
+  }
+}
+function ensureRepair1AuditActorBindingSchema(handle) {
+  let db;
+  try {
+    db = handle ?? rawDb();
+  } catch {
+    return false;
+  }
+  if (!db || typeof db.prepare !== "function") return false;
+  const key2 = db;
+  if (key2 && typeof key2 === "object" && installed.has(key2)) return true;
+  let cols;
+  try {
+    cols = columnNames(db, "audit_log");
+  } catch {
+    return false;
+  }
+  if (cols.length === 0) {
+    return false;
+  }
+  if (cols.includes("hash_version")) {
+    if (key2 && typeof key2 === "object") installed.add(key2);
+    return true;
+  }
+  const ddl = readRepair1Ddl();
+  const stmts = ddl ? executableStatements(ddl) : [REPAIR1_AUDIT_LOG_ALTER];
+  for (const s of stmts) {
+    try {
+      db.exec(s);
+    } catch (err) {
+      const msg = err.message ?? String(err);
+      if (/duplicate column name/i.test(msg)) continue;
+      log.error({
+        route: "applyRepair1AuditActorBindingSchema",
+        errorType: "REPAIR1_AUDIT_SCHEMA_INSTALL_FAILED",
+        message: msg,
+        statement: s.slice(0, 120)
+      });
+      return false;
+    }
+  }
+  let after;
+  try {
+    after = columnNames(db, "audit_log");
+  } catch {
+    return false;
+  }
+  const ok = after.includes("hash_version");
+  if (ok && key2 && typeof key2 === "object") installed.add(key2);
+  return ok;
+}
+var import_node_fs5, import_node_path5, MIGRATION_BASENAME4, REPAIR1_AUDIT_LOG_ALTER, installed;
+var init_applyRepair1AuditActorBindingSchema = __esm({
+  "server/lib/applyRepair1AuditActorBindingSchema.ts"() {
+    "use strict";
+    import_node_fs5 = __toESM(require("node:fs"), 1);
+    import_node_path5 = __toESM(require("node:path"), 1);
+    init_logger2();
+    init_connection();
+    MIGRATION_BASENAME4 = "0188_repair1_audit_actor_binding.sql";
+    REPAIR1_AUDIT_LOG_ALTER = "ALTER TABLE audit_log ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1";
+    installed = /* @__PURE__ */ new WeakSet();
+  }
+});
+
 // server/adminPlatformStore.ts
 function resolveTenantId(entity, explicit) {
   if (explicit && explicit.length > 0) return explicit;
@@ -24821,18 +25313,42 @@ function generateAuditId(nowMs = Date.now()) {
   const rand = (0, import_node_crypto6.randomBytes)(3).toString("hex");
   return `al_${ts}${ctr}${rand}`;
 }
+function auditHashBody(args) {
+  const v1 = `${args.prevHash}|${args.id}|${args.eventType}|${args.entity}|${args.ts}|${args.payloadStr}`;
+  if (Number(args.version) >= AUDIT_HASH_VERSION_ACTOR_BOUND) {
+    return `${v1}|${args.actorId ?? ""}`;
+  }
+  return v1;
+}
 function appendAudit(actor, entity, eventType, payload, explicitTenantId) {
   const id = generateAuditId();
   const ts = (/* @__PURE__ */ new Date()).toISOString();
   const tenantId = resolveTenantId(entity, explicitTenantId);
   const payloadStr = JSON.stringify(payload);
+  const actorBindingAvailable = ensureRepair1AuditActorBindingSchema();
+  if (!actorBindingAvailable && !_warnedActorBindingUnavailable) {
+    _warnedActorBindingUnavailable = true;
+    log.warn(
+      "[adminPlatformStore.appendAudit] audit_log.hash_version unavailable \u2014 migration 0188 has not been applied to this handle; writing a LEGACY (v1, actor-UNBOUND) chain row. Run `npm run db:migrate`."
+    );
+  }
+  const hashVersion = actorBindingAvailable ? AUDIT_HASH_VERSION_CURRENT : AUDIT_HASH_VERSION_LEGACY;
   let finalEntry = null;
   try {
     const db = getDb();
     db.transaction((tx) => {
       const tipRow = tx.select({ hash: auditLog.hash }).from(auditLog).where(eq(auditLog.tenantId, tenantId)).orderBy(desc(auditLog.createdAt), desc(auditLog.id)).limit(1).all();
       const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
-      const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
+      const body = auditHashBody({
+        version: hashVersion,
+        prevHash,
+        id,
+        eventType,
+        entity,
+        ts,
+        payloadStr,
+        actorId: actor
+      });
       const hash = sha2563(body);
       tx.insert(auditLog).values({
         id,
@@ -24846,7 +25362,9 @@ function appendAudit(actor, entity, eventType, payload, explicitTenantId) {
         prevHash,
         hash,
         createdAt: ts,
-        deletedAt: null
+        deletedAt: null,
+        // REPAIR WAVE 1 · ITEM 1 — the row declares its own formula version.
+        hashVersion
       }).run();
       finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
     });
@@ -24884,7 +25402,7 @@ function seedAudit() {
   ];
   for (const [a, e, t, p] of seed) appendAudit(a, e, t, p);
 }
-var import_node_crypto6, sha2563, activityFeed, users2, auditLog2, AUDIT_MIRROR_LIMIT, _auditIdCounter, _auditIdLastMs, AUDIT_CHAIN_ORDER_SQL_ASC, AUDIT_CHAIN_ORDER_SQL_DESC, AUDIT_CHAIN_SELECT_SQL, AUDIT_CHAIN_TIP_SQL, reconRuns2;
+var import_node_crypto6, sha2563, activityFeed, users2, auditLog2, AUDIT_MIRROR_LIMIT, _auditIdCounter, _auditIdLastMs, AUDIT_CHAIN_ORDER_SQL_ASC, AUDIT_CHAIN_ORDER_SQL_DESC, AUDIT_CHAIN_SELECT_SQL, _warnedActorBindingUnavailable, AUDIT_HASH_VERSION_LEGACY, AUDIT_HASH_VERSION_ACTOR_BOUND, AUDIT_HASH_VERSION_CURRENT, AUDIT_CHAIN_TIP_SQL, reconRuns2;
 var init_adminPlatformStore = __esm({
   "server/adminPlatformStore.ts"() {
     "use strict";
@@ -24906,6 +25424,7 @@ var init_adminPlatformStore = __esm({
     init_logger2();
     init_rateLimit();
     init_errors3();
+    init_applyRepair1AuditActorBindingSchema();
     sha2563 = (s) => (0, import_node_crypto6.createHash)("sha256").update(s, "utf8").digest("hex");
     activityFeed = [
       { id: "act_1", ts: new Date(Date.now() - 2 * 6e4).toISOString(), actor: "u_maya", entity: "co_novapay", kind: "round.closed", text: "NovaPay Seed Extension closed \u2014 $4.0M" },
@@ -25000,7 +25519,11 @@ var init_adminPlatformStore = __esm({
     _auditIdLastMs = 0;
     AUDIT_CHAIN_ORDER_SQL_ASC = "ORDER BY created_at ASC, id ASC";
     AUDIT_CHAIN_ORDER_SQL_DESC = "ORDER BY created_at DESC, id DESC";
-    AUDIT_CHAIN_SELECT_SQL = `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}`;
+    AUDIT_CHAIN_SELECT_SQL = `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash, actor_id AS "actorId", hash_version AS "hashVersion" FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}`;
+    _warnedActorBindingUnavailable = false;
+    AUDIT_HASH_VERSION_LEGACY = 1;
+    AUDIT_HASH_VERSION_ACTOR_BOUND = 2;
+    AUDIT_HASH_VERSION_CURRENT = AUDIT_HASH_VERSION_ACTOR_BOUND;
     AUDIT_CHAIN_TIP_SQL = `SELECT hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_DESC} LIMIT 1`;
     if (DEMO_SEED_ENABLED) {
       seedAudit();
@@ -25433,6 +25956,7 @@ var init_multiCompanyStore = __esm({
     init_subscriptionsStore();
     init_canonicalPlanResolver();
     init_currency();
+    init_founderOwnershipEngine();
     init_connection();
     init_schema();
     init_logger2();

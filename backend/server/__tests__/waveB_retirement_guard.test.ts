@@ -219,6 +219,65 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       // and the sacred_check.sh row. Nothing else depends on it.
       "client/src/pages/founder/Billing.tsx":
         "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f",
+      /* WAIVER-7 — WAVE 58g, OWNER-APPROVED 2026-08-15 (ruling R34, "If approved
+       * is the best practice. Then OK.").
+       *
+       * `server/roundCarryForwardEngine.ts` held a SECOND unit-conversion
+       * authority: `discountAsDecimalStr()` divided a stored discount percent by
+       * 100 itself, independently of `toWireDiscount` in
+       * shared/roundMathEngineAdapter.ts, which is the platform's single declared
+       * bridge from percent-as-written storage (R30) to the engine's [0,1] wire
+       * unit. Wave 58f proved the site REACHABLE from a live HTTP route
+       * (roundCarryForwardRoutes.ts:485) and inert only because its data source
+       * is empty. R34 chose the waiver over quarantine because "a freeze that
+       * preserves a bug is not integrity". The local division is gone; the
+       * function now delegates to `toWireDiscount`. Nothing else in the file
+       * changed — `computeConversionProjections` (:744-817) is untouched because
+       * it does NOT divide by 100 and "fixing" it would turn 20% into 0.2%.
+       *
+       * It lives in WAIVER_1_FROZEN because the path IS one of the base 40
+       * manifest rows (line 2 of sacred_baseline/SACRED_SHA256.txt), so (G-10)
+       * resolves it through THIS table. It is ALSO listed in
+       * EXTRA_WAIVED_FROZEN below because R34 names that table by name and the
+       * second-path miss has now happened four times — a duplicate pin costs
+       * nothing and a missing one costs a silent hole.
+       *
+       * Lineage: d7fa53f0… (pre-waiver) → 42d04653… (Wave 58g, current).
+       * TO DECLINE: restore d7fa53f0… as the live content and delete this entry,
+       * the EXTRA_WAIVED_FROZEN entry, the RATIFIED_HERE entry and the
+       * sacred_check.sh row (and put the freeze count back to 7). */
+      "server/roundCarryForwardEngine.ts":
+        "42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8",
+      /* WAIVER-8 — WAVE 75 · ITEM 1, OWNER-RATIFIED 2026-08-18 (ruling R70, "Q2:
+       * Change it. Has to be dynamic and real-time. No hard codes.").
+       *
+       * `server/paymentGatewayAdapter.ts:630` and `:765` wrote the literal
+       * `ownershipPct: 1.0` onto a brand-new company. The founder dashboard
+       * consumes that field as a FRACTION (`Dashboard.tsx:283` → `× 100`), so a
+       * company with `capTableHolders: 0` and NO securities rendered a confident
+       * `100.00%` on its first screen. It is now COMPUTED from the single
+       * cap-table engine via `server/lib/founderOwnershipEngine.ts`, and is `null`
+       * — rendered `—` — only when the engine has nothing to compute from.
+       *
+       * REGISTERED AS -8, NOT -9. R70 condition 5 names it "WAIVER-9", counting
+       * the eight KNOWN_DRIFT ROWS then in force. Field 4 is a waiver ID, and the
+       * distinct ids are 1..7, so `sacred_check.sh`'s closed-vocabulary check
+       * ABORTS (exit 3) on a WAIVER-9 row with no WAIVER-8. Transcript:
+       * build_log/wave75/W75_WAIVER9_REGISTRATION.md §2.
+       *
+       * It lives in WAIVER_1_FROZEN because the path IS one of the base 40
+       * manifest rows (line 3 of sacred_baseline/SACRED_SHA256.txt), so (G-10)
+       * resolves it through THIS table and (G-8)'s
+       * `ok + |WAIVER_1_FROZEN| === 40` identity still holds.
+       *
+       * Lineage: 83757c54… (pre-waiver, and the base manifest hash) → 15679904…
+       * (Wave 75, current).
+       * TO DECLINE: restore 83757c54… as the live content and delete this entry,
+       * the RATIFIED_HERE entry, the sacred_check.sh row and the WAIVER-8 block in
+       * wave18_cpmsg05_rate_limit_identity.test.ts (and put the freeze count back
+       * to 8). */
+      "server/paymentGatewayAdapter.ts":
+        "15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27",
     };
 
   /* ---------- G-8: Sacred manifest still 40/40 ---------- */
@@ -318,6 +377,37 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     "server/db/migrate.ts": {
       sha: "5790f11d1182be1c5af8b59a52a4314dd3e1ad5f9a6d0049986bc42d1ee1a44c",
       waiver: "WAIVER-3",
+    },
+    /* WAIVER-6 — REPAIR WAVE 1 · ITEM 1, owner-approved 2026-08-14.
+     *
+     * `server/db/connection.ts` gains `audit_log.hash_version` on the inline
+     * SQLite path, so dev/test agree with `shared/schema.ts` and migration 0188.
+     * That column is what lets the actor-bound v2 audit hash ship WITHOUT
+     * invalidating a single existing row (DEFAULT 1 = keep v1 meaning).
+     *
+     * It lives HERE rather than in WAIVER_1_FROZEN because connection.ts is not
+     * one of the base 40 manifest paths — it was added as the 48th entry by
+     * Wave 50 (ADDED_WAVE50), so (G-10) resolves it through this table.
+     *
+     * AND THIS ENTRY IS THE SECOND-PATH MISS AGAIN — the fourth time. WAIVER-6
+     * was recorded in sacred_check.sh, which printed a clean 48/48 with all 7
+     * waivers ratified, while (G-10)/(G-11) went red here. The warning against
+     * exactly this is written eleven lines above WAIVER-4 and was still not
+     * enough. The assertion caught it; the prose did not. A waiver is not
+     * installed until BOTH enforcement points carry it. */
+    "server/db/connection.ts": {
+      sha: "8a73c3d194c20ceaec2c4c9057bfecc29c78e2b142c295999d8afc63defdeef0",
+      waiver: "WAIVER-6",
+    },
+    /* WAIVER-7 — WAVE 58g, owner-approved 2026-08-15 (R34). Registered here
+     * BECAUSE R34 names `EXTRA_WAIVED_FROZEN` explicitly, even though this path
+     * is one of the base 40 and is therefore also pinned in WAIVER_1_FROZEN
+     * above. The two pins are independent copies of the same one legal state, so
+     * a further unwaived edit to the carry-forward engine fails BOTH of them as
+     * well as sacred_check.sh. Rationale and hash lineage: see WAIVER_1_FROZEN. */
+    "server/roundCarryForwardEngine.ts": {
+      sha: "42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8",
+      waiver: "WAIVER-7",
     },
   };
 
@@ -421,6 +511,25 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     "server/db/migrate.ts": "WAIVER-3",
     /* Ratified 2026-08-13 by owner ruling R13 (WAVE 48 · ITEM 2). */
     "client/src/pages/founder/Billing.tsx": "WAIVER-5",
+    /* Ratified 2026-08-14 — REPAIR WAVE 1 · ITEM 1. The owner was asked directly,
+       with the alternatives (payload-encoded version, or roll the item back) and
+       the cost of each, and approved the additive connection.ts edit. Approval
+       came BEFORE the edit, not after, so this is a ratified waiver and not a
+       delegated one awaiting sign-off. */
+    "server/db/connection.ts": "WAIVER-6",
+    /* Ratified 2026-08-15 by owner ruling R34 (WAVE 58g). The owner was shown
+       both options — quarantine the second conversion authority, or waive the
+       sacred freeze and delete it — with the cost of each, and approved the
+       waiver BEFORE the edit. A ratified waiver, not a delegated one. */
+    "server/roundCarryForwardEngine.ts": "WAIVER-7",
+    /* Ratified 2026-08-18 by owner ruling R70 (WAVE 75 · ITEM 1). The owner was
+       shown the two lines, the `100.00%` they render on a brand-new company's
+       dashboard, and the alternatives (render a dash, or compute the figure), and
+       chose the stronger option — COMPUTE IT — granting the waiver BEFORE the
+       edit. A ratified waiver, not a delegated one. Registered as WAIVER-8 rather
+       than the ruling's "WAIVER-9" because the gate's own contiguity check
+       forbids the gap; see WAIVER_1_FROZEN above. */
+    "server/paymentGatewayAdapter.ts": "WAIVER-8",
   };
 
   it("(G-11) the pending-ratification set matches sacred_check.sh in BOTH directions", () => {
@@ -501,7 +610,17 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     /* The ratified waiver is STILL LISTED AS WAIVED — ratification must not make
        a waiver disappear from what the operator sees. */
     expect(out).toContain("WAIVER-5 x1");
-    expect(out).toContain("6 under KNOWN_DRIFT freeze");
+        /* REPAIR WAVE 1 (2026-08-14): WAIVER-6 raised the frozen count 6 -> 7.
+       The number is asserted, not loosened: a waiver must never vanish from
+       what the operator reads. Update it deliberately when a waiver is added. */
+    /* WAVE 58g (2026-08-15): WAIVER-7 raised the frozen count 7 -> 8. */
+    /* WAVE 75 · ITEM 1 — 8 → 9. WAIVER-8 (server/paymentGatewayAdapter.ts, ruling
+       R70) adds the ninth KNOWN_DRIFT row. The number is asserted rather than
+       matched loosely precisely so a waiver cannot be added without a wave
+       stating that it did. */
+    expect(out).toContain("9 under KNOWN_DRIFT freeze");
+    expect(out).toContain("WAIVER-6 x1");
+    expect(out).toContain("WAIVER-7 x1");
     const listed = execFileSync("bash", [path.join(ROOT, "scripts", "sacred_check.sh"), "--list"], {
       encoding: "utf8",
       cwd: ROOT,

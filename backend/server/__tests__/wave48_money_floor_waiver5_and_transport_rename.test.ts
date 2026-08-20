@@ -314,9 +314,23 @@ describe("WAVE 48 · ITEM 2 — WAIVER-5 ratification is recorded everywhere it 
     expect(out).toContain("SACRED OK: 48/48");
     /* STILL WAIVED — ratification must not make a waiver vanish. */
     expect(out).toContain("WAIVER-5 x1");
-    expect(out).toContain("6 under KNOWN_DRIFT freeze");
+        /* REPAIR WAVE 1 (2026-08-14): WAIVER-6 raised the frozen count 6 -> 7.
+       The number is asserted, not loosened: a waiver must never vanish from
+       what the operator reads. Update it deliberately when a waiver is added. */
+    /* WAVE 58g (2026-08-15): WAIVER-7 (R34, server/roundCarryForwardEngine.ts —
+       the second unit-conversion authority, removed) raised it 7 -> 8. This is
+       the SECOND place the operator-facing count is asserted; both were updated
+       in the same wave, which is the point of duplicating it. */
+    /* WAVE 75 · ITEM 1 (2026-08-18): WAIVER-8 (R70,
+       server/paymentGatewayAdapter.ts — the two `ownershipPct: 1.0` literals that
+       rendered `100.00%` on a brand-new company's dashboard, now computed from the
+       engine) raised it 8 -> 9. Both places the operator-facing count is asserted
+       were updated in the same wave, which is the point of duplicating it. */
+    expect(out).toContain("9 under KNOWN_DRIFT freeze");
+    expect(out).toContain("WAIVER-6 x1");
+    expect(out).toContain("WAIVER-7 x1");
     /* NOW RATIFIED — and the old pending language is gone. */
-    expect(out).toContain("all 6 waivers OWNER-RATIFIED");
+    expect(out).toContain("all 9 waivers OWNER-RATIFIED");
     expect(out).not.toContain("PENDING OWNER RATIFICATION");
     const json = JSON.parse(
       execFileSync("bash", [SH, "--json"], { encoding: "utf8", cwd: ROOT }).trim(),

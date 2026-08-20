@@ -85,6 +85,23 @@ const USD_MINOR = 100_000_000;
 
 let app: Express;
 
+/* ── WAVE 71b · D11 — THE COMMON LEG, ON THE RECORD ────────────────────────────
+   `GET /api/founder/captable/waterfall` divides everything below the preference
+   stack by the company's COMMON share count. Until Wave 71 the route set that
+   count equal to the total PREFERRED count (its own comment: "simplified: 1 common
+   holder"), so group (C) below measured its currency exponent on top of an invented
+   denominator. D11 made the route read the real rows through the securities
+   provider `server/routes.ts:7113` hands it, and REFUSE by name
+   (`COMMON_SHARES_NOT_ON_RECORD`) when there are none.
+
+   These fixtures therefore now state their own common shares, exactly as they
+   already state their own rounds and ledger rows. 8,000,000 is chosen so the
+   2-share preferred class's as-converted alternative is negligible and the
+   non-participating class demonstrably takes its PREFERENCE — which is the branch
+   the exponent has to be able to flip. */
+const COMMON_SHARES = 8_000_000;
+const SECURITIES: Record<string, Array<Record<string, unknown>>> = {};
+
 function exec(sql: string, args: unknown[] = []): void {
   rawDb().prepare(sql).run(...(args as never[]));
 }
@@ -119,6 +136,25 @@ beforeAll(() => {
     });
     const up = updateRound(r.id, { state: "closed", raisedAmount: MAJOR }, { actor: TEST_ACTOR });
     if (!up.ok) throw new Error(`fixture round could not be closed: ${up.error}`);
+    /* ── WAVE 71b · D11 — THE NEGOTIATED TERM, ON THE RECORD ─────────────────
+       This is a PRICED equity class (`pricePerShare` above, closed, with a
+       committed `instrument_class: "equity"` ledger row). Whether it takes its
+       money back first, and at what multiple, is a term of its charter — NVCA
+       Model Certificate of Incorporation Art. IV Sec. 2.1. Until Wave 71 this
+       route assumed "1x non-participating" for every class on every cap table,
+       which is why this fixture never had to say it. It now says it. The value is
+       the market standard and is the same for both currencies, so it cannot be
+       what makes the two waterfalls differ — the exponent still is. */
+    const terms = updateRound(
+      r.id,
+      { liquidationPreference: "1x non-participating" },
+      { actor: TEST_ACTOR },
+    );
+    if (!terms.ok) throw new Error(`fixture liquidation preference not recorded: ${terms.error}`);
+    const readBack = getRoundById(r.id) as unknown as { liquidationPreference?: string | null };
+    if (String(readBack?.liquidationPreference ?? "") !== "1x non-participating") {
+      throw new Error("fixture liquidation preference did not persist");
+    }
     return r.id;
   };
   RD_JPY = mkRound(CO_JPY, "JPY");
@@ -184,10 +220,23 @@ beforeAll(() => {
     [TEST_ACTOR, new Date().toISOString()],
   );
 
+  /* One common holder per company, so D11(3)'s common leg has real rows to read.
+     Shape mirrors what `buildCompanySecurities` returns and what
+     `readCompanyCommonRows` filters on: `instrument === "common"`, integer shares. */
+  for (const co of [CO_JPY, CO_USD]) {
+    SECURITIES[co] = [
+      { id: `sec_${co}_founder`, holderName: "OQ332 Founder", instrument: "common", shares: COMMON_SHARES },
+    ];
+  }
+
   app = express();
   app.use(express.json());
   registerAdminCompaniesFullRoute(app);
-  registerTrack1Routes(app);
+  /* WAVE 71b — the securities provider, wired exactly as production wires it
+     (`server/routes.ts:7113` passes `buildCompanySecurities`). Registering without
+     one leaves the waterfall permanently refusing `COMMON_SHARES_NOT_ON_RECORD`,
+     which would make group (C) measure a refusal instead of an exponent. */
+  registerTrack1Routes(app, (cid: string) => (SECURITIES[cid] ?? []) as never);
   registerTrack4Routes(app);
 });
 
@@ -434,9 +483,19 @@ describe("C — sink 4: GET /api/founder/captable/waterfall", () => {
     // Non-empty: an empty breakdown would satisfy any sum assertion trivially.
     expect(Array.isArray(res.body.byShareClass)).toBe(true);
     expect(res.body.byShareClass.length).toBe(1);
-    expect(res.body.lpProceeds).toBe(JPY_MINOR);
-    expect(res.body.founderProceeds).toBe(EXIT - JPY_MINOR);
-    expect(res.body.founderProceeds).toBeGreaterThan(0);
+    /* ── WAVE 77 · R72 — THE TYPE CHANGED, THE PROOF DID NOT ──────────────────
+       `lpProceeds` / `founderProceeds` are now EXACT DECIMAL TEXT, not JSON
+       numbers (owner ruling R72, an authorised interface change). The currency
+       exponent proof this test exists for is unchanged VALUE FOR VALUE: the same
+       ¥1,000,000 preference and the same ¥1,000,000 founder leg, compared against
+       the same `JPY_MINOR` constant, now as its decimal string. Nothing was
+       widened, no tolerance was introduced and no figure moved. */
+    expect(res.body.lpProceeds).toBe(String(JPY_MINOR));
+    expect(res.body.founderProceeds).toBe(String(EXIT - JPY_MINOR));
+    /* Was `toBeGreaterThan(0)`. The meaning is preserved without narrowing the
+       money string back to a double: it is neither zero nor negative. */
+    expect(res.body.founderProceeds).not.toBe("0");
+    expect(String(res.body.founderProceeds)).not.toMatch(/^-/);
   });
 
   it("C2 USD: the SAME major amount at exponent 2 exhausts the same exit — the founder receives nothing", async () => {
@@ -446,8 +505,10 @@ describe("C — sink 4: GET /api/founder/captable/waterfall", () => {
     expect(res.status).toBe(200);
     expect(res.body.byShareClass.length).toBe(1);
     // $1,000,000 = 100,000,000 minor > the 2,000,000-minor exit.
-    expect(res.body.lpProceeds).toBe(EXIT);
-    expect(res.body.founderProceeds).toBe(0);
+    /* WAVE 77 · R72 — same figures, now as exact decimal text. The founder still
+       receives NOTHING, and "nothing" is `"0"`, not `undefined` and not `""`. */
+    expect(res.body.lpProceeds).toBe(String(EXIT));
+    expect(res.body.founderProceeds).toBe("0");
   });
 
   it("C3 the two currencies do NOT produce the same waterfall for the same major amount", async () => {

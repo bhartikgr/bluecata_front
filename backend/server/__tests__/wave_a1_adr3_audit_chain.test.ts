@@ -206,8 +206,29 @@ describe("Wave A-1 v2 (ADR-3) — audit chain repair", () => {
     });
 
     it("hash body formula is byte-compatible", () => {
+      /* REPAIR WAVE 1 · ITEM 1 (2026-08-14) — THIS ASSERTION MOVED, AND WHY.
+       *
+       * It used to pin the literal `const body = \`${prevHash}|...\`` text in
+       * adminPlatformStore.ts. The v1 formula is now the `v1` local inside
+       * `auditHashBody()`, because the actor-bound v2 body had to ship WITHOUT
+       * invalidating a single existing row.
+       *
+       * The PROPERTY this test protects is unchanged and is what is asserted
+       * below: the v1 body must still be exactly
+       *   prevHash|id|eventType|entity|ts|payloadStr
+       * so every pre-existing row keeps verifying byte-for-byte, and v2 must be
+       * that same string with `|actorId` APPENDED — never interleaved, so v1
+       * stays a strict prefix of v2.
+       *
+       * This is a source-text pin, which is the weaker kind of check. The
+       * BEHAVIOURAL proof that v1 rows still verify lives in
+       * server/__tests__/repair1_audit_actor_binding.test.ts. */
       const src = readSource("server/adminPlatformStore.ts");
-      expect(src).toMatch(/const body = `\$\{prevHash\}\|\$\{id\}\|\$\{eventType\}\|\$\{entity\}\|\$\{ts\}\|\$\{payloadStr\}`/);
+      expect(src).toMatch(/const v1 = `\$\{args\.prevHash\}\|\$\{args\.id\}\|\$\{args\.eventType\}\|\$\{args\.entity\}\|\$\{args\.ts\}\|\$\{args\.payloadStr\}`/);
+      // v2 appends the actor to the END of the v1 body, keeping v1 a strict prefix.
+      expect(src).toMatch(/return `\$\{v1\}\|\$\{args\.actorId \?\? ""\}`/);
+      // The chain reader must SELECT actor_id, or a rewritten actor is invisible.
+      expect(src).toMatch(/actor_id AS "actorId"/);
     });
 
     it("/verify handler body uses verifyTenantAuditChain (Opus v1 B4)", () => {
