@@ -156,6 +156,234 @@
       "reason": "WAVE 3A / P-1 (DEF-007) — CORRECTED IN PLACE, not removed. This was the Select option label on the discount-code kind picker. It instructed the admin to TYPE a fraction (\"0.10 = 10%\"), which is exactly the convention the owner's 2026-08-09 ruling reversed for the input side: storage stays FRACTIONAL, but ADMIN INPUT is percent-as-written (type 100, store 1.0). The amount field beside this label now takes percent-as-written and converts to the stored fraction (client/src/lib/percentDisplay.ts parsePercentInputToFraction), so leaving the old label in place would have told the admin to type 0.10 into a field that reads it as 0.1% — a 100x under-charge. Replaced by \"Percent (type 10 for 10%)\" plus an explicit on-screen convention note (data-testid=discount-percent-convention). No control, option or capability was removed: all three discount kinds are still selectable.",
       "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md, spec/00_SHARED_STANDARDS.md §1.1; WAVE 3A build directive)",
       "date": "2026-08-09"
+    },
+    {
+      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tShares authorized",
+      "reason": "WAVE 52 / Shadie item 2a — A MISLABELLING CORRECTED, NOT A CONTROL REMOVED. The input, its data-testid (input-shares), its validation and its wire key (sharesAuthorized) are all UNCHANGED and still on screen; only the visible label changed to ‘New shares issued in this round’. The field never meant authorized capital — Capavate has no authorized-capital field anywhere in the schema — and it is not a sum of holdings. RoundNew.tsx's own comment records the meaning: ‘Distinct from sharesAuthorized which is NEW shares issued in this round.’ Keeping the old label would keep a false sentence in front of a founder, and the label was the cause of the reviewer's confusion. Panel/button/event/tab identity counts for this file ROSE (392→473 panels) and nothing DISAPPEARED in those classes. Strategy Review 1 STRUCK the DGCL §161 / NVCA §2.2 authorized-ceiling rationale, so no authority claim replaces it.",
+      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+      "date": "2026-08-15"
+    },
+    {
+      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tImplied post-money",
+      "reason": "WAVE 52 / Shadie item 1a — A FALSE LABEL ON A BOX THAT COULD NOT COMPUTE. The readout rendered Number(form.preMoney) + Number(form.targetAmount); on a Common round targetAmount is not a field the instrument collects, so the addend was always NaN→0 and the box displayed the PRE-money under a post-money label, beneath a tooltip promising ‘pre-money + target raise’. The rendered field was the defect, not the missing input. The readout is NOT removed: the same div and the same data-testid (input-post) remain, now labelled ‘Post-money valuation’, showing T·p when it can be computed and a named refusal when it cannot, plus a new on-screen derivation line (data-testid=w52-post-money-derivation). Strictly MORE disclosure, and a true label.",
+      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+      "date": "2026-08-15"
+    },
+    {
+      "id": "client/src/pages/founder/RoundNew.tsx\tplaceholder\tEnter pre-money and shares authorized",
+      "reason": "WAVE 52 / Shadie items 2a+5a — THE PLACEHOLDER NAMED THE WRONG DENOMINATOR. Price per share is pre-money ÷ fully-diluted PRE-MONEY shares, never ÷ the new shares this round issues. The placeholder told the founder the opposite and was the third recorded mislabelling of the same quantity (RoundNew.tsx:158, :1176 and this line). The input, its data-testid (input-pps), its auto/override toggle and its formula caption are all unchanged; only the placeholder text now names the quantity actually divided by. Corrected to ‘Enter pre-money and fully-diluted pre-money shares’.",
+      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+      "date": "2026-08-15"
+    },
+    {
+      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tDiscount (%)",
+      "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — “Relabel to ‘Discount (% off the round price)’ — never a bare ‘Discount’.” “Discount” and “Discount Rate” are INVERSES and the YC SAFE legal form uses the latter (a 20% discount is a Discount Rate of 80% — Wyrick); DLA Piper calls conflating them ‘quadrupling the intended discount’. A label reading only ‘Discount (%)’ does not say which of the two it is. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
+      "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Authority cited is owner ruling R30.1 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15), which mandates this exact label, and the WAVE 58e spec §D3.1 which repeats it. Recorded here per the R28 standard: the control is still reachable, the destination identity is named, and no recoverable identity was excused instead of restored — the old string cannot be restored as a sibling because R30 forbids the screen carrying a bare ‘Discount’ label at all. Ratify or refuse.",
+      "date": "2026-08-16"
+    },
+    {
+      "id": "client/src/pages/founder/Rounds.tsx\ttext\tDiscount (%)",
+      "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — the SAME relabel on the Edit-terms modal, which on live v26.17.0 is the ONLY post-creation surface where the discount is visible or editable, and the only place the corrupt live value 20260707 (R31-a) was ever shown. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
+      "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Same authority as the RoundNew entry above (owner ruling R30.1 + WAVE 58e spec §D3.1). Appended at the END of this class array as a sibling, never inserted mid-list — one mid-list insertion previously invalidated 46 child identities and produced 62 phantom drops.",
+      "date": "2026-08-16"
+    },
+    {
+      "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tThis is a preview only — no money moves.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This is a projection only — no money moves.\" Same node, same warning, same position. \"preview\" named this project's BUILD STATE; \"projection\" names what the number actually is.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/Landing.tsx\ttext\tSprint 15 · login + entitlement",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Sign in and entitlement\". Same chip (data-testid=\"chip-sprint\"), same position on the landing page. Only this project's sprint number is gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t's",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph (a JSX text run between two <code> elements). The paragraph still explains the same behaviour; it no longer names server/subscriptionsStore.ts or startSubscription(), so the fragments around those <code> elements no longer exist as separate text runs.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) is not wired to this field yet.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The FACT is retained verbatim in the new single-run sentence: \"Managed founders are on a separate 90-day default, which this field does not yet control.\"",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) — there is no separate hardcoded map anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Every behavioural claim is retained: \"pricing_models.discountCodes is read directly on every charge — there is no separate hardcoded list anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.\" Only the source-file name and two internal function names are gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Changing the charged amount at the gateway boundary is Slice 3 / M14 — not this page. Zero Airwallex code touched here.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Changing what the provider actually charges is done there, not on this page. This screen never writes to the payment provider.\" Same warning, same position; the slice/milestone code and the internal note about which code was touched are gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Unknown slugs fail closed. Source:",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Unknown slugs are refused rather than guessed.\" The fail-closed BEHAVIOUR is retained in plainer words; the \"Source: server/lib/partnerTiers.ts\" pointer is gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 14",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. The fallback is now stated in words a non-engineer reads: \"a 14-day trial is used only when no live pricing model or no trial length is configured.\"",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 90",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. Retained in words: \"Managed founders are on a separate 90-day default.\"",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tEditing the trial length affects new founder signups immediately —",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The sentence still opens with exactly this fact: \"Editing the trial length affects new founder signups immediately: this field is read first…\".",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tKnown unit quirk (unchanged by this slice):",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Known unit quirk:\". The quirk, its lossiness and its consequence are all still stated; only \"(unchanged by this slice)\" — a claim about this project's own delivery increments — is gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tPublishing is deploy-gated: the package amount must equal the gateway tier amount resolved from",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This package cannot be published until the amount matches the payment provider's own tier amount, which is set from\" — followed by the same <code> environment-variable name, which is a real operator instruction and is deliberately KEPT. Only the internal term \"deploy-gated\" is gone.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tcalcCouponDiscountCents",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. The behaviour it described is retained; the function name is not something an admin can act on.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tfindDiscountCodeByCode",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. Same reason.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tif no live model or no trial is configured. The separate managed-founder path (",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. Both facts are retained in the new single-run sentence.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tin",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT — a two-letter JSX text run between two <code> elements in the rewritten discount-code paragraph. It carried no information on its own.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tis read directly by",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Now \"is read directly on every charge\", which says the same thing without naming the function that does it.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tmirror-writes this value into",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten unit-quirk paragraph. Now \"this value is also mirror-written into\" — same fact, passive voice, no source-file subject.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\ton every charge (via",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. \"on every charge\" is retained verbatim in the new run.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\treads this field first and only falls back to",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. \"this field is read first\" is retained.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/adminPlatformFeesRoutes.ts",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The lossy legacy mirror write it named is still described, and the destination table and the rounding are still shown.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/lib/partnerTiers.ts",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The fail-closed behaviour it was cited for is retained in words.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/managedFounderStore.ts",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The managed-founder 90-day default it named is retained in words.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/paymentStore.ts",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin (twice — this text run, and inside the discount-code SectionTitle hint). Removed under Q25. The percent-as-a-fraction STORAGE RULE, which is the part an admin can get wrong, is retained verbatim.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/subscriptionsStore.ts",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The trial-length read order it named is retained in words.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tstartSubscription()",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — INTERNAL FUNCTION NAME rendered to an admin. Removed under Q25. What it does — read this field first for new founder signups — is retained in words.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/Activity.tsx\tdescription\tAppend-only audit ledger. Hash-chained per R165 §12 in production.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Append-only audit ledger. Every entry is hash-chained, so the record cannot be altered after the fact.\" Same node, same panel description. The owner-ruling identifier is gone and the GUARANTEE it referred to is now stated plainly — which is more useful to a founder, not less.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/CapTable.tsx\ttext\tCap table engine per R200 §10. Source-of-truth ledger; SAFEs use post-money cap conversion. As-converted view applies cap/discount per R165 §2. New to a term?",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Computed by the cap-table engine. Source-of-truth ledger; SAFEs use post-money cap conversion. The as-converted view applies each instrument's own cap and discount. New to a term?\" Two owner-ruling identifiers gone; every stated FACT and the glossary link that follows are unchanged.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/Messages.tsx\ttext\tThreads are role-aware. You can DM cap-table members and active-round investors. Uninvited investors are gated per Sprint 15 entitlement rules.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: the first two sentences are byte-identical; the third becomes \"Investors you have not invited cannot be messaged.\" The RULE is now stated instead of the sprint that shipped it.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/Settings.tsx\ttext\tThe 2FA enforcement, SSO domain, and export controls below are preview placeholders. Programmatic exports and SSO domain enforcement are scheduled for an upcoming release.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE (same banner, same data-testid=\"banner-data-preview\"): \"Workspace 2FA enforcement, SSO domain enforcement and programmatic exports are not yet available. The controls below are shown so you can see what is coming; they are disabled until each one works, and none of them will report a change that has not been saved.\" STRONGER, not weaker: it drops the internal word \"preview\", drops a release promise nobody can hold anyone to, and states the new guarantee that the controls no longer claim false saves.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/investor/InvitationDetail.tsx\ttext\tFully-diluted view, shared with you under R165 §4 redaction policy.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE, on an INVESTOR screen: \"Fully-diluted view, shared with you under the company's cap-table redaction policy.\" Same node, same position. An investor was being shown this project's internal ruling number.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/investor/Signup.tsx\ttext\tKYC document (preview stub)",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"KYC document (not yet collected)\". Same form label, same position. \"(preview stub)\" told a prospective investor about this project's build state; \"(not yet collected)\" tells them the truth about their own document.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/partner/PartnerDashboard.tsx\ttext\tComing with Sprint 32 consent ledger.",
+      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE on a PAYING CONSORTIUM PARTNER's dashboard, in the same card (data-testid=\"card-cross-portfolio\"), which is NOT deleted: \"Not yet available. Showing you that an investor in your portfolio also appears in another partner's portfolio requires that investor's recorded consent, and Capavate will not surface an overlap without it.\" The sprint number and the implied delivery date are gone; the reason the feature does not exist is now stated.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
     }
   ],
   "removedEvents": [
@@ -175,6 +403,36 @@
       "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tButton\tonClick\texpr:70f4884aeeb9",
       "approvedBy": "Ozan Isinak (delegated authority, 2026-08-11)",
       "reason": "MODIFICATION, NOT A REMOVAL. The refund Button, its data-testid (button-refund-invoice-<id>), its disabled logic, its label and its refund.mutate call are all still present and unchanged. ONE LINE INSIDE the onClick changed: the confirmation dialog rendered the amount by dividing minor units by 100, which UNDERSTATES A JPY REFUND BY 100x (JPY is ISO-4217 exponent 0). It now calls formatMinor(inv.amountMinor, inv.currency). This is the confirm dialog on a screen whose own copy reads 'This moves real money and cannot be undone' - the admin was shown the wrong figure before authorising a refund. PROOF OF NON-REMOVAL: reverting that single line restores 'no silent drops' with nothing else changed (Wave 21 ran this revert-and-restore). ROOT CAUSE: the guard fingerprints handlers by EXPRESSION HASH, so any edit to a handler body is indistinguishable from deleting it - the same fingerprinting weakness Wave 11 fixed for CHILD MEMBERSHIP (adding a tab read as removing the tab list) and that blocked Wave 4B from adding a roster column. The expression case is still unfixed and is logged as a guard follow-up. Allowlisting this one entry beats shipping a known 100x money-display defect on a refund dialog."
+    },
+    {
+      "id": "client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:4cb80683e419",
+      "reason": "WAVE 58 / owner ruling R27 — A RELOCATION ENTRY, WITH ITS DESTINATION NAMED. DESTINATION ID: client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:<the handler on data-testid=\"addon-pool-percent\">, in the same file, in the same section (data-testid=\"addon-pool-section\"), reachable in the browser. WHAT THIS IDENTITY WAS: the inline onChange on the \"Pool size (shares)\" input — `e => setAddonPoolDraft(d => ({ ...d, poolSize: e.target.value }))`. R27 rules that the option pool is entered as a PERCENTAGE of fully diluted and that \"the share count becomes the derived output, shown to the founder, NEVER the input\". The share count input therefore has no writer any more: it is `readOnly` and displays the derived value. Its onChange is not suppressed or stubbed out — a dead handler would be a dead promise — it is genuinely gone, and the write it performed now happens on the percentage field. WHAT IS *NOT* REMOVED, all verified by the guard census in the same run: the control itself (data-testid=\"addon-pool-size\") is STILL ON SCREEN; its label text \"Pool size (shares)\" is UNCHANGED and still in the copy inventory; its container (data-testid=\"addon-pool-fields\") and the toggle (data-testid=\"addon-pool-toggle\") are unchanged; the wire key `poolSize` is unchanged, still sent on the `option_pool` child-round payload and still a SHARE COUNT there; and the four CardContent panel-membership records that a first attempt at this change did drop (inner=Input#24, Label#46, input#5, label#5) were RESTORED by keeping the relocated JSX lexically inside the card rather than hoisting it into a variable. This is the ONLY identity in any class that this wave could not carry across, and the file gains many more than it loses. NOTE FOR RATIFICATION: R27 authorises the percentage input and the derived share count explicitly, and its binding constraints require that a guard-identity change be \"a relocation entry naming its destination, submitted for ratification — never a quiet allowlist growth\". This entry is that submission. It grows scripts/silent-drop-guard/allowlist.json from 40 to 41 and is APPENDED AT THE END of its class array as a sibling, never inserted mid-list (a mid-list insertion once invalidated 46 child identities). It is NOT ratified until the owner says so.",
+      "approvedBy": "SUBMITTED FOR RATIFICATION — owner ruling R27 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15): \"make it a percentage\"; \"the share count becomes the derived output, shown to the founder, never the input\". R27 authorises the change that causes this identity to move but does not itself name this identity, so this entry is flagged rather than treated as pre-approved.",
+      "date": "2026-08-15"
+    },
+    {
+      "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:422d190899b7",
+      "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:df9859db5a44",
+      "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:af61dc179bce",
+      "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
+    },
+    {
+      "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:cc5284aa419d",
+      "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
+      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+      "date": "2026-08-19"
     }
   ],
   "removedPanels": [

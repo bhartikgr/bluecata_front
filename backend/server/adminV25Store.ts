@@ -725,6 +725,73 @@ export function registerAdminV25Routes(app: Express): void {
       const deletedAt = now();
       const cascadeSummary: Record<string, number> = {};
 
+      /* ── WAVE 57c · ITEM 3 (R37 approved order #3) — STOP LYING ABOUT THE CASCADE ──
+       *
+       * THE DEFECT. The founder branch below used to run
+       *     UPDATE funded_queue SET deleted_at = ? WHERE company_id = ?
+       * inside `try { … } catch { cascadeSummary.funded_queue = 0; }`.
+       * `funded_queue` HAS NO `deleted_at` COLUMN — verified by
+       * `PRAGMA table_info(funded_queue)` against a live handle built from the
+       * inline DDL: invitation_id, tenant_id, round_id, company_id, investor_id,
+       * amount, currency, shares, instrument_class, enqueued_at. So the statement
+       * always threw, the catch swallowed it, and the response reported
+       * `cascade.funded_queue = 0` — BYTE-IDENTICAL to "there was nothing to
+       * clean up". An operator deleting a founder tenant was told a cap-table
+       * cascade had run over the pending funding queue when it had not run at all.
+       *
+       * WHICH FIX, AND WHY. R37 order #3 says fix the report or fix the cascade,
+       * never leave both wrong. Fixing the CASCADE would mean either
+       *   (a) adding `funded_queue.deleted_at` — which needs migration 0191 AND
+       *       matching inline DDL inside SACRED `server/db/connection.ts`
+       *       (dev/test SQLite is built from those inline definitions), i.e. a
+       *       sacred edit this wave is not authorised to make; or
+       *   (b) converting it to `DELETE FROM funded_queue …` — turning a claimed
+       *       SOFT delete into a real HARD delete of pending investor funding
+       *       rows, which is the opposite of R35's "hard delete should be
+       *       reconsidered against soft delete where the data has financial
+       *       significance".
+       * Both are owner decisions. So THE REPORT IS FIXED: the false
+       * `funded_queue: 0` claim is gone, the failure is surfaced instead of
+       * swallowed, and the rows that were NOT retired are COUNTED and named so
+       * the operator learns exactly what is left behind.
+       *
+       * The mechanism is generic on purpose: every previously-swallowed cascade
+       * step now reports either a real count or an explicit error, so this class
+       * of silent lie cannot come back through a different branch. */
+      const cascadeErrors: Record<string, string> = {};
+      const cascadeNotPerformed: Record<string, { rowsRemaining: number | null; reason: string }> = {};
+
+      /**
+       * Run one cascade step. On success it records the real row count. On
+       * failure it records the error AND best-effort counts the rows that are
+       * still there, and it NEVER writes a `0` into `cascadeSummary` — because a
+       * `0` there means "ran, matched nothing", and that is precisely the lie
+       * this wave is removing.
+       */
+      const cascadeStep = (
+        name: string,
+        run: () => number,
+        countRemaining?: () => number,
+      ): void => {
+        try {
+          cascadeSummary[name] = run();
+        } catch (err) {
+          const message = (err as Error).message;
+          cascadeErrors[name] = message;
+          let remaining: number | null = null;
+          try {
+            remaining = countRemaining ? countRemaining() : null;
+          } catch {
+            remaining = null;
+          }
+          cascadeNotPerformed[name] = { rowsRemaining: remaining, reason: message };
+          log.error(
+            `[adminV25Store.tenant delete] cascade step "${name}" FAILED for ${tenantType} ${tenantId}: ${message}` +
+            (remaining === null ? "" : ` — ${remaining} row(s) left behind`),
+          );
+        }
+      };
+
       // ── CASCADE DELETIONS ────────────────────────────────────────────
       if (tenantType === "founder") {
         // Hard-delete company and related rows
@@ -738,16 +805,20 @@ export function registerAdminV25Routes(app: Express): void {
         cascadeSummary.subscriptions = r3.changes;
 
         // Soft-circles belonging to this company
-        try {
-          const r4 = db.prepare(`UPDATE soft_circles SET deleted_at = ? WHERE company_id = ?`).run(deletedAt, tenantId);
-          cascadeSummary.soft_circles = r4.changes;
-        } catch { cascadeSummary.soft_circles = 0; }
+        cascadeStep(
+          "soft_circles",
+          () => db.prepare(`UPDATE soft_circles SET deleted_at = ? WHERE company_id = ?`).run(deletedAt, tenantId).changes,
+          () => (db.prepare(`SELECT COUNT(*) AS n FROM soft_circles WHERE company_id = ? AND deleted_at IS NULL`).get(tenantId) as { n: number }).n,
+        );
 
-        // Cap-table entries for this company (soft-delete via funded_queue removal)
-        try {
-          const r5 = db.prepare(`UPDATE funded_queue SET deleted_at = ? WHERE company_id = ?`).run(deletedAt, tenantId);
-          cascadeSummary.funded_queue = r5.changes;
-        } catch { cascadeSummary.funded_queue = 0; }
+        /* WAVE 57c ITEM 3 — the funded_queue step. It is ATTEMPTED unchanged (so
+           the day a `deleted_at` column is added it starts working with no code
+           change) but its failure is now REPORTED instead of reported as `0`. */
+        cascadeStep(
+          "funded_queue",
+          () => db.prepare(`UPDATE funded_queue SET deleted_at = ? WHERE company_id = ?`).run(deletedAt, tenantId).changes,
+          () => (db.prepare(`SELECT COUNT(*) AS n FROM funded_queue WHERE company_id = ?`).get(tenantId) as { n: number }).n,
+        );
 
       } else if (tenantType === "investor") {
         // Hard-delete user and credentials
@@ -760,10 +831,11 @@ export function registerAdminV25Routes(app: Express): void {
         const r3 = db.prepare(`UPDATE company_members SET deleted_at = ? WHERE user_id = ?`).run(deletedAt, tenantId);
         cascadeSummary.company_members = r3.changes;
 
-        try {
-          const r4 = db.prepare(`DELETE FROM soft_circles WHERE investor_user_id = ?`).run(tenantId);
-          cascadeSummary.soft_circles = r4.changes;
-        } catch { cascadeSummary.soft_circles = 0; }
+        cascadeStep(
+          "soft_circles",
+          () => db.prepare(`DELETE FROM soft_circles WHERE investor_user_id = ?`).run(tenantId).changes,
+          () => (db.prepare(`SELECT COUNT(*) AS n FROM soft_circles WHERE investor_user_id = ?`).get(tenantId) as { n: number }).n,
+        );
 
       } else if (tenantType === "partner") {
         // Remove partner organization
@@ -785,7 +857,20 @@ export function registerAdminV25Routes(app: Express): void {
         cascadeSummary.user_credentials = r3.changes;
       }
 
-      auditPayload = { tenantType, tenantId, tenantName: resolvedName, deletedBy: actor, deletedAt, cascade: cascadeSummary };
+      /* WAVE 57c ITEM 3 — the audit payload carries the same honesty as the
+         response. An audit record that claims a complete cascade is the same
+         lie one layer deeper. */
+      const cascadeIncomplete = Object.keys(cascadeErrors).length > 0;
+      auditPayload = {
+        tenantType,
+        tenantId,
+        tenantName: resolvedName,
+        deletedBy: actor,
+        deletedAt,
+        cascade: cascadeSummary,
+        cascadeIncomplete,
+        ...(cascadeIncomplete ? { cascadeErrors, cascadeNotPerformed } : {}),
+      };
 
       // Persist audit BEFORE the rows are gone (required even after rows are deleted)
       const auditId = newId("tda");
@@ -797,7 +882,24 @@ export function registerAdminV25Routes(app: Express): void {
       appendAdminAudit(actor, `tenant_delete:${tenantId}`, "tenant.deleted", auditPayload);
       BridgeOutbound.auditLogAppended("admin", { eventType: "tenant.deleted", tenantType, tenantId, tenantName: resolvedName });
 
-      return res.json({ ok: true, deleted: true, auditId, tenantId, tenantType, tenantName: resolvedName, cascade: cascadeSummary });
+      /* WAVE 57c ITEM 3 — `cascadeIncomplete` is always present (true or false)
+         so a caller can branch on it without having to know which keys used to
+         be missing. When it is true, `cascadeErrors` names the step that could
+         not run and `cascadeNotPerformed[step].rowsRemaining` says how much was
+         left behind. The tenant itself WAS deleted, so this stays a 200 — the
+         honesty is in the body, not in a status code that would break the
+         legitimate operation. */
+      return res.json({
+        ok: true,
+        deleted: true,
+        auditId,
+        tenantId,
+        tenantType,
+        tenantName: resolvedName,
+        cascade: cascadeSummary,
+        cascadeIncomplete,
+        ...(cascadeIncomplete ? { cascadeErrors, cascadeNotPerformed } : {}),
+      });
     } catch (err) {
       log.error("[adminV25Store.tenant delete] error:", (err as Error).message);
       return res.status(500).json({ ok: false, error: "DELETE_FAILED", message: (err as Error).message });

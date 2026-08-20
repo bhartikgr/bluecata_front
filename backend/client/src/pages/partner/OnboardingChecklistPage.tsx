@@ -11,6 +11,7 @@
  * No mock data; no localStorage; no TODOs.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -122,14 +123,14 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!r.ok) {
-    let detail = "";
-    try {
-      const j = await r.json();
-      detail = j?.error ?? "";
-    } catch {
-      detail = await r.text().catch(() => "");
-    }
-    throw new Error(`HTTP ${r.status}${detail ? `: ${detail}` : ""}`);
+    /* WAVE 73 · ITEM 1 · R58 — A CONSORTIUM PARTNER'S OWN ONBOARDING SCREEN.
+       This wrapper is a byte-for-byte sibling of the admin one
+       (`admin/ConsortiumApplicationsPage.tsx`) and threw the same thing away: a
+       partner blocked on a checklist step saw an enum code and an HTTP number
+       instead of the sentence the server wrote about what to do next. Reads the
+       server's `message` now, through the module Wave 69 created, and falls back
+       to this function's own previous string when there is none. */
+    throw new Error(await serverRefusalText(r));
   }
   return (await r.json()) as T;
 }

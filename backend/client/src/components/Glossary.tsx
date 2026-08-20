@@ -73,9 +73,25 @@ export const ENTRIES: GlossaryEntry[] = [
  { term: "Valuation cap", alt: ["Cap"], category: "Round Mechanics",
  definition: "The maximum company valuation at which a SAFE or Note converts to shares. Lower cap = more dilution to founders, more upside for the investor.",
  example: "$5M cap means a SAFE always converts as if the company were worth at most $5M." },
- { term: "Discount", category: "Round Mechanics",
- definition: "A percentage off the priced-round share price the SAFE/Note investor gets. 20% means they pay $0.80 for what new investors pay $1.00.",
+ { term: "Discount", alt: ["Discount (% off the round price)"], category: "Round Mechanics",
+ definition: "A percentage off the priced-round share price the SAFE/Note investor gets. 20% means they pay $0.80 for what new investors pay $1.00. Capavate stores it exactly as you write it — 20 means 20% — and it is never rescaled by how big it looks.",
+ technicalDefinition: "Conversion price = round price per share × (1 − discount). Not to be confused with DISCOUNT RATE, which is its complement and is the term the YC SAFE legal form uses: a 20% Discount is a Discount Rate of 80%. See the separate 'Discount Rate' entry — conflating the two is what DLA Piper calls 'quadrupling the intended discount'. Where a SAFE has both a valuation cap and a discount, conversion happens at whichever gives the LOWER price per share.",
  example: "$1.00 PPS × (1 − 0.20 discount) = $0.80 conversion price." },
+ /* ══════════════════════════════════════════════════════════════════
+    WAVE 58e · D3.4 (owner ruling R30.4) — THE MORE DANGEROUS TERM WAS UNDEFINED.
+    ══════════════════════════════════════════════════════════════════
+    Searching this glossary for "discount rate" on live v26.17.0 returned 0 of 56
+    terms (verified 2026-08-15). "Discount" was defined; its INVERSE — the term the
+    YC SAFE legal document actually uses — was not. A fraction/percent slip is 100×
+    and obvious. This one is the complement, looks entirely plausible, and reverses
+    who benefits, which is why it reaches signed documents.
+
+    The existing "Discount" entry above is KEPT (R30 requires it); this is added
+    beside it and each cross-references the other. */
+ { term: "Discount Rate", alt: ["Discount rate", "SAFE Discount Rate"], category: "Round Mechanics",
+ definition: "The percentage of the round price the SAFE/Note holder actually PAYS — the price AFTER the discount, not the reduction. It is the complement of Discount: a 20% discount is a Discount Rate of 80%. The YC SAFE legal form uses this term, so your signed document may say 80% where your term sheet says 20%.",
+ technicalDefinition: "Discount Rate = 100% − Discount. Conversion price = round price per share × Discount Rate. Authority: Wyrick, 'SAFE Financing: Valuation Cap vs Discount' — \"the SAFE form uses the term 'Discount Rate,' which means the price AFTER the discount has been applied. So, if you have a 20% discount, the 'Discount Rate' would be 80%!\" DLA Piper's SAFE FAQs warn that recording a 20% Discount as a Discount Rate of 20% is 'quadrupling the intended discount'. Capavate's own field is 'Discount (% off the round price)' — i.e. the DISCOUNT, not the Discount Rate — and every screen that shows it prints both forms so the two cannot be swapped by accident.",
+ example: "A 20% discount is a Discount Rate of 80%: $1.00 × 0.80 = $0.80. Recording it as a Discount Rate of 20% would give $1.00 × 0.20 = $0.20 — an 80% discount, four times the shares, for the same money." },
  { term: "MFN", alt: ["Most-Favored-Nation"], category: "Round Mechanics",
  definition: "If you raise a later SAFE on better terms before the priced round, the MFN investor inherits those better terms automatically.",
  example: "Investor A signs a SAFE at $8M cap. You later sign Investor B at $5M cap. Investor A's MFN bumps them to $5M cap too." },

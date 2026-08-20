@@ -13,6 +13,15 @@
  *   - same shares per (holderId, kind, series) key
  *   - same ownershipPercent to 12 decimal places
  *
+ * WAVE 71 · D18 — `ownershipPercent` is now `string | null`, and `null` means the
+ * view's denominator was zero (0 ÷ 0, undefined). `ownDp` below is the ONE place
+ * this module turns that contract into a comparable token: `null` becomes the
+ * literal string `"undefined"`, which compares equal to another `"undefined"` and
+ * unequal to any number. It is NOT coerced to `0`, because two engines that both
+ * decline to state a ratio AGREE, while an engine stating `0` against an engine
+ * stating `undefined` DISAGREE — and before this change the second case was
+ * silently reported as a match.
+ *
  * Anything else is `divergence`. The diffs are returned for UI display.
  */
 import type { ComputeOptions, CapTableResult, CapTableHolderRow } from "../types.js";
@@ -33,6 +42,23 @@ export type HolderDiff = {
   referenceOwnership: string;
   shareDelta: string;
   ownershipDelta: string;
+  /* WAVE 73 · ITEM 10 — A NAME FOR A DIFFERENCE WE ALREADY UNDERSTAND.
+
+     Wave 72 (FINDING R-1) found that the INDEPENDENT reference engine writes
+     `"0"` for a 0 ÷ 0 ownership ratio where the primary writes `null` (D18). On a
+     populated zero-share table that surfaces here as an anonymous DIVERGENCE —
+     and the obvious "fix" for an anonymous divergence is to make the two engines
+     agree, which would destroy the only thing a second implementation is for.
+
+     So the difference is NAMED instead of removed. When it is exactly this
+     condition, `condition` is set and the row explains itself. The reference
+     engine is NOT edited, and `status` is NOT softened: the run still reports a
+     divergence, because the two engines genuinely disagree — it is now a KNOWN,
+     EXPLAINED disagreement rather than a mystery for the next agent to
+     "reconcile" by deleting the check. `undefined` on every other row, so nothing
+     that was reported before is reported differently. */
+  condition?: "ownership_undefined_vs_zero";
+  conditionNote?: string;
 };
 
 export type ReconciliationResult = {
@@ -56,6 +82,25 @@ export type ReconciliationResult = {
 // arbitrary-precision strings cross-engine. Share counts must always match exactly.
 const OWN_TOLERANCE_DP = 8;
 
+/** WAVE 71 · D18 — the delta between two possibly-undefined ownership figures.
+    `null` on either side is NOT read as zero: the delta is reported as the token
+    `"undefined"`, because the size of the gap between a number and "no number" is
+    not a number. */
+function ownDelta(a: string | null | undefined, b: string | null | undefined): string {
+  if (a === null || a === undefined || b === null || b === undefined) return "undefined";
+  const x = parseFloat(a);
+  const y = parseFloat(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return "undefined";
+  return (x - y).toFixed(OWN_TOLERANCE_DP);
+}
+
+/** WAVE 71 · D18 — the single null-aware rendering of an ownership figure. */
+function ownDp(v: string | null | undefined): string {
+  if (v === null || v === undefined) return "undefined";
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n.toFixed(OWN_TOLERANCE_DP) : "undefined";
+}
+
 function rowKey(r: CapTableHolderRow): string {
   return `${r.holderId}|${r.kind}|${r.series ?? ""}`;
 }
@@ -65,7 +110,7 @@ function hashCapTable(t: CapTableResult): string {
     .map((r) => ({
       key: rowKey(r),
       shares: r.shares.toString(),
-      ownership: parseFloat(r.ownershipPercent).toFixed(OWN_TOLERANCE_DP),
+      ownership: ownDp(r.ownershipPercent),
     }))
     .sort((a, b) => a.key.localeCompare(b.key));
   return sha256(canonicalJson(canon));
@@ -105,25 +150,46 @@ export function reconcile(
     }
     if (p.shares !== r.shares) {
       const shareDelta = (p.shares - r.shares).toString();
-      const pOwn = parseFloat(p.ownershipPercent).toFixed(OWN_TOLERANCE_DP);
-      const rOwn = parseFloat(r.ownershipPercent).toFixed(OWN_TOLERANCE_DP);
+      const pOwn = ownDp(p.ownershipPercent);
+      const rOwn = ownDp(r.ownershipPercent);
       diffs.push({
         key, holderId: p.holderId, kind: p.kind, series: p.series ?? null,
         primaryShares: p.shares.toString(), referenceShares: r.shares.toString(),
         primaryOwnership: pOwn, referenceOwnership: rOwn,
-        shareDelta, ownershipDelta: (parseFloat(p.ownershipPercent) - parseFloat(r.ownershipPercent)).toFixed(OWN_TOLERANCE_DP),
+        shareDelta, ownershipDelta: ownDelta(p.ownershipPercent, r.ownershipPercent),
       });
       continue;
     }
-    const pOwn = parseFloat(p.ownershipPercent).toFixed(OWN_TOLERANCE_DP);
-    const rOwn = parseFloat(r.ownershipPercent).toFixed(OWN_TOLERANCE_DP);
+    const pOwn = ownDp(p.ownershipPercent);
+    const rOwn = ownDp(r.ownershipPercent);
     if (pOwn !== rOwn) {
+      /* WAVE 73 · ITEM 10 — the named condition (see `HolderDiff.condition`).
+         Recognised NARROWLY and symmetrically: one side's ratio does not exist,
+         the other side's is exactly zero, and the share counts already agree (we
+         are past the share-delta branch above). Any other ownership difference is
+         reported exactly as it was. */
+      const undefinedVsZero =
+        (p.ownershipPercent == null && rOwn === (0).toFixed(OWN_TOLERANCE_DP)) ||
+        (r.ownershipPercent == null && pOwn === (0).toFixed(OWN_TOLERANCE_DP));
       diffs.push({
         key, holderId: p.holderId, kind: p.kind, series: p.series ?? null,
         primaryShares: p.shares.toString(), referenceShares: r.shares.toString(),
         primaryOwnership: pOwn, referenceOwnership: rOwn,
         shareDelta: "0",
-        ownershipDelta: (parseFloat(p.ownershipPercent) - parseFloat(r.ownershipPercent)).toFixed(OWN_TOLERANCE_DP),
+        ownershipDelta: ownDelta(p.ownershipPercent, r.ownershipPercent),
+        ...(undefinedVsZero
+          ? {
+              condition: "ownership_undefined_vs_zero" as const,
+              conditionNote:
+                "KNOWN CONDITION, not an unexplained mismatch: one engine reports this holder's " +
+                "ownership as UNDEFINED (0 ÷ 0 on a zero-share table, ruling D18) and the other " +
+                "reports it as exactly 0. The share counts agree. The two engines are deliberately " +
+                "independent implementations and the reference engine is NOT edited to agree — that " +
+                "would remove the second opinion this gate exists to provide. Resolve it by giving " +
+                "the company a non-zero share count, or by ruling on which convention is canonical; " +
+                "do NOT make the engines identical.",
+            }
+          : {}),
       });
     }
   }

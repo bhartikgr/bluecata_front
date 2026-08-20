@@ -526,7 +526,9 @@ export default function FounderInvestorCRM() {
                       <Badge variant="outline" className="text-[10px]">{c.region}</Badge>
                       {c.ownership.sharesUsd > 0 && (
                         <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700">
-                          {fmtUSD(c.ownership.sharesUsd, { compact: true })} · {fmtPct(c.ownership.pct * 100, 1)}
+                          {/* WAVE 61a · R47 (closes L-5) — ownership at 2 dp,
+                              display precision only; `* 100` untouched (R16). */}
+                          {fmtUSD(c.ownership.sharesUsd, { compact: true })} · {fmtPct(c.ownership.pct * 100, 2)}
                         </Badge>
                       )}
                       {c.maSignals > 0 && <Badge variant="outline" className="text-[10px] border-[hsl(333_75%_35%)]/40 text-[hsl(333_75%_35%)]">{c.maSignals} M&amp;A signal</Badge>}

@@ -38,7 +38,19 @@ export type Security = {
     interestRate: string;      // annual, e.g. "0.06"
     interestKind: "simple" | "compounded";
     issueDate: string;         // ISO
-    maturityDate: string;      // ISO
+    /* WAVE 70 · D7 — OPTIONAL, because it is honest for it to be absent.
+       `maturityDate` reaches NO arithmetic anywhere in this package:
+       `convertNoteToPreferred` never reads it, there is no maturity trigger, no
+       default and no automatic conversion. It was REQUIRED, so the one caller
+       that builds notes (`shared/roundMathEngineAdapter.ts`) hardcoded
+       "2027-12-31" to satisfy the type — a literal date asserted about every
+       note on the platform. Making it optional lets the adapter pass the STORED
+       maturity when there is one and pass nothing when there is not.
+       THE GAP THIS DOES NOT CLOSE, stated so it is not over-read: maturity still
+       triggers nothing. `maturityMonths` is fenced [0,600] at both layers
+       (Wave 61b, migration 0192) and its value still reaches no arithmetic. A
+       maturity trigger is an owner-scope feature, not a defect fix. */
+    maturityDate?: string;     // ISO
   };
   // Warrant
   warrant?: {
@@ -58,7 +70,13 @@ export type Security = {
   // Preferred-specific
   preferred?: {
     liquidationPreferenceMultiple: number;   // 1, 2, 3
-    participating: boolean;
+    /* WAVE 70 · D1 / R60 §6 — OPTIONAL. It was required, so the adapter
+       hardcoded `participating: false` on every existing preferred class: a
+       negotiated liquidation term asserted as fact about investors who never
+       agreed it. Nothing in this package reads it on a `Security` (only
+       `computeWaterfall` reads its own separate input type), so absence changes
+       no arithmetic here — it just stops the adapter having to invent a term. */
+    participating?: boolean;
     participationCapMultiple?: number;       // optional cap for participating preferred
     seniority: number;                       // 0 = most senior
     antiDilution?: "none" | "full_ratchet" | "broad_based" | "narrow_based";
@@ -75,6 +93,7 @@ export type Transaction =
   | { type: "convert_safe"; securityId: string; round: PricedRound; date: string }
   | { type: "convert_note"; securityId: string; round: PricedRound; date: string }
   | { type: "issue_preferred_round"; round: PricedRound; date: string }
+  /** WAVE 52c · B4 — `targetPercent` is PERCENT-AS-WRITTEN (R16): "25" = 25%. */
   | { type: "esop_topup"; targetPercent: string; mode: "pre_money" | "post_money"; date: string };
 
 export type PricedRound = {
@@ -84,7 +103,13 @@ export type PricedRound = {
   investmentAmount: string;    // new money raised
   pricePerShare?: string;      // optional explicit; otherwise computed
   currency?: Currency;
-  optionPoolPostPercent?: string;  // e.g. "0.10" → 10% post-money pool
+  /**
+   * WAVE 52c · B4 — PERCENT-AS-WRITTEN (R16 / OR-1). `"10"` → 10% post-money
+   * pool, `"25"` → 25%. NOT a fraction: before Wave 52c this field was
+   * documented as `"0.10"` → 10%, and a UI supplying a percent-as-written `25`
+   * threw "Pool target must be < 100%". Read by BOTH engines under this unit.
+   */
+  optionPoolPostPercent?: string;
   optionPoolMode?: "pre_money" | "post_money";
   liquidationPreferenceMultiple?: number;
   participating?: boolean;
@@ -100,7 +125,22 @@ export type CapTableHolderRow = {
   kind: InstrumentKind;
   series?: string;
   shares: Shares;
-  ownershipPercent: string;   // Decimal as string, full precision
+  /* ── WAVE 71 · D18 — `null` MEANS UNDEFINED, AND NEVER MEANS ZERO ─────────
+     THE DEFECT. `computeView` returned the confident string `"0"` for a holder
+     whose ownership is 0 / 0 — a zero-share holder on a zero-share cap table.
+     Owner ruling R47 is explicit that "a percentage of zero shares is undefined,
+     not zero", and the honest em-dash a founder sees on `/founder/captable` comes
+     from the CLIENT's own `totalSharesNum > 0` gate (`CapTable.tsx:569-571`), NOT
+     from this engine and NOT from R54's formatter — `fmtPct("0")` prints `0.00%`
+     quite correctly, because `0` is finite. So every OTHER consumer of the engine
+     received `"0"` for an undefined ratio and had no way to know.
+
+     THE CONTRACT. `null` is returned when, and only when, the view's denominator
+     is zero. A caller cannot mistake `null` for a number: `parseFloat(null)` does
+     not type-check, `Number(null)` is a deliberate coercion the author must
+     write, and JSON carries it as `null` rather than `0`. Every caller in the
+     tree was checked and is listed in `build_log/wave71/W71_VISIBILITY.md`. */
+  ownershipPercent: string | null;   // Decimal as string, full precision. `null` = 0 ÷ 0, undefined.
   invested?: string;
   currency?: Currency;
 };
@@ -125,6 +165,30 @@ export type CapTableResult = {
   formulaIdsUsed: string[];
 };
 
+/**
+ * WAVE 52b · §11.6.2 — THE ROLLBACK FLAG FOR THE WAVE 52 PRICING ORDER.
+ *
+ * `"w52_post_pool_post_conversion"` (the DEFAULT, and the corrected arithmetic):
+ *   the price per share is solved AFTER the option-pool top-up and AFTER SAFE /
+ *   note conversion, and a post-money SAFE's company capitalization is measured
+ *   BEFORE the pool push.
+ *
+ * `"legacy_pre_w52"` (the ROLLBACK): the pre-Wave-52 order, with all three
+ *   measured defects restored together — no fixed-point solve, the pool top-up
+ *   applied ABOVE the conversion loops, and the SAFE's capitalization measured
+ *   AFTER the pool push. On the canonical worked example this returns the engine
+ *   to $3.00 as its starting price against a true $2.00 and hands the SAFE
+ *   403,225 shares it is not entitled to. It exists ONLY so that Wave 52 can be
+ *   reverted without redeploying v26.16.0 and losing every other wave with it.
+ *
+ * The value is NOT decided here and NOT read from `process.env`. It is resolved
+ * from the database at call time by
+ * `server/lib/roundMathDisclosureStore.ts::resolveW52PricingOrder()`, per owner
+ * ruling R21 ("100% dynamic. Nothing static or hard coded."). This package stays
+ * pure and takes the resolved value as an input.
+ */
+export type PricingOrderMode = "w52_post_pool_post_conversion" | "legacy_pre_w52";
+
 export type ComputeOptions = {
   companyId: string;
   asOf: string;
@@ -133,6 +197,8 @@ export type ComputeOptions = {
   fx?: FxSnapshot;
   holders: Holder[];
   transactions: Transaction[];
+  /** Omitted means the corrected Wave 52 order. See `PricingOrderMode`. */
+  pricingOrderMode?: PricingOrderMode;
 };
 
 /** Formula registry record. */

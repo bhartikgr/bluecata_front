@@ -7,7 +7,14 @@
  *   - hash chains intact
  *   - drift detector clean
  *
- * Reachable from `POST /api/admin/sync/reset-demo` (admin-SES gated).
+ * Reachable from `POST /api/admin/sync/reset-demo`.
+ *
+ * WAVE 57c · ITEM 6 — this line used to read "(admin-SES gated)". That was FALSE:
+ * the x-admin-SES check was removed in v25.16 NC4 and the route carries
+ * `requireAdmin` only. As of Wave 57c the route is additionally DRY-RUN BY
+ * DEFAULT (`?apply=1` to mutate), fails closed on identity, and writes an
+ * audit_log entry naming the bridge chain head it discards. This function itself
+ * is unchanged and still resets `lastChainHash` to 64 zeros when called.
  */
 import { _testBridge, emitBridgeEvent, seedDemoEvents } from "../server/bridgeStore";
 import { resetInboundState } from "../server/lib/bridgeInbound";

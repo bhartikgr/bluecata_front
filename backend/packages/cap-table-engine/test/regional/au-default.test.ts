@@ -56,7 +56,7 @@ describe("AU default formula pack", () => {
     // Company qualifies for §83A-105 startup concession (< 10 yr, < $50M, unlisted, AU-resident).
     const qualifying = computeEsopTopUp({
       mode: "pre_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 9_000_000n,
       existingPool: 0n,
       newInvestorShares: 1_000_000n,
@@ -76,7 +76,7 @@ describe("AU default formula pack", () => {
     // Non-qualifying company falls back to the deferred-tax regime.
     const nonQualifying = computeEsopTopUp({
       mode: "pre_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 9_000_000n,
       existingPool: 0n,
       newInvestorShares: 1_000_000n,

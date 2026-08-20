@@ -451,7 +451,7 @@ export default function SpvPerformance({
         <AppCard className="p-0" data-testid="spv-cashflows-card">
           {flowsQ.data && !flowsQ.data.chainInstalled && (
             <div className="border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="spv-cashflows-unchained-warning">
-              The append-only chain is not installed on this deployment (migration 0165). Rows below are
+              The append-only chain is not installed on this deployment. Rows below are
               readable but their integrity is not being enforced.
             </div>
           )}
@@ -782,7 +782,7 @@ export default function SpvPerformance({
         <AppCard className="p-4" data-testid="spv-marks-card">
           <div className="text-sm font-medium text-[var(--cv-color-navy)]">GP mark override</div>
           <div className="mt-1 text-xs text-slate-500" data-testid="spv-marks-provenance">
-            The override engine and its routes have existed since Wave 9 with no screen, which meant a GP
+            The override engine and its routes existed for some time with no screen, which meant a GP
             was <span className="font-medium">able to</span> override a mark only by calling the API. This
             is that screen. A reason of at least ten characters is mandatory and is stored with the
             override; the prior fair value is captured so the change is legible after the fact.

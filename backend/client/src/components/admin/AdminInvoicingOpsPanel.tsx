@@ -317,7 +317,7 @@ function InvoiceMintCard({ partners }: { partners: Array<{ id: string; name: str
         )}
         {previewTotalMinor !== null && (
           <span className="block text-muted-foreground" data-testid="text-invoice-preview-total">
-            {`Lines total ${formatMinor(previewTotalMinor, currency)} — a preview only. The stored total is computed by the database from the lines, and is never sent from here.`}
+            {`Lines total ${formatMinor(previewTotalMinor, currency)} — a preview only. The stored total is computed from the lines themselves and is never sent from this screen.`}
           </span>
         )}
       </div>

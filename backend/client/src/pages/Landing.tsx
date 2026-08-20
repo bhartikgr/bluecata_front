@@ -220,7 +220,7 @@ export default function Landing() {
         </span>
         <div className="flex-1" />
         {import.meta.env.DEV && (
-          <span className="text-[10px] text-[hsl(219_25%_30%)]/60" data-testid="chip-sprint">Sprint 15 · login + entitlement</span>
+          <span className="text-[10px] text-[hsl(219_25%_30%)]/60" data-testid="chip-sprint">Sign in and entitlement</span>
         )}
       </footer>
     </div>

@@ -98,7 +98,15 @@ const SURFACE_COPY: Record<Surface, {
     kpi1Label: "Companies", kpi1Help: "Total active founder workspaces on Capavate. Includes seed, Series A+, and Pre-Seed tenants regardless of round state. Trailing 30-day net new is shown as the MoM% badge.",
     kpi2Label: "Investors", kpi2Help: "Total invited-or-active investor user accounts. NRR x is the Net Revenue Retention multiple (active investor billing this quarter ÷ active investor billing prior quarter on the same cohort).",
     kpi3Label: "Soft-circled", kpi3Help: "Sum of every non-binding investor commitment currently outstanding across all active rounds. A high ratio of soft-circled : funded suggests pipeline conversion friction worth investigating.",
-    kpi4Label: "Funded", kpi4Help: "Sum of cash that has actually wired into companies and been committed to the cap table. Churn% is the percentage of paying founder accounts that downgraded or cancelled in the last 30 days.",
+    /* WAVE 61a · R51 — the clause "in the last 30 days" was DEMONSTRABLY FALSE and
+       is replaced (R44 row 1). server/adminPlatformStore.ts computes
+       `churnPct = cancelled / everCount * 100`, where `everCount` is a UNION over
+       the whole of `subscriptions` and `subscriptions_history` — there is no date
+       predicate, no window and no period of any kind in that query. One sentence
+       is APPENDED recording the consequence the owner asked for. THE ARITHMETIC IS
+       NOT TOUCHED: a real 30-day window needs a transition timestamp on
+       `subscriptions_history` and is its own wave. */
+    kpi4Label: "Funded", kpi4Help: "Sum of cash that has actually wired into companies and been committed to the cap table. Churn% is the percentage of paying founder accounts that downgraded or cancelled since the account was created. Because the denominator is every account that has ever subscribed, this figure can never decrease over time.",
     funnelOnboardingTitle: "Founder onboarding funnel",
     funnelOnboardingHelp: "Drop-off between (1) creating a company on Capavate, (2) opening their first round, (3) closing their first round. Steep drop from create→round indicates onboarding friction; steep drop from round→close indicates deal-flow friction.",
     funnelInvestorTitle: "Investor commitment funnel",

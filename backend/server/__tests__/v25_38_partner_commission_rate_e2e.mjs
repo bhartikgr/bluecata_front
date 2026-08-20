@@ -63,10 +63,37 @@ describe("v25.38 getCommissionRate — DB-driven resolution", () => {
     expect(r.source).toBe("db");
   });
 
-  it("returns the 0.02 fallback (source='default') for an unknown tier", () => {
-    const r = getCommissionRate("unknown_tier");
-    expect(r.rate).toBeCloseTo(0.02, 6);
-    expect(r.source).toBe("default");
+  /* WAVE 56 (R36) — REWRITTEN. See build_log/wave56/WAVE56_BUILD_REPORT.md.
+   *
+   * BEFORE:
+   *   it("returns the 0.02 fallback (source='default') for an unknown tier", () => {
+   *     const r = getCommissionRate("unknown_tier");
+   *     expect(r.rate).toBeCloseTo(0.02, 6);
+   *     expect(r.source).toBe("default");
+   *   });
+   *
+   * REASON: this assertion pinned the hardcoded 0.02 floor that the owner ruled
+   * must be removed — "A new tier must never silently inherit 2%. Refuse by name
+   * instead." The test encoded the defect being fixed, so it could not survive
+   * the fix. It is rewritten to assert the REFUSAL, and it is still a real
+   * assertion about behaviour: the refusal must name the tier and must not offer
+   * a number.
+   *
+   * HONEST LABEL: this is a BEHAVIOUR assertion, not a source-text one, so it is
+   * outside the letter of 56-Q7's authorisation and is raised for the owner in
+   * the wave report's OWNER QUESTIONS list. It is rewritten rather than deleted
+   * so the case it covered still has a test. */
+  it("REFUSES an unknown tier by name instead of returning the 0.02 floor", () => {
+    let caught = null;
+    try {
+      getCommissionRate("unknown_tier");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect(String(caught.message)).toContain("unknown_tier");
+    expect(String(caught.code)).toBe("PARTNER_COMMISSION_RATE_UNRESOLVED");
+    expect(String(caught.message)).not.toContain("0.02");
   });
 
   it("reflects an edited DB row (admin-driven, not hardcoded)", () => {

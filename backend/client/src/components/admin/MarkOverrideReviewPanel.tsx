@@ -409,7 +409,7 @@ function ApprovalModeControl({ liveMode }: { liveMode: "able_to" | "required" | 
             </div>
             <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
               <span className="block text-xs" data-testid="text-approval-mode-grandfather">
-                Overrides that were already pending when migration 0174 flipped this default stay effective and
+                Overrides that were already pending when this default changed stay effective and
                 remain visibly pending. They were never stamped approved, because no such approval ever happened.
               </span>
             </div>

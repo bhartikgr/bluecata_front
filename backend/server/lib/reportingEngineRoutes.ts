@@ -163,7 +163,7 @@ function ctxOf(req: Request): any {
 
 function actorOf(req: Request): string {
   const c = ctxOf(req);
-  return String(c?.userId ?? c?.identity?.email ?? "unknown");
+  return String(c?.userId ?? c?.identity?.email ?? "u_unknown");
 }
 
 function tenantOf(req: Request): string {

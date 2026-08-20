@@ -67,6 +67,16 @@ type RoundTerms = {
  boardComposition?: string;
 };
 type UseOfProceedsEntry = { category: string; percent: number };
+/* WAVE 80 · ITEM 2 — USE OF PROCEEDS ARRIVES IN EITHER OF TWO REAL SHAPES.
+   The founder round wizard collects it as ONE FREE-TEXT NARRATIVE; the structured
+   `{category, percent}` rows this card was typed for only ever came from
+   `server/mockData.ts`. Wave 80 made the wizard actually persist what the founder
+   typed and widened both readers rather than deriving rows from a sentence —
+   deriving them would mean Capavate inventing per-bucket percentages a founder
+   never entered and printing them on the document an investor uses to decide.
+   The rationale is declared once, on `validateUseOfProceeds` in
+   `shared/roundMathEngineAdapter.ts`. */
+type UseOfProceedsShared = UseOfProceedsEntry[] | string | null;
 type Inv = {
  id: string;
  company: { id: string; name: string; sector: string };
@@ -74,7 +84,7 @@ type Inv = {
  whyNow?: string;
  leadInvestorNote?: string;
  terms?: RoundTerms;
- useOfProceeds?: UseOfProceedsEntry[];
+ useOfProceeds?: UseOfProceedsShared;
  };
  state: string; receivedAt: string;
  /* WAVE 43 · R7 + R6 — nullable, as `round_invitations.expires_at` always was.
@@ -143,8 +153,63 @@ function NotProvided({ className = "" }: { className?: string }) {
 type DecisionRecordShape = {
   state?: string;
   softCircledAt?: string | null;
+  /* WAVE 59 · S1 — the recorded commitment, read from the SAME durable decision
+     record the PATCH validates against (yourDecisionStore.ensureRecord →
+     no-downgrade guard). Previously this page typed only `state`/`softCircledAt`,
+     so the amount the server had already accepted was unreadable and the
+     "already submitted" case could not be rendered honestly. */
+  amount?: number | null;
+  currency?: string | null;
+  softCircleType?: string | null;
 };
 type DecisionRecordResponse = DecisionRecordShape & { record?: DecisionRecordShape };
+
+/**
+ * WAVE 59 · S1 — HONEST NAMES FOR THE DECISION STATE-MACHINE REFUSALS.
+ *
+ * `PATCH /api/rounds/:roundId/invitations/:invId/decision` answers 409 with a
+ * machine-readable transition error (server/yourDecisionStore.ts
+ * `validateTransition`, :~528). Every one of them used to reach the investor as
+ * the single toast "Action failed / Please try again." — which is a dead end,
+ * because none of these refusals can ever be cleared by retrying. Shadie's 2a
+ * is exactly this: a 409 `noop_transition:soft_circled` presented as a
+ * transient failure.
+ *
+ * Returns `null` for anything this function does not recognise, so a genuine
+ * fault (network, auth, 5xx) still falls through to the generic retry copy
+ * instead of being mislabelled.
+ */
+export function describeDecisionRefusal(message: string): { title: string; description: string } | null {
+  const noop = /noop_transition:([a-z_]+)/i.exec(message);
+  if (noop) {
+    const state = noop[1].toLowerCase();
+    if (state === "soft_circled") {
+      return {
+        title: "Already submitted",
+        description: "You have already submitted a soft circle for this round. Reload the page to see the amount on record.",
+      };
+    }
+    return {
+      title: "Already recorded",
+      description: `This invitation is already recorded as "${state.replace(/_/g, " ")}", so there was nothing to change. Retrying will not alter it.`,
+    };
+  }
+  const forbidden = /forbidden_transition:([a-z_]+)->([a-z_]+)/i.exec(message);
+  if (forbidden) {
+    return {
+      title: "Not available from this state",
+      description: `This invitation is recorded as "${forbidden[1].replace(/_/g, " ")}", and that step cannot move it to "${forbidden[2].replace(/_/g, " ")}". Reload the page to see the current state.`,
+    };
+  }
+  const invalidFrom = /invalid_(from|to)_state:([a-z_]*)/i.exec(message);
+  if (invalidFrom) {
+    return {
+      title: "Invitation state not recognised",
+      description: `The server does not recognise the state "${invalidFrom[2] || "(empty)"}" for this step, so it refused rather than guess. Retrying will not help — please report this invitation id.`,
+    };
+  }
+  return null;
+}
 
 // B4: Tab values mapped to URL-safe keys
 type TabValue = "overview" | "captable" | "terms" | "dataroom" | "decision";
@@ -357,15 +422,37 @@ export default function InvitationDetail() {
    }
    return res.json();
   },
-  onError: (err: Error) => {
+  onError: (err: Error, variables) => {
    // v26.1.x AVI-C-EXT / FIX #2 — a benign, already-past-view transition is NOT
    // a user-facing failure. When the record has already progressed past
    // `viewed` (viewed/accepted/soft_circled/…), the mount view ping is a no-op
    // the server rejects with `noop_transition` or `forbidden_transition:*->viewed`.
-   // Treat those as silent; the view is already recorded. Genuine failures
-   // (network, auth, mismatch, real forbidden actions) still surface.
-   if (/noop_transition/i.test(err.message)) return;
-   if (/forbidden_transition:[a-z_]+->viewed/i.test(err.message)) return;
+   // Treat those as silent; the view is already recorded.
+   //
+   // WAVE 59 · S1 — the silence is now scoped to THE MOUNT PING ONLY.
+   // Previously the two guards below were unconditional, which meant every
+   // transition refusal on a DELIBERATE investor action fell through to the
+   // generic "Action failed / Please try again." toast. Shadie's 2a is exactly
+   // that: a 409 `noop_transition:soft_circled` on a "Submit soft circle" click
+   // reported as something a retry could fix. `variables.action === "view"` is
+   // the automatic ping; anything else the investor pressed on purpose and is
+   // owed a named reason.
+   const isMountViewPing = (variables as { action?: string } | undefined)?.action === "view";
+   if (isMountViewPing) {
+    if (/noop_transition/i.test(err.message)) return;
+    if (/forbidden_transition:[a-z_]+->viewed/i.test(err.message)) return;
+   }
+   // WAVE 59 · S1 — surface the REAL reason for a state-machine refusal. These
+   // are permanent: retrying can never clear them, so telling the investor to
+   // retry is a dead promise (R21). Unrecognised failures keep the generic copy.
+   const named = describeDecisionRefusal(err.message);
+   if (named) {
+    toast({ title: named.title, description: named.description, variant: "destructive" });
+    // Re-read the authoritative decision record so the page stops showing a
+    // form for an action the server has already recorded.
+    queryClient.invalidateQueries({ queryKey: ["/api/rounds", roundId, "invitations", id, "decision"] });
+    return;
+   }
    // Contact-support affordance removed (v26.1.x AVI-C-EXT, Ozan): there is no
    // in-app support destination, so no dead link is shown. Keep the rest of the
    // error copy.
@@ -437,6 +524,55 @@ export default function InvitationDetail() {
    }
  }, [wireInstr.data, toast]);
 
+ /* WAVE 59 · S5.1 — A 404 INVITATION USED TO SPIN FOREVER.
+  *
+  * Found while verifying Shadie's 2a, using the invitation id printed in her own
+  * deck: `GET /api/investor/invitations/inv_rnd_ae5e403b01b7_bd34388615601030`
+  * answers 404 (routes.ts: `{ message: "Not found" }`), the shared queryClient
+  * runs with `retry: false`, so `inv.data` stays `undefined` forever and this
+  * line rendered "Loading…" indefinitely with no error surfaced at all. The
+  * reader is left believing the platform is hung.
+  *
+  * The route deliberately answers 404 for BOTH "no such invitation" and "exists
+  * but is not yours" (it must not confirm existence to a non-owner), so the copy
+  * below states exactly that pair and does not guess which one applies. Any other
+  * status is a genuine fault and says so. */
+ if (inv.isError) {
+  const invStatus = Number((inv.error as { status?: number } | null)?.status ?? 0);
+  return (
+   <PageBody>
+    {/* WAVE 59 · S5.1 — the wrapper <div> is NOT decoration. The silent-drop
+        guard keys an un-testid'd container on `at=<ancestor tag chain>#ordinal`,
+        and it increments that ordinal even for containers it then keys by
+        data-testid. Placing this Card directly under <PageBody> renumbered the
+        pre-existing `at=InvitationDetail:PageBody#1` Card to #2 and the guard
+        correctly reported its CardContent body as REMOVED. One extra <div> puts
+        this card on a different structural path, so no existing ordinal moves.
+        Same lesson as the Wave 43 R7 "append at the end, never substitute
+        mid-list" note further down this file. */}
+    <div>
+    <Card className="border-[hsl(7_61%_43%)]/40" data-testid="panel-invitation-unavailable">
+     <CardHeader className="pb-3">
+      <CardTitle role="heading" aria-level={2} className="text-base text-[hsl(7_61%_43%)]" data-testid="text-invitation-unavailable">
+       {invStatus === 404 ? "This invitation could not be opened" : "This invitation could not be loaded"}
+      </CardTitle>
+     </CardHeader>
+     <CardContent className="space-y-3 text-sm">
+      <p className="text-muted-foreground" data-testid="text-invitation-unavailable-reason">
+       {invStatus === 404
+        ? "The server does not have an invitation with this id for your account. Either the link is out of date, or it belongs to a different account. Ask the founder to resend it — reloading this page will not help."
+        : `The server could not return this invitation${invStatus ? ` (HTTP ${invStatus})` : ""}. This is a fault on our side, not a problem with your link.`}
+      </p>
+      <div className="text-xs font-mono text-muted-foreground" data-testid="text-invitation-unavailable-id">Invitation id: {id}</div>
+      <Button variant="outline" asChild data-testid="button-back-to-invitations">
+       <Link href="/investor/invitations"><ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Back to your invitations</Link>
+      </Button>
+     </CardContent>
+    </Card>
+    </div>
+   </PageBody>
+  );
+ }
  if (!inv.data) return <PageBody>Loading…</PageBody>;
  const i = inv.data;
  const pct = (i.raisedAmount / i.targetAmount) * 100;
@@ -509,6 +645,47 @@ export default function InvitationDetail() {
    decision?.state === "confirmed" ||
    decision?.state === "signed" ||
    decision?.state === "funded";
+
+ /* WAVE 59 · S1 — ONE STATE AUTHORITY FOR THIS SCREEN.
+  *
+  * Shadie's 2a: "Submit soft circle" returned 409 `noop_transition:soft_circled`
+  * and the page said only "Action failed / Please try again."
+  *
+  * The two authorities that disagreed:
+  *   • `GET /api/investor/invitations/:id` projects `state: modern.state`, which
+  *     was `"sent"`. `mapModernInvitationState()` maps "sent" (and anything not
+  *     in the decision chart) to `pending`.
+  *   • `PATCH …/decision` validates against the DECISION RECORD, resolved
+  *     durable-first through the NO-DOWNGRADE guard
+  *     (yourDecisionStore.ensureRecord), which already held `soft_circled`.
+  *
+  * The submit form was gated ONLY on `!roundClosed`, and the "Soft-circle
+  * recorded" card was gated on `mySig` — client zustand in localStorage. On a
+  * fresh browser, or another device, or after clearing storage, `mySig` is empty,
+  * so the investor was shown a submit form for a commitment the server had
+  * already accepted.
+  *
+  * `decisionSoftCircleLocked` is read from `decision` — the response of
+  * `GET /api/rounds/:roundId/invitations/:invId/decision`, which calls the SAME
+  * `ensureRecord()` the PATCH validates against. So the surface the investor
+  * reads and the surface the write path enforces are now the same one.
+  *
+  * The NO-DOWNGRADE GUARD IS NOT TOUCHED. It is deliberate and correct — it
+  * stops a server restart erasing a real investor commitment. Weakening it to
+  * make the 409 go away would trade a UI bug for lost commitments. */
+ const decisionState = decision?.state ?? null;
+ const decisionSoftCircleLocked =
+   decisionState === "soft_circled" ||
+   decisionState === "confirmed" ||
+   decisionState === "signed" ||
+   decisionState === "funded";
+ /* The amount the SERVER has on record. Never a client guess and never `mySig`:
+  * if the durable record carries no usable amount we say so rather than print a
+  * number we cannot source (R21). */
+ const recordedSoftCircleAmount =
+   typeof decision?.amount === "number" && Number.isFinite(decision.amount) && decision.amount > 0
+     ? decision.amount
+     : null;
 
  // v24.3 — isConfirmed / wireInstr / copyAccountNumber were MOVED above the
  // `if (!inv.data) return` early return (see the v25.48 INV-CRASH fix comment)
@@ -751,14 +928,14 @@ export default function InvitationDetail() {
         data-testid="note-captable-out-of-scope"
         className="rounded-md border border-slate-300/60 bg-slate-50 dark:bg-slate-900/40 px-4 py-3 text-sm text-slate-700 dark:text-slate-300"
        >
-        Shared cap table not available to you — you are not on this company&rsquo;s cap table, so only your own position is shown. This is deliberate under the R165 §4 redaction policy, not a fault: refreshing will not change it. The shared holder list opens to you once you hold a position in this company.
+        Shared cap table not available to you — you are not on this company&rsquo;s cap table, so only your own position is shown. This is deliberate under the cap-table redaction policy, not a fault: refreshing will not change it. The shared holder list opens to you once you hold a position in this company.
        </div>
       )}
       <Card>
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>
          <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><PieIcon className="h-4 w-4" /> Pre-money cap table</CardTitle>
-         <p className="text-sm text-muted-foreground mt-0.5">Fully-diluted view, shared with you under R165 §4 redaction policy.</p>
+         <p className="text-sm text-muted-foreground mt-0.5">Fully-diluted view, shared with you under the company's cap-table redaction policy.</p>
         </div>
         <Badge variant="outline" className="text-[10px]"><ShieldCheck className="h-3 w-3 mr-1" /> Redacted to investor-grade</Badge>
        </CardHeader>
@@ -895,11 +1072,19 @@ export default function InvitationDetail() {
        <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Use of proceeds</CardTitle></CardHeader>
        <CardContent>
         {/* COS-1 (Wave 4): consistent "Not provided" line when no use-of-proceeds. */}
-        {(!i.round.useOfProceeds || i.round.useOfProceeds.length === 0) ? (
+        {/* WAVE 80 · ITEM 2 — the narrative branch. Rendered verbatim, as the founder
+            wrote it, with no bars and no invented percentages. The rows branch below
+            is untouched, so every structured round looks exactly as it did. */}
+        {(typeof i.round.useOfProceeds === "string" && i.round.useOfProceeds.trim().length > 0) ? (
+         <div className="space-y-2" data-testid="uop-narrative">
+          <p className="text-sm whitespace-pre-wrap leading-relaxed" data-testid="text-uop-narrative">{i.round.useOfProceeds.trim()}</p>
+          <p className="text-xs text-muted-foreground">Recorded by the founder when the round was created.</p>
+         </div>
+        ) : (!i.round.useOfProceeds || !Array.isArray(i.round.useOfProceeds) || i.round.useOfProceeds.length === 0) ? (
          <p className="text-sm"><NotProvided /></p>
         ) : (
          <div className="space-y-3">
-          {(i.round.useOfProceeds ?? []).map((u, idx) => (
+          {(Array.isArray(i.round.useOfProceeds) ? i.round.useOfProceeds : []).map((u, idx) => (
            <div key={u.category ?? `uof-${idx}`}>
             <div className="flex justify-between text-sm mb-1"><span>{u.category ?? "Uncategorized"}</span><span className="font-mono tabular-nums">{u.percent}%</span></div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${u.percent}%` }} /></div>
@@ -1101,7 +1286,18 @@ export default function InvitationDetail() {
       <div ref={softCircleFormRef} />
 
       <div className="grid md:grid-cols-2 gap-5">
-       {!roundClosed && (
+       {/* WAVE 59 · S1 — the form is gated on the SERVER's decision record, not on
+           the client's localStorage copy. `decisionSoftCircleLocked` is derived
+           from `GET /api/rounds/:roundId/invitations/:invId/decision`, the same
+           `ensureRecord()` resolution the PATCH validates against. When the
+           server already holds `soft_circled` (or beyond), the form is ABSENT and
+           the statement panel appended at the end of this list is shown instead
+           — following the Wave 43 R7 precedent immediately below: gate the Card
+           whole, append the replacement at the END, never substitute mid-list.
+           The card is not merely disabled and no legitimate operation is
+           suppressed: the server refuses this exact action as a no-op, so
+           rendering the form was the page making a promise it could not keep. */}
+       {!roundClosed && !decisionSoftCircleLocked && (
        <Card className="border-[hsl(0_100%_40%)]/40">
         <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base text-[hsl(0_100%_40%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
         {/* WAVE 43 · OWNER RULING R7 — THE DEFECT THE AUDITOR PHOTOGRAPHED.
@@ -1248,6 +1444,36 @@ export default function InvitationDetail() {
          <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
            Soft-circles are no longer accepted on this round, and a submission would be refused by the server. If you still intend to participate, contact the founder: they can reopen the round or accept your commitment specifically. Either way it is recorded as <strong>accepted after close</strong>, attributed to the founder who accepted it, and shown that way to you, to them, and on the cap table.
+          </p>
+         </CardContent>
+        </Card>
+       )}
+
+       {/* WAVE 59 · S1 — "ALREADY SUBMITTED", from the authoritative record.
+           Appended at the END of this sibling list for the identical reason the
+           Wave 43 R7 panel above is: a mid-list substitution renumbers every
+           sibling `CardContent` and the silent-drop guard reports panel bodies
+           that never moved. Everything shown here comes from the durable decision
+           record. If the record carries no usable amount we say so rather than
+           print a number we cannot source (R21). */}
+       {decisionSoftCircleLocked && (
+        <Card className="border-emerald-300/50 bg-emerald-50/20" data-testid="panel-softcircle-already-submitted">
+         <CardHeader className="pb-3">
+          <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2 text-emerald-800" data-testid="text-softcircle-already-submitted">
+           <ShieldCheck className="h-4 w-4" /> You have already submitted a soft circle for this round
+          </CardTitle>
+         </CardHeader>
+         <CardContent className="space-y-3 text-sm">
+          <div data-testid="text-recorded-softcircle-amount">
+           {recordedSoftCircleAmount != null
+            ? <>Amount on record: <strong>{fmtUSD(recordedSoftCircleAmount)}</strong>{decision?.currency ? <> {decision.currency}</> : null}.</>
+            : <>The server holds your soft circle for this round, but no amount is recorded against it. {NOT_PROVIDED}</>}
+          </div>
+          <div className="text-xs text-muted-foreground" data-testid="text-recorded-softcircle-state">
+           Recorded state: <span className="font-mono">{decisionState}</span>. This is the same record the server validates a submission against, which is why re-submitting is refused rather than duplicated.
+          </div>
+          <p className="text-xs text-muted-foreground">
+           To change the amount, contact the founder — amending a recorded soft circle is not something this page can do today.
           </p>
          </CardContent>
         </Card>

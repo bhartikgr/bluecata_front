@@ -24,7 +24,7 @@ import { requireCollectiveOrPartnerMember } from "./lib/requireCollectiveOrPartn
 import { requireCollectiveEnabled } from "./lib/featureFlags";
 import { requirePartnerAuth } from "./lib/requirePartnerAuth";
 import { getQuestionById } from "./expertQAStore";
-import { appendAdminAudit } from "./adminPlatformStore";
+import { appendAdminAudit, isAuditWriteFailure } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 
 /* ------------------------------------------------------------------ types */
@@ -306,7 +306,7 @@ export function registerPartnerResponderRoutes(app: Express): void {
        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, partnerId, b.chapterId ?? null, displayName, JSON.stringify(Array.isArray(b.topics) ? b.topics : []),
       b.status ?? "active", now, now, ctx?.userId ?? null, ctx?.userId ?? null);
-    try { appendAdminAudit(ctx?.userId ?? "admin", `responder:${id}`, "partner_responder.created", { id, partnerId }); } catch { /* best-effort */ }
+    try { appendAdminAudit(ctx?.userId ?? "u_unknown_admin", `responder:${id}`, "partner_responder.created", { id, partnerId }); } catch { /* best-effort */ }
     res.status(201).json({ ok: true, responder: registryRow(rawDb().prepare(`SELECT * FROM partner_responder_registry WHERE id = ?`).get(id)) });
   });
 
@@ -326,18 +326,47 @@ export function registerPartnerResponderRoutes(app: Express): void {
     rawDb().prepare(
       `UPDATE partner_responder_registry SET display_name=?, chapter_id=?, topics_json=?, status=?, updated_at=?, updated_by=? WHERE id=?`,
     ).run(next.displayName, next.chapterId, JSON.stringify(next.topics), next.status, nowIso(), ctx?.userId ?? null, id);
-    try { appendAdminAudit(ctx?.userId ?? "admin", `responder:${id}`, "partner_responder.updated", { id }); } catch { /* best-effort */ }
+    try { appendAdminAudit(ctx?.userId ?? "u_unknown_admin", `responder:${id}`, "partner_responder.updated", { id }); } catch { /* best-effort */ }
     res.json({ ok: true, responder: registryRow(rawDb().prepare(`SELECT * FROM partner_responder_registry WHERE id = ?`).get(id)) });
   });
 
   app.delete(`${ADMIN}/:id`, requireAdmin, (req: Request, res: Response) => {
     const ctx = (req as any).userContext;
     const id = String(req.params.id);
+    /* WAVE 57c · ITEM 5 (R37 order #5) — BIND THE ACTOR, FAIL CLOSED.
+       This DELETE is destructive surface (A14 in the W57c sweep) and used to
+       write its audit entry under `ctx?.userId ?? "u_unknown_admin"`. An audit
+       row attributed to a placeholder looks like a record and is not one, which
+       R35 forbids. Following Repair Wave 1 (server/bridgeStore.ts:1500) the
+       refusal happens BEFORE the soft-delete write rather than after it.
+       `requireAdmin` always assigns req.userContext, so this branch is
+       unreachable under today's mount — the point is that it cannot become
+       reachable silently. The sibling create/update handlers in this file carry
+       the same placeholder but are NOT destructive endpoints, so they are
+       reported rather than changed in this wave. */
+    const actorUserId: string | undefined = ctx?.userId;
+    if (!actorUserId) {
+      return res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    }
     const existing = rawDb().prepare(`SELECT id FROM partner_responder_registry WHERE id = ? AND deleted_at IS NULL`).get(id);
     if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
     rawDb().prepare(`UPDATE partner_responder_registry SET deleted_at=?, updated_at=?, updated_by=? WHERE id=?`)
-      .run(nowIso(), nowIso(), ctx?.userId ?? null, id);
-    try { appendAdminAudit(ctx?.userId ?? "admin", `responder:${id}`, "partner_responder.deleted", { id }); } catch { /* best-effort */ }
+      .run(nowIso(), nowIso(), actorUserId, id);
+    try {
+      const written = appendAdminAudit(actorUserId, `responder:${id}`, "partner_responder.deleted", { id });
+      /* WAVE 57d D2 — the audit writer catches its own DB failure and returns an
+         empty-hash sentinel rather than throwing, so the catch below could never
+         fire for the principal failure mode and this header was dead code. The
+         sentinel is now inspected. The soft-delete above is NOT rolled back: this
+         makes the failure VISIBLE, it does not make the delete fail-closed. */
+      if (isAuditWriteFailure(written)) {
+        res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+        log.error(`[partnerResponderStore] AUDIT_DB_WRITE_FAILED — audit row for partner_responder.deleted ${id} was NOT written; the soft-delete proceeded and is unattributable.`);
+      }
+    } catch {
+      /* Never silent — the adminUsersRoutes.ts:265 pattern. */
+      res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+    }
     res.json({ ok: true });
   });
 

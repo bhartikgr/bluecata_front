@@ -296,7 +296,11 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
  <Kpi icon={Wallet} label="Total raised" value={fmtUSD(kpis.totalRaised, { compact: true })} hint={`across ${novapayRounds.length} rounds`} />
  <Kpi icon={TrendingUp} label="Latest valuation" value={fmtUSD(kpis.latestValuation, { compact: true })} hint="post-money" />
- <Kpi icon={PieIcon} label="Founder ownership" value={fmtPct(kpis.founderPct, 1)} hint="fully diluted" />
+ {/* WAVE 61a · R47 (closes L-5) — 2 dp. This component is mounted on
+     /founder/dashboard immediately above the "Founder ownership" Stat, so the
+     same quantity was printed twice on one screen; both are now 2 dp. Display
+     precision only: `kpis.founderPct` and its units are untouched (R16). */}
+ <Kpi icon={PieIcon} label="Founder ownership" value={fmtPct(kpis.founderPct, 2)} hint="fully diluted" />
  <Kpi icon={Users} label="Cap-table holders" value={kpis.investorCount} hint="founders + investors + pool" />
  </div>
  )}

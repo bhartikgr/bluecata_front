@@ -66,9 +66,34 @@ describe("Bug 1 — the shipped source keeps the guard (no revert to the crash)"
   });
 
   it("InvitationDetail use-of-proceeds guards category key + label and defaults to []", () => {
-    expect(invSrc).toContain(`(i.round.useOfProceeds ?? []).map((u, idx) =>`);
+    /* ══ UPDATED BY WAVE 80 · ITEM 2 — THE GUARD IS STRONGER, NOT WEAKER. ══
+       This assertion pinned the literal `(i.round.useOfProceeds ?? []).map(...)`.
+       That expression's PURPOSE is "never call `.map` on something that is not an
+       array", and it was written when the only possible values were an array or
+       nullish.
+
+       WAVE 80 made the founder round wizard actually PERSIST use of proceeds, which
+       it had been discarding on every create, and the wizard collects it as ONE
+       FREE-TEXT NARRATIVE. A string is neither an array nor nullish, so `?? []`
+       would have passed a STRING to `.map` — Bug 1's crash, reintroduced by the
+       very field this pin was protecting. The guard is now
+       `Array.isArray(i.round.useOfProceeds) ? i.round.useOfProceeds : []`, which is
+       strictly stronger: it excludes every non-array value, not only nullish ones.
+
+       WHY NOT DERIVE ROWS FROM THE TEXT instead: that would mean Capavate inventing
+       per-bucket percentages and dollar amounts the founder never entered and
+       printing them on the document an investor decides from. The narrative renders
+       verbatim in its own branch, with no percentage and no bar.
+       Evidence: build_log/wave80/WAVE80_REPORT.md; render proof in
+       client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx. */
+    expect(invSrc).toContain(`(Array.isArray(i.round.useOfProceeds) ? i.round.useOfProceeds : []).map((u, idx) =>`);
     expect(invSrc).toContain('key={u.category ?? `uof-${idx}`}');
     expect(invSrc).toContain(`{u.category ?? "Uncategorized"}`);
+    /* AND THE WEAKER FORM IS GONE, so this cannot pass on both. */
+    expect(invSrc).not.toContain(`(i.round.useOfProceeds ?? []).map(`);
+    /* THE NARRATIVE BRANCH EXISTS and is guarded by a typeof check, so a string can
+       never reach the rows branch and an array can never reach the narrative one. */
+    expect(invSrc).toContain(`typeof i.round.useOfProceeds === "string"`);
   });
 
   it("InvitationDetail dataroom list defaults to [] before load", () => {

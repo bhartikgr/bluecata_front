@@ -1,335 +1,62 @@
 /**
- * Demo bindings — turn the existing /api securities payload into engine inputs.
+ * client/src/lib/engineDemo.ts — RE-EXPORT SHIM (WAVE 52c · B1).
  *
- * The engine is the source of truth for the cap-table page; this adapter just
- * translates the existing mock-API shape to the engine's `Holder[] + Transaction[]`
- * inputs so we can compute `result.rows` and a `result.trace`.
+ * The implementation moved to `shared/roundMathEngineAdapter.ts` so that the
+ * SERVER can call the identical adapter. It had to move because Wave 52's
+ * pricing-order flag reached no production code: the only production caller of
+ * the round-pricing pipeline was this client module, and a browser cannot read
+ * the `platform_config` row the flag lives in. A server route can, and now does
+ * — `GET /api/founder/rounds/:id/round-math` in `server/roundMathRoutes.ts`.
+ *
+ * Nothing was duplicated. There is exactly ONE `adaptSecuritiesToEngine`, ONE
+ * `runEngine` and ONE `projectPostClose` in the tree, and both the route and the
+ * Projection screen use it. Every existing `@/lib/engineDemo` import keeps
+ * working unchanged.
+ *
+ * WAVE 3F / ITEM 5 is preserved verbatim in the moved file: `readDiscountFraction`
+ * is the only way a discount is read, the forbidden `n > 1 ? n / 100 : n`
+ * magnitude guess is absent, and an out-of-domain wire value is REJECTED rather
+ * than rescaled.
+ *
+ * WAVE 58e · D1 adds `toWireDiscount` in the same file: the ONE declared
+ * conversion from the storage unit (percent-as-written, R30) to the engine's wire
+ * unit (a fraction), applied UNCONDITIONALLY and never by sniffing the magnitude.
+ * `readDiscountFraction` is unchanged and still the only arbiter of `[0,1]`.
  */
-import {
-  computeCapTable,
-  type Holder,
-  type Transaction,
-  type View,
-  type Region,
-  type CapTableResult,
-} from "@capavate/cap-table-engine";
-
-export type ApiSecurity = {
-  id: string;
-  companyId: string;
-  holderName: string;
-  holderType: string;
-  instrument: string;
-  series: string | null;
-  shares: number;
-  pricePerShare: number | null;
-  investmentAmount: number | null;
-  cap: number | null;
-  discount: number | null;
-  issuedAt: string | null;
-  // Sprint 5 — institutional-grade enrichments
-  certificateNumber?: string | null;
-  shareNumberFrom?: number | null;
-  shareNumberTo?: number | null;
-  roundId?: string | null;
-  vesting?: { months: number; cliff: number; startDate: string; percentVested: number } | null;
-  drag?: boolean;
-  rofr?: boolean;
-  coSale?: boolean;
-  proRata?: boolean;
-  leadInvestorOfRound?: boolean;
-  sideLetter?: string | null;
-  // Defect 15 — privacy fields optionally enriched by server for co-member views.
-  investorId?: string | null;
-  holderVisibility?: { screenName: string; screenNameSet: boolean; visibleToCoMembers: boolean; visibleToCollectiveNetwork: boolean } | null;
-  optionStatus?: { granted: number; available: number; exercised: number; cancelled: number } | null;
-  interestRate?: number | null;
-  maturityDate?: string | null;
-  accruedInterest?: number | null;
-  strike?: number | null;
-  expiry?: string | null;
-  fmv?: number | null;
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════ *
- *  WAVE 3F / ITEM 5 — THE FORBIDDEN PERCENT GUESS IS REMOVED FROM THIS FILE.
- * ═══════════════════════════════════════════════════════════════════════════ *
- *
- * WHAT WAS HERE (:118, :152, :190 in the frozen artifact):
- *
- *     s.discount != null ? (s.discount > 1 ? (s.discount / 100).toString()
- *                                          : s.discount.toString()) : undefined
- *     const discountFrac = s.discount != null
- *       ? (s.discount > 1 ? s.discount / 100 : s.discount) : 0;
- *
- * `n > 1 ? n / 100 : n` CANNOT DISTINGUISH 1% FROM 100%. Both arrive as a
- * number the heuristic reads as a fraction: a wire value of `1` meant as "1%"
- * is silently priced as a 100% discount, and every value in (0,1] is
- * indistinguishable from a correctly-fractional one. The magnitude of a number
- * is not evidence of its unit. This is the heuristic the owner forbade, and
- * W10 REVIEW A found it still shipping in the artifact.
- *
- * THE RULE NOW (identical to client/src/lib/percentDisplay.ts, WAVE 3A):
- *   • STORAGE AND WIRE ARE FRACTIONAL. 0.2 is 20%. 1 is 100%. Full stop.
- *   • A value outside [0,1] is not re-interpreted, re-scaled or clamped — it
- *     is REJECTED, because a `20` on the wire is a producer bug and guessing
- *     which of 20% and 2000% was meant is exactly the defect.
- *   • DISPLAY goes through percentDisplay.formatFractionAsPercent, never
- *     through an inline ×100 here.
- */
-
-/** Raised instead of guessing the unit of an out-of-domain discount. */
-export class InvalidDiscountWireValueError extends Error {
-  readonly securityId: string;
-  readonly received: unknown;
-  constructor(securityId: string, received: unknown) {
-    super(
-      `INVALID_DISCOUNT_FRACTION: security ${securityId} sent discount=${JSON.stringify(received)}; ` +
-        `discounts are FRACTIONAL on the wire and must be within [0,1] (0.2 = 20%). ` +
-        `The value is rejected rather than rescaled: 1 means 100%, not 1%.`,
-    );
-    this.name = "InvalidDiscountWireValueError";
-    this.securityId = securityId;
-    this.received = received;
-  }
-}
-
-/**
- * Read a discount that is FRACTIONAL BY CONTRACT.
- * Returns undefined when absent. Throws on anything outside [0,1] or
- * non-finite. Never divides, never multiplies, never clamps.
- */
-export function readDiscountFraction(raw: unknown, securityId: string): number | undefined {
-  if (raw === null || raw === undefined || raw === "") return undefined;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(n) || n < 0 || n > 1) throw new InvalidDiscountWireValueError(securityId, raw);
-  return n;
-}
-
-export function adaptSecuritiesToEngine(secs: ApiSecurity[]): { holders: Holder[]; transactions: Transaction[] } {
-  const holders: Holder[] = [];
-  const seen = new Set<string>();
-  for (const s of secs) {
-    const id = s.holderName;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    holders.push({
-      id,
-      name: s.holderName,
-      type: (s.holderType as Holder["type"]) ?? "other",
-    });
-  }
-
-  const transactions: Transaction[] = secs.map<Transaction>((s, i) => {
-    const baseId = s.id ?? `s-${i}`;
-    if (s.instrument === "common" || s.instrument === "preferred") {
-      return {
-        type: "issue",
-        date: s.issuedAt ?? "2025-01-01",
-        security: {
-          id: baseId,
-          holderId: s.holderName,
-          kind: s.instrument,
-          series: s.series ?? undefined,
-          shares: BigInt(s.shares),
-          pricePerShare: s.pricePerShare?.toString(),
-          investmentAmount: s.investmentAmount?.toString(),
-          ...(s.instrument === "preferred" ? {
-            preferred: {
-              liquidationPreferenceMultiple: 1,
-              participating: false,
-              seniority: 0,
-              originalIssuePrice: s.pricePerShare?.toString() ?? "1",
-            },
-          } : {}),
-        },
-      };
-    }
-    if (s.instrument === "option") {
-      return {
-        type: "issue",
-        date: s.issuedAt ?? "2025-01-01",
-        security: {
-          id: baseId,
-          holderId: s.holderName,
-          kind: "option",
-          series: s.series ?? undefined,
-          option: { grantedShares: BigInt(s.shares), exercisePrice: "0.01", vestingMonths: 48, cliffMonths: 12 },
-        },
-      };
-    }
-    if (s.instrument === "safe") {
-      return {
-        type: "issue",
-        date: s.issuedAt ?? "2025-01-01",
-        security: {
-          id: baseId,
-          holderId: s.holderName,
-          kind: "safe",
-          investmentAmount: s.investmentAmount?.toString(),
-          safe: {
-            type: "post_money_cap",
-            cap: s.cap?.toString(),
-            // WAVE 3F / ITEM 5 — fractional-only, rejected if out of domain.
-            discount: readDiscountFraction(s.discount, s.id)?.toString(),
-          },
-        },
-      };
-    }
-    if (s.instrument === "warrant") {
-      return {
-        type: "issue",
-        date: s.issuedAt ?? "2025-01-01",
-        security: {
-          id: baseId,
-          holderId: s.holderName,
-          kind: "warrant",
-          warrant: {
-            underlyingShares: BigInt(s.shares),
-            strikePrice: (s.pricePerShare ?? 0.01).toString(),
-            expiry: "2030-12-31",
-            cashless: true,
-          },
-        },
-      };
-    }
-    if (s.instrument === "note") {
-      return {
-        type: "issue",
-        date: s.issuedAt ?? "2025-01-01",
-        security: {
-          id: baseId,
-          holderId: s.holderName,
-          kind: "note",
-          investmentAmount: s.investmentAmount?.toString(),
-          note: {
-            principal: (s.investmentAmount ?? 0).toString(),
-            cap: s.cap?.toString(),
-            // WAVE 3F / ITEM 5 — fractional-only, rejected if out of domain.
-            discount: readDiscountFraction(s.discount, s.id)?.toString(),
-            interestRate: "0.05",
-            interestKind: "simple",
-            issueDate: s.issuedAt ?? "2025-01-01",
-            maturityDate: "2027-12-31",
-          },
-        },
-      };
-    }
-    // Fallback to common
-    return {
-      type: "issue",
-      date: s.issuedAt ?? "2025-01-01",
-      security: { id: baseId, holderId: s.holderName, kind: "common", shares: BigInt(s.shares ?? 0) },
-    };
-  });
-
-  return { holders, transactions };
-}
-
-/**
- * Sprint 4 — As-Converted SAFE roll-up.
- *
- * The primary engine's "as_converted" view requires `estimatedPps` to render
- * SAFE/Note holders, but the demo `computeCapTable` call leaves it undefined.
- * Rather than mutate the engine API (and break the 69 tests pinned to it), we
- * pre-convert SAFEs into synthetic Common issuances in this adapter when the
- * caller asks for as_converted. The conversion price is the lower of the SAFE
- * post-money cap-implied price and the (PPS × (1−discount)) price, mirroring
- * the engine's `estimateConvertibleShares` logic.
- */
-function safeConvertedShares(
-  s: ApiSecurity,
-  estimatedPps: number,
-  estimatedFdShares: number,
-): number {
-  const purchase = s.investmentAmount ?? 0;
-  if (!purchase) return 0;
-  // WAVE 3F / ITEM 5 — same fractional contract on the conversion-price path.
-  const discountFrac = readDiscountFraction(s.discount, s.id) ?? 0;
-  const candidates: number[] = [estimatedPps];
-  if (s.cap && estimatedFdShares > 0) candidates.push(s.cap / estimatedFdShares);
-  if (discountFrac > 0) candidates.push(estimatedPps * (1 - discountFrac));
-  const conversionPrice = Math.min(...candidates.filter((c) => c > 0));
-  if (!conversionPrice || !isFinite(conversionPrice)) return 0;
-  return Math.floor(purchase / conversionPrice);
-}
-
-export function runEngine(secs: ApiSecurity[], view: View, region: Region = "US"): CapTableResult {
-  let working = secs;
-  if (view === "as_converted") {
-    // Estimate latest priced PPS from the most recent preferred issuance.
-    const preferred = secs
-      .filter((x) => x.instrument === "preferred" && x.pricePerShare)
-      .sort((a, b) => (a.issuedAt ?? "").localeCompare(b.issuedAt ?? ""));
-    const estPps = preferred.length
-      ? preferred[preferred.length - 1].pricePerShare ?? 1
-      : 1;
-    const estFdShares = secs.reduce((sum, x) => {
-      if (x.instrument === "common" || x.instrument === "preferred" || x.instrument === "option" || x.instrument === "warrant") {
-        return sum + (x.shares ?? 0);
-      }
-      return sum;
-    }, 0);
-    working = secs.map((s) => {
-      if (s.instrument !== "safe" && s.instrument !== "note") return s;
-      const converted = safeConvertedShares(s, estPps, estFdShares);
-      if (!converted) return s;
-      return {
-        ...s,
-        instrument: "common",
-        shares: converted,
-        series: s.series ?? "SAFE → Common (as-converted)",
-        pricePerShare: s.pricePerShare ?? estPps,
-      };
-    });
-  }
-  const { holders, transactions } = adaptSecuritiesToEngine(working);
-  return computeCapTable({
-    companyId: "co-active",
-    asOf: new Date().toISOString().slice(0, 10),
-    view,
-    formulaRegion: region,
-    holders,
-    transactions,
-  });
-}
-
-/** Project a post-close cap table by appending a synthetic priced round. */
-export function projectPostClose(
-  secs: ApiSecurity[],
-  // Wave C4 — widen to accept null/undefined: a freshly-created round often has
-  // no pre-money / target yet (shown as "Unknown"/$0). Previously these were
-  // typed as `number` but the caller passed `round.preMoney` (number | null),
-  // and `null.toString()` below crashed the whole projection tab.
-  round: { preMoneyValuation: number | null | undefined; investmentAmount: number | null | undefined; series: string },
-  region: Region = "US",
-): CapTableResult {
-  // Fail-safe coercion so a null/undefined/NaN can never crash `.toString()`.
-  const preMoneyValuation = Number.isFinite(Number(round.preMoneyValuation)) ? Number(round.preMoneyValuation) : 0;
-  const investmentAmount = Number.isFinite(Number(round.investmentAmount)) ? Number(round.investmentAmount) : 0;
-  const { holders, transactions } = adaptSecuritiesToEngine(secs);
-  if (!holders.find((h) => h.id === `investors-${round.series}`)) {
-    holders.push({ id: `investors-${round.series}`, name: `${round.series} investors`, type: "investor" });
-  }
-  transactions.push({
-    type: "issue_preferred_round",
-    date: new Date().toISOString().slice(0, 10),
-    round: {
-      id: round.series,
-      series: round.series,
-      preMoneyValuation: preMoneyValuation.toString(),
-      investmentAmount: investmentAmount.toString(),
-      liquidationPreferenceMultiple: 1,
-      participating: false,
-      antiDilution: "broad_based",
-    },
-  });
-  return computeCapTable({
-    companyId: "co-active",
-    asOf: new Date().toISOString().slice(0, 10),
-    view: "fully_diluted",
-    formulaRegion: region,
-    holders,
-    transactions,
-  });
-}
+export {
+  InvalidDiscountWireValueError,
+  readDiscountFraction,
+  /* WAVE 58e · D1 — the unit boundary, re-exported so client surfaces can state
+     the same conversion they are about to be shown the result of. */
+  toWireDiscount,
+  /* WAVE 58e · D2/D3 — one range rule and one disclosure across every surface. */
+  validateDiscountPercentAsWritten,
+  validateInterestRatePercentAsWritten,
+  describeDiscount,
+  DISCOUNT_MARKET_NORM_MIN,
+  DISCOUNT_MARKET_NORM_MAX,
+  INTEREST_RATE_PERCENT_MAX,
+  DISCOUNT_STORAGE_UNIT,
+  DISCOUNT_WIRE_UNIT,
+  DISCOUNT_STORED_PERCENT_MAX,
+  adaptSecuritiesToEngine,
+  runEngine,
+  projectPostClose,
+  /* WAVE 58b · DEFECT 3 — re-exported so client surfaces resolve the ONE
+     fully-diluted pre-money base through the same function the server does. */
+  ledgerFullyDilutedPreMoneyShares,
+  resolveFdPreMoneyBase,
+  unconvertedConvertibleCount,
+  /* WAVE 58c · A3 — the non-throwing form, for the three RENDER-SCOPE callers.
+     A malformed committed row must produce a named on-screen refusal, never an
+     ErrorBoundary fallback on the screen a founder raises money from. */
+  tryLedgerFullyDilutedPreMoneyShares,
+} from "@shared/roundMathEngineAdapter";
+export type {
+  FdBaseResolution,
+  LedgerFdResolution,
+  WireDiscount,
+  TermRangeVerdict,
+  DiscountDisclosure,
+} from "@shared/roundMathEngineAdapter";
+export type { ApiSecurity } from "@shared/roundMathEngineAdapter";

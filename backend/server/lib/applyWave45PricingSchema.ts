@@ -36,6 +36,7 @@ import path from "node:path";
 import { log } from "./logger";
 import { getDb, getDbDriver, rawDb } from "../db/connection";
 import { ensureWave5MoneySchema } from "./applyWave5MoneySchema";
+import { ensureWave56TierDomainSchema } from "./applyWave56TierDomainSchema";
 
 interface DbLike {
   prepare(sql: string): {
@@ -177,6 +178,18 @@ const _installed = new WeakSet<object>();
 export function ensureWave45PricingSchema(db: DbLike): void {
   if (_installed.has(db as unknown as object)) return;
   applyWave45PricingSchema(db);
+  /* WAVE 56 (R21/R36) — 0185's DDL, which the line above installs, carries the
+     FIVE-SLUG CHECK. Migration 0191 removes it and installs the referential
+     controls that replace it. Chaining the Wave 56 installer here is what stops
+     `npm test` from running against the OLD schema while the wave claims to have
+     made the tier domain dynamic — the exact "passed while checking nothing"
+     shape this project keeps paying for. Ordering is fixed: 0185 first, always,
+     because 0191 rebuilds the tables 0185 creates. */
+  try {
+    ensureWave56TierDomainSchema(db);
+  } catch (err) {
+    log.error?.({ err }, "wave56 tier-domain install threw during wave45 ensure");
+  }
   _installed.add(db as unknown as object);
 }
 

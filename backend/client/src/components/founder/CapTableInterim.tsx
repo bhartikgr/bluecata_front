@@ -14,6 +14,7 @@
  */
 import { useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -122,6 +123,29 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
 
   return (
     <div className="space-y-4" data-testid="captable-interim">
+      {/* WAVE 55b · OQ-3 — THIS COMPONENT HAD NO ERROR BRANCH AT ALL.
+          Only `isLoading` was handled. On a 404 / 403 / 500 the three sections each
+          fell to `data?.<kind> ?? []` and printed `No committed positions.`,
+          `No funded positions.` and `No soft-circle positions.` — three fabricated
+          zeros — while the amber pro-forma banner above still asserted that
+          committed ownership is unaffected by anything shown below. It is mounted for
+          FOUNDERS (pages/founder/CapTable.tsx:453) and, read-only, for INVESTORS
+          (pages/investor/InvitationDetail.tsx:1018), so both personas saw it.
+
+          Shared `LoadFailedRefusal`, as a SIBLING at the head of the same stack.
+          Nothing is removed: the banner, all three sections, their tables, their
+          column headers and every action button still mount, and each section's
+          empty copy is re-gated on `isSuccess` so a genuinely empty interim view
+          reads EXACTLY as before. */}
+      {interimQ.isError && (
+        <LoadFailedRefusal
+          what="the interim (pro-forma) cap table"
+          testId="captable-interim-error"
+          onRetry={() => void interimQ.refetch()}
+          isRetrying={interimQ.isFetching}
+        />
+      )}
+
       {/* Pro-forma banner */}
       <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-900" data-testid="interim-banner">
         <Info className="h-4 w-4 mt-0.5 shrink-0" />
@@ -135,11 +159,13 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
         kind="committed"
         rows={data?.committed ?? []}
         subtotal={data?.subtotals.committed}
+        loaded={interimQ.isSuccess}
       />
       <InterimSection
         kind="funded"
         rows={data?.funded ?? []}
         subtotal={data?.subtotals.funded}
+        loaded={interimQ.isSuccess}
         action={
           !readOnly && (data?.funded?.length ?? 0) > 0 ? (
             <Button
@@ -174,6 +200,7 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
         kind="soft_circle"
         rows={data?.soft_circle ?? []}
         subtotal={data?.subtotals.soft_circle}
+        loaded={interimQ.isSuccess}
         rowAction={
           !readOnly
             ? (r: InterimRow) => (
@@ -201,12 +228,17 @@ function InterimSection({
   subtotal,
   action,
   rowAction,
+  loaded = true,
 }: {
   kind: InterimKind;
   rows: InterimRow[];
   subtotal?: Subtotal;
   action?: React.ReactNode;
   rowAction?: (r: InterimRow) => React.ReactNode;
+  /** WAVE 55b · OQ-3 — `true` only when the query SUCCEEDED. A zero row count is
+   *  a fact worth stating only then; otherwise it is a guess. Defaults to `true`
+   *  so no existing caller's behaviour changes. */
+  loaded?: boolean;
 }) {
   const meta = KIND_META[kind];
   return (
@@ -234,7 +266,16 @@ function InterimSection({
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 ? (
+              {/* WAVE 55b · OQ-3 — the ONLY change to this row is its CONDITION:
+                  `rows.length === 0` became `loaded && rows.length === 0`, so the
+                  byte-identical `No … positions.` node still renders on a genuine
+                  empty SUCCESS and no longer on a failure. The not-loaded row is
+                  APPENDED at the end of this same <tbody> rather than inserted
+                  first: the silent-drop guard identifies each <tr> by its ORDINAL
+                  within the tbody, and a leading insert shifted every later
+                  ordinal, which `npm run guard` correctly reported as 18 removed
+                  panel bodies. Nothing is removed and nothing is reordered. */}
+              {loaded && rows.length === 0 ? (
                 <tr><td colSpan={rowAction ? 7 : 6} className="px-4 py-6 text-center text-muted-foreground">No {meta.label.toLowerCase()} positions.</td></tr>
               ) : (
                 rows.map((r, i) => (
@@ -265,6 +306,11 @@ function InterimSection({
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums">{fmtMoney(subtotal.amount, rows[0]?.currency ?? "USD")}</td>
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums">{subtotal.shares ? fmtNum(subtotal.shares) : "—"}</td>
                   <td colSpan={rowAction ? 3 : 2} />
+                </tr>
+              )}
+              {!loaded && (
+                <tr data-testid={`interim-not-loaded-${kind}`}>
+                  <td colSpan={rowAction ? 7 : 6} className="px-4 py-6 text-center text-muted-foreground">Not loaded — we could not read this section, so it is not a statement that there is nothing here.</td>
                 </tr>
               )}
             </tbody>

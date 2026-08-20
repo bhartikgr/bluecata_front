@@ -48,7 +48,7 @@ import { useToast } from "@/hooks/use-toast";
    by 100 anywhere on this page. */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { formatMinor, toMinor } from "@/lib/currency";
-import { minorToMajorString } from "@/lib/moneyDisplay";
+import { minorToMajorString, formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 
 /* WAVE 24 · ITEM 2 — the three orphaned admin partner-billing endpoints
    (invoice mint, commission split, admin money events) arrive as ONE MORE TAB
@@ -164,6 +164,12 @@ type ReconcileResponse = {
     listAmountMinor: number | null;
     discountMinor: number | null;
     priceDerivation: string | null;
+    /* WAVE 73 · ITEM 2 — the stored denomination, now SELECTed by
+       `server/lib/wave14MoneyRoutes.ts` (`partner_subscription.currency`,
+       `TEXT NOT NULL`). Typed nullable deliberately: an older server build, or a
+       row written before the column was populated, must render an honest refusal
+       rather than have a currency guessed for it. */
+    currency: string | null;
   }>;
   findings: Array<{ kind: string; partnerId: string; subscriptionId: string; detail: string }>;
   reconciled: boolean;
@@ -551,11 +557,34 @@ function ReconcileTab() {
                       <td className="px-3 py-2">{r.tierSlug}</td>
                       <td className="px-3 py-2">{r.cycle}</td>
                       <td className="px-3 py-2">{r.status}</td>
+                      {/* ════════════════════════════════════════════════════════
+                          WAVE 73 · ITEM 2 — THESE THREE CELLS SAID "USD" NO MATTER WHAT
+                          THE DATABASE STORED.
+                          ════════════════════════════════════════════════════════
+                          The literal `"USD"` was passed to every formatter here while
+                          `partner_subscription.currency` — `TEXT NOT NULL` — sat
+                          unread, so a partner billed in any other currency had their
+                          figures printed with the wrong symbol on the admin ops screen.
+                          That is a money defect, not a cosmetic one.
+
+                          `r.currency` is now the denomination, and
+                          `formatMinorOrUnavailable` (`lib/moneyDisplay.ts:33-58`)
+                          already REFUSES with a dash when the currency is absent — it
+                          does not default to USD, and neither does this screen. All
+                          three cells keep their container, their alignment and their
+                          testids; only the value's denomination changed.
+
+                          The R6 note below is UNCHANGED and still true of the discount
+                          cell it describes (R44: it was not false, so it was not
+                          replaced). */}
                       <td className="px-3 py-2 text-right font-mono">
-                        {r.listAmountMinor === null ? "—" : formatMinor(r.listAmountMinor, "USD")}
+                        {formatMinorOrUnavailable(r.listAmountMinor, r.currency)}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono">{formatMinor(r.discountMinor ?? 0, "USD")}</td>
-                      <td className="px-3 py-2 text-right font-mono">{formatMinor(r.amountMinor, "USD")}</td>
+                      {/* WAVE 55 · R6 — was `?? 0`: "no discount recorded" and "a $0.00
+                          discount" are different statements. The list-amount cell above
+                          already refuses with the same dash. */}
+                      <td className="px-3 py-2 text-right font-mono">{formatMinorOrUnavailable(r.discountMinor, r.currency)}</td>
+                      <td className="px-3 py-2 text-right font-mono">{formatMinorOrUnavailable(r.amountMinor, r.currency)}</td>
                       <td className="px-3 py-2 text-xs">{r.priceDerivation ?? "—"}</td>
                     </tr>
                   ))}
@@ -755,7 +784,7 @@ function DecisionsTab() {
         {(d?.awaitingOwner ?? []).length > 0 && (
           <div className="mb-3 rounded-md border border-amber-500 bg-amber-500/10 p-3 text-sm" data-testid="decisions-awaiting-owner">
             <AlertTriangle className="mr-1 inline h-4 w-4" />
-            Awaiting an owner ruling: {(d?.awaitingOwner ?? []).join(", ")}. No default has been invented for these; the
+            Not yet enabled: {(d?.awaitingOwner ?? []).join(", ")}. No default has been invented for these; the
             conservative behaviour is in force and is documented in each row below.
           </div>
         )}

@@ -618,12 +618,61 @@ const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
   "expiryDate",
   "sharesAuthorized",
   "poolSize",
+  /* WAVE 58 · R27 — the option pool is a PERCENTAGE of fully diluted.
+     `optionPoolPostPercent` is PERCENT-AS-WRITTEN (R16 / OR-1): the stored value
+     is `"15"` for 15%, with no conversion at any layer. `optionPoolMode` is the
+     pre-money / post-money PLACEMENT, which decides who pays for the pool.
+
+     ADDITIVE ONLY, and NO MIGRATION. Both keys live in `extras_json`, which
+     `POST /api/rounds` already stashes for any non-column field and which
+     `rowToRound` already re-spreads on hydrate. Listing them here is what lets
+     `PATCH /api/rounds/:id/terms` round-trip them instead of rejecting them as
+     UNKNOWN_FIELD. Nothing existing is renamed, re-typed or reinterpreted:
+     `poolSize` above keeps its meaning and its stored values exactly. */
+  "optionPoolPostPercent",
+  "optionPoolMode",
   "mfn",
   "proRata",
   "liquidationPreference",
   "antiDilutionType",
   "useOfProceeds",
   "cap",
+  /* WAVE 70 · D5 — THE SAFE CAP CONVENTION, MADE STORABLE. ADDITIVE, NO MIGRATION.
+     `shared/roundMathEngineAdapter.ts:892` hardcoded `type: "post_money_cap"` for
+     every SAFE that ever reached the engine, so `pre_money_cap` — implemented and
+     tested in the engine, and producing different, correct results ($1.00 and
+     2,000,000 shares vs $0.80 and 2,500,000 on identical terms) — was unreachable
+     through the platform. §11 request 5 of the document already sent to Shadie
+     asks her to test exactly that comparison.
+     `safeType` takes the engine's own vocabulary, `"post_money_cap"` /
+     `"pre_money_cap"`. It lives in `extras_json`, which `POST /api/rounds`
+     already stashes for any non-column field and which `rowToRound` already
+     re-spreads on hydrate, so listing it here is only what lets
+     `PATCH /api/rounds/:id/terms` round-trip it instead of rejecting it as
+     UNKNOWN_FIELD — exactly the precedent set for `optionPoolPostPercent` above.
+     Nothing existing is renamed, re-typed or reinterpreted, and NO MIGRATION IS
+     ADDED: the migration count stays 173 with 0192 highest.
+     WHILE IT IS UNSET the adapter reads the market default (YC v1.2 post-money)
+     and STATES THAT ASSUMPTION on screen rather than choosing silently. */
+  "safeType",
+  /* WAVE 81 · ITEM 2 (D4) — `seniority`. ADDITIVE, NO MIGRATION.
+     The RANK of a preference class in the exit payment order. It lives in
+     `extras_json`, which `POST /api/rounds` already stashes for any non-column
+     field and which `rowToRound` already re-spreads on hydrate, and
+     `server/lib/roundStoredTerms.ts` has read it since Wave 79 — so the platform
+     could already HOLD it and only the write path threw it away. Listing it here
+     is what lets `PATCH /api/rounds/:id/terms` round-trip it instead of the route
+     silently discarding it, exactly the precedent set by `optionPoolPostPercent`
+     (Wave 58b), `safeType` (Wave 70), `liquidationPreference` (Wave 75) and
+     Wave 80's four. Migrations stay at 173 with 0192 highest.
+
+     EVERY WRITER THAT CAN NOW REACH IT VALIDATES IT. Adding a key here makes it
+     reachable through `updateRound` from `PATCH /api/founder/rounds/:id` too,
+     which hands every patch key straight to this function — so that route was
+     given the SAME imported fence in the same wave (`validateSeniorityRankStored`,
+     declared once in `server/lib/roundStoredTerms.ts`). Wave 76 was caught by
+     exactly the opposite order of operations; it is not repeated here. */
+  "seniority",
 ]);
 
 /* Exported so the route layer can pre-filter a terms patch into core-column

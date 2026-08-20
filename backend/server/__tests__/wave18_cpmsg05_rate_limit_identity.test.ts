@@ -291,6 +291,46 @@ describe("CP-MSG-05 — the messaging limiter is keyed on the caller", () => {
         "still be present in scripts/sacred_check.sh: ratifying a waiver records " +
         "a decision, it does not remove the freeze.",
     ).toBeTruthy();
+    /* WAVE 75 · ITEM 1 (R70) — WAIVER-8 IS RECORDED AT THIS THIRD POINT TOO.
+       `release/SACRED_DOC_v26_19_0.md` §3.4 names three enforcement sites, and this
+       file is the third (the one Wave 58g found only by grepping). The Wave 38 /
+       WAIVER-4/5/6 lesson is that a waiver recorded in only some readers is how
+       four separate second-path misses happened, so WAIVER-8 — the owner-ratified
+       R70 grant covering server/paymentGatewayAdapter.ts, whose two
+       `ownershipPct: 1.0` literals rendered a confident `100.00%` on a brand-new
+       company's dashboard — is asserted HERE as well: the row must exist, it must
+       be tagged WAIVER-8, and field 5 must read exactly RATIFIED.
+
+       ON THE ID: R70 condition 5 calls it "WAIVER-9", counting the eight
+       KNOWN_DRIFT ROWS then in force. Field 4 is a waiver ID and the distinct ids
+       were 1..7, so a WAIVER-9 row with no WAIVER-8 makes sacred_check.sh ABORT
+       (exit 3) on its own closed-vocabulary check. Transcript:
+       build_log/wave75/W75_WAIVER9_REGISTRATION.md §2. */
+    const waiver8Row = check.match(/"server\/paymentGatewayAdapter\.ts\|([^"]*)"/);
+    expect(
+      waiver8Row,
+      "WAIVER-8's KNOWN_DRIFT row for server/paymentGatewayAdapter.ts must be " +
+        "present in scripts/sacred_check.sh: the sacred file was edited under an " +
+        "owner-ratified waiver (R70), and an edited sacred file with no registered " +
+        "waiver is worse than the defect it fixed.",
+    ).toBeTruthy();
+    const w8Fields = (waiver8Row as RegExpMatchArray)[1].split("|");
+    expect(w8Fields.length + 1, "WAIVER-8 row must also carry EXACTLY 5 fields").toBe(5);
+    expect(w8Fields[0], "field 2 must preserve the PRE-waiver bytes as evidence").toBe(
+      "83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660",
+    );
+    expect(w8Fields[2], "the paymentGatewayAdapter.ts row must be governed by WAIVER-8").toBe("WAIVER-8");
+    expect(
+      w8Fields[3],
+      "WAIVER-8 was OWNER-RATIFIED 2026-08-18 (R70); field 5 must say so",
+    ).toBe("RATIFIED");
+    /* And the ENFORCED bytes are the ones actually on disk — an exact pin, not an
+       ignore, independently written here as the third copy. */
+    expect(w8Fields[1]).toBe("15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27");
+    expect(
+      crypto.createHash("sha256").update(fs.readFileSync("server/paymentGatewayAdapter.ts")).digest("hex"),
+    ).toBe(w8Fields[1]);
+
     const w5Fields = (waiver5Row as RegExpMatchArray)[1].split("|");
     expect(w5Fields.length + 1, "WAIVER-5 row must also carry EXACTLY 5 fields").toBe(5);
     expect(w5Fields[2], "the Billing.tsx row must be governed by WAIVER-5").toBe("WAIVER-5");

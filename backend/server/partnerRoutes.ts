@@ -67,6 +67,12 @@ import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger"; /* w-partner F7 — non-fatal mirror warnings */
+/* WAVE 56 (R21/R36) — the tier domain and the access ladder are DATA. */
+import { partnerTierDomainSlugs } from "./lib/partnerTierResolver";
+import { compareTierRank } from "./lib/partnerTierDomain";
+/* WAVE 56b — distinguish Wave 56's named unresolved-commission-rate refusal
+   from a transient failure, so /api/partner/me never 500s over it. */
+import { isUnknownCommissionTierError } from "./lib/partnerCommissionRateResolver";
 /* w-partner F-new3 — the SAME resolver the seat gate enforces with
    (requirePartnerAuth.ts:207), so the banner can never disagree with the 403. */
 import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver";
@@ -427,8 +433,17 @@ export function registerPartnerRoutes(app: Express): void {
 
   app.post("/api/admin/partners/:id/promote-tier", requireAdmin, (req: Request, res: Response) => {
     const { tier, rationale } = req.body ?? {};
-    const validTiers: PartnerTier[] = ["catalyst", "builder", "amplifier", "nexus", "founding_member"];
-    if (!isString(tier) || !validTiers.includes(tier as PartnerTier)) {
+    // WAVE 56 (R21/R36) — THE VALIDATION DOMAIN IS THE DATABASE.
+    // This was a compiled-in array of five, and it is the reason a fully created
+    // tier could not be ASSIGNED to a partner: measured through HTTP,
+    // POST /api/admin/partners/:id/promote-tier {tier:"bridge"} answered 400
+    // "tier must be one of catalyst|builder|amplifier|nexus|founding_member"
+    // while the pricing page advertised bridge at its real price. The list now
+    // comes from partner_tier_lifecycle, with the seeded five union'd in so an
+    // existing tier can never drop out of the picker; an unknown slug is still
+    // refused, and the refusal still names the tiers that do exist.
+    const validTiers: string[] = partnerTierDomainSlugs();
+    if (!isString(tier) || !validTiers.includes(tier)) {
       return badRequest(res, "tier must be one of " + validTiers.join("|"));
     }
     if (!isString(rationale)) return badRequest(res, "rationale required (audit reason)");
@@ -734,11 +749,34 @@ export function registerPartnerRoutes(app: Express): void {
      * EffectivePlanError; we surface effectivePlan: null (never break /me) so a
      * mis-configured tier degrades gracefully rather than 500-ing the session. */
     let effectivePlan: ReturnType<typeof resolvePartnerEffectivePlan> | null = null;
+    /* WAVE 56b — ADDITIVE. Why the session bootstrap could 500, and why it no
+       longer does: `resolvePartnerEffectivePlan` calls `resolveCommissionRate`,
+       which since Wave 56 THROWS `UnknownCommissionTierError` for a tier with
+       no configured rate. That is not an `EffectivePlanError`, so the catch
+       below rethrew it and Express answered a bare 500 on /api/partner/me —
+       the partner's whole workspace failed to load, not one figure. The session
+       now loads, `effectivePlan` stays null (no rate is guessed), and the
+       reason is stated by NAME in this additive field rather than left as an
+       unexplained null. Existing keys are untouched. */
+    let effectivePlanError: { code: string; tier: string; message: string } | null = null;
     try {
       effectivePlan = resolvePartnerEffectivePlan(ctx.partnerId, ctx.tier);
     } catch (err) {
-      if (!(err instanceof EffectivePlanError)) throw err;
-      effectivePlan = null;
+      if (isUnknownCommissionTierError(err)) {
+        effectivePlan = null;
+        effectivePlanError = {
+          code: "PARTNER_COMMISSION_RATE_UNRESOLVED",
+          tier: String(ctx.tier),
+          message: (err as Error).message,
+        };
+        log.warn(
+          `[partner] /me effective plan unavailable: no commission rate configured for tier=${String(ctx.tier)} ` +
+            `partner=${ctx.partnerId} — set it in Admin \u2192 Fees & Billing \u2192 "Consortium Partner Promotions" \u2192 "Partner commission rates"`,
+        );
+      } else {
+        if (!(err instanceof EffectivePlanError)) throw err;
+        effectivePlan = null;
+      }
     }
     /* Read admin-set reconciliation fields from the EXISTING partner contact
      * record (getById) — no new store, no body/query input. */
@@ -790,6 +828,8 @@ export function registerPartnerRoutes(app: Express): void {
       subRole: ctx.partnerSubRole,
       identity: { userId: ctx.userId, email: ctx.email, name: ctx.name },
       effectivePlan,
+      /* WAVE 56b — additive: names the reason effectivePlan is null. */
+      effectivePlanError,
       status,
       commissionPct,
       partnerType,
@@ -1700,7 +1740,23 @@ export function registerPartnerRoutes(app: Express): void {
       const patch = req.body ?? {};
       const wlKeys = ["brandColor", "logoUrl", "customDomain", "whiteLabelEnabled"] as const;
       const touchesWl = wlKeys.some((k) => k in patch);
-      const whiteLabelAllowed = TIER_RANK[ctx.tier] >= TIER_RANK["nexus"];
+      /* WAVE 56 (R21/R36) — THIS GATE ANSWERED SILENTLY WRONG FOR A NEW TIER.
+         `TIER_RANK[ctx.tier]` was `undefined` for any tier outside the compiled-in
+         five, and `undefined >= 4` is `false`, so white-label was denied with a
+         403 that blamed the tier for being too junior when the truth was that the
+         platform had no rank for it. `compareTierRank` reads the rank from the
+         database (partner_tier_rank, set by the human who created the tier) and
+         distinguishes "junior" from "unranked", which is logged below rather than
+         rendered as a plain refusal. Behaviour for the five ranked tiers is
+         unchanged. */
+      const wlVerdict = compareTierRank(ctx.tier, "nexus");
+      const whiteLabelAllowed = wlVerdict.allowed;
+      if (touchesWl && !whiteLabelAllowed && wlVerdict.basis !== "ranked") {
+        log.warn(
+          `[partner] white-label gate could not compare ranks: tier=${String(ctx.tier)} ` +
+            `basis=${wlVerdict.basis} tierRank=${String(wlVerdict.tierRank)} thresholdRank=${String(wlVerdict.thresholdRank)}`,
+        );
+      }
       if (touchesWl && !whiteLabelAllowed) {
         return res.status(403).json({ error: "PARTNER_TIER_INSUFFICIENT", details: { current: ctx.tier, required: "nexus" } });
       }

@@ -14,6 +14,63 @@
  */
 import Decimal from "decimal.js";
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 81 · ITEM 1 (D3) — WHY THIS GLOBAL `Decimal.set` STAYS, MEASURED.
+   ═══════════════════════════════════════════════════════════════════════════
+   THIS LINE IS NOT UNTOUCHED BY ACCIDENT, AND IT IS NOT ENDORSED EITHER.
+
+   The defect Wave 81 fixed was that TWO modules mutated this one shared
+   decimal.js constructor and the cap-table engine's rounding therefore depended
+   on which loaded last. `packages/cap-table-engine/src/primitives/bigDecimal.ts`
+   now constructs through its OWN `Decimal.clone({ 38, ROUND_HALF_EVEN })`, so
+   the engine is immune to this line and this line is immune to the engine.
+
+   THE OBVIOUS SECOND HALF — give this package a clone too and delete this
+   `set` — WAS MEASURED AND IS NOT SAFE THIS WAVE. Eight modules construct off
+   the BARE global constructor and inherit whatever this line leaves behind:
+
+       server/captableCommitStore.ts        ← SACRED (manifest row 1); not editable
+       server/routes.ts
+       server/track1Routes.ts
+       shared/roundMathEngineAdapter.ts
+       server/lib/founderOwnershipEngine.ts
+       server/lib/warrantExercise.ts
+       server/paymentStore.ts
+       packages/math-fns/src/ilpa.ts
+
+   Remove this line and, in any process that does not otherwise configure
+   decimal.js, all eight fall back to decimal.js's DEFAULT precision 20. That is
+   not a no-op:
+
+       server/track1Routes.ts:657 sums the engine's exact payout strings —
+         precision 40 -> 50000000            (legs reconcile to the exit)
+         precision 20 -> 50000000.000000000001
+
+       server/routes.ts:6952 derives an exact PPS x shares product —
+         precision 40 -> 15241578.751714595060205
+         precision 20 -> 15241578.75171459506      (truncated)
+
+   The first of those is the R72 "money as exact decimal text" reconciliation the
+   QA document publishes. A sacred file is among the consumers, so the honest
+   fix — every consumer owning its own configuration — cannot be completed in
+   this wave. Recorded as an OPEN ITEM rather than half-done:
+   `build_log/wave81/W81_ROUNDING_AUTHORITY.md`.
+
+   WHAT THIS LINE NOW IS. After the engine's clone it is the ONLY global
+   decimal.js mutation in the tree, which makes the shared constructor
+   DETERMINISTIC — 40 / ROUND_HALF_UP in every process that loads this package,
+   decimal.js's default in every process that does not, and never a function of
+   ordering. It is a platform compatibility pin for the eight consumers above,
+   not this package's private configuration.
+   `server/__tests__/w81_rounding_authority.test.ts` pins that there is exactly
+   ONE such writer and that it is this one; a second one anywhere re-opens D3 and
+   fails that test.
+
+   40 AND ROUND_HALF_UP ARE LEFT EXACTLY AS FOUND. Every function in this file
+   ends in `.toDecimalPlaces(<=12).toNumber()`, so its published outputs do not
+   expose digit 39 or 40, but "does not appear to matter" is not a reason to move
+   a money setting in the last wave before a freeze.
+   ═══════════════════════════════════════════════════════════════════════════ */
 Decimal.set({ precision: 40, rounding: Decimal.ROUND_HALF_UP });
 
 /* ===== TERM SHEET ===== */

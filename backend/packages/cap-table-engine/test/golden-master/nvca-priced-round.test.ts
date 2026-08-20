@@ -87,8 +87,12 @@ describe("NVCA priced Series A baseline — golden master", () => {
     expect(poolRow!.shares.toString()).toBe("2000000");
 
     // Ownership %
-    expect(parseFloat(founderRow!.ownershipPercent).toFixed(4)).toBe("64.0000");
-    expect(parseFloat(investorRow!.ownershipPercent).toFixed(4)).toBe("20.0000");
-    expect(parseFloat(poolRow!.ownershipPercent).toFixed(4)).toBe("16.0000");
+    /* WAVE 71 · D18 — `ownershipPercent` is now `string | null`; `null` means the
+       view's denominator was zero (0 ÷ 0, undefined). `?? ""` yields NaN, so a row
+       that ever became undefined here would FAIL LOUDLY rather than be read as 0.
+       This fixture has 25,000,000 shares, so the value is never null. */
+    expect(parseFloat(founderRow!.ownershipPercent ?? "").toFixed(4)).toBe("64.0000");
+    expect(parseFloat(investorRow!.ownershipPercent ?? "").toFixed(4)).toBe("20.0000");
+    expect(parseFloat(poolRow!.ownershipPercent ?? "").toFixed(4)).toBe("16.0000");
   });
 });

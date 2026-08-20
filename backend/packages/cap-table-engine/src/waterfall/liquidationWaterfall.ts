@@ -98,10 +98,191 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
   const payouts: WaterfallPayout[] = [];
   const treatAsCommon = new Set<string>();
 
-  // First pass: decide convert vs preference for each preferred class
-  const totalPreferenceCash: Decimal = sortedPreferred.reduce<Decimal>((s, p) => {
-    return s.plus(D(p.invested).mul(D(p.liquidationPreferenceMultiple)));
-  }, ZERO);
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 71 · D10 — A PARTICIPATING CLASS'S PARTICIPATION IS MEASURED AGAINST
+     THE PREFERENCES THAT ARE ACTUALLY TAKEN.
+     ═══════════════════════════════════════════════════════════════════════════
+     THE DEFECT, measured. `totalPreferenceCash` was summed ONCE, over EVERY
+     class, BEFORE any convert-or-take decision had been made, and
+     `remainingAfterAllPref = exit − totalPreferenceCash` is what each
+     participating class's pro-rata slice is measured against. A class that
+     CONVERTS waives its preference and takes no preference cash at all — but the
+     residual every other participating class shared was still reduced by it.
+
+     Executed, exit $50,000,000, Series A participating and uncapped,
+     Series B participating with $4,000,000 invested:
+
+       Series B's treatment              | B's outcome        | A's TOTAL
+       ----------------------------------|--------------------|-------------
+       uncapped                          | $13,000,000        | $19,000,000
+       capped 4x (does not bind)         | $13,000,000        | $19,000,000
+       capped 2x (BINDS -> B CONVERTS)   | $10,333,333.33…    | $19,000,000
+
+     A's payout was IDENTICAL in all three. A's participation was computed as if B
+     had taken a $4,000,000 preference that B did not take. The company-level
+     arithmetic was conserved in every run (Σ payouts + remainder = the exit)
+     because the residual absorbed the error — so this never showed up as money
+     appearing or disappearing. It showed up only in the SPLIT between Series A
+     and the founders, which is the number both of them care about.
+
+     THE FIX, and why it needs a fixed point rather than a reordering. The
+     decisions and the total are mutually dependent:
+       · a NON-PARTICIPATING class's decision (`asConvertedAtFull > preferenceFull`)
+         does NOT depend on the total, so those converters are known immediately;
+       · a PARTICIPATING class converts only when its participation cap BINDS, and
+         its participation depends on `remainingAfterAllPref`, which depends on the
+         total, which depends on who converted.
+     Excluding a converter can only RAISE the residual, which can only RAISE
+     another class's participation, which can only make a cap MORE likely to bind.
+     So the converter set is monotonically non-decreasing under iteration and the
+     loop terminates in at most one pass per class. Convergence is by exact set
+     equality, never a tolerance.
+
+     `computeParticipatingShares` IS ALSO FIXED, and it is the second half of the
+     same defect: it counted a class as participating even after the cap had forced
+     it to convert, so a converter's shares sat in the participation denominator
+     AND in the residual pool. It now takes the converter set and excludes them.
+
+     WHAT WAVE 71 DELIBERATELY DID NOT CHANGE, AND WHY WAVE 79 HAD TO. Wave 71
+     left the converters OUT of the participation denominator and called that "a
+     modelling question about which residual pool is which, not an arithmetic
+     error", recorded as an owner question in `build_log/wave71/`. THAT REASON WAS
+     WRONG, and the paragraph is kept here rather than erased so the record shows
+     what was believed and what corrected it. See the WAVE 79 block below: leaving
+     them out pays ONE residual at TWO different per-share prices, and on this
+     wave's own advertised fixture it made the FOUNDERS' error more than three
+     times LARGER than it was before Wave 71. Conservation held in every run either
+     way, which is exactly why it never showed up as money appearing or
+     disappearing — only as the split.
+
+     AUTHORITY. NVCA Model Certificate of Incorporation, Article IV §2 (liquidation
+     preference and participation): a holder electing to convert to Common Stock
+     is treated AS a holder of Common Stock and receives no Preferred payment —
+     which is precisely why its preference cannot be inside the sum that sizes
+     everyone else's participation. https://nvca.org/model-legal-documents/ */
+  const preferenceIsTaken = (p: WaterfallClass, converters: ReadonlySet<string>): boolean =>
+    !converters.has(p.classId);
+
+  const preferenceCashExcluding = (converters: ReadonlySet<string>): Decimal =>
+    sortedPreferred.reduce<Decimal>(
+      (s, p) => (preferenceIsTaken(p, converters) ? s.plus(D(p.invested).mul(D(p.liquidationPreferenceMultiple))) : s),
+      ZERO,
+    );
+
+  /* ════════════════════════════════════════════════════════════════════════
+     WAVE 79 · ITEM 1 (Review A §D-A1) — ONE RESIDUAL, ONE POOL, ONE PRICE.
+     ════════════════════════════════════════════════════════════════════════
+     THE DEFECT, measured. A class that CONVERTS was excluded from the
+     PARTICIPATION denominator (Wave 71's fix, correct) and yet was still paid out
+     of the SAME residual through `sharesInPool` in Step 2 (unchanged). So one pool
+     of money was divided by two different share counts, and the residual was paid
+     at two different per-share prices at once.
+
+     Executed on Wave 71's own advertised $50,000,000 fixture — Series A $10m /
+     4,000,000 shares participating uncapped, Series B $4m / 4,000,000 shares
+     participating with a 2× cap that BINDS so B converts, founders 8,000,000
+     common. Taken from the engine's OWN output fields, not recomputed:
+
+       Series A participation  = $13,333,333.33 over 4,000,000 shares = $3.3333/share
+       founders + converted B  =                                        $2.2222/share
+       residual actually available (exit − A's $10m preference) =      $40,000,000
+       common-equivalent shares that share it (8m common + 4m A + 4m converted B) = 16,000,000
+       $3.3333 × 16,000,000   = $53,333,333.33 out of a $40,000,000 residual.
+
+     A RATE THAT WOULD NEED $53.33m OUT OF $40m IS NOT A POOL PRICE. It is not a
+     modelling preference about which pool is which; it is an unbalanced division.
+     Conservation was preserved only because Step 2 absorbed the difference, which
+     is precisely what Wave 71 said of the half it did fix.
+
+     THE CORRECTION, and its size. Against an independent model of standard
+     American venture terms written in exact BigInt rationals
+     (`build_log/wave79/w79_independent_waterfall.mts`, which agrees with this
+     engine TO THE DIGIT on every non-converting fixture — that agreement is what
+     makes its disagreement credible):
+
+       $50m exit, B's 2× cap binds | correct | pre-Wave-71 | post-Wave-71 (the defect)
+       Series A                    | 20,000,000 | 19,000,000     | 23,333,333.33
+       Series B                    | 10,000,000 | 10,333,333.33  |  8,888,888.89
+       Founders                    | 20,000,000 | 20,666,666.67  | 17,777,777.78
+
+     THE FOUNDERS' ERROR WAS MORE THAN THREE TIMES LARGER AFTER WAVE 71 THAN
+     BEFORE IT (+$666,666.67 -> −$2,222,222.22), and $23,333,333 was reported to
+     the owner as a corrected figure. It was not one.
+
+     AUTHORITY. NVCA Model Certificate of Incorporation, Article IV §2: a holder
+     that elects to convert IS a holder of Common Stock. After the preferences
+     actually taken, one residual is shared pro rata by one pool of
+     common-equivalent shares at one price. A converter's shares therefore belong
+     in the participation denominator — the same denominator Step 2 already uses.
+     https://nvca.org/model-legal-documents/
+
+     WHY THIS CANNOT CHANGE A NON-CONVERTING CASE. `convertedSharesOf` is a sum
+     over the converter set, so it is exactly `0n` whenever nothing converts, and
+     `x + 0n` is `x`. Every fixture with no converter is byte-identical — pinned
+     over 4,000 randomised fixtures in `w79_waterfall_split.test.ts`, and that is
+     the set where this engine already agrees with the independent model.
+
+     WHY THE FIXED POINT STILL TERMINATES, restated because the fix changes the
+     monotonicity argument above rather than merely inheriting it. When a class
+     moves from participating to converted it now LEAVES `participatingSharesNow`
+     and ENTERS `convertedSharesOf`, so `denom` is UNCHANGED, while `prefCash`
+     falls and the residual therefore RISES. Every other participating class's
+     participation can only rise, so a cap can only become MORE likely to bind. The
+     converter set is still monotonically non-decreasing and still converges by
+     exact set equality, never a tolerance. */
+  const convertedSharesOf = (converters: ReadonlySet<string>): bigint =>
+    sortedPreferred
+      .filter((p) => converters.has(p.classId))
+      .reduce<bigint>((s, p) => s + p.shares, BigInt(0));
+
+  /* Pass 0 — the decisions that do not depend on the total at all. */
+  const seedConverters = new Set<string>();
+  for (const pref of sortedPreferred) {
+    if (pref.participating) continue;
+    const preferenceFull0 = D(pref.invested).mul(D(pref.liquidationPreferenceMultiple));
+    const asConvertedAtFull0 = D(pref.shares.toString())
+      .mul(exit)
+      .div(D(totalAsConvertedShares.toString()));
+    if (asConvertedAtFull0.gt(preferenceFull0)) seedConverters.add(pref.classId);
+  }
+
+  /* Fixed point over the participating classes' cap-binding decisions. */
+  let converters: Set<string> = seedConverters;
+  for (let pass = 0; pass <= sortedPreferred.length; pass++) {
+    const prefCash = preferenceCashExcluding(converters);
+    const next = new Set<string>(converters);
+    const participatingSharesNow = sortedPreferred
+      .filter((p) => p.participating && !converters.has(p.classId))
+      .reduce<bigint>((s, p) => s + p.shares, BigInt(0));
+    /* WAVE 79 · ITEM 1 — site 1 of 2. `+ convertedSharesOf(converters)` is the
+       whole fix here; it is `0n` when nothing has converted. */
+    const denom = participatingSharesNow + totalCommonShares + convertedSharesOf(converters);
+    for (const pref of sortedPreferred) {
+      if (!pref.participating || converters.has(pref.classId)) continue;
+      if (pref.participationCapMultiple === undefined) continue;
+      const preferenceFullP = D(pref.invested).mul(D(pref.liquidationPreferenceMultiple));
+      const preferenceP = preferenceFullP.gt(exit) ? exit : preferenceFullP;
+      const residual = exit.minus(prefCash);
+      let participationP = ZERO;
+      if (residual.gt(0) && denom > BigInt(0)) {
+        participationP = D(pref.shares.toString()).mul(residual).div(D(denom.toString()));
+      }
+      const totalP = preferenceP.plus(participationP);
+      const capP = D(pref.invested).mul(D(pref.participationCapMultiple));
+      if (totalP.gt(capP)) {
+        const asConvertedAtFullP = D(pref.shares.toString())
+          .mul(exit)
+          .div(D(totalAsConvertedShares.toString()));
+        if (asConvertedAtFullP.gt(capP)) next.add(pref.classId);
+      }
+    }
+    if (next.size === converters.size) break;   /* exact set equality — no tolerance */
+    converters = next;
+  }
+
+  /* THE number the participating classes are measured against: the preferences
+     that are actually taken, and nothing else. */
+  const totalPreferenceCash: Decimal = preferenceCashExcluding(converters);
 
   /* v25.20 Lane 2 NC3 (hard close) — the waterfall cannot pay out more than
      the exit proceeds. Pre-v25.20 a $10M 1× preference on an $8M exit
@@ -127,7 +308,18 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
       // Participating: takes preference + pro-rata of remaining
       // Decision is to participate; the cap may force conversion if cap binds
       const remainingAfterAllPref = exit.minus(totalPreferenceCash);
-      const totalParticipatingShares = computeParticipatingShares(sortedPreferred) + totalCommonShares;
+      /* WAVE 71 · D10 — a class the cap forced to CONVERT is not a participant:
+         it is paid from the residual pool in Step 2 instead. Passing the whole list
+         counted it in both places. */
+      const stillParticipating = sortedPreferred.filter((p) => !converters.has(p.classId));
+      /* WAVE 79 · ITEM 1 — site 2 of 2. The converters are excluded from
+         `stillParticipating` (Wave 71, correct: they take no preference and no
+         PREFERRED participation) and added back as COMMON-EQUIVALENT shares, which
+         is what they are once they convert and is exactly the pool `sharesInPool`
+         pays in Step 2. One residual, one denominator, one price. `0n` when
+         nothing has converted. */
+      const totalParticipatingShares =
+        computeParticipatingShares(stillParticipating) + totalCommonShares + convertedSharesOf(converters);
       let participation = ZERO;
       if (remainingAfterAllPref.gt(0) && totalParticipatingShares > 0n) {
         participation = D(pref.shares.toString())
@@ -284,6 +476,18 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
   };
 }
 
+/**
+ * The shares that participate in the residual as PREFERRED.
+ *
+ * WAVE 71 · D10 — its BODY is unchanged, deliberately. The second half of D10 was
+ * that this function was handed EVERY class, including classes whose participation
+ * cap had already forced them to CONVERT — so a converter's shares sat in the
+ * participation denominator here AND in `sharesInPool` in Step 2, counted twice.
+ * The fix is at the CALL SITE, which now passes only the classes that are still
+ * participating. Filtering at the call site rather than adding a parameter keeps
+ * this function a single-purpose sum over whatever it is given, and keeps the
+ * "who converted" decision in exactly one place.
+ */
 function computeParticipatingShares(prefs: WaterfallClass[]): bigint {
   return prefs.filter((p) => p.participating).reduce((s, p) => s + p.shares, 0n);
 }

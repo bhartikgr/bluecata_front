@@ -52,6 +52,10 @@ import { resolveRateLimitClientIp } from "./lib/rateLimit"; /* WAVE 22 · ITEM 1
 // v25.42h round-2 (Blocker 2) — DB read failures must surface as 503, never as
 // an empty/default literal payload.
 import { DbUnavailableError } from "./lib/errors";
+/* REPAIR WAVE 1 · ITEM 1 — self-heal installer for migration 0188
+   (audit_log.hash_version). server/db/connection.ts is SACRED and cannot be
+   extended, so a handle built from its inline DDL needs this. */
+import { ensureRepair1AuditActorBindingSchema } from "./lib/applyRepair1AuditActorBindingSchema";
 
 /**
  * Patch v10 — Live activity feed allowlist.
@@ -438,6 +442,20 @@ const auditLog: AuditEntry[] = [];
 /** Cap on the in-memory mirror; hydrator loads the most recent N rows. */
 const AUDIT_MIRROR_LIMIT = 5000;
 
+/**
+ * WAVE 57c · ITEM 4 (R37 approved order #4) — the bound on the blast radius of
+ * POST /api/admin/users/bulk.
+ *
+ * The endpoint previously accepted an unbounded ids[] and would hard-delete
+ * auth_sessions rows for every id in one call. This is a CAP, not a ban: a
+ * larger operation is still entirely possible, it just has to be issued as
+ * explicit successive batches, each with its own typed confirmation and its own
+ * audit entry. 100 is large enough for real incident response (the whole seeded
+ * platform is smaller than that) and small enough that logging every user out
+ * by accident is not one request away.
+ */
+export const MAX_BULK_USER_IDS = 100;
+
 /** Default per-tenant resolver — derive from the entity string if possible. */
 function resolveTenantId(entity: string, explicit?: string): string {
   if (explicit && explicit.length > 0) return explicit;
@@ -546,6 +564,38 @@ export function appendAdminAudit(
 }
 
 /**
+ * WAVE 57d · D2 — MAKE AUDIT-WRITE FAILURE DETECTABLE (narrowest fix).
+ *
+ * `appendAudit()` catches its own DB write failure, logs `AUDIT_DB_WRITE_FAILED`,
+ * and RETURNS NORMALLY with an empty-hash sentinel (see the catch block in
+ * `appendAudit` and the v25.23 NH-J rationale there — unconditionally throwing
+ * would crash the many call sites that are not wrapped in try/catch). That design
+ * is kept. What was missing is that NO caller inspected the sentinel, so every
+ * `X-Audit-Warning` path added by Wave 57c was unreachable dead code: written in
+ * five places, executed in none. All three independent 57c reviews found this
+ * (Review 1 "Audit-write failure is silent", Review 2 "Test Integrity: FAIL",
+ * Review 3 §0/§1.2 "not merely untested — unreachable").
+ *
+ * This predicate is the whole fix: the sentinel is now NAMED, so the five call
+ * sites can check it. It deliberately does NOT change `appendAudit`'s contract,
+ * does NOT throw, and does NOT alter whether any operation proceeds.
+ *
+ * HONEST LABEL — read this before repeating 57c's claim: checking this predicate
+ * makes audit failure **VISIBLE**. It does NOT make any path **fail-closed**.
+ * The destructive work has already happened by the time the audit is appended at
+ * every one of these call sites. The compliance-hold guard is fail-closed on
+ * IDENTITY ONLY (Review 3 §1.1); its audit is deliberately fail-OPEN so an audit
+ * outage can never leave a tenant's cap-table commits frozen behind an
+ * unreleasable hold. Wave 57d does not change that trade-off.
+ *
+ * An empty `hash` cannot occur on a successful write: `sha256()` always returns
+ * 64 hex characters, so `hash === ""` is unambiguous.
+ */
+export function isAuditWriteFailure(entry: AuditEntry | null | undefined): boolean {
+  return !entry || entry.hash === "";
+}
+
+/**
  * Wave A-1 (ADR-3 action 2): the single ordering + soft-delete function.
  *
  * Writer and verifier MUST agree on how the chain is ordered and how
@@ -599,8 +649,58 @@ export const AUDIT_CHAIN_ORDER_SQL_DESC = "ORDER BY created_at DESC, id DESC" as
 
 /** SQL fragment listing the columns needed by both writer and verifier,
  *  keyed on tenant_id and IGNORING deleted_at (audit_log is append-only). */
+/* REPAIR WAVE 1 · ITEM 1 — `actor_id` and `hash_version` are APPENDED AT THE END
+   of the column list as siblings. Nothing above them moved.
+
+   Before this wave the verifier's column list stopped at `hash`, so `actor_id`
+   was never read and `verifyTenantAuditChain()` reported a chain `ok` after any
+   row's actor had been rewritten to anything at all (W57_REVIEW_3_RISK §1.1).
+   Selecting the actor is what makes a forged actor DETECTABLE; hashing it (see
+   `auditHashBody`) is what makes it detectable *by the hash*. Both are needed. */
 export const AUDIT_CHAIN_SELECT_SQL =
-  `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}` as const;
+  `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash, actor_id AS "actorId", hash_version AS "hashVersion" FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}` as const;
+
+/* ============================================================
+ * REPAIR WAVE 1 · ITEM 1 — VERSIONED AUDIT-CHAIN HASH BODIES
+ * ============================================================
+ *
+ * v1 (LEGACY) is byte-for-byte the formula documented at :566 and is what every
+ * pre-existing row was signed with. It is NOT modified here — the string below
+ * is character-identical to the original, so no historical row changes state.
+ *
+ * v2 (ACTOR-BOUND) appends `|actorId` to the END of the v1 body. The v1 body is
+ * therefore a strict PREFIX of the v2 body, which keeps the two auditable side
+ * by side and avoids a mid-sequence insertion.
+ *
+ * The caller passes the version READ FROM THE ROW (`audit_log.hash_version`,
+ * added by migration 0188, DB default 1). Never a date, never a build constant.
+ */
+/** Warn-once latch for the degraded (pre-0188 handle) path. */
+let _warnedActorBindingUnavailable = false;
+
+export const AUDIT_HASH_VERSION_LEGACY = 1 as const;
+export const AUDIT_HASH_VERSION_ACTOR_BOUND = 2 as const;
+
+/** The version every NEW row is signed with. DB-driven downstream: it is stored
+ *  on the row, and the verifier reads it back rather than assuming it. */
+export const AUDIT_HASH_VERSION_CURRENT = AUDIT_HASH_VERSION_ACTOR_BOUND;
+
+export function auditHashBody(args: {
+  version: number;
+  prevHash: string;
+  id: string;
+  eventType: string;
+  entity: string;
+  ts: string;
+  payloadStr: string;
+  actorId: string | null;
+}): string {
+  const v1 = `${args.prevHash}|${args.id}|${args.eventType}|${args.entity}|${args.ts}|${args.payloadStr}`;
+  if (Number(args.version) >= AUDIT_HASH_VERSION_ACTOR_BOUND) {
+    return `${v1}|${args.actorId ?? ""}`;
+  }
+  return v1;
+}
 
 /** SQL fragment for tip read: newest link by (created_at, id). */
 export const AUDIT_CHAIN_TIP_SQL =
@@ -655,7 +755,13 @@ export function verifyTenantAuditChain(
     // audit_chain_genesis table not yet migrated — fall back to "0"*64.
   }
   // 2. Walk the chain.
-  const rows = db.prepare(AUDIT_CHAIN_SELECT_SQL).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string | null; hash: string }>;
+  // REPAIR WAVE 1 · ITEM 1 — the column list now includes `hash_version`, which
+  // migration 0188 adds. A database built from the SACRED inline DDL in
+  // server/db/connection.ts (which is what NODE_ENV=test opens) has never seen
+  // that migration, so ensure the column before the SELECT names it. Without
+  // this the verifier would throw "no such column" on every fresh handle.
+  ensureRepair1AuditActorBindingSchema(db as unknown as Parameters<typeof ensureRepair1AuditActorBindingSchema>[0]);
+  const rows = db.prepare(AUDIT_CHAIN_SELECT_SQL).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string | null; hash: string; actorId: string | null; hashVersion: number | null }>;
   // 3. If a genesis is set: FAIL CLOSED if the anchor row is missing or its
   //    stored hash differs from anchor_hash (GPT-5 v2.1 B1). A dangling
   //    anchor is not a graceful degradation — it silently changes the
@@ -700,7 +806,20 @@ export function verifyTenantAuditChain(
   for (let i = 0; i < effectiveRows.length; i++) {
     const a = effectiveRows[i];
     if (a.priorHash !== prior) { broken = i; break; }
-    const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
+    /* REPAIR WAVE 1 · ITEM 1 — recompute under the version THE ROW DECLARES.
+       A NULL/absent hash_version means a pre-0188 row and verifies under v1,
+       byte-for-byte as before. A v2 row includes actor_id in the body, so
+       rewriting the actor breaks verification at this link. */
+    const expected = sha256(auditHashBody({
+      version: Number(a.hashVersion ?? AUDIT_HASH_VERSION_LEGACY),
+      prevHash: prior,
+      id: a.id,
+      eventType: a.action,
+      entity: a.target,
+      ts: a.ts,
+      payloadStr: a.payloadJson ?? "{}",
+      actorId: a.actorId,
+    }));
     if (a.hash !== expected) { broken = i; break; }
     prior = a.hash;
   }
@@ -727,6 +846,28 @@ function appendAudit(
   const tenantId = resolveTenantId(entity, explicitTenantId);
   const payloadStr = JSON.stringify(payload);
 
+  /* REPAIR WAVE 1 · ITEM 1 — the actor is now part of the hash body, and the row
+     must be able to RECORD which formula signed it. Ensure migration 0188's
+     `hash_version` column exists on this handle before we write. If it cannot be
+     installed we DO NOT silently fall back to the legacy body: that would write
+     an actor-unbound row while the wave claims otherwise. We fall back
+     explicitly, log it loudly, and stamp the row as v1 so the verifier still
+     agrees with the bytes. No silent drops. */
+  const actorBindingAvailable = ensureRepair1AuditActorBindingSchema();
+  if (!actorBindingAvailable && !_warnedActorBindingUnavailable) {
+    /* Warned ONCE per process, not per row: `seedAudit()` runs at module
+       evaluation and would otherwise emit one line per seeded entry. */
+    _warnedActorBindingUnavailable = true;
+    log.warn(
+      "[adminPlatformStore.appendAudit] audit_log.hash_version unavailable — " +
+      "migration 0188 has not been applied to this handle; writing a LEGACY " +
+      "(v1, actor-UNBOUND) chain row. Run `npm run db:migrate`.",
+    );
+  }
+  const hashVersion = actorBindingAvailable
+    ? AUDIT_HASH_VERSION_CURRENT
+    : AUDIT_HASH_VERSION_LEGACY;
+
   // DB-6: a single BEGIN IMMEDIATE transaction reads the per-tenant chain tip
   // and inserts the new row. Concurrent inserts for the same tenant are
   // serialized by sqlite, so two appends can never compute the same prevHash.
@@ -749,7 +890,16 @@ function appendAudit(
         .limit(1)
         .all() as Array<{ hash: string }>;
       const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
-      const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
+      const body = auditHashBody({
+        version: hashVersion,
+        prevHash,
+        id,
+        eventType,
+        entity,
+        ts,
+        payloadStr,
+        actorId: actor,
+      });
       const hash = sha256(body);
 
       tx.insert(auditLogTable)
@@ -765,6 +915,8 @@ function appendAudit(
           hash,
           createdAt: ts,
           deletedAt: null,
+          // REPAIR WAVE 1 · ITEM 1 — the row declares its own formula version.
+          hashVersion,
         })
         .run();
 
@@ -1900,6 +2052,20 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
   app.post("/api/admin/users/:id/sessions/revoke", (req: Request, res: Response) => {
     const id = req.params.id;
+    /* WAVE 57c · ITEM 5 (R37 order #5) — BIND THE ACTOR, FAIL CLOSED.
+       The audit append below used to read
+           userContext?.userId ?? "system:admin"
+       so an unresolvable identity produced a real session-destroying action
+       attributed to a placeholder. R35 requires a bound actor and Repair Wave 1
+       (server/bridgeStore.ts:1500) established the shape: refuse BEFORE the
+       mutation rather than fabricate an actor afterwards. `requireAdmin` on the
+       `/api/admin` mount always assigns req.userContext, so this branch is
+       unreachable under today's mount and behaviour is unchanged — the point is
+       that it can no longer become reachable silently. */
+    const revokeActorId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId;
+    if (!revokeActorId) {
+      return res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    }
     // v25.42h — the legacy hardcoded `users` sessions short-circuit has been
     // REMOVED. Revocation now operates solely on the durable auth_sessions table.
     let revoked = 0;
@@ -1913,24 +2079,153 @@ export function registerAdminPlatformRoutes(app: Express): void {
     // every mutating admin endpoint leaves a forensic trail. Actor is the
     // server-derived admin identity (never client-supplied).
     try {
-      const actorId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "system:admin";
-      appendAudit(actorId, `user:${id}`, "user.sessions.revoked", { id, revoked });
-    } catch { /* non-fatal */ }
+      const written = appendAudit(revokeActorId, `user:${id}`, "user.sessions.revoked", { id, revoked });
+      /* WAVE 57d D2 — sentinel inspected; see isAuditWriteFailure(). Without this
+         the header below could not fire for the principal failure mode (a DB
+         write failure, which the writer catches and returns rather than throws). */
+      if (isAuditWriteFailure(written)) {
+        res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+        log.error({
+          route: "adminPlatformStore.users.sessions.revoke",
+          errorType: "AUDIT_DB_WRITE_FAILED",
+          message: `audit row for user.sessions.revoked ${id} was NOT written`,
+          actor: revokeActorId,
+        });
+      }
+    } catch {
+      /* Non-fatal, but never silent — same pattern as adminUsersRoutes.ts:265. */
+      res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+    }
     res.json({ ok: true, revoked });
   });
+  /* ── WAVE 57c · ITEM 4 (R37 order #4) — BOUND BLAST RADIUS + BOUND ACTOR ────
+   *
+   * BEFORE: `POST /api/admin/users/bulk` accepted an unbounded `ids[]`, applied
+   * suspend / unsuspend / force_mfa / force_logout / reset_password to every id
+   * in one call (with `force_logout` HARD-deleting `auth_sessions` rows per id),
+   * required no confirmation of any kind beyond admin auth, had no UI callsite,
+   * and audited each id under `userContext?.userId ?? "system:bulk"`. One curl
+   * with every user id on the platform would log every user out, and the audit
+   * trail could say "system:bulk did it".
+   *
+   * AFTER, and nothing here disables the operation:
+   *   1. ACTOR BOUND, FAIL CLOSED — no resolvable identity, no mutation (R35 /
+   *      Repair Wave 1 pattern, server/bridgeStore.ts:1500).
+   *   2. BLAST RADIUS BOUNDED — `MAX_BULK_USER_IDS` distinct ids per call,
+   *      duplicates collapsed, non-string ids refused. A larger operation is
+   *      still possible: it must be issued as explicit successive batches, which
+   *      is exactly the friction R35 asks for.
+   *   3. CONFIRMATION NAMING THE ROWS — borrowing the 409 + `proposedChange`
+   *      response shape already in the tree at server/adminContactsStore.ts:2044:
+   *      the first call returns 409 `confirmation_required` naming the action and
+   *      the exact ids/count; the caller repeats the request with `confirmCount`
+   *      equal to that count to apply. No new pattern invented.
+   *
+   *      ── WAVE 57d · D3 — HONEST LABEL, DO NOT RESTORE THE OLD ONE ─────────
+   *      Wave 57c described this as **"two-phase confirmation"**. It is NOT.
+   *      Independent Review 1 established (and I reproduced it over HTTP) that a
+   *      caller may send a matching `confirmCount` in the FIRST AND ONLY
+   *      request: there is no server-issued preview token, no challenge, no
+   *      payload digest, no nonce and no server-side state binding the
+   *      confirmation to a previously previewed set of ids. Two round-trips are
+   *      a CONVENTION here, not an enforced protocol.
+   *
+   *      What it actually is: a **TYPO GUARD / COUNT ECHO**. It defends against
+   *      "I meant 3 ids and pasted 300" and against a client that forgot to
+   *      filter its selection. It does NOT defend against a compromised or
+   *      malicious admin session, replay, or an automated caller that computes
+   *      `ids.length` itself — all of which satisfy it trivially.
+   *      `confirmationModel: "count_echo_typo_guard"` is returned on the 409 so
+   *      the wire contract says the same thing as this comment.
+   *
+   *      Building REAL two-phase (server-issued, payload-bound, single-use token)
+   *      is a design decision for the owner and is recorded as a recommendation
+   *      in build_log/wave57d/WAVE57D_REPORT.md, NOT taken here: it would change
+   *      the request contract of a live admin endpoint a second time in two
+   *      waves, and R37 did not authorise it.
+   *      ─────────────────────────────────────────────────────────────────────
+   *   4. AUDITED AS A BATCH **and** per id, so a partial application is legible.
+   * ─────────────────────────────────────────────────────────────────── */
   app.post("/api/admin/users/bulk", (req: Request, res: Response) => {
     const { action, ids } = req.body ?? {};
     const allowed = ["suspend", "unsuspend", "force_mfa", "force_logout", "reset_password"];
     if (!allowed.includes(action)) return res.status(400).json({ error: "invalid_action", allowed });
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return res.json({ ok: true, action, count: 0 });
+
+    /* 1 — ACTOR BOUND BEFORE ANYTHING MUTATES. Replaces `?? "system:bulk"`. */
+    const bulkActorId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId;
+    if (!bulkActorId) {
+      return res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
     }
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.json({ ok: true, action, count: 0, applied: 0 });
+    }
+
+    /* 2 — BOUNDED, DEDUPED, TYPED. A non-string id is refused rather than
+       stringified into a WHERE clause that silently matches nothing. */
+    if (ids.some((v: unknown) => typeof v !== "string" || v.trim() === "")) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_ids",
+        code: "invalid_ids",
+        message: "Every entry in ids[] must be a non-empty string user id.",
+      });
+    }
+    const uniqueIds = Array.from(new Set((ids as string[]).map((s) => s.trim())));
+    if (uniqueIds.length > MAX_BULK_USER_IDS) {
+      return res.status(400).json({
+        ok: false,
+        error: "bulk_limit_exceeded",
+        code: "bulk_limit_exceeded",
+        limit: MAX_BULK_USER_IDS,
+        received: uniqueIds.length,
+        message:
+          `A single bulk call may target at most ${MAX_BULK_USER_IDS} distinct users ` +
+          `(received ${uniqueIds.length}). Split the operation into explicit batches.`,
+      });
+    }
+
+    /* 3 — CONFIRMATION NAMING THE ROWS (adminContactsStore 409 response shape).
+       WAVE 57d D3: this is a TYPO GUARD, not two-phase confirmation — a matching
+       `confirmCount` is accepted on the first and only request. See the header. */
+    const confirmCountRaw = (req.body ?? {}).confirmCount;
+    const confirmCount =
+      typeof confirmCountRaw === "number"
+        ? confirmCountRaw
+        : typeof confirmCountRaw === "string" && confirmCountRaw.trim() !== ""
+          ? Number(confirmCountRaw)
+          : null;
+    if (confirmCount !== uniqueIds.length) {
+      return res.status(409).json({
+        ok: false,
+        error: "confirmation_required",
+        code: "confirmation_required",
+        proposedChange: {
+          action,
+          count: uniqueIds.length,
+          ids: uniqueIds,
+          hardDeletesSessions: action === "force_logout",
+        },
+        /* WAVE 57d D3 — the wire contract now states what this control is. */
+        confirmationModel: "count_echo_typo_guard",
+        confirmationModelNote:
+          "Echoing the count is a typo guard, not two-phase confirmation: no " +
+          "server-issued token, challenge, digest or nonce is required, and a " +
+          "caller may supply confirmCount in its first and only request.",
+        message:
+          `This will apply "${action}" to ${uniqueIds.length} user(s)` +
+          (action === "force_logout" ? ", hard-deleting their session rows" : "") +
+          `. Re-send the same request with "confirmCount": ${uniqueIds.length} to apply.`,
+      });
+    }
+
     /* v25.28 — actually persist the requested action on durable rows.
      * Each action maps to an auth_users column or auth_sessions delete. */
     let applied = 0;
+    const perIdAuditFailures: string[] = [];
     try {
       const db = rawDb();
-      for (const id of ids) {
+      for (const id of uniqueIds) {
         if (action === "suspend") {
           const r = db.prepare(`UPDATE auth_users SET status = 'suspended' WHERE id = ?`).run(id);
           applied += (r as { changes?: number }).changes ?? 0;
@@ -1942,10 +2237,54 @@ export function registerAdminPlatformRoutes(app: Express): void {
           applied += (r as { changes?: number }).changes ?? 0;
         }
         // force_mfa + reset_password are tracked by audit only — no schema column yet.
-        appendAudit((req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "system:bulk", "platform", `user.${action}`, { id });
+        /* WAVE 57c ITEM 4/5 — bound actor, and a per-id audit failure is
+           collected rather than able to abort the loop silently. */
+        try {
+          const perId = appendAudit(bulkActorId, "platform", `user.${action}`, { id, batchSize: uniqueIds.length });
+          /* WAVE 57d D2 — the writer returns an empty-hash sentinel on DB failure
+             instead of throwing, so this catch alone never saw the principal
+             failure mode. Sentinel now counted as a failure. */
+          if (isAuditWriteFailure(perId)) perIdAuditFailures.push(id);
+        } catch {
+          perIdAuditFailures.push(id);
+        }
       }
     } catch { /* DB not ready in test sandbox — fall back to count-only ack */ }
-    res.json({ ok: true, action, count: ids.length, applied });
+
+    /* WAVE 57c ITEM 4 — one BATCH audit entry alongside the per-id entries, so
+       "who fired a bulk action at how many users, and how many rows moved" is a
+       single legible record instead of something an operator must reassemble. */
+    try {
+      const batch = appendAudit(bulkActorId, "platform", `user.bulk.${action}`, {
+        action,
+        requested: uniqueIds.length,
+        applied,
+        ids: uniqueIds,
+        limit: MAX_BULK_USER_IDS,
+      });
+      /* WAVE 57d D2 — see isAuditWriteFailure(). Makes this header reachable. */
+      if (isAuditWriteFailure(batch)) {
+        res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+        log.error({
+          route: "adminPlatformStore.users.bulk",
+          errorType: "AUDIT_DB_WRITE_FAILED",
+          message: `batch audit row for user.bulk.${action} was NOT written`,
+          actor: bulkActorId,
+        });
+      }
+    } catch {
+      res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+    }
+    if (perIdAuditFailures.length > 0) {
+      res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+      log.error({
+        route: "adminPlatformStore.users.bulk",
+        errorType: "AUDIT_DB_WRITE_FAILED",
+        message: `${perIdAuditFailures.length} per-id audit row(s) were NOT written`,
+        actor: bulkActorId,
+      });
+    }
+    res.json({ ok: true, action, count: uniqueIds.length, applied });
   });
 
   /* ====== Audit log ======

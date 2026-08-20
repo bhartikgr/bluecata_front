@@ -114,7 +114,7 @@ interface HandoverRow {
 /** Server gate codes → human copy, each read at the cited line. */
 const ADMIN_MF_ERROR_COPY: Record<string, string> = {
   INVALID_CAPABILITY_SEED_TYPE:
-    "That capability seed type is not one the server recognises (server/managedFounderStore.ts:368). Pick a listed type.",
+    "That capability seed type is not one the server recognises. Pick a listed type.",
   TRIAL_EXPIRES_AT_REQUIRED: "Enter the new trial expiry date.",
   TRIAL_NOT_FOUND: "This engagement has no Mode-A trial to override.",
   HANDOVER_NOT_FOUND: "That hand-over no longer exists for this partner.",

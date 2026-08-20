@@ -1224,16 +1224,38 @@ export default function Settings() {
           <TabsContent value="data" className="mt-4">
             <TabIntro
               title="Data"
-              body="Export, retention, and audit ledger access. All exports are hash-chained per R165 §12 — you can independently verify integrity. Cap-table snapshots include engine attribution and reconcile checksums."
+              body="Export, retention, and audit ledger access. Every export is hash-chained, so you can independently verify its integrity. Cap-table snapshots include engine attribution and reconcile checksums."
             />
-            {/* v25.20 Lane 4 sub-finding: 2FA enforcement and SSO domain are
-              * UI-only placeholders — no enforcement endpoint backs them yet.
-              * The two export buttons surface a toast but do not produce a
-              * downloadable artifact in this build. Flag this for honesty. */}
+            {/* ═══════════════════════════════════════════════════════════════════
+                WAVE 80 · ITEM 4.2 — FOUR CONTROLS THAT LOOKED LIVE AND DID NOTHING.
+                ═══════════════════════════════════════════════════════════════════
+                WHAT WAS WRONG. Four controls in this section were fully interactive
+                and had no save path at all: an uncontrolled `Switch defaultChecked`
+                for 2FA enforcement, an uncontrolled SSO-domain `Input`, and two
+                export buttons whose only effect was a SUCCESS TOAST — "Audit log
+                exported / Hash-chain verified." and "Data export queued / You'll
+                receive an email when ready." No file was produced, nothing was
+                queued and no email was ever sent. A banner admitted the section was
+                a placeholder, but the controls still invited the action and then
+                claimed it had happened.
+
+                WHAT WAS DONE, and why not deletion. The owner's rule is "we cannot
+                disable vehicles" and "I'd rather add than delete", so nothing here is
+                removed: every control keeps its label and its place. Each is now
+                DISABLED and carries a plain sentence saying it is not yet available.
+                THE SUCCESS TOASTS ARE GONE — a control that reports success for work
+                it did not do is the worst of the three options, and it is the one
+                thing that had to change. Nothing now claims a save that did not
+                happen, and the section still shows a founder exactly what is coming.
+
+                THE AUDIT LEDGER ITSELF IS NOT AFFECTED and is not a placeholder: it
+                is readable on Founder → Activity today. Only the programmatic export
+                of it is unavailable, which is what the sentences below say. */}
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs" data-testid="banner-data-preview">
-              The 2FA enforcement, SSO domain, and export controls below are
-              preview placeholders. Programmatic exports and SSO domain
-              enforcement are scheduled for an upcoming release.
+              Workspace 2FA enforcement, SSO domain enforcement and programmatic
+              exports are not yet available. The controls below are shown so you can
+              see what is coming; they are disabled until each one works, and none of
+              them will report a change that has not been saved.
             </div>
             <div className="grid md:grid-cols-2 gap-4">
               <Card>
@@ -1241,16 +1263,31 @@ export default function Settings() {
                 <CardContent className="space-y-3">
                   <div>
                     <Label>Enforce 2FA for the workspace</Label>
-                    <div className="flex items-center gap-3 mt-2"><Switch defaultChecked data-testid="switch-2fa" /> <span className="text-sm text-muted-foreground">All members</span></div>
+                    {/* WAVE 80 · ITEM 4.2 — `checked={false}` with no `onCheckedChange`,
+                        not `defaultChecked`. `defaultChecked` rendered the switch ON,
+                        which told every founder that two-factor authentication was
+                        already enforced for all members when nothing enforced it. An
+                        unavailable control must not also state a false fact. */}
+                    <div className="flex items-center gap-3 mt-2"><Switch checked={false} disabled data-testid="switch-2fa" /> <span className="text-sm text-muted-foreground">All members</span></div>
+                    <p className="text-xs text-muted-foreground mt-1.5" data-testid="text-2fa-unavailable">Workspace-wide 2FA enforcement is not yet available, so this cannot be turned on here. Individual members can still enable two-factor authentication on their own account.</p>
                   </div>
-                  <div><Label>SSO domain</Label><Input className="mt-1" defaultValue="" placeholder="yourcompany.com" data-testid="input-sso" /></div>
+                  <div>
+                    <Label>SSO domain</Label>
+                    <Input className="mt-1" value="" readOnly disabled placeholder="yourcompany.com" data-testid="input-sso" />
+                    <p className="text-xs text-muted-foreground mt-1.5" data-testid="text-sso-unavailable">SSO domain enforcement is not yet available, so a domain entered here would not be saved or enforced. The field is disabled rather than accepting a value that would be lost.</p>
+                  </div>
                 </CardContent>
               </Card>
               <Card>
                 <CardHeader><CardTitle className="text-base">Export & delete</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
-                  <Button variant="outline" className="w-full" onClick={() => toast({ title: "Audit log exported", description: "Hash-chain verified." })} data-testid="button-export-audit"><Download className="h-3.5 w-3.5 mr-2" /> Export audit log (JSON)</Button>
-                  <Button variant="outline" className="w-full" onClick={() => toast({ title: "Data export queued", description: "You'll receive an email when ready." })} data-testid="button-export-all"><Download className="h-3.5 w-3.5 mr-2" /> Export all workspace data</Button>
+                  {/* WAVE 80 · ITEM 4.2 — the two success toasts for work that never
+                      happened are removed. Both buttons keep their label and their
+                      place and are disabled, each with the sentence that says so. */}
+                  <Button variant="outline" className="w-full" disabled data-testid="button-export-audit"><Download className="h-3.5 w-3.5 mr-2" /> Export audit log (JSON)</Button>
+                  <p className="text-xs text-muted-foreground" data-testid="text-export-audit-unavailable">Downloading the audit log as a file is not yet available. You can read and search the full append-only ledger now on the Activity screen.</p>
+                  <Button variant="outline" className="w-full" disabled data-testid="button-export-all"><Download className="h-3.5 w-3.5 mr-2" /> Export all workspace data</Button>
+                  <p className="text-xs text-muted-foreground" data-testid="text-export-all-unavailable">A full workspace export is not yet available. Nothing has been queued and no email will be sent, so this button does not claim otherwise.</p>
                   <p className="text-xs text-muted-foreground border-t pt-3">Workspace deletion has moved to the <strong>Delete</strong> tab.</p>
                 </CardContent>
               </Card>
@@ -1261,7 +1298,7 @@ export default function Settings() {
           <TabsContent value="privacy" className="mt-4">
             <TabIntro
               title="Privacy & visibility"
-              body="Controls how you appear across other cap tables and shared message threads. Read each toggle carefully: the founder real-name rule on your own cap table is non-negotiable per R200 §16."
+              body="Controls how you appear across other cap tables and shared message threads. Read each toggle carefully: the founder real-name rule on your own cap table is non-negotiable."
             />
             <Card data-testid="section-privacy-full" className="border-2 border-destructive/70">
               <CardHeader>

@@ -36,7 +36,11 @@ type FounderCompany = {
     raisedThisYearUsd: number;
     dataroomFiles: number;
     pendingSoftCircles: number;
-    ownershipPct: number;
+    /* WAVE 75 · ITEM 1 (R70/R47) — `number | null`; GET /api/founder/companies now
+       computes it from the cap-table engine at read time and sends `null` when
+       there is nothing to compute from. This component does not render the field;
+       the type is widened so it cannot silently start rendering a `null` as `0`. */
+    ownershipPct: number | null;
   };
   collective: { status: string; memberSince?: string };
   billing: {

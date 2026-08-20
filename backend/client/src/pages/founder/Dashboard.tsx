@@ -261,6 +261,27 @@ export default function FounderDashboard() {
   const companyId = active.data?.activeCompanyId ?? "";
   const company = active.data?.company;
 
+  /* WAVE 73 · ITEM 8 · R47 / R48 — ONE DERIVATION OF FOUNDER OWNERSHIP, AND IT
+     DOES NOT INVENT A ZERO.
+
+     BEFORE, at :454 and :554, both sites read
+         fmtPct((company?.kpi?.ownershipPct ?? 0) * 100, 2)
+     so a response carrying NO ownership figure printed a confident 0.00% — a
+     specific, false claim about the founder's stake, on the first screen a
+     founder sees, open across three waves (R58 row 6).
+
+     The coalesce is REMOVED and nothing replaces it: null in, an em-dash out,
+     via the platform's own fmtPct (format.ts:51-55 already renders the dash for
+     anything safeNumber cannot read). No ?? 0, no || 0, no Math.max (R54).
+
+     `== null` covers BOTH null and undefined and nothing else: a genuine stored
+     0 is a real value and still renders 0.00%, which is what the Wave 61a
+     lower-pole test asserts and what R47 requires. The * 100 is unchanged —
+     kpi.ownershipPct is a FRACTION (R16; unit proof in
+     server/__tests__/w61a_company_creation_ownership_pct.test.ts). */
+  const ownershipPctRaw = company?.kpi?.ownershipPct;
+  const ownershipPctDisplay = ownershipPctRaw == null ? null : Number(ownershipPctRaw) * 100;
+
   // Wave B1 (3a) addendum — "Led by <Consortium Partner>" attribution, resolved
   // read-only from the additive /api/companies/:id/attribution endpoint (does
   // NOT touch the sacred company-profile endpoint). Shown on the founder hero.
@@ -289,8 +310,12 @@ export default function FounderDashboard() {
   const selfId = meQ.data?.userId ?? null;
   const selfName =
     meQ.data?.identity?.displayName ?? meQ.data?.identity?.name ?? meQ.data?.name ?? null;
-  const engagement = useQuery<DREngagement>({ queryKey: ["/api/founder/dataroom/engagement", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/dataroom/engagement?companyId=${companyId}`)).json() });
-  const reports = useQuery<Report[]>({ queryKey: ["/api/founder/reports2", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/reports2?companyId=${companyId}`)).json() });
+  /* WAVE 60 · A-9 — these two fired before `companyId` resolved and their results
+     feed dashboard tiles ("Dataroom views"), so an unscoped read printed a
+     fabricated 0. `enabled: Boolean(companyId)` copies the `activity` query nine
+     lines above. Added inline so no line below shifts. */
+  const engagement = useQuery<DREngagement>({ queryKey: ["/api/founder/dataroom/engagement", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/dataroom/engagement?companyId=${companyId}`)).json(), enabled: Boolean(companyId) });
+  const reports = useQuery<Report[]>({ queryKey: ["/api/founder/reports2", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/reports2?companyId=${companyId}`)).json(), enabled: Boolean(companyId) });
   const maAll = useQuery<MaInitiative[]>({ queryKey: ["/api/investor/ma/initiatives"] });
 
   const companyRounds = useMemo(() => asArray(rounds.data).filter(r => r.companyId === companyId), [rounds.data, companyId]);
@@ -441,7 +466,21 @@ export default function FounderDashboard() {
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Founder ownership</div>
                 <ShieldCheck className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
-              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtPct((company?.kpi?.ownershipPct ?? 0) * 100, 1)}</div>
+              {/* WAVE 61a · R47 (closes L-5) — ownership is displayed at TWO
+                  decimal places everywhere on the founder/investor cap-table
+                  surfaces. This is a DISPLAY-PRECISION WIDENING only (1 -> 2):
+                  the expression, its units and its `* 100` are byte-identical,
+                  and adding a digit cannot move any value's rounding (R16).
+                  See build_log/wave61a/W61A_PRECISION_DECISION.md. */}
+              {/* WAVE 73 · ITEM 8 · R47 / R48 (R58 row 6) — THE `?? 0` IS GONE.
+                  It printed a confident `0.00%` founder ownership on the FIRST
+                  screen a founder sees whenever the server sent no figure at
+                  all. R47: an unknown ownership renders `—`. R48 already ruled
+                  this same fabrication out at the API. NO REPLACEMENT DEFAULT
+                  was added — `ownershipPctDisplay` is `null` when the field is
+                  absent, and `fmtPct(null, 2)` is the platform's own `—`. A
+                  genuine stored `0` is still a value and still prints `0.00%`. */}
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtPct(ownershipPctDisplay, 2)}</div>
               <div className="text-xs text-muted-foreground mt-1">of fully-diluted</div>
             </CardContent>
           </Card>
@@ -540,7 +579,10 @@ export default function FounderDashboard() {
 
         {/* Founder KPI strip */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <Stat label="Founder ownership" value={fmtPct((company?.kpi?.ownershipPct ?? 0) * 100, 1)} hint="of fully-diluted" icon={ShieldCheck} testid="stat-ownership" />
+          {/* WAVE 61a · R47 (closes L-5) — 2 dp, as :448 above. Display only. */}
+          {/* WAVE 73 · ITEM 8 — same one derivation as the bento tile above, so the
+              two renders of one quantity cannot disagree again. */}
+          <Stat label="Founder ownership" value={fmtPct(ownershipPctDisplay, 2)} hint="of fully-diluted" icon={ShieldCheck} testid="stat-ownership" />
           <Stat label="Cap-table holders" value={company?.kpi?.capTableHolders ?? 0} hint="fully-diluted" icon={Users} testid="stat-holders" />
           <Stat label="Raised this year" value={fmtUSD(company?.kpi?.raisedThisYearUsd ?? 0, { compact: true })} hint={`of ${fmtUSD(totalTarget, { compact: true })} target`} icon={TrendingUp} trend="up" testid="stat-raised" />
           <Stat label="Dataroom views" value={engagement.data?.topDocs.reduce((s, d) => s + d.totalViews, 0) ?? 0} hint={`${engagement.data?.investors.length ?? 0} unique viewers`} icon={Eye} testid="stat-dataroom" />

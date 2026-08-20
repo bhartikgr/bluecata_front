@@ -1819,6 +1819,20 @@ function applyV2545_4Schema(db: any) {
   const platformFeesAddColumns: string[] = [
     `ALTER TABLE platform_fees ADD COLUMN billing_period TEXT`,
     `ALTER TABLE platform_fees ADD COLUMN deleted_at TEXT`,
+    /* REPAIR WAVE 1 · ITEM 1 — WAIVER-6, owner-approved 2026-08-14.
+     *
+     * `audit_log.hash_version` records WHICH hash formula signed each row, so
+     * the actor-bound v2 body can be introduced without invalidating a single
+     * pre-existing row. Migration 0188 adds this column on the numbered-runner
+     * path (production / Postgres); this line is the inline-SQLite parity edit
+     * so dev and test agree with `shared/schema.ts`. Without it,
+     * `auditChainVerifier.test.ts` cannot even load — 20 assertions covering
+     * the audit chain silently stop running.
+     *
+     * Additive only. DEFAULT 1 means every row that already exists keeps its
+     * v1 (actor-unbound) meaning, which is exactly what preserves history.
+     * The matching fresh-DB column is on the CREATE TABLE below. */
+    `ALTER TABLE audit_log ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1`,
   ];
   for (const sql of platformFeesAddColumns) {
     try { db.exec(sql); } catch (err: any) {
@@ -3169,6 +3183,11 @@ function buildProductionTableStatements(): string[] {
       payload_json TEXT,
       prev_hash TEXT,
       hash TEXT NOT NULL,
+      /* REPAIR WAVE 1 · ITEM 1 — WAIVER-6, owner-approved 2026-08-14.
+         Fresh-DB parity for migration 0188 / shared/schema.ts. DEFAULT 1 keeps
+         every existing row's v1 (actor-unbound) hash valid. See the matching
+         ALTER in platformFeesAddColumns for pre-existing databases. */
+      hash_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       deleted_at TEXT
     );`,

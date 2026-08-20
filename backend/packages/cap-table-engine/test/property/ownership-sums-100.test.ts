@@ -19,7 +19,11 @@ describe("Property: ownership percentages sum to 100%", () => {
             id: `s${i}`, holderId: `h${i}`, kind: "common", shares: s, series: "Common",
           }));
           const rows = computeView({ view: "basic", securities, holders });
-          const sum = rows.reduce((s, r) => s + parseFloat(r.ownershipPercent), 0);
+          /* WAVE 71 · D18 — `ownershipPercent` is `string | null`; `null` means a
+             zero-share denominator. This generator has `min: 1n`, so the total is
+             never zero and no row is ever null. `?? ""` gives NaN if that ever
+             changed, which fails the assertion loudly instead of quietly adding 0. */
+          const sum = rows.reduce((s, r) => s + parseFloat(r.ownershipPercent ?? ""), 0);
           expect(Math.abs(sum - 100)).toBeLessThan(1e-9);
         },
       ),

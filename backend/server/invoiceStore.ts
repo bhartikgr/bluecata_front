@@ -742,6 +742,41 @@ export function registerInvoiceRoutes(app: Express): void {
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     if (inv.status !== "paid") return res.status(400).json({ ok: false, error: "invoice_not_paid" });
     const amountMinor = Number(req.body?.amountMinor ?? inv.totalMinor);
+    /* ═══════════════════════════════════════════════════════════════════
+       WAVE 61b · R42 — THE SERVER HALF. A BLIND REFUND IS REFUSED BY NAME.
+       ═══════════════════════════════════════════════════════════════════
+       The admin screen's button is blocked (`AdminFeesConsolidated.tsx`), but a
+       control-only fix is a fix that reopens — Wave 58e's whole lesson, and this
+       endpoint is reachable directly. `Number(null)` is `0`, so an invoice with
+       no recorded total previously produced a refund invoice for `-0`, recorded
+       against a real company, with no error anywhere.
+
+       A GENUINE ZERO IS STILL REFUNDABLE. `0` is finite and is accepted. Only an
+       amount the platform does not have, or a denomination it cannot name, is
+       refused — and refused BY NAME, never defaulted to USD. Nothing is
+       clamped, rescaled or repaired (R16). */
+    /* The RAW value is tested, not the coerced one: `Number(null)` is `0`, so
+       testing `amountMinor` alone would have let a missing total through as a
+       zero-value refund — the very defect. */
+    const rawRefundAmount = req.body?.amountMinor ?? inv.totalMinor;
+    if (rawRefundAmount == null || String(rawRefundAmount).trim() === "" || !Number.isFinite(amountMinor)) {
+      return res.status(400).json({
+        ok: false,
+        error: "refund_amount_unknown",
+        message:
+          `Invoice ${inv.id} has no recorded amount, so Capavate cannot refund it. Record the invoice total ` +
+          `on the invoice, then refund. Capavate will not treat a missing amount as $0.00.`,
+      });
+    }
+    if (typeof inv.currency !== "string" || inv.currency.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "refund_currency_unknown",
+        message:
+          `Invoice ${inv.id} has no recorded currency, so Capavate cannot refund it. Record the invoice's ` +
+          `currency on the invoice, then refund. Capavate will not assume US dollars.`,
+      });
+    }
     const reason = String(req.body?.reason ?? "admin_refund");
     const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     try {

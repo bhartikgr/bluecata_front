@@ -57,9 +57,30 @@ export function applyFullRatchet(input: FullRatchetInput): FullRatchetOutput {
     };
   }
 
-  const ratio = oip.div(nip);
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 81 · ITEM 3 (D5) — ONE FUSED DIVISION, NOT DIVIDE-THEN-MULTIPLY.
+     ═══════════════════════════════════════════════════════════════════════
+     WHAT WAS WRONG. This was `oip.div(nip)` into a `ratio`, then
+     `protectedDec.mul(ratio)`. The intermediate ratio is rounded to the
+     configured significant digits FIRST, so an exact-integer entitlement came
+     back as `…9999999999` and `decimalToShares(…, "floor")` then floored it one
+     share LOW. Measured at the engine's declared 38 / ROUND_HALF_EVEN:
+
+         protected 7,777,777, OIP 1.00, NIP 0.875 (exact answer 8,888,888)
+           divide-then-multiply -> 8888887.9999999999999999999999999999997 -> 8,888,887
+           one fused division   -> 8888888                                 -> 8,888,888
+
+     Over an exact-integer sweep of 960 OIP/NIP/share combinations the split
+     form loses a share in 77 of them; the fused form loses none.
+     `newConversionPrice` is untouched — it is NIP, not a quotient.
+
+     WHY IT SHIPS WITH ITEM 1 AND NOT AFTER IT. Item 1 pins this engine to
+     38 / ROUND_HALF_EVEN, which is the configuration in which this defect
+     BITES; at the 40 / ROUND_HALF_UP production was accidentally running at, 70
+     of the same 960 still lost a share. Fixing the configuration without fixing
+     the arithmetic would make the loss deterministic instead of removing it. */
   const protectedDec = D(input.protectedShares.toString());
-  const newSharesDec = protectedDec.mul(ratio);
+  const newSharesDec = protectedDec.mul(oip).div(nip);
   let newShares = decimalToShares(newSharesDec, "floor");
   if (newShares < input.protectedShares) newShares = input.protectedShares;
   const delta = newShares - input.protectedShares;

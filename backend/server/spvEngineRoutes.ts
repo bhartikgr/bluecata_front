@@ -1083,7 +1083,7 @@ export function registerSpvEngineRoutes(app: Express): void {
     try {
       const fee = spvEngineStore.addFee(
         partnerId, String(req.params.spvId),
-        { ...body, layer: "platform" }, ctx.userId ?? "admin", { adminPlatform: true },
+        { ...body, layer: "platform" }, ctx.userId ?? "u_unknown_admin", { adminPlatform: true },
       );
       res.status(201).json({ fee });
     } catch (e) { err(res, e); }

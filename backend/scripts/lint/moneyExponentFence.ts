@@ -179,8 +179,31 @@ export const BASELINE: BaselineEntry[] = [
        removed, no vocabulary token removed, no directory excluded, nothing
        newly allowlisted, and the baseline is still exactly ONE entry that is
        still prose rather than code. The fence's own BASELINE-STALE branch
-       demands this re-pin-with-justification rather than silence. */
-    line: 1549,
+       demands this re-pin-with-justification rather than silence.
+
+       WAVE 56 re-pin: 1549 → 1551. Same site, byte-identical text (verified by
+       the fence's own `text` match, which is what made it report BASELINE-STALE
+       rather than pass). It moved DOWN by exactly TWO lines because Wave 56
+       added ONE import plus ONE comment line at the top of this file for the
+       new tier-catalogue admin panel (R36 / 56-Q9). WAVE 56 did not touch the
+       prose, the legacy mirror it describes, or any money conversion anywhere in
+       this file. The fence is UNCHANGED: no pattern removed, no vocabulary token
+       removed, no directory excluded, nothing newly allowlisted, and the
+       baseline is still exactly ONE entry that is still prose rather than code.
+
+       WAVE 80 re-pin: 1551 -> 1550. Same site, byte-identical text (verified by
+       the fence's own `text` match, which is what made it report BASELINE-STALE
+       rather than pass). It moved UP by exactly ONE line because WAVE 80 ITEM 1
+       removed the source-file name `server/adminPlatformFeesRoutes.ts` from the
+       rendered prose two lines ABOVE it under owner ruling Q25 ("no exposure of
+       our internal process"), and the replacement sentence is one line shorter.
+       WAVE 80 did not touch the prose this entry pins, the legacy mirror it
+       describes, or any money conversion anywhere in this file — the `/ 100`
+       inside the <code> element is the same documentation of the same lossy
+       legacy write. The fence is UNCHANGED: no pattern removed, no vocabulary
+       token removed, no directory excluded, nothing newly allowlisted, and the
+       baseline is still exactly ONE entry that is still prose rather than code. */
+    line: 1550,
     text: "<code>Math.round(amountMinor / 100)</code> because that legacy table stores",
     why: "Not code — JSX documentation prose inside a <code> element, describing the legacy mirror write that WAVE 34 fixed at adminPlatformFeesRoutes.ts.",
   },

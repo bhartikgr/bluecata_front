@@ -141,7 +141,7 @@ export default function AdminNotifications() {
       <PageBody>
         <AdminPageIntro
           guidance={{
-            eyebrow: "Sprint 28 Wave 6",
+            eyebrow: "Notifications",
             title: "Notification Composer",
             description: "Campaigns let admins author rich notifications, target specific audiences (all investors, investors by industry/region, founders of a company, specific users, etc.), and schedule delivery — all with SHA-256 hash chain, audit log, and bridge event tracking.",
             positive: "27 notification kinds · 12 audience targeting modes · scheduled or immediate send · double-verify on all mutations.",

@@ -49,6 +49,8 @@
  */
 import { wave45Db } from "./applyWave45PricingSchema";
 import { ensureWave50MoneyDefectSchema } from "./applyWave50MoneyDefectSchema";
+/* WAVE 56 (R21/R36) — the tier domain is DATA. See partnerTierDomain.ts. */
+import { tierDomainSlugs } from "./partnerTierDomain";
 
 /** Tier IDENTITY metadata. Deliberately carries NO amount — see the header. */
 export interface PartnerTierDef {
@@ -66,7 +68,29 @@ export const PARTNER_TIERS: readonly PartnerTierDef[] = [
   { slug: "founding_member", label: "Founding Member", inviteOnly: true },
 ];
 
-const CANONICAL_SLUGS = new Set(PARTNER_TIERS.map((t) => t.slug));
+/**
+ * WAVE 56 (R21/R36) — CANONICAL MEMBERSHIP IS A DATABASE QUESTION.
+ *
+ * This used to be a module-level Set built from the five-element PARTNER_TIERS
+ * array, and it was the reason a fully created tier could not be BOUGHT:
+ * `resolvePartnerTierSlug("bridge")` returned null, so `requireChargeTier()`
+ * refused with PARTNER_TIER_PRICE_UNRESOLVED while the public pricing page
+ * advertised the tier at its real price. Advertised ≠ charged is the one thing
+ * this file's own header says must never happen.
+ *
+ * It is now a function: the five seeded slugs (so an existing tier can never
+ * drop out) union every tier that exists in `partner_tier_lifecycle`. A slug
+ * that is in NEITHER is still refused, so the fail-closed direction is intact.
+ */
+function canonicalSlugs(): Set<string> {
+  const out = new Set(PARTNER_TIERS.map((t) => t.slug));
+  try {
+    for (const slug of tierDomainSlugs()) out.add(slug);
+  } catch {
+    /* unreadable domain: the seeded five still answer, nothing new is admitted */
+  }
+  return out;
+}
 
 /** Legacy → canonical slug mapping (deprecated partner_* slugs). */
 const LEGACY_PARTNER_SLUG_MAP: Record<string, string> = {
@@ -86,7 +110,7 @@ const LEGACY_PARTNER_SLUG_MAP: Record<string, string> = {
 export function resolvePartnerTierSlug(slug: unknown): string | null {
   if (typeof slug !== "string") return null;
   const s = slug.trim().toLowerCase();
-  if (CANONICAL_SLUGS.has(s)) return s;
+  if (canonicalSlugs().has(s)) return s;
   return LEGACY_PARTNER_SLUG_MAP[s] ?? null;
 }
 

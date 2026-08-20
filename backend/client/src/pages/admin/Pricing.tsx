@@ -610,7 +610,15 @@ function InvoicesTab() {
 /* Tab 4 — Billing Metrics                                                       */
 /* =========================================================================== */
 function BillingMetricsTab() {
-  const { data, isLoading } = useQuery<{ subscriptions: Subscription[] }>({
+  /* WAVE 60 · L-6 — this tab destructured only { data, isLoading }. With no
+     isError branch, a failed GET /api/admin/subscriptions left `subs = []` and
+     the six tiles below printed MRR $0.00 / ARR $0.00 / Expansion MRR $0.00 /
+     New Revenue (trial) $0.00 / Churn rate 0.0% / Past due 0 — six fabricated
+     figures, four of them money, on an admin screen, indistinguishable from
+     "this platform has no subscriptions". Three other tabs in THIS FILE already
+     consume isError and mount LoadFailedRefusal (:151/:303, :460/:561,
+     :703/:775); this follows them. The six computations below are untouched. */
+  const { data, isLoading, isError, isSuccess, isFetching, refetch } = useQuery<{ subscriptions: Subscription[] }>({
     queryKey: ["/api/admin/subscriptions"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/subscriptions")).json(),
   });
@@ -625,9 +633,30 @@ function BillingMetricsTab() {
   const arrMinor = active.reduce((sum, s) => sum + s.annualAmountMinor, 0);
   // MRR = ARR / 12
   const mrrMinor = Math.round(arrMinor / 12);
-  // Churn rate placeholder (would compute from status transitions in production)
+  /* WAVE 61a · R51 — THE ARITHMETIC BELOW IS UNCHANGED; ONLY THE TWO LABELS IN
+     the `metrics` array MOVED, because they named quantities this code does not
+     compute. `cancelled.length / subs.length` is the CANCELLED SHARE of every
+     subscription in the current payload. It is not a churn rate: a churn rate is
+     cancellations WITHIN A PERIOD over the base at the start of that period, and
+     there is no period, no date and no prior-month term anywhere below. The
+     author's own note said it would compute from status transitions in
+     production. Implementing a real churn rate needs status-transition history
+     and is its own wave — so the tile is relabelled to what it computes, which is
+     the first of the two options R51 allows (label it, or refuse). Relabelling
+     was chosen over refusing because the number is REAL arithmetic on REAL data:
+     refusing would delete a working metric to fix a name, which is a silent
+     drop. */
   const churnRate = subs.length > 0 ? ((cancelled.length / subs.length) * 100).toFixed(1) : "0.0";
-  // Expansion revenue = scale + enterprise vs prior month (static demo)
+  /* WAVE 61a · R51 — the previous comment here claimed `vs prior month`. There is
+     NO prior-month term, no date and no second period in the expression below:
+     it sums the CURRENT monthly amount of every active founder_scale and
+     founder_enterprise subscription. Expansion MRR has a specific meaning in
+     SaaS finance (new recurring revenue from EXISTING customers — upgrades, seat
+     growth); this figure includes brand-new customers and excludes upgrades
+     within other tiers, so it is not expansion MRR by any definition. Real
+     expansion MRR needs prior-period snapshots the tree does not have (the same
+     reason server/adminPlatformStore.ts honestly returns `nrr: null`).
+     Arithmetic untouched; only the label moved. */
   const expansionMinor = active.filter(s => s.plan === "founder_scale" || s.plan === "founder_enterprise").reduce((sum, s) => sum + s.annualAmountMinor / 12, 0);
   // New revenue this month (trialing converted)
   const newRevMinor = trialing.reduce((sum, s) => sum + s.annualAmountMinor / 12, 0);
@@ -635,9 +664,9 @@ function BillingMetricsTab() {
   const metrics = [
     { label: "MRR", value: fmtMoney(mrrMinor, "USD"), icon: TrendingUp, color: "text-emerald-600" },
     { label: "ARR", value: fmtMoney(arrMinor, "USD"), icon: BarChart3, color: "text-emerald-600" },
-    { label: "Expansion MRR", value: fmtMoney(Math.round(expansionMinor), "USD"), icon: ArrowUpRight, color: "text-sky-600" },
+    { label: "Scale + Enterprise MRR", value: fmtMoney(Math.round(expansionMinor), "USD"), icon: ArrowUpRight, color: "text-sky-600" },
     { label: "New Revenue (trial)", value: fmtMoney(Math.round(newRevMinor), "USD"), icon: Sparkles, color: "text-sky-600" },
-    { label: "Churn rate", value: `${churnRate}%`, icon: TrendingDown, color: "text-rose-600" },
+    { label: "Cancelled share (all-time)", value: `${churnRate}%`, icon: TrendingDown, color: "text-rose-600" },
     { label: "Past due", value: `${pastDue.length}`, icon: AlertTriangle, color: "text-amber-600" },
   ];
 
@@ -649,6 +678,22 @@ function BillingMetricsTab() {
 
   return (
     <div>
+      {/* WAVE 60 · L-6 — the refusal is a PRECEDING SIBLING of the tile grid, in
+          its own <div>. `div` is not a PANEL_TAG (extract-inventory.ts:151-181),
+          so this does not renumber the grid or any of the six ordinal-addressed
+          <Card>s inside it. NO SILENT DROP: all six tiles and the plan-breakdown
+          table still mount on the failure path — they show the em-dash this file
+          already uses for an unknown value. */}
+      {isError && (
+        <div className="mb-6">
+          <LoadFailedRefusal
+            what="the billing metrics"
+            testId="w60-billing-metrics-error"
+            onRetry={() => void refetch()}
+            isRetrying={isFetching}
+          />
+        </div>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
         {metrics.map(m => (
           <Card key={m.label} data-testid={`card-metric-${m.label.toLowerCase().replace(/\s+/g, "-")}`}>
@@ -657,7 +702,13 @@ function BillingMetricsTab() {
                 <m.icon className={`h-4 w-4 ${m.color}`} />
                 <span className="text-xs text-muted-foreground">{m.label}</span>
               </div>
-              <div className="text-xl font-semibold font-mono tabular-nums">{isLoading ? "—" : m.value}</div>
+              {/* WAVE 60 · L-6 — was `{isLoading ? "—" : m.value}`, which printed a
+                  computed zero on ERROR and on PAUSED. `!isSuccess` is the
+                  PAUSED-safe form and subsumes isLoading; isLoading is kept in the
+                  expression so the loading behaviour is visibly identical and the
+                  destructured binding is still consumed. A genuinely EMPTY but
+                  SUCCESSFUL load still prints today's honest $0.00 / 0.0% / 0. */}
+              <div className="text-xl font-semibold font-mono tabular-nums">{isLoading || !isSuccess ? "—" : m.value}</div>
             </CardContent>
           </Card>
         ))}

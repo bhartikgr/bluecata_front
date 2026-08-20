@@ -262,7 +262,7 @@ export function registerDscFeedbackRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const parsed = dscScoresInboundSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: "validation", details: parsed.error.flatten() });
-      const adminUserId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "unknown";
+      const adminUserId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "u_unknown";
       // v16 Addendum A: pass submitterUserId so DB row records who relayed it.
       const f = ingestDscScores({ ...parsed.data, submitterUserId: adminUserId });
       // v16 F-coll-25 — audit any successful mock-inbound write.

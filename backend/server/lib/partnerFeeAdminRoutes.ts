@@ -42,11 +42,41 @@ const FEE_KINDS = new Set([
 
 function actorOf(req: Request): string {
   const ctx = (req as any).userContext;
-  return String(ctx?.identity?.email ?? ctx?.userId ?? "admin");
+  return String(ctx?.identity?.email ?? ctx?.userId ?? "u_unknown_admin");
 }
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/* ── WAVE 57d · D4 — FAIL-CLOSED ACTOR FOR THE DESTRUCTIVE ROUTE ───────────────
+   `actorOf()` above falls back to the literal `"u_unknown_admin"`. Wave 57c
+   classified this file among the "24 non-destructive" anonymous-actor sites;
+   independent Review 1 found that classification false and named the fee-schedule
+   expiry DELETE explicitly — it changes the EFFECTIVE FINANCIAL SCHEDULE, and an
+   audit row attributed to `u_unknown_admin` looks like a record and is not one
+   (R35 / R29).
+
+   This resolver preserves `actorOf`'s exact ordering (`identity.email`, then
+   `userId`) so the value RECORDED for every legitimate call is byte-identical to
+   today. It only refuses when NEITHER is present — the case that used to be
+   recorded as `u_unknown_admin`. `requireAdmin` is mounted on the whole
+   `/api/admin` prefix (server/routes.ts:692) and always assigns
+   `req.userContext`, so the 401 is unreachable under today's mounts and no
+   legitimate operation is affected.
+
+   NARROWEST FIX, deliberately: `actorOf` itself is LEFT AS IS and only the
+   destructive DELETE uses this resolver. Switching the shared helper (and with it
+   every create/update/mark-paid route in this file) is the sweeping option and is
+   recorded as a recommendation for the authorised 57e sweep instead. */
+function requireActorOrRefuse(req: Request, res: Response): string | null {
+  const ctx = (req as any).userContext;
+  const actor = String(ctx?.identity?.email ?? ctx?.userId ?? "");
+  if (!actor) {
+    res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    return null;
+  }
+  return actor;
 }
 
 export function registerPartnerFeeAdminRoutes(app: Express): void {
@@ -152,8 +182,12 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       | { id: string; tier: string | null }
       | undefined;
     if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
+    /* WAVE 57d D4 — bound actor, fail closed BEFORE the expiry write. See the
+       requireActorOrRefuse() header above. */
+    const expireActorId = requireActorOrRefuse(req, res);
+    if (!expireActorId) return;
     rawDb().prepare(`UPDATE partner_fee_schedules SET effective_to = ?, updated_at = ? WHERE id = ?`).run(nowIso(), nowIso(), id);
-    appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.expired", { id });
+    appendAdminAudit(expireActorId, `partner_fee_schedule:${id}`, "partner_fee_schedule.expired", { id });
     publishFeeScheduleChangedForTier(
       existing.tier === null || existing.tier === undefined ? null : String(existing.tier),
       "partner_fee_schedule.expired",

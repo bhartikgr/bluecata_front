@@ -30,7 +30,18 @@ import type { TermSheetData, TermSheetSection, TermSheetTemplate, Region, Instru
 import { getClauseDescription } from "./descriptions";
 
 const usd = (n: number) => `$${(Number.isFinite(n) ? n : 0).toLocaleString("en-US")}`;
-const num = (n: number) => (Number.isFinite(n) ? n : 0).toLocaleString("en-US");
+/* WAVE 58b · DEFECT 4 — a NULL share count prints a bracketed blank a lawyer will
+   fill in, never a fabricated number. The old signature coerced a missing figure
+   to `0`, which is a statement of fact in a document an investor relies on. */
+const num = (n: number | null | undefined) =>
+  n === null || n === undefined || !Number.isFinite(n)
+    ? "[FULLY-DILUTED CAPITALIZATION NOT SET]"
+    : n.toLocaleString("en-US");
+/* The pool clause, generated from the round's REAL percentage and placement. */
+const poolClause = (x: { poolSize: number | null; poolTiming: string }) =>
+  x.poolSize === null || x.poolSize === undefined
+    ? "no increase in the employee option pool"
+    : `an unallocated employee option pool sized to ${x.poolSize}% of the post-Closing fully-diluted capitalization (the "Pool Top-Up"), placed ${x.poolTiming === "post_money" ? "POST-money — dilution shared pro-rata across all holders" : "PRE-money — dilution borne entirely by the existing holders"}`;
 
 /* ================================================================== */
 /* Governing-law per-region                                            */
@@ -107,7 +118,7 @@ function pricedRoundCore(d: TermSheetData, instrumentLabel: string): TermSheetSe
     {
       id: "premoney",
       heading: "5. Pre-Money Valuation",
-      body: (x) => `${usd(x.preMoney)} (the "Pre-Money Valuation"), assuming a fully-diluted capitalization of ${num(x.fdSharesPreMoney)} shares (the "Fully-Diluted Capitalization") inclusive of an unallocated employee option pool sized to ${x.poolSize}% of the post-Closing fully-diluted capitalization (the "Pool Top-Up").`,
+      body: (x) => `${usd(x.preMoney)} (the "Pre-Money Valuation"), assuming a fully-diluted capitalization of ${num(x.fdSharesPreMoney)} shares (the "Fully-Diluted Capitalization") inclusive of ${poolClause(x)}.`,
       editable: true,
     },
     {
@@ -184,7 +195,13 @@ function pricedRoundCore(d: TermSheetData, instrumentLabel: string): TermSheetSe
     {
       id: "esop",
       heading: "17. Employee Option Pool",
-      body: (x) => `Immediately prior to the Closing, the Company will reserve an employee option pool sufficient to bring the unallocated portion to ${x.poolSize}% of the post-Closing fully-diluted capitalization (${x.poolTiming === "pre_money" ? "pre-money pool — dilutes founders only" : "post-money pool — dilutes all holders pro-rata"}).`,
+      /* WAVE 58b · DEFECT 4 — reads the ROUND's percentage and placement. Both
+         were hardcoded (10%, post_money), so a founder who set 15% pre-money in
+         the wizard generated a term sheet saying 10% post-money and sent it to an
+         investor. */
+      body: (x) => x.poolSize === null || x.poolSize === undefined
+        ? `No increase in the Company's employee option pool is contemplated in connection with the Closing.`
+        : `${x.poolTiming === "pre_money" ? "Immediately prior to" : "Immediately following"} the Closing, the Company will reserve an employee option pool sufficient to bring the unallocated portion to ${x.poolSize}% of the post-Closing fully-diluted capitalization (${x.poolTiming === "pre_money" ? "pre-money pool — dilutes founders only" : "post-money pool — dilutes all holders pro-rata"}).`,
       editable: true,
     },
     {
@@ -351,7 +368,9 @@ function poolSection(d: TermSheetData): TermSheetSection[] {
     {
       id: "size",
       heading: "4. Pool Size",
-      body: (x) => `Increase the unallocated reserve to ${x.poolSize}% of the post-Closing fully-diluted capitalization.`,
+      body: (x) => x.poolSize === null || x.poolSize === undefined
+        ? `No increase to the unallocated reserve is contemplated by this term sheet.`
+        : `Increase the unallocated reserve to ${x.poolSize}% of the post-Closing fully-diluted capitalization.`,
       editable: true,
     },
     {

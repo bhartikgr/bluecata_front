@@ -151,12 +151,57 @@ export const PERCENT_FIELD_DOMAIN: Readonly<Record<string, PercentFieldDomain>> 
         "Fraction. 1 is a legitimate 100%-off VIP grant and is OWNER-CLOSED (P-2); " +
         "it must not be rewritten to 0.01.",
     }),
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 58f · F0 — THIS ENTRY SAID "fraction, [0,1]". THAT WAS WRONG.
+       ═══════════════════════════════════════════════════════════════════════
+       `captable_commits.discount_pct` is PERCENT-AS-WRITTEN under owner ruling
+       R30, and always has been in practice:
+         · `shared/schema.ts:1425` — `discountPct: text("discount_pct"),
+           // Decimal-as-string (e.g. "20" = 20%)`.
+         · THE WRITER — `server/captableCommitStore.ts:575` (SACRED, unmodified)
+           writes `round.discount` VERBATIM, and `rounds.extras_json` holds
+           percent-as-written (live stores `"discount": 20`).
+         · THE READERS — `server/routes.ts:2127` and
+           `server/captableSnapshotsStore.ts:109` take `Number(discountPct)`
+           into the securities shape, after which
+           `roundMathEngineAdapter.toWireDiscount` divides by 100 EXACTLY ONCE
+           to reach the engine wire. A stored `0.2` therefore prices as a 0.2%
+           discount, not 20% — R16 forbids reading the unit off the magnitude.
+
+       WHAT THE OLD ENTRY WAS AGREEING WITH. Migration 0153's two triggers,
+       which aborted any `discount_pct` outside a fraction [0,1]. Reproduced by
+       execution in Wave 58f: `'20'` -> `RAISE(ABORT,
+       'DISCOUNT_PCT_OUT_OF_DOMAIN:expected fraction 0..1')`. Those triggers are
+       corrected by `migrations/0190_wave58f_discount_pct_domain.sql`, so this
+       entry is corrected with them — a policy record that contradicts the
+       column it describes is how the contradiction survived two waves.
+
+       THIS CHANGE IS INERT AT RUNTIME AND SAID SO HONESTLY. VERIFIED: the key
+       `"captable.discountPct"` has NO caller anywhere in the tree — no
+       `normalisePercentField`, no `assertStoredFraction`, no route. It fenced
+       nothing before and it fences nothing now. It is documentation, and it is
+       corrected so the written record and the enforced record agree.
+
+       NOTE ON `assertStoredFraction`. That helper throws
+       `PERCENT_FIELD_UNKNOWN:<field>:not_a_fraction_field` for any
+       `percent_as_written` field. That is the CORRECT outcome here: this column
+       is not a fraction, and a future caller must not be handed one.
+
+       The upper bound is `< 100`, matching `DISCOUNT_STORED_PERCENT_MAX` in
+       `shared/roundMathEngineAdapter.ts` — but `max` here is INCLUSIVE, so the
+       exact shared bound is asserted against this file by the Wave 58f test
+       rather than restated as a second rule (R21). 100% or more would price the
+       shares at or below zero. */
     "captable.discountPct": Object.freeze({
       field: "captable.discountPct",
-      inputForm: "fraction" as const,
+      inputForm: "percent_as_written" as const,
       min: 0,
-      max: 1,
-      rationale: "SAFE/note discount, fraction. Fenced at the table by 0153 triggers (P-11).",
+      max: 99.999999999,
+      rationale:
+        "SAFE/note discount, PERCENT-AS-WRITTEN under owner ruling R30: '20' means 20%. " +
+        "Fenced at the table by migration 0190's triggers, which CORRECT 0153's " +
+        "fraction-domain [0,1] fence (P-11) — that fence aborted the platform's own " +
+        "canonical value and would have failed the first SAFE commit carrying a discount.",
     }),
     /**
      * WAVE 10 / EN-5 — the hurdle AFTER `normaliseSpvTermsHurdle` has run.

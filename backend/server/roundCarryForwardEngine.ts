@@ -34,6 +34,15 @@ import { getCompanyProfile } from "./companyProfileStore";
    live multiCompanyStore first, falling back to the demo seed so existing
    seed-based engine tests stay green. PURE READ. */
 import { getCompanyRecordById } from "./multiCompanyStore";
+/* WAVE 58g / WAIVER-7 (owner ruling R34, 2026-08-15) — the ONE unit-conversion
+   authority. This file used to divide a stored percent by 100 itself; it now
+   imports the shared bridge instead, so there is exactly one place in the tree
+   that converts a discount from its declared STORAGE unit (percent-as-written,
+   R30/R16: `20` means 20%) to the engine's declared WIRE unit (a fraction in
+   [0,1]). `InvalidDiscountWireValueError` inside `toWireDiscount` remains the
+   SOLE arbiter of the [0,1] domain — it is not weakened, bypassed or
+   duplicated here. */
+import { toWireDiscount } from "@shared/roundMathEngineAdapter";
 
 function resolveCompanyForCarryForward(
   companyId: string,
@@ -247,10 +256,27 @@ function getUnrealizedInstruments(companyId: string): SecurityRecord[] {
   );
 }
 
-/** Percent discount on the security record (stored as 0-100 integer in mockData, engine wants 0-1). */
+/**
+ * Percent discount on the security record → the engine's wire fraction.
+ *
+ * INPUT UNIT, VERIFIED NOT ASSUMED (Wave 58g): `SecurityRecord.discount` is the
+ * `discount` field of `server/mockData.ts`'s seed securities, which hold `20`
+ * for a 20% discount and `15` for 15% (`sec_4`, `sec_6`, `sec_7`, `sec_8`).
+ * That is the same PERCENT-AS-WRITTEN contract R30 fixes for `rounds.discount`,
+ * so the shared bridge is the correct conversion for this input — it is not a
+ * second unit smuggled through a rule written for another.
+ *
+ * WAIVER-7 / R34: the local `rawDiscount / 100` that used to live here was a
+ * SECOND, independent unit-conversion authority. It is gone. `toWireDiscount`
+ * converts unconditionally from the DECLARED unit (never by inspecting the
+ * value's magnitude, which R16 forbids) and refuses anything whose fraction
+ * falls outside [0,1] via `InvalidDiscountWireValueError` — so a corrupt
+ * `20260707` is now REFUSED by name here instead of being passed on as a
+ * "fraction" of 202607.07. Absent stays absent: `null` in, `null` out.
+ */
 function discountAsDecimalStr(rawDiscount: number | null | undefined): string | null {
   if (rawDiscount == null) return null;
-  return (rawDiscount / 100).toFixed(6);
+  return toWireDiscount(rawDiscount, "roundCarryForwardEngine.unrealizedInstrument")?.wireFraction ?? null;
 }
 
 // ─── Per-round-type carry-forward logic ────────────────────────────────────

@@ -19,6 +19,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, CheckCircle2, Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 
 /* ---------------------------- helpers ---------------------------- */
 
@@ -30,14 +31,13 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body ?? {}),
   });
   if (!r.ok) {
-    let detail = "";
-    try {
-      const j = await r.json();
-      detail = j?.error ?? "";
-    } catch {
-      detail = await r.text().catch(() => "");
-    }
-    throw new Error(`HTTP ${r.status}${detail ? `: ${detail}` : ""}`);
+    /* WAVE 73 · ITEM 1 · R58 — THE ACCOUNT-DELETION AND DATA-EXPORT SURFACE.
+       Third sibling of the same wrapper, and the one where an enum code is least
+       usable: a person asking for their data or their account to be deleted was
+       shown `HTTP 409: <code>` while the server's explanation of what blocks it
+       was parsed and dropped. The refusal text now reaches the inline error the
+       page already renders. Same module as Wave 69's fix. */
+    throw new Error(await serverRefusalText(r));
   }
   return (await r.json()) as T;
 }

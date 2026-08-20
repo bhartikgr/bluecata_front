@@ -465,6 +465,14 @@ describe("Wave 0-9c v3: program-wide REPLACE lint (AST-based)", () => {
       // sqlite_master which the harness itself just dropped.
       "server/lib/wave0Migration.ts:1012",
       "server/lib/wave0Migration.ts:1020",
+      // WAVE 68 · R49 — `db.exec(ddl)` in the self-heal installer for migration
+      // 0192. Same shape, same reason and the same line-for-line justification as
+      // `server/lib/applyWave58fDiscountDomain.ts:180` above: the argument is the
+      // TEXT OF A CHECKED-IN MIGRATION FILE read from disk, never request data and
+      // never interpolated. Reading it rather than re-typing it is what stops the
+      // installer and 0192 from drifting apart. Tracked here so a genuinely new
+      // dynamic-SQL site in a money-touching file still fails loud.
+      "server/lib/applyWave68TermFences.ts:200",
     ]);
     const moneyIntersect = violations.filter((v) => moneyTouchingFiles.has(v.file));
     const moneyIntersectIds = moneyIntersect.map((v) => `${v.file}:${v.line}`);

@@ -52,8 +52,15 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ShieldAlert, Link2, TrendingUp, Users } from "lucide-react";
 
-/** The canonical 5-tier ladder, mirroring partnerRoutes.ts:412 exactly. */
-const PARTNER_TIERS = [
+/** The canonical 5-tier ladder, mirroring partnerRoutes.ts:412 exactly.
+ *
+ *  WAVE 56 (R21/R36) — NO LONGER THE PICKER'S SOURCE.
+ *  This array was the reason an admin literally could not select a newly created
+ *  tier: the server accepted it and the dropdown did not offer it. The picker now
+ *  reads GET /api/admin/partner-tiers. These five remain as the FALLBACK while
+ *  that request is in flight or if it fails, so the control never becomes empty
+ *  — an empty tier picker is a worse failure than a stale one. */
+const SEEDED_PARTNER_TIERS = [
   "catalyst",
   "builder",
   "amplifier",
@@ -101,6 +108,20 @@ export function PartnerLifecyclePanel({
   const [attrCompanyId, setAttrCompanyId] = useState("");
   const [attrSource, setAttrSource] = useState<string>("admin_manual");
   const [attrNotes, setAttrNotes] = useState("");
+
+  /* WAVE 56 — the tier list, from the database, so this picker and the server's
+     validation cannot disagree. Archived tiers are excluded: a partner is not
+     moved ONTO a retired tier, while an existing assignment to one still
+     resolves everywhere else. */
+  const tierListQ = useQuery<{ ok: boolean; tiers: Array<{ slug: string; label: string; state: string }> }>({
+    queryKey: ["/api/admin/partner-tiers"],
+    queryFn: async () => (await apiRequest("GET", "/api/admin/partner-tiers")).json(),
+  });
+  const tierOptions: string[] = (() => {
+    const rows = tierListQ.data?.tiers ?? [];
+    const live = rows.filter((r) => r.state !== "archived").map((r) => r.slug);
+    return live.length > 0 ? live : [...SEEDED_PARTNER_TIERS];
+  })();
 
   /* AD-1 — seat report for THIS partner. Same store method as the all-partner
      roster report at partnerRoutes.ts:207, so the two cannot disagree. */
@@ -247,7 +268,7 @@ export function PartnerLifecyclePanel({
               <SelectValue placeholder="Move to tier…" />
             </SelectTrigger>
             <SelectContent>
-              {PARTNER_TIERS.map((t) => (
+              {tierOptions.map((t) => (
                 <SelectItem key={t} value={t}>
                   {t}
                 </SelectItem>

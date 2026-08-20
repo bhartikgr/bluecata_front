@@ -18,6 +18,7 @@
  * error inline.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -104,14 +105,17 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!r.ok) {
-    let detail = "";
-    try {
-      const j = await r.json();
-      detail = j?.error ?? "";
-    } catch {
-      detail = await r.text().catch(() => "");
-    }
-    throw new Error(`HTTP ${r.status}${detail ? `: ${detail}` : ""}`);
+    /* WAVE 73 · ITEM 1 · R58 — THIS BRANCH USED TO READ `j.error` AND NOTHING ELSE.
+       An admin whose partner approval was REFUSED AND ROLLED BACK saw
+           HTTP 409: partner_approval_invoice_refused
+       while the 393-character explanation the server wrote for exactly this case
+       (`server/consortiumApplyStore.ts:2162-2174` — which ruling applies, that
+       nothing was half-written, and what to fix) was parsed and discarded one
+       line above. `serverRefusalText` reads the server's `message` and keeps the
+       enum code appended, and falls back to this function's OWN previous string
+       when the body carries no explanation, so nothing is lost either way. Same
+       module as Wave 69's `queryClient` fix — one authority, not two. */
+    throw new Error(await serverRefusalText(r));
   }
   return (await r.json()) as T;
 }

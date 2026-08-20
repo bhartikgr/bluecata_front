@@ -14,7 +14,38 @@ import { log } from "./lib/logger";
 
 function actorOf(req: Request): string {
   const ctx = (req as any).userContext;
-  return String(ctx?.userId ?? "admin");
+  return String(ctx?.userId ?? "u_unknown_admin");
+}
+
+/* ── WAVE 57d · D4 — BIND THE ACTOR ON THE DESTRUCTIVE ROUTE, FAIL CLOSED ──────
+   `actorOf()` above falls back to the literal `"u_unknown_admin"`. Wave 57c
+   classified this file among the "24 non-destructive" anonymous-actor sites;
+   independent Review 1 found that classification false and named
+   `DELETE /api/admin/collective-subscriptions/:id` → `store.deletePackage()`
+   explicitly. Deleting a subscription package is a money-control change, and an
+   audit row attributed to `u_unknown_admin` looks like a record and is not one
+   (R35).
+
+   NARROWEST FIX, deliberately: only the DELETE route is switched to this
+   fail-closed resolver. `actorOf` itself is LEFT AS IS so the five
+   non-destructive routes in this file (list/get/create/update/promote/clone/
+   bootstrap) keep their exact current behaviour — changing the shared helper
+   would have been the sweeping option, and it is recorded as a recommendation
+   for the authorised 57e sweep instead.
+
+   `requireAdmin` is mounted on every route in this file and always assigns
+   `req.userContext`, so the 401 branch is unreachable under today's mounts and
+   no legitimate deletion is affected. The point is that it cannot become
+   reachable silently. Pattern source: server/bridgeStore.ts:1500 and Wave 57c's
+   four bound sites. */
+function requireActorOrRefuse(req: Request, res: Response): string | null {
+  const ctx = (req as any).userContext;
+  const userId = ctx?.userId ? String(ctx.userId) : "";
+  if (!userId) {
+    res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    return null;
+  }
+  return userId;
 }
 
 export function registerCollectiveSubscriptionAdminRoutes(app: Express): void {
@@ -79,7 +110,10 @@ export function registerCollectiveSubscriptionAdminRoutes(app: Express): void {
 
   // DELETE (soft; live -> must deprecate)
   app.delete(`${BASE}/:id`, requireAdmin, (req: Request, res: Response) => {
-    const r = store.deletePackage(String(req.params.id), actorOf(req));
+    /* WAVE 57d D4 — bound actor, fail closed BEFORE the delete. See header. */
+    const deleteActorId = requireActorOrRefuse(req, res);
+    if (!deleteActorId) return;
+    const r = store.deletePackage(String(req.params.id), deleteActorId);
     if (!r.ok) return res.status(r.error === "not_found" ? 404 : 400).json(r);
     res.json(r);
   });

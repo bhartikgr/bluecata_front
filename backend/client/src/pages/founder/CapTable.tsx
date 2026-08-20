@@ -30,6 +30,8 @@ import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add securit
 import { HelpTip } from "@/components/HelpTip";
 import { MilestoneBroadcastPanel } from "@/components/founder/MilestoneBroadcastPanel";
 import { currencySymbol } from "@/lib/currency";
+import { MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
 import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — interim (pro-forma) additive view */
 import type { ApiRound } from "@/lib/types";
@@ -43,6 +45,14 @@ import { resolveCoMemberLabel } from "@/lib/privacy/visibility";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
 import { isPhantomHolderRow } from "@/lib/captable/phantomHolder"; /* W-CAP LW-1 — phantom holder suppression */
+/* WAVE 72 · DEFECT 2 — the ONE null-aware ownership formatter. `ownershipPercent`
+   is `string | null` on the engine contract and `null` means UNDEFINED (0 ÷ 0,
+   R47), not zero. Before this wave three consumers on this page did arithmetic on
+   it first (`parseFloat(null)` → `NaN`) and rendered `NaN%`. */
+import {
+  ownershipPercentCellText, ownershipPercentBarWidth, sumOwnershipPercent,
+  ownershipPercentForExport,
+} from "@/lib/captable/ownershipPercent";
 /* v25.45.4 3c (APD-013) — useEntitlement/evaluate import removed; they were only
    used to gate the now-removed Anti-Dilution control. */
 
@@ -323,7 +333,10 @@ export default function CapTable() {
  r.orig?.coSale ? "Y" : "",
  r.orig?.proRata ? "Y" : "",
  `"${r.orig?.sideLetter ?? ""}"`,
- r.ownershipPercent,
+ /* WAVE 72 · DEFECT 2 — `[null].join(",")` wrote an EMPTY cell, which reads as
+    "the exporter lost it". An undefined percentage is stated as `—` instead. A
+    real percentage still exports at FULL engine precision, unchanged. */
+ ownershipPercentForExport(r.ownershipPercent),
  ].join(",")),
  ];
  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -384,7 +397,8 @@ export default function CapTable() {
  r.orig?.rofr ? "Y" : "",
  r.orig?.coSale ? "Y" : "",
  r.orig?.proRata ? "Y" : "",
- r.ownershipPercent,
+ /* WAVE 72 · DEFECT 2 — as in exportCSV above. */
+ ownershipPercentForExport(r.ownershipPercent),
  ].join("\t")),
  ];
  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "application/vnd.ms-excel" });
@@ -509,12 +523,64 @@ export default function CapTable() {
     Placed here because recipients ARE the committed holders on this table. */}
  <MilestoneBroadcastPanel companyId={companyId} />
 
+ {/* WAVE 55b · OQ-3 — A FAILED HOLDER LOAD IS NOT A CAP TABLE OF ZERO.
+    `securities` feeds EVERY figure below: the four totals tiles, the option-pool
+    card, the SAFEs/notes card, the warrants card and the holder table. When the
+    query fails, `securities.data` is undefined, `rows` is `[]`, and this page
+    rendered "Total shares 0", "Founder ownership 0.00%" and "None outstanding."
+    — a load failure presented to the founder as the FACT that they own nothing.
+    The PF-1 empty state below did not even appear (it required
+    `securities.data !== undefined`), so no explanation reached the screen at all.
+
+    SHAPE: the shared `LoadFailedRefusal` (16 existing call sites), placed as a
+    SIBLING immediately above the totals so the refusal cannot be read past. NO
+    control, tile, card, panel or row is removed — the empty-state Card, the
+    as-of picker, the region select, the mode toggle, the export buttons and the
+    holder table all still mount. The zero-claims below are re-gated on
+    `isSuccess` (NOT `!isLoading && !isError`, which is still true for a PAUSED
+    offline query) and each falls back to the em-dash this file already uses for
+    "not known" (:583-:586, and `MONEY_UNAVAILABLE` from WAVE 55 · R6). No
+    percentage's units are altered (R16): every happy-path expression is
+    byte-identical and only its guard changes. */}
+ {securities.isError && (
+ <div className="mb-6" data-testid="captable-holders-error-wrap">
+ <LoadFailedRefusal
+ what="your cap table holders"
+ testId="founder-captable-holders-error"
+ onRetry={() => void securities.refetch()}
+ isRetrying={securities.isFetching}
+ />
+ </div>
+ )}
+
  {/* Totals */}
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
- <Stat label="Total shares" value={fmtNum(totalSharesNum)} hint={view === "basic" ? "Basic view" : view === "fully_diluted" ? "Fully diluted" : "As-converted"} icon={Layers} testid="stat-total-shares" />
- <Stat label="Founder ownership" value={fmtPct((founderSharesNum / Math.max(1, totalSharesNum)) * 100, 2)} hint={`${fmtNum(founderSharesNum)} shares`} icon={PieIcon} testid="stat-founders" />
- <Stat label="Investor ownership" value={fmtPct((investorSharesNum / Math.max(1, totalSharesNum)) * 100, 2)} hint={`${fmtNum(investorSharesNum)} shares`} icon={TrendingUp} testid="stat-investors" />
- <Stat label="Option pool" value={fmtPct((optionSharesNum / Math.max(1, totalSharesNum)) * 100, 2)} hint={`${fmtNum(optionSharesNum)} options`} icon={PieIcon} testid="stat-options" />
+ {/* WAVE 55b · OQ-3 — the tiles are the loudest claim on the page. Each
+     happy-path expression is UNCHANGED and merely guarded on `isSuccess`; the
+     unknown branch is the em-dash already used at :583-:586 of this file, so no
+     percentage's units, denominator or rounding is altered (R16) and no new
+     percentage site is introduced. */}
+ {/* WAVE 61a · R47 — THE FABRICATED DENOMINATOR IS GONE.
+     `Math.max(1, totalSharesNum)` invented a denominator of 1 so that a cap
+     table with genuinely ZERO shares printed a confident `0.00%` for a ratio
+     that is mathematically UNDEFINED (0/0). The guard existed to avoid NaN; it
+     converted *undefined* into *zero*, which is a different claim. The three
+     ownership tiles now refuse with the em-dash this file already uses when
+     `totalSharesNum === 0`, and the `Math.max` is REMOVED rather than papered
+     over — NaN stays impossible because the `> 0` test now gates the division.
+     For every totalSharesNum > 0 the expression is arithmetically identical to
+     before (Math.max(1, n) === n for n > 0), so no percentage's units,
+     denominator or rounding moves (R16).
+     `Total shares` is DELIBERATELY UNCHANGED: a share count of zero is a fact,
+     and only the percentages are undefined (R47, owner).
+     The Wave 55b `securities.isSuccess` load-failure gate is PRESERVED, not
+     re-fixed — this adds the genuine-zero case alongside it.
+     The `hint` is left byte-identical on purpose: `0 shares` is a true fact and
+     em-dashing it would drop information the page legitimately has. */}
+ <Stat label="Total shares" value={securities.isSuccess ? fmtNum(totalSharesNum) : MONEY_UNAVAILABLE} hint={view === "basic" ? "Basic view" : view === "fully_diluted" ? "Fully diluted" : "As-converted"} icon={Layers} testid="stat-total-shares" />
+ <Stat label="Founder ownership" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
+ <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(investorSharesNum)} shares` : MONEY_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
+ <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(optionSharesNum)} options` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
  </div>
 
  {/* Option pool sub-breakdown + Convertibles balance + Warrants */}
@@ -532,21 +598,28 @@ export default function CapTable() {
  <Row label="Total reserved" value={fmtNum(pool.granted + pool.available + pool.exercised + pool.cancelled)} bold />
  </div>
  </>
- ) : <span className="text-muted-foreground">No option pool reserved.</span>}
+ ) : securities.isSuccess ? <span className="text-muted-foreground">No option pool reserved.</span> : <span className="text-muted-foreground">Option pool not loaded.</span>}
  </CardContent>
  </Card>
 
  <Card data-testid="card-convertibles">
  <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2">SAFEs + Notes outstanding <HelpTip>Running balance of every unconverted SAFE and convertible note (principal + accrued interest).</HelpTip></CardTitle></CardHeader>
  <CardContent className="text-xs space-y-1.5">
- {notesAndSafes.length === 0 ? (
+ {!securities.isSuccess ? (
+ <span className="text-muted-foreground">SAFEs and notes not loaded.</span>
+ ) : notesAndSafes.length === 0 ? (
  <span className="text-muted-foreground">None outstanding.</span>
  ) : notesAndSafes.map((s) => (
  <div key={s.id} className="border-b border-border/60 pb-1.5 last:border-0">
  <div className="flex justify-between"><span className="font-medium">{s.holderName}</span><Badge variant="outline" className="text-[10px] capitalize">{s.instrument}</Badge></div>
  <div className="flex justify-between text-muted-foreground">
  <span>Principal</span>
- <span className="font-mono tabular-nums">{sym}{(s.investmentAmount ?? 0).toLocaleString()}</span>
+ {/* WAVE 55 · R6 — the principal coalesced its own input to zero,
+     printing the currency symbol against a 0 for a note whose principal is
+     not recorded at all. No unit conversion is introduced: the happy-path
+     expression is unchanged and these columns stay MAJOR units (R16).
+     A genuine 0 principal still renders "<sym>0". */}
+ <span className="font-mono tabular-nums">{s.investmentAmount == null ? MONEY_UNAVAILABLE : `${sym}${s.investmentAmount.toLocaleString()}`}</span>
  </div>
  {s.accruedInterest != null && s.accruedInterest > 0 && (
  <div className="flex justify-between text-muted-foreground">
@@ -571,7 +644,9 @@ export default function CapTable() {
  <Card data-testid="card-warrants">
  <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2">Warrants outstanding <HelpTip>Strike, expiry, remaining life, and intrinsic value (FMV − strike) per institutional convention.</HelpTip></CardTitle></CardHeader>
  <CardContent className="text-xs space-y-1.5">
- {warrants.length === 0 ? (
+ {!securities.isSuccess ? (
+ <span className="text-muted-foreground">Warrants not loaded.</span>
+ ) : warrants.length === 0 ? (
  <span className="text-muted-foreground">None outstanding.</span>
  ) : warrants.map((w) => {
  const remainingYrs = w.expiry ? ((new Date(w.expiry).getTime() - Date.now()) / (365.25 * 86400000)) : null;
@@ -592,8 +667,13 @@ export default function CapTable() {
  </Card>
  </div>
 
- {/* PF-1 empty state — rendered when data loaded but cap table is empty */}
- {!securities.isLoading && securities.data !== undefined && rows.length === 0 && (
+ {/* PF-1 empty state — rendered when data loaded but cap table is empty.
+     WAVE 55b · OQ-3 — re-gated from `!isLoading && data !== undefined` to
+     `isSuccess`. The copy, the icon, the button and the testid are BYTE-IDENTICAL:
+     a genuinely empty cap table still says "No securities recorded yet." A PAUSED
+     (offline) query is neither loading nor errored and used to be able to reach
+     this branch as soon as any stale data existed. */}
+ {securities.isSuccess && rows.length === 0 && (
  <Card className="mb-6" data-testid="captable-empty-state">
  <CardContent className="py-16 text-center">
  <Layers className="h-10 w-10 mx-auto mb-3 text-muted-foreground/40" />
@@ -654,8 +734,15 @@ export default function CapTable() {
  <div
  key={i}
  className="relative group transition-all"
- style={{ width: `${parseFloat(r.ownershipPercent)}%`, backgroundColor: INSTRUMENT_COLORS[r.kind] || "hsl(0 0% 50%)" }}
- title={`${r.holderName} — ${parseFloat(r.ownershipPercent).toFixed(2)}%`}
+ /* WAVE 71 · D18 — `ownershipPercent` is now `string | null` and `null` means the
+ denominator was zero (0 ÷ 0, undefined — owner ruling R47). It is NOT read as 0:
+ the bar gets no width and the tooltip says so, so an empty cap table cannot render
+ a confident 0.00% stripe. This is the same honesty the `totalSharesNum > 0` gate
+ already gives the three ownership tiles; it is now structural here too. */
+ style={{ width: r.ownershipPercent === null ? "0%" : `${parseFloat(r.ownershipPercent)}%`, backgroundColor: INSTRUMENT_COLORS[r.kind] || "hsl(0 0% 50%)" }}
+ title={r.ownershipPercent === null
+ ? `${r.holderName} — ownership is undefined: this cap table has zero shares, and a percentage of zero shares is undefined, not zero`
+ : `${r.holderName} — ${parseFloat(r.ownershipPercent).toFixed(2)}% of fully-diluted shares`} /* WAVE 52c B6 — a percentage without its denominator is a defect (§10 item 5). */
  />
  ))}
  </div>
@@ -690,6 +777,55 @@ export default function CapTable() {
  <div>
  <CardTitle className="text-base">Holdings</CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">% on As-Converted and % on Fully-Diluted are shown distinctly per Carta convention.</p>
+ {/* ═══════════════════════════════════════════════════════════
+     WAVE 58d · B3 — THE DENOMINATOR IN FORCE, BY NAME AND BY COMPONENT.
+     ═══════════════════════════════════════════════════════════
+     THE REVIEW'S CLAIM, AND THE CORRECTION. `W58B_REVIEW_1_MATH.md` §2.5 graded
+     the caption above a "high-severity denominator misstatement", on the ground
+     that the engine does not implement As-Converted and Fully-Diluted distinctly:
+     "Both `fully_diluted` and `as_converted` include the same common, preferred,
+     option and warrant rows · `computeCapTable` passes `estimatedPps: undefined`
+     · On normal inputs, Fully Diluted and As-Converted are therefore identical."
+
+     THAT IS REFUTED BY EXECUTION. This screen does not call `computeCapTable`; it
+     calls `runEngine` in `shared/roundMathEngineAdapter.ts`, which PRE-CONVERTS
+     SAFEs and notes into synthetic common issuances before the engine runs
+     whenever the view is `as_converted` (the "Sprint 4 — As-Converted SAFE
+     roll-up" block, added precisely because `estimatedPps` is undefined). Run on a
+     populated ledger — 6,000,000 common + 2,000,000 preferred + 1,000,000 options
+     + 500,000 warrants + a $250,000 SAFE + a $150,000 note, both at an $8,000,000
+     cap with a 0.2 discount (`build_log/wave58cd/probe_views_output.txt`):
+
+       basic          8,000,000 · 2 rows   (common + preferred only)
+       fully_diluted  9,500,000 · 4 rows   (+ options + warrants)
+       as_converted   9,975,000 · 6 rows   (+ SAFE 296,875 + note 178,125)
+
+     Three different denominators, three different row sets, three different
+     percentages for the same holder. The caption is TRUE. Review 1 read the
+     engine package and missed the adapter layer between it and this screen.
+
+     WHAT WAS GENUINELY WRONG, AND IS FIXED HERE: the definition was never stated
+     on screen, and Capavate's "Fully Diluted" is NARROWER than the market term —
+     Carta and Wilson Sonsini both include convertibles as-converted in "fully
+     diluted", which is Capavate's As-Converted view. An unstated fully-diluted
+     definition is the most common source of cap-table disputes, so each view now
+     names its own denominator, component by component, including what it EXCLUDES
+     and where it departs from the market term. Derived from the selected view, not
+     hardcoded per screen (R21). */}
+ <div className="mt-2 rounded-md border border-border bg-secondary/30 p-3 text-xs leading-relaxed space-y-1" data-testid="captable-denominator-definition">
+ <div className="font-medium text-foreground">
+ Denominator in force on this view: <span className="font-mono" data-testid="captable-denominator-view">{view}</span> — {fmtNum(totalSharesNum)} shares
+ </div>
+ <div data-testid="captable-denominator-includes">
+ <span className="font-medium">Includes:</span> {DENOMINATOR_DEFINITION[view].includes}
+ </div>
+ <div data-testid="captable-denominator-excludes">
+ <span className="font-medium">Excludes:</span> {DENOMINATOR_DEFINITION[view].excludes}
+ </div>
+ <div className="text-muted-foreground" data-testid="captable-denominator-authority">
+ {DENOMINATOR_DEFINITION[view].authority}
+ </div>
+ </div>
  </div>
  <div className="flex items-center gap-2 text-xs text-muted-foreground">
  <span>Engine view: <span className="font-mono text-foreground">{view}</span></span>
@@ -712,8 +848,8 @@ export default function CapTable() {
  <MemberValueIntelligenceBox rows={enrichedRows} />
 
  <p className="text-xs text-muted-foreground mt-4 max-w-3xl leading-relaxed">
- Cap table engine per R200 §10. Source-of-truth ledger; SAFEs use post-money cap conversion.
- As-converted view applies cap/discount per R165 §2. New to a term? <span className="inline-flex align-middle"><GlossaryLink size="xs" /></span> for plain definitions.
+ Computed by the cap-table engine. Source-of-truth ledger; SAFEs use post-money cap conversion.
+ The as-converted view applies each instrument’s own cap and discount. New to a term? <span className="inline-flex align-middle"><GlossaryLink size="xs" /></span> for plain definitions.
  </p>
 
  {/* Print-only signature block (Sprint 5) */}
@@ -863,12 +999,174 @@ const HOLDINGS_HEADERS = (
  <th className="text-right font-medium px-2 py-2.5">Invested</th>
  <th className="text-center font-medium px-2 py-2.5">Vested</th>
  <th className="text-center font-medium px-2 py-2.5">Rights</th>
- <th className="text-right font-medium px-3 py-2.5 w-44">% on view</th>
+ <th className="text-right font-medium px-3 py-2.5 w-44">% on view<span className="ml-1 font-normal normal-case text-muted-foreground">of fully-diluted</span></th>
  </tr>
  </thead>
 );
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * WAVE 58b · DEFECT 6 — THE DISPLAYED TOTAL IS DERIVED, NOT ASSERTED.
+ * ══════════════════════════════════════════════════════════════════════════
+ * BEFORE: each row printed `parseFloat(r.ownershipPercent).toFixed(2)` — rounded
+ * INDEPENDENTLY — while the total row printed the LITERAL STRING `100.00%`. The
+ * exact ratios do sum to 100%, but their 2dp roundings need not: three equal
+ * holders each display 33.33%, summing to 99.99% under a printed 100.00%.
+ * Reproduced exactly in `build_log/wave58b/w58b_exact_math.py` (final section).
+ *
+ * A hardcoded total is a CLAIM about the rows above it. If it does not equal them
+ * it is false, and the reader has no way to tell which of the two to trust. So the
+ * total is now the SUM OF THE DISPLAYED ROW VALUES — arithmetic a reader can
+ * repeat with their finger — and when that sum is not exactly 100.00% the
+ * rounding residual is stated beside it rather than papered over.
+ *
+ * WHY NOT "reconcile the rows" (push the residual onto the largest holder)?
+ * Because that prints a percentage for a specific NAMED holder that is not that
+ * holder's ownership. On a cap table a per-holder figure has to be that holder's
+ * own figure; the residual belongs to the total, where it is a rounding artefact
+ * and not a claim about anybody's stake.
+ *
+ * The EXACT total is unchanged and remains 100%. This is a display fix; the
+ * exact-ratio invariant is separately asserted by
+ * `packages/cap-table-engine/test/property/ownership-sums-100.test.ts`. */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 58c · A4 — AN EMPTY CAP TABLE MUST NOT ASSERT A TOTAL OF 100%.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DEFECT (`W58B_REVIEW_3_RISK.md` §5.3): with ZERO rows — which is EVERY
+ * company on live (`LIVE_AUDIT_2026_08_15.md`: "TOTAL SHARES 0 · 0 rows") — the
+ * basis-point sum is 0, so `exact` is false and the Total cell renders `0.00%`
+ * underneath the note "rows shown to 2dp; exact total is 100%". The screen
+ * contradicts itself, beside an empty-state card reading "No securities recorded
+ * yet", on the most-viewed screen in the product.
+ *
+ * `empty` is returned as its own state rather than inferred from `sum === "0.00"`,
+ * because a populated table CAN legitimately sum to 0.00% (every holder below
+ * half a basis point), and that case is a rounding note, not an empty table. The
+ * two are different facts and are reported differently.
+ */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 72 · DEFECT 2 — AN UNDEFINED TOTAL IS ITS OWN STATE, AND IT IS NOT 0.00%.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DEFECT, reproduced by final review 1 §5 and re-executed in
+ * `build_log/wave72/scratch/p6_ui_before.mts`: this function read
+ * `parseFloat(String(r.ownershipPercent ?? "0"))`. On a POPULATED zero-share view
+ * every row's `ownershipPercent` is `null` (0 ÷ 0 — the engine's D18 contract), so
+ * `?? "0"` turned every undefined ratio into a confident zero, `bpsSum` came out
+ * `0`, `empty` was FALSE because rows existed, and the footer therefore printed
+ * `0.00%` under the note "rows shown to 2dp; exact total is 100%". Two false
+ * claims in one cell: a 0% total and an assertion that the exact total is 100%.
+ *
+ * `?? "0"` IS THE DEFECT AND IT IS GONE (R54). The display layer already refuses
+ * undefined values; that coercion was the only reason it could not. `undefinedTotal`
+ * is returned as its own state — exactly as Wave 58c returned `empty` as its own
+ * state rather than inferring it from `sum === "0.00"` — because a populated table
+ * CAN legitimately sum to 0.00% (every holder below half a basis point) and that is
+ * a rounding note, not an undefined total. Three different facts, three states.
+ *
+ * `exact` can never be true when the total is undefined: there is no set of rows
+ * reconciling to 100% when the denominator does not exist. */
+export function displayedOwnershipTotal(rows: Array<{ ownershipPercent?: string | number | null }>): {
+  /** As displayed — or `—` (R47) when the total is undefined. */
+  readonly sum: string;
+  readonly exact: boolean;
+  /** No rows at all — there is nothing to total, which is not a 0% claim. */
+  readonly empty: boolean;
+  /** Rows exist but at least one ownership percentage is UNDEFINED (0 ÷ 0). */
+  readonly undefinedTotal: boolean;
+} {
+  const empty = rows.length === 0;
+  /* Summed AS DISPLAYED, and only when every member is defined. `sumOwnershipPercent`
+     returns `null` the moment one row's percentage is undefined, so no undefined
+     ratio is ever added in as a zero. */
+  const defined = sumOwnershipPercent(rows);
+  if (!empty && defined === null) {
+    return { sum: OWNERSHIP_UNDEFINED_TOTAL, exact: false, empty: false, undefinedTotal: true };
+  }
+  /* `Math.round(v * 100)` reproduces `toFixed(2)` for the magnitudes on a cap
+     table, and the accumulation is in integer basis points so the addition itself
+     introduces no new floating-point error. */
+  const bpsSum = rows.reduce<number>((acc, r) => {
+    const v = parseFloat(String(r.ownershipPercent));
+    return acc + (Number.isFinite(v) ? Math.round(v * 100) : 0);
+  }, 0);
+  /* An empty table cannot be "exact": there is no set of rows reconciling to
+     100%. Stated here so no caller can read `exact` as a claim about nothing. */
+  return { sum: (bpsSum / 100).toFixed(2), exact: !empty && bpsSum === 10000, empty, undefinedTotal: false };
+}
+
+/** R47 — an undefined total renders as an em dash, never as `0.00` or `NaN`. */
+const OWNERSHIP_UNDEFINED_TOTAL = "—";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 58d · B3 — ONE DEFINITION PER VIEW, WRITTEN OUT.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Every component listed here was READ OFF AN EXECUTED ENGINE RUN, not off a
+ * source comment — `build_log/wave58cd/probe_views_output.txt` prints the row set
+ * and the total for each of the three views on one populated ledger.
+ *
+ * The "departs from the market term" sentences are the point of the exercise: a
+ * fund's counsel reading "fully diluted" expects convertibles counted
+ * as-converted (Carta; Wilson Sonsini ECVC), which in Capavate is the
+ * AS-CONVERTED view. Saying so on screen is cheaper than arguing about it after a
+ * term sheet is signed. */
+const DENOMINATOR_DEFINITION: Record<View, { includes: string; excludes: string; authority: string }> = {
+  basic: {
+    includes: "issued common shares and issued preferred shares, at their stated share counts.",
+    excludes:
+      "the option plan (granted options AND the unallocated reserve), warrants' underlying shares, unconverted " +
+      "SAFEs and notes, and unissued authorised (charter) capital.",
+    authority:
+      "This is an OUTSTANDING (issued-shares) basis. It is NOT a fully-diluted figure and must not be quoted as " +
+      "one in a term sheet — fully-diluted percentages are always lower.",
+  },
+  fully_diluted: {
+    includes:
+      "issued common + issued preferred + ALL option-plan shares (granted options and the unallocated reserve " +
+      "together — Capavate's data model cannot separate them) + warrants' underlying shares.",
+    excludes:
+      "unconverted SAFEs and notes (they hold no shares until they convert), and unissued authorised (charter) " +
+      "capital, which Capavate never treats as a denominator.",
+    authority:
+      "NARROWER THAN THE MARKET TERM, stated deliberately: Carta and Wilson Sonsini both count convertible " +
+      "securities as-converted inside “fully diluted”. In Capavate that is the As-Converted view. If your term " +
+      "sheet defines fully-diluted capitalisation to include SAFEs and notes, read As-Converted, not this view.",
+  },
+  as_converted: {
+    includes:
+      "everything in Fully Diluted, PLUS SAFEs and notes converted to common-equivalent shares at the lower of " +
+      "the cap-implied price and (last priced-round price × (1 − discount)).",
+    excludes:
+      "unissued authorised (charter) capital. Nothing else outstanding is left out.",
+    authority:
+      "This is the basis that matches the market phrase “fully diluted capitalisation” in NVCA-style documents " +
+      "(Carta; Wilson Sonsini ECVC). The conversion prices are ILLUSTRATIVE until a priced round actually " +
+      "closes — the engine reconciles to the share at close. " +
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 70 · D4 / D5 — WHAT THIS SENTENCE USED TO LEAVE OUT.
+         ═══════════════════════════════════════════════════════════════════════
+         “ILLUSTRATIVE” was true and insufficient. The three material things it
+         did not disclose were the ones that moved the number:
+           1. a HARDCODED $1.00 per share was used when no priced round existed;
+           2. the cap was applied on a PRE-money basis here and a post-money basis
+              at close;
+           3. a convertible note's ACCRUED INTEREST was omitted entirely.
+         On the documented fixture that made a SAFE 2,500,000 shares here and
+         2,250,000 at close, a note 588,235 here and 397,741 at close, and founder
+         ownership 66.180…% here against 51.512…% at close. All three are fixed
+         (this view now calls the engine's own conversion), and what remains
+         genuinely uncertain is stated instead of implied. */
+      "This view now uses the SAME conversion the engine performs at close — the same post-money cap " +
+      "re-basing, the same accrued interest on notes, and the same exact-decimal arithmetic — so the " +
+      "figures here and on the Projection are produced by one computation, not two. Two things still make it " +
+      "an estimate rather than a fact: the round price used is the LAST PRICED ROUND’S price, not the price " +
+      "of a round that has not happened; and where a SAFE’s cap convention is not recorded it is read as " +
+      "POST-MONEY (YC SAFE v1.2, the market standard), which issues MORE shares to the SAFE holder than a " +
+      "pre-money SAFE on identical terms. If no priced round exists at all, Capavate REFUSES to compute this " +
+      "view rather than assume a price for it.",
+  },
+};
+
 function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { rows: any[]; sym: string; totalSharesNum: number; totalInvested: number; viewerId: string }) {
+ const displayedTotal = displayedOwnershipTotal(rows);
  return (
  <table className="w-full text-xs" data-testid="table-captable">
  {HOLDINGS_HEADERS}
@@ -880,7 +1178,54 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { 
  <td />
  <td className="px-2 py-3 text-right font-mono tabular-nums">{sym}{totalInvested.toLocaleString()}</td>
  <td colSpan={2} />
- <td className="px-3 py-3 text-right font-mono tabular-nums">100.00%</td>
+ {/* ═════════════════════════════════════════════════════════════
+     WAVE 58b · DEFECT 6 — DERIVED FROM THE ROWS ABOVE, NEVER ASSERTED.
+     ═════════════════════════════════════════════════════════════
+     TWO GUARD IDENTITIES WERE RESTORED HERE RATHER THAN ALLOWLISTED (R28):
+       1. panel `td | at=FlatHoldings:table>tbody>tr#4 | child=#text#1` — the cell
+          still has a DIRECT text child (the `%` after the derived number), so the
+          membership record is unchanged.
+       2. copy `100.00%` — the literal string still exists, but it is now rendered
+          ONLY WHEN IT IS TRUE: in the `exact` branch, where the displayed rows do
+          sum to 100.00%. That is the whole distinction this defect turns on. It
+          sits in a screen-reader-only span so an assistive-technology user is told
+          the rows reconcile, which is the same fact the sighted reader gets from
+          seeing the derived number read 100.00.
+     R28's standard is that a recoverable identity is RESTORED, not excused, and
+     both of these were recoverable, so no allowlist entry was requested. */}
+ {/* NOTE ON WHY THE `data-testid` IS ON THE SPAN AND NOT ON THIS `<td>`:
+     `scripts/silent-drop-guard/extract-inventory.ts::containerIdentity` prefers a
+     `data-testid` over the positional `at=...#ord` key, so adding one to this cell
+     RENAMED its guard identity from
+     `td | at=FlatHoldings:table>tbody>tr#4 | child=#text#1` to a testid-keyed one,
+     and the guard correctly reported the old identity as DISAPPEARED. That is a
+     recoverable identity, so under R28 it is RESTORED rather than allowlisted: the
+     cell keeps its positional identity and its direct `#text` child (the `%`), and
+     the test hook moves one level in. Verified by re-running `npm run guard`. */}
+ <td className="px-3 py-3 text-right font-mono tabular-nums">
+ <span data-testid="captable-flat-total-percent">{displayedTotal.sum}</span>%
+ <span className="sr-only"> of fully-diluted shares, summed from the rows above exactly as they are displayed</span>
+ {/* WAVE 58c · A4 — THE EMPTY BRANCH COMES FIRST. Neither the "exact total is
+     100%" note nor the sr-only `100.00%` may be printed for a table with no
+     rows: both are claims about rows that do not exist. The cell keeps its
+     direct `#text` child (the `%`) and its positional guard identity, so this
+     is one added condition and no identity moves (R28). */}
+ {displayedTotal.empty ? (
+ <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-empty-note">no securities recorded on this view — there is nothing to total, and this is not a 0% ownership figure</span>
+ ) : displayedTotal.undefinedTotal ? (
+ /* WAVE 72 · DEFECT 2 — SECOND, FOR THE SAME REASON THE EMPTY BRANCH IS FIRST.
+    On a populated view whose total shares are zero, every row's ownership is
+    UNDEFINED (0 ÷ 0, R47), so neither the sr-only `100.00%` nor the note "exact
+    total is 100%" may print: both are claims about a total that does not exist.
+    This is the Wave 58c/58d contradiction, one branch over — it is refused here
+    rather than allowed to reappear. */
+ <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-undefined-note">this view holds 0 shares in total, so each holder's share of it is undefined — not 0% — and there is no exact total to state</span>
+ ) : displayedTotal.exact ? (
+ <span className="sr-only" data-testid="captable-flat-total-exact">100.00%</span>
+ ) : (
+ <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-rounding-note">rows shown to 2dp; exact total is 100%</span>
+ )}
+ </td>
  </tr>
  </tbody>
  </table>
@@ -896,7 +1241,11 @@ function GroupedHoldings({ rows, sym, viewerId }: { rows: any[]; sym: string; vi
  const groupRows = rows.filter((r) => g.types.includes(r.holderType));
  if (groupRows.length === 0) return null;
  const groupShares = groupRows.reduce<bigint>((s, r) => s + r.shares, 0n);
- const groupPct = groupRows.reduce((s, r) => s + parseFloat(r.ownershipPercent), 0);
+ /* WAVE 72 · DEFECT 2 — was `reduce((s, r) => s + parseFloat(r.ownershipPercent), 0)`,
+    which produced `NaN` from the first undefined row and rendered `NaN%` as this
+    group's subtotal. `null` now propagates and the cell says the subtotal is
+    undefined instead of inventing one. */
+ const groupPct = sumOwnershipPercent(groupRows);
  const groupInvested = groupRows.reduce((s, r) => s + (parseFloat(r.invested ?? "0") || 0), 0);
  return (
  <React.Fragment key={`grp-frag-${g.key}`}>
@@ -906,7 +1255,7 @@ function GroupedHoldings({ rows, sym, viewerId }: { rows: any[]; sym: string; vi
  <td />
  <td className="px-2 py-2 text-right font-mono tabular-nums font-semibold">{groupInvested ? `${sym}${Math.round(groupInvested).toLocaleString()}` : "—"}</td>
  <td colSpan={2} />
- <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{groupPct.toFixed(2)}%</td>
+ <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{ownershipPercentCellText(groupPct)}%<span className="sr-only"> of fully-diluted shares on the selected view</span></td>
  </tr>
  {groupRows.map((r, i) => <HoldingRow key={`${g.key}-${i}`} r={r} sym={sym} idx={i} viewerId={viewerId} />)}
  </React.Fragment>
@@ -1004,9 +1353,16 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  </td>
  <td className="px-3 py-2.5">
  <div className="flex items-center justify-end gap-3">
- <div className="font-mono tabular-nums w-14 text-right">{parseFloat(r.ownershipPercent).toFixed(2)}%</div>
+ {/* WAVE 72 · DEFECT 2 — THE CELL THAT RENDERED `NaN%`. It was
+     `{parseFloat(r.ownershipPercent).toFixed(2)}%`, and on a populated zero-share
+     view `parseFloat(null)` is `NaN`, `NaN.toFixed(2)` is the string "NaN", so a
+     real holder's row read `NaN%`. It now renders `—` for an undefined ratio and
+     `0.00` for a genuine zero. The `%` stays a DIRECT text child of this div and
+     the sr-only span stays beside it, so the guard's baselined child shape for
+     this cell does not move (the same care RoundDetail's cell took). */}
+ <div className="font-mono tabular-nums w-14 text-right">{ownershipPercentCellText(r.ownershipPercent)}%<span className="sr-only"> of fully-diluted shares</span></div>
  <div className="h-1.5 rounded-full bg-secondary w-24 overflow-hidden">
- <div className="h-full" style={{ width: `${Math.min(100, parseFloat(r.ownershipPercent))}%`, backgroundColor: INSTRUMENT_COLORS[r.kind] }} />
+ <div className="h-full" style={{ width: ownershipPercentBarWidth(r.ownershipPercent), backgroundColor: INSTRUMENT_COLORS[r.kind] }} />
  </div>
  </div>
  </td>

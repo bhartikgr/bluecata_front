@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -63,7 +64,11 @@ const ENTRY_KIND_LABELS: Record<string, string> = {
 
 function fmtMoney(minor: number | null, currency = "USD"): string {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
-  return formatMinor(minor ?? 0, currency, { locale: "en-US" });
+  /* WAVE 55 · R6 — `minor ?? 0` printed "$0.00" for an amount nobody has
+   * recorded. This is a dense P&L table, so the owner's ruling 55-Q1 gives
+   * the compact dash. A GENUINE 0 still formats as "$0.00": the helper
+   * refuses only for null/undefined/"" (isUnknownNumber), never for 0. */
+  return formatMinorOrUnavailable(minor, currency, { locale: "en-US" });
 }
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";

@@ -17,15 +17,24 @@ import { Link } from "wouter";
 
 export default function Collective() {
   const companyId = useActiveCompanyId();
+  /* WAVE 60 · A-9 — both reads fired before `companyId` resolved (it is "", not
+     undefined, so the request went out as ...?companyId=). `?? []` below then
+     fed the statusBadge IIFE, whose output for an empty pair is the badge
+     "Not applied" — a confident assertion about the founder's own membership,
+     manufactured from a read that never had a scope. `enabled` keeps the queries
+     PENDING until there is a company. The `.catch(() => [])` is a JSON-parse
+     guard, NOT an HTTP-error swallow, and is left byte-identical. */
   const nominationsQ = useQuery<Array<{ status: string }>>({
     queryKey: ["/api/founder/collective/nominations", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/collective/nominations?companyId=${companyId}`)).json().catch(() => []),
     retry: false,
+    enabled: Boolean(companyId), /* WAVE 60 · A-9 */
   });
   const applicationsQ = useQuery<Array<{ status: string }>>({
     queryKey: ["/api/founder/collective/applications", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/collective/applications?companyId=${companyId}`)).json().catch(() => []),
     retry: false,
+    enabled: Boolean(companyId), /* WAVE 60 · A-9 */
   });
 
   const statusBadge = (() => {
@@ -110,7 +119,7 @@ export default function Collective() {
                 "Verified accreditation per regional regulation (US Reg D 506(c), CA NI 45-106, UK FCA, SG MAS, AU ASIC)",
                 "Active investing track record (\u2265 3 rounds in the last 24 months)",
                 "Contribution to chapter meetings and deal reviews",
-                "Hash-chain audit-trail consent (R165 \u00a712)",
+                "Hash-chain audit-trail consent",
               ].map((t) => (
                 <li key={t} className="flex items-start gap-2 text-muted-foreground">
                   <Check className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />

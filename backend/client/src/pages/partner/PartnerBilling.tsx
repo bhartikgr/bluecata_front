@@ -25,6 +25,10 @@ import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 curren
 import { formatMinorOrUnavailable, minorToMajorString } from "@/lib/moneyDisplay"; /* WAVE 21 ITEM 2 + ITEM 5 */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
+/* WAVE 69 · V-3 (R58) — `ApiError.message` is replaced with a generic sentence by
+   `queryClient.ts:63` for anything ≥ 240 chars, and this refusal is 431. The real
+   text lives on `ApiError.payload.message`. */
+import { serverRefusalMessage } from "@/lib/serverRefusalMessage";
 /* WAVE 16 / CP-BRG-07 — a stored FRACTION becomes a displayed percent in ONE
  * place only. The forbidden "guess the unit from the magnitude" normaliser is
  * NOT used here (it is spelled out in server/lib/wave16FeeAggregateWiring.ts,
@@ -110,6 +114,23 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
   });
 
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
+  /* ═══════════════════════════════════════════════════════════════
+     WAVE 69 · V-3 (R58 row 3) — A 409 IS NOT A TRANSIENT FAILURE.
+     ═══════════════════════════════════════════════════════════════
+     Only `403` was ever inspected here, so `commissionPctOrRefuse()`'s 409
+     (`server/partnerConsortiumRoutes.ts:144-162`) fell into the generic branch
+     below and the partner was told to "refresh and try again" — advice that can
+     NEVER work, because a missing tier commission rate is not transient.
+
+     `error.code` survives the boundary intact and is the correct thing to branch
+     on; `error.message` does NOT (the 431-character sentence is ≥ 240 chars, so
+     `queryClient.ts:63` replaces it). The reason is read off the payload. */
+  const planUnresolved =
+    isError &&
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.code === "PARTNER_COMMISSION_RATE_UNRESOLVED";
+  const planUnresolvedReason = planUnresolved ? serverRefusalMessage(error) : null;
   const entries = data?.entries ?? [];
   // v25.33 — derive per-currency totals from the rows (not the single-currency
   // totalsByStatus map) so multi-currency partners see correct summaries.
@@ -140,12 +161,37 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
         </div>
       )}
 
-      {!isForbidden && isError && (
+      {/* WAVE 69 · V-3 — CONDITION NARROWED, COPY UNTOUCHED (R44). "Could not load
+          your commission ledger. Please refresh and try again." is TRUE for the
+          transient failures it was written for (a 500, a dropped connection) and
+          stays on screen for them, byte-identical. It is false ONLY for this one
+          409, and the remedy for "true in general, false in one branch" is to ADD
+          the branch — not to replace the general copy. No allowlist entry. */}
+      {!isForbidden && !planUnresolved && isError && (
         <div
           className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
           data-testid="partner-billing-error"
         >
           Could not load your commission ledger. Please refresh and try again.
+        </div>
+      )}
+
+      {/* WAVE 69 · V-3 — THE SERVER'S OWN SENTENCE, RENDERED, NOT PARAPHRASED.
+          It already names the tier, the exact admin path, the endpoint, and states
+          that nothing has been charged, paid or recorded and no default rate has
+          been assumed. The route file's own comment records that the admin path was
+          verified in the tree, and warns that naming the wrong tab sends the admin
+          to a screen that cannot fix it — so it is NOT restated here. One
+          authority, imported. The fallback below is used only if the body carried
+          no message; it invents no path and no rate. */}
+      {planUnresolved && (
+        <div
+          className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+          role="alert"
+          data-testid="partner-billing-rate-unresolved"
+        >
+          {planUnresolvedReason ??
+            "Your commission figures cannot be computed: no commission rate is configured for your tier. Nothing has been charged, paid or recorded, and no default rate has been assumed. Refreshing will not help — an administrator has to configure the rate for your tier."}
         </div>
       )}
 
@@ -652,7 +698,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
                 {checkout && (
                   <div className="mt-2 text-xs text-[var(--cv-color-text-muted)]" data-testid="subscribe-checkout-started">
                     Payment started ({checkout.gatewayStatus}) for {formatMinor(checkout.amountMinor, checkout.currency)}
-                    {checkout.stubMode ? " — gateway in stub mode, subscription activated immediately." : "."}
+                    {checkout.stubMode ? " — the payment provider is in test mode, so the subscription was activated immediately." : "."}
                   </div>
                 )}
               </div>
@@ -878,6 +924,32 @@ function InvoicesTab({ ready }: { ready: boolean }) {
     (billing.isError && billing.error instanceof ApiError && billing.error.status === 403) ||
     (spvFees.isError && spvFees.error instanceof ApiError && spvFees.error.status === 403);
 
+  /* ══════════════════════════════════════════════════════════════════
+     WAVE 73 · ITEM 3 (finishes WAVE 69 · V-3) — THIS TAB TOLD THE PARTNER THERE
+     WERE NO LINE ITEMS WHEN THE READ HAD BEEN REFUSED.
+     ══════════════════════════════════════════════════════════════════
+     Wave 69 treated ONE of the eight partner billing tabs. On this one the same
+     409 from `commissionPctOrRefuse()` left `billing.data` undefined, `lines`
+     empty, and the tab rendered
+
+         "No invoice line items yet"
+
+     — which is not merely generic copy, it is a FALSE STATEMENT: there are no
+     rows because the server refused to compute them, not because none exist.
+     So the empty state is NARROWED (it still renders, byte-identical, whenever
+     the read genuinely succeeded and returned nothing) and the server's own
+     sentence is APPENDED as a new sibling at the end of the tab.
+
+     Branching on `error.code`, not `error.message`: the 431-character sentence is
+     over `queryClient`'s 240-character gate, so `message` here is the generic
+     substitute. The text is read off the payload through Wave 69's module. */
+  const commissionRefused =
+    billing.isError &&
+    billing.error instanceof ApiError &&
+    billing.error.status === 409 &&
+    billing.error.code === "PARTNER_COMMISSION_RATE_UNRESOLVED";
+  const commissionRefusedReason = commissionRefused ? serverRefusalMessage(billing.error) : null;
+
   const lines: InvoiceLine[] = [
     ...(billing.data?.entries ?? []).map((e) => ({
       id: e.id, date: e.date, kind: "Referral commission", reference: e.dealId,
@@ -931,7 +1003,10 @@ function InvoicesTab({ ready }: { ready: boolean }) {
         </Button>
       </div>
       {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-invoices-loading">Loading…</div>}
-      {!isLoading && lines.length === 0 && (
+      {/* WAVE 73 · ITEM 3 — CONDITION NARROWED, COPY UNTOUCHED (R44). The empty
+          state is true when the read SUCCEEDED and returned nothing, and it still
+          renders for that, word for word. */}
+      {!isLoading && lines.length === 0 && !commissionRefused && (
         <PartnerEmptyState
           title="No invoice line items yet"
           description="Commission and SPV-fee entries appear here as deals are funded and SPVs deployed."
@@ -964,6 +1039,19 @@ function InvoicesTab({ ready }: { ready: boolean }) {
             </table>
           </div>
         </AppCard>
+      )}
+      {/* WAVE 73 · ITEM 3 — APPENDED AT THE END as a new sibling (the guard's
+          ordinal trap: inserting at the head of a container reads as a mass
+          removal). Nothing above is moved, removed or re-nested. */}
+      {commissionRefused && (
+        <div
+          className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+          role="alert"
+          data-testid="partner-invoices-rate-unresolved"
+        >
+          {commissionRefusedReason ??
+            "Your commission line items cannot be computed: no commission rate is configured for your tier. Nothing has been charged, paid or recorded, and no default rate has been assumed. This is not an empty ledger — an administrator has to configure the rate for your tier."}
+        </div>
       )}
     </>
   );

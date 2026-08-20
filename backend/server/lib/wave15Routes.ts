@@ -87,7 +87,7 @@ function liveAuditChainOk(tenantId?: string): { ok: boolean | null; detail: stri
 }
 
 function actorOf(req: Request): string {
-  return String((req as any).user?.id ?? (req as any).userId ?? getUserContext(req)?.userId ?? "unknown");
+  return String((req as any).user?.id ?? (req as any).userId ?? getUserContext(req)?.userId ?? "u_unknown");
 }
 
 function sessionUserId(req: Request): string {

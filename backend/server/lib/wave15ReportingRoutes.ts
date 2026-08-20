@@ -34,7 +34,7 @@ const VEHICLE_KINDS: readonly string[] = Object.freeze(["spv", "fund", "company"
 
 function actorOf(req: Request): string {
   const c = (req as any).userContext ?? {};
-  return String(c?.userId ?? c?.identity?.email ?? "unknown");
+  return String(c?.userId ?? c?.identity?.email ?? "u_unknown");
 }
 
 function today(): string {

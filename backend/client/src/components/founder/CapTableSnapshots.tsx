@@ -103,6 +103,18 @@ export default function CapTableSnapshots({ companyId, sym = "$" }: { companyId:
           <p className="text-xs text-rose-600">Couldn’t load projected / previous cap tables.</p>
           <Button variant="outline" size="sm" onClick={() => q.refetch()} data-testid="snapshots-retry">Retry</Button>
         </CardContent>
+        {/* WAVE 60 · A-5 (OWNER RULING R51 — APPEND ONLY). R44 was applied to the
+            sentence above and it did NOT meet the bar for a REPLACE: it is true
+            when it renders, it names the thing that failed, and it already
+            offers a working Retry. So it, its <p>, its <Button> and both
+            data-testids are BYTE-IDENTICAL, and this is one appended sentence
+            distinguishing a load failure from an empty list. Appended as the
+            LAST child of <Card> (a second CardContent, not a third item spliced
+            into the justify-between row above) so no existing container ordinal
+            shifts — see the WAVE 55b 18-panel incident. Allowlist stays 43. */}
+        <CardContent className="px-4 pb-4 pt-0" data-testid="snapshots-error-note">
+          <p className="text-xs text-muted-foreground">Nothing has been changed — this is a loading failure, not an empty list.</p>
+        </CardContent>
       </Card>
     );
   }

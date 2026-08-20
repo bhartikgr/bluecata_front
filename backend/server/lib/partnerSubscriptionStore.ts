@@ -60,6 +60,8 @@ import {
   supersedeGrandfatheredForInsert,
 } from "./partnerBillingStore";
 import { resolvePartnerEffectivePlan, EffectivePlanError } from "./partnerEffectivePlan";
+/* WAVE 56b — see the catch in quotePartnerCheckout. */
+import { isUnknownCommissionTierError } from "./partnerCommissionRateResolver";
 
 /* ==========================================================================
  * 0. Schema readiness (A-22 — the sacred bootstrap does not run 0167).
@@ -223,6 +225,18 @@ export function quotePartnerCheckout(input: {
       cycle: input.cycle,
     });
   } catch (err) {
+    /* WAVE 56b — Wave 56's unresolved-commission-rate refusal is NOT an
+       EffectivePlanError, so it fell straight through this catch and the
+       subscribe/checkout routes reported it as a generic 500
+       PARTNER_SUBSCRIBE_FAILED. Same fault, correct status and name: 409, tier
+       named, no rate invented. */
+    if (isUnknownCommissionTierError(err)) {
+      throw new PartnerCheckoutError(
+        "PARTNER_COMMISSION_RATE_UNRESOLVED",
+        (err as Error).message,
+        409,
+      );
+    }
     if (err instanceof EffectivePlanError) {
       throw new PartnerCheckoutError(
         "PARTNER_SUBSCRIPTION_NOT_AVAILABLE",

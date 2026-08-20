@@ -1497,6 +1497,31 @@ export function registerBridgeRoutes(app: Express): void {
      {"apply":true} to mutate), idempotent, audited with an explicit reason.
      Never DELETEs, never emits, never presents an archive as a delivery. */
   app.post("/api/admin/bridge/archive", requireAdmin, async (req: Request, res: Response) => {
+    /* REPAIR WAVE 1 · ITEM 3 — FAIL CLOSED ON IDENTITY, BEFORE ANYTHING MUTATES.
+     *
+     * This handler used to write the audit entry by nullish-coalescing
+     * `(req as any).userContext?.userId` onto the seeded platform-admin id.
+     * That id is a REAL tenant-bound admin (server/lib/seedDemoData.ts:124,
+     * tenant_admin_capavate / admin@capavate.io) and is enumerated in
+     * server/lib/feeSettlementAuthority.ts:590 TEST_ONLY_PLATFORM_ADMIN_IDS — so
+     * a row written by that fallback was indistinguishable from a genuine admin
+     * action. `server/lib/requireIdentity.ts:1-27` bans exactly this pattern.
+     *
+     * The check is placed HERE, at handler entry, and not at the original line,
+     * for a specific reason: the audit append at the bottom of this handler sits
+     * inside a `try { … } catch { log.warn }`, so a throw raised there would be
+     * SWALLOWED and the audit entry silently lost. Refusing before
+     * `archiveBridgeOutbox()` runs means we neither fabricate an actor nor drop
+     * an audit record. `requireAdmin` (server/lib/authMiddleware.ts:77-88) always
+     * assigns req.userContext before next(), so under today's mount this branch
+     * is unreachable and behaviour is unchanged. */
+    const actorUserId = (req as Request & { userContext?: { userId?: string } })
+      .userContext?.userId;
+    if (!actorUserId) {
+      return res
+        .status(401)
+        .json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    }
     const apply =
       req.query.apply === "1" ||
       req.query.apply === "true" ||
@@ -1514,7 +1539,10 @@ export function registerBridgeRoutes(app: Express): void {
         // module, so a static import would close an import cycle.
         const { appendAdminAudit } = await import("./adminPlatformStore");
         appendAdminAudit(
-          (req as any).userContext?.userId ?? "u_admin",
+          /* REPAIR WAVE 1 · ITEM 3 — was a nullish-coalesce onto the real seeded
+             platform-admin identity (see the fail-closed note at the top of this
+             handler). Now the verified session identity, guaranteed non-empty. */
+          actorUserId,
           "bridge_outbox",
           "bridge.outbox.archived",
           {
@@ -1563,13 +1591,117 @@ export function registerBridgeRoutes(app: Express): void {
     res.json({ eventId: e.envelope.eventId, hmac: e.hmac });
   });
 
-  // Sprint 16 A4 — demo reset + replay (admin-SES-gated for safety).
-  /* v25.16 NC4 — was guarded only by a trivial 8-char string length check on
-     x-admin-ses; replaced with proper requireAdmin session middleware. */
+  /* ── Sprint 16 A4 — demo reset + replay. ────────────────────────────────
+   *
+   * GUARD, STATED HONESTLY (WAVE 57c · ITEM 6 — R37 approved order #6):
+   * This endpoint is `requireAdmin`-gated and NOTHING MORE. The previous comment
+   * here said "admin-SES-gated for safety", which was FALSE — the x-admin-SES
+   * check was removed in v25.16 NC4 and replaced with `requireAdmin`; the comment
+   * was left behind claiming a control that does not exist. A false comment about
+   * a destructive endpoint's guard is worse than no comment, because the next
+   * reader trusts it.
+   *
+   * WHAT IT DESTROYS: `resetDemoState()` (scripts/reset-demo.ts:23) calls
+   * `_testBridge.resetChain()` (:1659 of this file), which resets the running
+   * bridge HMAC head `lastChainHash` to 64 zeros and truncates the in-memory
+   * outbox and inbox, then re-seeds DEMO events. The durable
+   * `bridge_event_history` rows keep their PRE-RESET hashes, so chain continuity
+   * is broken and cannot be un-broken.
+   *
+   * WHAT THIS WAVE ADDS — all three copied from the reference implementation on
+   * this same router, `POST /api/admin/bridge/archive` (:1499), rather than
+   * invented here:
+   *   1. FAIL CLOSED ON IDENTITY before anything mutates.
+   *   2. DRY RUN BY DEFAULT — it now takes `?apply=1` / `{"apply":true}` and
+   *      otherwise reports exactly what it WOULD do (including the current chain
+   *      head it would discard) and changes nothing. The endpoint is not
+   *      disabled; its default simply stops being "destroy now".
+   *   3. AUDITED with a bound actor, recording the chain head BEFORE the reset,
+   *      so the break is documented rather than merely happening.
+   *
+   * R26 / WAVES 46a-46b COORDINATION — checked, and there is no interference:
+   * R26's sequencing governs the `audit_log` chain re-seed (`audit_chain_genesis`,
+   * under R2) and then the bridge ENABLEMENT (`COLLECTIVE_WEBHOOK_URL` /
+   * `_SECRET` in SACRED server/lib/bridgeRuntime.ts) and the backlog
+   * archive/discard via `/api/admin/bridge/archive` + `/api/admin/bridge/dlq/clear`.
+   * This handler touches NONE of those: it does not read or write
+   * `audit_chain_genesis`, does not alter credentials, and is not part of the
+   * archive/discard path. If anything it protects the sequence — firing it during
+   * R26 step 4 would inject demo events into a first-ever live receiver, and it
+   * is now dry-run by default. */
   app.post("/api/admin/sync/reset-demo", requireAdmin, async (req: Request, res: Response) => {
+    /* 1 — FAIL CLOSED ON IDENTITY (Repair Wave 1 · Item 3 shape, :1500). */
+    const actorUserId = (req as Request & { userContext?: { userId?: string } })
+      .userContext?.userId;
+    if (!actorUserId) {
+      return res
+        .status(401)
+        .json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    }
+
+    /* 2 — DRY RUN BY DEFAULT (`/api/admin/bridge/archive` shape). */
+    const apply =
+      req.query.apply === "1" ||
+      req.query.apply === "true" ||
+      (req.body as { apply?: unknown } | undefined)?.apply === true;
+
+    const chainHeadBefore = lastChainHash;
+    const outboxBefore = outbox.length;
+    const inboxBefore = inbox.length;
+
+    if (!apply) {
+      return res.json({
+        ok: true,
+        dryRun: true,
+        applied: false,
+        wouldDo: {
+          resetChainHeadTo: "0".repeat(64),
+          chainHeadBefore,
+          discardOutboxRows: outboxBefore,
+          discardInboxRows: inboxBefore,
+          reseedDemoEvents: true,
+          irreversible:
+            "bridge_event_history retains the pre-reset hashes, so chain continuity cannot be restored",
+        },
+        hint: 'Re-send with ?apply=1 (or {"apply":true}) to actually reset.',
+        outbox: outboxBefore,
+        inbox: inboxBefore,
+      });
+    }
+
     const { resetDemoState } = await import("../scripts/reset-demo");
     const summary = resetDemoState();
-    res.json({ ok: summary.ok, summary, outbox: outbox.length, inbox: inbox.length });
+
+    /* 3 — AUDIT with a bound actor, naming the chain head that was discarded. */
+    try {
+      const { appendAdminAudit } = await import("./adminPlatformStore");
+      appendAdminAudit(actorUserId, "bridge_chain", "bridge.demo_state.reset", {
+        chainHeadBefore,
+        chainHeadAfter: lastChainHash,
+        outboxBefore,
+        inboxBefore,
+        outboxAfter: outbox.length,
+        inboxAfter: inbox.length,
+        entitiesEmitted: summary.entitiesEmitted,
+        warnings: summary.warnings,
+        chainContinuityBroken: true,
+      });
+    } catch (err) {
+      res.setHeader("X-Audit-Warning", "audit_log_write_failed");
+      log.warn(
+        `[bridgeStore.reset-demo] audit append failed: ${(err as Error).message}`,
+      );
+    }
+
+    res.json({
+      ok: summary.ok,
+      dryRun: false,
+      applied: true,
+      chainHeadBefore,
+      summary,
+      outbox: outbox.length,
+      inbox: inbox.length,
+    });
   });
 
   // v24.5 GAP-2 — Admin-visible bridge event history (circular buffer, 1000 rows).

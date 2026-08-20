@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StateBadge } from "@/components/common";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 60 · A-3 / A-4 */
 import {
  ArrowLeft, Users, Activity, BarChart3, FileText, Check, X, ShieldCheck,
  Inbox, AlertTriangle, MessageSquare, Building2, Target, Layers,
@@ -503,8 +504,31 @@ export default function InvestorCompanyDetail({
  <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Co-investors on this cap table</CardTitle></CardHeader>
  <CardContent>
  {coMembers.isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
- {coMembers.isError && <div className="text-sm text-muted-foreground">Co-member list unavailable in preview</div>}
- {!coMembers.isLoading && !coMembers.isError && asArray(coMembers.data).length === 0 && (
+ {/* WAVE 60 · A-4 — CAUSE MISATTRIBUTION, not an empty-vs-failed defect. This
+     line already fired only on isError, but it blamed "preview", and `preview`
+     is a real named mode in this file (:127 `mode?: "preview"`, :130
+     `isPreview`) that this line was NOT gated on. On the ordinary investor
+     route (App.tsx:783) the page is NOT in preview, so the sentence named a
+     cause that did not apply — false in the majority mount. R44 row 1 would
+     permit a REPLACE; instead the literal and its <div> are kept BYTE-IDENTICAL
+     and only the condition narrows, and a real refusal is ADDED for the
+     non-preview mount. No allowlist entry. */}
+ {coMembers.isError && isPreview && <div className="text-sm text-muted-foreground">Co-member list unavailable in preview</div>}
+ {(coMembers.isError || coMembers.fetchStatus === "paused") && !isPreview && (
+ <LoadFailedRefusal
+  what="the co-investor list"
+  testId="w60-coinvestors-error"
+  onRetry={() => void coMembers.refetch()}
+  isRetrying={coMembers.isFetching}
+ />
+ )}
+ {/* WAVE 60 · A-4 — condition narrowed from `!isLoading && !isError` to
+     `isSuccess`. The copy is UNCHANGED and was already honest; the gate was
+     not, because a PAUSED query is neither loading nor errored, so an offline
+     investor was told this company has no co-investors. Narrowing is also
+     required so the refusal added above and this sentence can never render at
+     the same time. */}
+ {coMembers.isSuccess && asArray(coMembers.data).length === 0 && (
  <div className="text-sm text-muted-foreground">No co-investors found for this company.</div>
  )}
  {asArray(coMembers.data).map(m => (
@@ -1016,7 +1040,24 @@ function CapTableMessagesPanel({
  if (q.isLoading) {
  return <div className="text-sm text-muted-foreground py-12 text-center">Loading cap-table messages…</div>;
  }
- if (!data || data.exists === false) {
+ /* WAVE 60 · A-3 — `!data` is TRUE on ERROR and on PAUSED, so a failed request
+  * printed a sentence asserting a channel DOES NOT EXIST. The sentence is true
+  * when `exists === false`, so it is kept byte-identical below and only its
+  * condition narrows; this refusal is ADDED for the failure case alone. The
+  * members-only gate that follows is untouched. `!data` joins the failure branch
+  * (not the "does not exist" branch): with loading, error and paused already
+  * handled, an absent body is not evidence of absence. */
+ if (q.isError || q.fetchStatus === "paused" || !data) {
+ return (
+  <LoadFailedRefusal
+   what="the cap-table message channel"
+   testId="w60-captable-channel-error"
+   onRetry={() => void q.refetch()}
+   isRetrying={q.isFetching}
+  />
+ );
+ }
+ if (data.exists === false) {
  return (
  <div className="text-sm text-muted-foreground py-12 text-center">
  No cap-table message channel exists for this company yet.

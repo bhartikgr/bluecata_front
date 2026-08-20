@@ -207,7 +207,7 @@ export default function ActivityPage() {
     <>
       <PageHeader
         title="Activity log"
-        description="Append-only audit ledger. Hash-chained per R165 §12 in production."
+        description="Append-only audit ledger. Every entry is hash-chained, so the record cannot be altered after the fact."
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Activity" }]}
         actions={
           <div className="flex flex-col items-end gap-1">

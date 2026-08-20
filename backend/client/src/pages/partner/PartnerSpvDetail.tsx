@@ -5,6 +5,7 @@
  */
 import { useState } from "react";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
+import { moneyOrNotProvided } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient"; /* v25.14 NH3 — needed for queryFn */
@@ -340,7 +341,9 @@ export default function PartnerSpvDetail() {
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
-            <div className="font-mono">{formatMinor(s.targetRaiseMinor ?? 0, s.currency)}</div>
+            {/* WAVE 55 · R6 / 55-Q1 — prominent readout: named refusal, not a dash.
+                See PartnerFundDetail.tsx for the identical tile. */}
+            <div className="font-mono">{moneyOrNotProvided(s.targetRaiseMinor, s.currency)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>

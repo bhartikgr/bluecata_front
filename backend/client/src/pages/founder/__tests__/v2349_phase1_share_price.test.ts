@@ -54,6 +54,17 @@ describe("v23.4.9 Phase 1 — share price is derived & read-only for priced roun
 
   it("explains the auto-calculation in the field tooltip", () => {
     expect(ROUND_NEW).toMatch(/Calculated automatically/);
-    expect(ROUND_NEW).toMatch(/pre-money valuation ÷ shares authorized/);
+    /* WAVE 52 · item 2a — THIS ASSERTION WAS PINNING A FALSE SENTENCE.
+       It required the tooltip to read "pre-money valuation ÷ shares authorized".
+       Price per share is pre-money ÷ fully-diluted PRE-MONEY shares; it is never
+       divided by the new shares this round issues. "Shares authorized" was the
+       third recorded mislabelling of the same quantity (RoundNew.tsx:158, the
+       price placeholder, and this tooltip), and correcting it is commitment 3 of
+       §10 of the response already sent to the external reviewer. The intent of
+       this test — that the field explains its own derivation — is preserved and
+       strengthened: it now also asserts the negation, so the wrong denominator
+       cannot come back. */
+    expect(ROUND_NEW).toMatch(/pre-money valuation ÷ fully-diluted PRE-MONEY shares/);
+    expect(ROUND_NEW).not.toMatch(/pre-money valuation ÷ shares authorized/);
   });
 });

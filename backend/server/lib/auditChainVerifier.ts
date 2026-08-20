@@ -33,6 +33,7 @@
  */
 import { createHash } from "node:crypto";
 import { getDb } from "../db/connection";
+import { ensureRepair1AuditActorBindingSchema } from "./applyRepair1AuditActorBindingSchema";
 import {
   auditLog as auditLogTable,
   dscVotes as dscVotesTable,
@@ -505,6 +506,21 @@ export function verifyChainForTable(
   let rows: any[] = [];
   try {
     const db: any = getDb();
+    /* REPAIR WAVE 1 · ITEM 1 — this walker selects * via drizzle, so once
+       `audit_log.hash_version` exists in the Drizzle table definition the
+       generated column list names it. A handle built from the SACRED inline DDL
+       in server/db/connection.ts has never run migration 0188, so ensure the
+       column first. Read-only posture is preserved: this is additive DDL that
+       the migration would have applied anyway, and it touches no row's hash.
+       Linkage-only for audit_log, so the versioned body change does not affect
+       this verifier's arithmetic. */
+    if (cfg.name === "audit_log") {
+      try {
+        ensureRepair1AuditActorBindingSchema();
+      } catch {
+        /* non-fatal — the read below reports its own failure hint */
+      }
+    }
     // Read-only transaction: select rows in chronological order, apply filters.
     db.transaction((tx: any) => {
       let q = tx.select().from(cfg.table);

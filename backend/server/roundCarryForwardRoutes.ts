@@ -31,6 +31,43 @@ import { createHash, randomBytes } from "node:crypto";
 import { requireAuth } from "./lib/authMiddleware";
 import { getUserContext } from "./lib/userContext";
 import { getRoundById, updateRound, closeRound, UPDATE_ROUND_WHITELIST_KEYS, ACTIVE_LIVE_ROUND_STATES, isOneOpenExemptRound, listActiveLivePricedRounds, OneOpenRoundConflictError } from "./roundsStore"; /* v25.17 Lane A NH7 — verify round↔company binding; v25.20 Lane 4 — persist accepted fields onto the round; v25.48.2 Q4c/MF4 one-open-round guard (atomic in-tx) */
+/* WAVE 58f · F1 (R21) — THE SAME shared range rule the other two round writers
+   use. IMPORTED, never re-implemented: `POST /api/rounds` and
+   `PATCH /api/rounds/:id/terms` both import these two functions from
+   `@shared/roundMathEngineAdapter` at `server/routes.ts:494`, and a second copy
+   of a financial range rule is the R21 defect class this build exists to remove.
+   See the block at the PATCH handler below for why this route needed them. */
+/* WAVE 61b · R50 — the sibling term bounds, same module, same reason: this
+   route hands EVERY patch key to `updateRound`, whose extras whitelist persists
+   `valuationCap` / `maturityMonths` / `strikePrice` / `expiryYears` and whose
+   column whitelist persists `fdPreMoneyShares`. It is the THIRD writer. */
+import {
+  validateDiscountPercentAsWritten,
+  validateInterestRatePercentAsWritten,
+  validateMaturityMonths,
+  validateExpiryYears,
+  validateStrikePrice,
+  validateValuationCap,
+  validateFdPreMoneyShares,
+  /* WAVE 68 · R56 — the date-shaped WARNING for the two money terms. */
+  dateShapedValueWarning,
+  /* WAVE 76 · R60 / D5 — the two CLOSED vocabularies. THIS route is the one that
+     was measured storing `"FULL_RATCHET"`, `"post money"` and the number `7` into
+     them on a 200; see the block at its use site. */
+  validateAntiDilutionTypeStored,
+  validateSafeCapTypeStored,
+  /* WAVE 77 · R71 — the absolute maturity date is DERIVED from `maturityMonths`
+     and is not independently writable. THIS handler is the one Wave 76 measured
+     accepting `maturityDate: "1999-01-01"` and `"not-a-date"` on a 200, bypassing
+     the future-date refusal `POST /api/rounds` makes. The refusal object is the
+     SAME imported constant all three writers use — one rule, not three copies. */
+  MATURITY_DATE_NOT_WRITABLE,
+  type TermValueVerdict,
+} from "@shared/roundMathEngineAdapter";
+/* WAVE 81 · ITEM 2 (D4) — WRITER 2 OF 2 needs the SAME fence as writer 1, because
+   this handler hands every patch key to `updateRound` and `seniority` joined
+   `UPDATE_EXTRAS_WHITELIST` in the same wave. Imported, never restated. */
+import { validateSeniorityRankStored } from "./lib/roundStoredTerms";
 import { listPendingCommitments, lapsePendingWithinTx, emitLapsedMutations, type PendingCommitment } from "./lib/roundClosePendingLapse"; /* v25.48.2 Q13/MF5/MF6 — warn + atomically lapse un-confirmed soft-circles inside the close tx (parallel module, no cap-table math) */
 /* v25.17 Lane A NH8 — computeCarryForwardLive is already imported from
    roundCarryForwardEngine below and reused for server-side digest recompute. */
@@ -68,6 +105,56 @@ import {
   roundClosedBody,
   roundClosedKey,
 } from "./lib/wave17MilestoneAutoTriggers";
+
+/* WAVE 61b · R50 — ONE table, used by BOTH writers in this file (the founder
+   PATCH and the carry-forward accept), so they cannot bound different sets. */
+const R50_BOUNDED_TERMS: ReadonlyArray<readonly [string, (raw: unknown) => TermValueVerdict]> = [
+  ["valuationCap", validateValuationCap],
+  ["maturityMonths", validateMaturityMonths],
+  ["strikePrice", validateStrikePrice],
+  ["expiryYears", validateExpiryYears],
+  ["fdPreMoneyShares", validateFdPreMoneyShares],
+];
+
+/* ═════════════════════════════════════════════════════════════════
+   WAVE 76 · R60 / D5 — THE TWO CLOSED VOCABULARIES, ON THE LOOSEST WRITER.
+   ═════════════════════════════════════════════════════════════════
+   Wave 76's brief said a founder "cannot correct" these two terms after creation.
+   MEASUREMENT SAID OTHERWISE (`build_log/wave76/W76_PROBE_TRANSCRIPT.txt`, probe B):
+   the founder round-patch handler below — which destructures
+   `const { expectedVersion, ...patch }` and hands every remaining key to
+   `updateRound` — has ALWAYS persisted both, and validated NEITHER:
+
+   (The route's own path is deliberately NOT spelled out in this comment. Test
+   `W58F-F1enum3` slices this file BETWEEN the accept route and the first literal
+   occurrence of that path string to prove writer 4 cannot persist a term; a second
+   occurrence above the accept route silently empties that slice and the proof
+   passes vacuously. Found by running the suite, not by reasoning.)
+
+     antiDilutionType = "full_ratchet"  -> HTTP 200, stored "full_ratchet"
+     antiDilutionType = "FULL_RATCHET"  -> HTTP 200, stored "FULL_RATCHET"
+     antiDilutionType = 7               -> HTTP 200, stored 7
+     safeType         = "post money"    -> HTTP 200, stored "post money"
+
+   The last three are the dangerous ones: `resolvePreferredTerms` throws
+   `invalid_anti_dilution_type` on any token outside the closed list, so this route
+   could put a round into a state where the cap-table path REFUSES TO COMPUTE, and
+   the edit-terms screen could not undo it because that route dropped the key.
+
+   This is the FOURTH time this handler has been found to be the loosest of the
+   writers — Wave 58f (the corrupt discount came in here), Wave 61b ("it was not in
+   the brief"), Wave 68, and now Wave 76. The rule is IMPORTED, never restated, so
+   the three writers cannot drift.
+
+   ABSENT IS UNTOUCHED, and that is load-bearing here: this is a sparse PATCH over
+   an open field bag and almost every call carries neither key. The stored value is
+   NOT rewritten by validation — `patch` reaches `updateRound` exactly as sent,
+   matching the percent and R50 blocks above it. Validation here decides ACCEPT or
+   REFUSE and nothing else. */
+const W76_CLOSED_VOCABULARY_TERMS: ReadonlyArray<readonly [string, (raw: unknown) => TermValueVerdict]> = [
+  ["antiDilutionType", validateAntiDilutionTypeStored],
+  ["safeType", validateSafeCapTypeStored],
+];
 
 // ─── Audit log ────────────────────────────────────────────────────────────
 
@@ -655,6 +742,19 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
         if (whitelistKeys.has(k)) filteredPatch[k] = v;
       }
 
+      /* WAVE 61b · R50 — WRITER 4 OF 4. The founder supplies `acceptedValue` for
+         every accepted/overridden field, and it lands in `filteredPatch`
+         unvalidated. The audit digest pins the SUGGESTION, not the value the
+         founder chose instead, so an overridden `fdPreMoneyShares` of 20260707
+         reached `updateRound` on a 409-clean request. Same imported rule, same
+         refusal by name; absent keys are untouched. */
+      for (const [key, validate] of R50_BOUNDED_TERMS) {
+        const v = validate(filteredPatch[key]);
+        if (!v.ok) {
+          return res.status(400).json({ ok: false, error: v.error, message: v.message });
+        }
+      }
+
       if (Object.keys(filteredPatch).length > 0) {
         const upd = updateRound(String(roundId), filteredPatch, { actor });
         /* NO_CHANGES is benign (the accepted values already matched the round).
@@ -788,6 +888,157 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
          fallback), which rolls back the activation. */
       const enforceOneOpen = Boolean(targetState && ACTIVE_LIVE_ROUND_STATES.has(targetState) && !activatingExempt);
 
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 58f · F1 — THE THIRD WRITER. THIS IS THE ROUTE THE DATE CAME IN ON.
+         ═══════════════════════════════════════════════════════════════════════
+         WHAT WAS WRONG. Wave 58e closed `POST /api/rounds` and
+         `PATCH /api/rounds/:id/terms` and reported "both HTTP writers closed".
+         THERE WERE THREE. This handler destructures `const { expectedVersion,
+         ...patch } = body;` and hands EVERY remaining key to
+         `roundsStore.updateRound`, whose `UPDATE_EXTRAS_WHITELIST` persists
+         `discount` and `interestRate` into `rounds.extras_json`. It called
+         NEITHER validator. So `PATCH /api/founder/rounds/:id` with
+         `{"discount":20260707}` was accepted and persisted — an eight-digit
+         date (2026-07-07) landing in a percentage field, which through the
+         cap-table engine's × (1 − d) prices a $1.00 round at −$202,606.07 a
+         share. This is a live-observable value on `rnd_64e9d6ad728a`.
+
+         THE RULE, IMPORTED AND NOT RESTATED (R21). The two functions above are
+         the SAME ones the other two routes call. Nothing about the rule is
+         re-typed here, so the three writers cannot drift:
+           · discount      — PERCENT-AS-WRITTEN (R16/R30), range [0, 100).
+           · interestRate  — PERCENT-AS-WRITTEN, range [0, 100].
+           · REFUSED BY NAME with HTTP 400 and the field's own error code
+             (`invalid_discount` / `invalid_interestRate`) plus a sentence that
+             says what the field means. Never clamped, never rescaled: R16
+             forbids reading a unit off a magnitude, and guessing whether
+             `20260707` meant 20% or 2,000,000% is the defect itself.
+           · THE MARKET NORM (10–20%) IS WARNED, NEVER BLOCKED (R30.5). A legal
+             but unusual figure is stored EXACTLY as written and the reason is
+             returned in `termWarnings`. A warning that blocks is a block.
+
+         ABSENT IS UNTOUCHED, AND THAT IS LOAD-BEARING HERE. This is a PATCH
+         over an open-ended field bag: most calls to it carry neither key. Both
+         validators return `{ ok: true, percent: "" }` for `null` / `undefined` /
+         `""`, and nothing below writes a value the caller did not send — a
+         missing field is never reset to zero. A 0% discount and NO discount are
+         different facts about a contract.
+
+         THE STORED VALUE IS NOT REWRITTEN BY VALIDATION. Unlike
+         `PATCH /api/rounds/:id/terms`, which assigns `Number(dv.percent)`, this
+         route leaves `patch` alone and lets `updateRound` persist what the
+         caller sent. Validation here decides ACCEPT or REFUSE and nothing else,
+         so no value is silently restated on its way through. */
+      const termWarnings: string[] = [];
+      {
+        const dv = validateDiscountPercentAsWritten((patch as Record<string, unknown>).discount);
+        if (!dv.ok) {
+          return res.status(400).json({ ok: false, error: dv.error, message: dv.message });
+        }
+        if (dv.warning) termWarnings.push(dv.warning);
+        const iv = validateInterestRatePercentAsWritten((patch as Record<string, unknown>).interestRate);
+        if (!iv.ok) {
+          return res.status(400).json({ ok: false, error: iv.error, message: iv.message });
+        }
+        if (iv.warning) termWarnings.push(iv.warning);
+      }
+      /* ════════════════════════════════════════════════════════════════
+         WAVE 61b · R50 — WRITER 3 OF 4, AND IT WAS NOT IN THE BRIEF.
+         ════════════════════════════════════════════════════════════════
+         R50 names TWO writers — the edit-terms PATCH and the create route. Wave
+         58f had already proved there are THREE, for exactly these fields' two
+         percent siblings, and the block above is its fix. The same argument
+         applies verbatim to the five R50 fields: `updateRound`'s
+         `UPDATE_EXTRAS_WHITELIST` contains `valuationCap`, `maturityMonths`,
+         `strikePrice` and `expiryYears`, and `UPDATE_WHITELIST` contains
+         `fdPreMoneyShares`. Before this block, this route validated NONE of
+         them — not even for NaN or a negative, which the other two writers had
+         rejected since v23.7. It was the loosest of the three.
+
+         The rule is IMPORTED, never restated (R21). ABSENT IS UNTOUCHED, which
+         is load-bearing here: this is a sparse PATCH over an open field bag and
+         most calls carry none of these keys. The stored value is NOT rewritten
+         by validation — `patch` is passed to `updateRound` untouched, exactly as
+         the percent block above does, so nothing is silently restated. */
+      {
+        for (const [key, validate] of R50_BOUNDED_TERMS) {
+          const v = validate((patch as Record<string, unknown>)[key]);
+          if (!v.ok) {
+            return res.status(400).json({ ok: false, error: v.error, message: v.message });
+          }
+        }
+      }
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 77 · R71 — WRITER 3 OF 3. THE BYPASS WAVE 76 MEASURED, CLOSED.
+         ═══════════════════════════════════════════════════════════════════════
+         `maturityDate` is on `UPDATE_EXTRAS_WHITELIST`, this handler destructures
+         `{ expectedVersion, ...patch }` and hands every key to `updateRound`, and
+         it applied NO date validation at all — so a founder could store a maturity
+         in the past by editing, after creation had refused exactly that value
+         (`build_log/wave76/W76_FIELD_DISPOSITION.md` §1.4). R71 makes the absolute
+         date derived from `maturityMonths`, so it is refused BY NAME here, with the
+         imported sentence, exactly as at the other two writers. ABSENT IS
+         UNTOUCHED: a patch that does not mention the key is unaffected, and a
+         round that already stores a legacy date keeps it and keeps displaying it. */
+      if ((patch as Record<string, unknown>)["maturityDate"] !== undefined) {
+        return res.status(400).json({ ok: false, ...MATURITY_DATE_NOT_WRITABLE });
+      }
+      /* WAVE 76 · R60 / D5 — the two CLOSED vocabularies, refused by name on this
+         writer for the first time. The list, the codes and the sentences are the
+         imported ones (declared at `W76_CLOSED_VOCABULARY_TERMS` above, which
+         records the measured transcript of what this handler used to accept). */
+      {
+        for (const [key, validate] of W76_CLOSED_VOCABULARY_TERMS) {
+          const v = validate((patch as Record<string, unknown>)[key]);
+          if (!v.ok) {
+            return res.status(400).json({ ok: false, error: v.error, field: key, message: v.message });
+          }
+        }
+      }
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 81 · ITEM 2 (D4) — WRITER 2 OF 2. THE FENCE ARRIVES WITH THE KEY.
+         ═══════════════════════════════════════════════════════════════════════
+         `seniority` joined `roundsStore.UPDATE_EXTRAS_WHITELIST` in this wave so
+         that `PATCH /api/rounds/:id/terms` could stop discarding it. This handler
+         destructures `{ expectedVersion, ...patch }` and hands EVERY remaining key
+         to `updateRound`, so without this block the same edit would have turned
+         this route into an UNVALIDATED writer for a term that decides the order in
+         which classes are paid at an exit — `{"seniority": 3.5}` or
+         `{"seniority": 500}` accepted and stored, and then read back as `null` by
+         `roundStoredTerms` so the waterfall refuses with the value sitting on the
+         row. That is precisely the shape Wave 76 measured on this route for
+         `antiDilutionType`, and the reason the whitelist entry and the fence ship
+         together rather than one wave apart.
+
+         SAME IMPORTED SENTENCE, SAME CODE, SAME DOMAIN as writer 1. ABSENT IS
+         UNTOUCHED: a patch that does not mention the key is unaffected, and
+         `null` still reaches `updateRound` as an explicit removal. */
+      {
+        const sv = validateSeniorityRankStored((patch as Record<string, unknown>)["seniority"]);
+        if (!sv.ok) {
+          return res.status(400).json({ ok: false, error: sv.error, field: "seniority", message: sv.message });
+        }
+      }
+      /* ══════════════════════════════════════════════════════════════════════
+         WAVE 68 · R56 — WRITER 3 OF 3. THE DATE-SHAPED WARNING.
+         ══════════════════════════════════════════════════════════════════════
+         This is the LOOSEST of the four R50 writers (Wave 61b §3) and it is the
+         route the corrupt date came in on (Wave 58f). The value is ACCEPTED and
+         persisted exactly as sent — R56 warns, it does not block, and this is
+         explicitly NOT R42. The sentence is imported, not restated, so all three
+         writers say the same thing.
+
+         WRITER 4 (`POST /api/founder/rounds/:roundId/carry-forward/accept`) is
+         deliberately NOT given this warning: its patch is filtered to
+         `UPDATE_ROUND_WHITELIST_KEYS`, so the only R50 field it can persist is
+         `fdPreMoneyShares` — a SHARE COUNT, which R56 does not cover (money
+         fields only) and which no bound or shape test can protect (R50's own
+         note). Recorded rather than silently skipped. */
+      for (const _k of ["valuationCap", "strikePrice"] as const) {
+        const _w = dateShapedValueWarning(_k, (patch as Record<string, unknown>)[_k]);
+        if (_w) termWarnings.push(_w);
+      }
+
       const result = updateRound(String(id), patch, {
         actor: owned.actor,
         expectedVersion: typeof expectedVersion === "string" ? expectedVersion : undefined,
@@ -824,7 +1075,14 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
           rejectedKey: result.rejectedKey,
         });
       }
-      return res.status(200).json({ ok: true, round: result.round });
+      /* WAVE 58f · F1 — warnings travel WITH the success, and only when there
+         are any: the key is omitted entirely on a clean save so no existing
+         caller sees a new empty array. Same shape as the other two writers. */
+      return res.status(200).json({
+        ok: true,
+        round: result.round,
+        ...(termWarnings.length > 0 ? { termWarnings } : {}),
+      });
     },
   );
 

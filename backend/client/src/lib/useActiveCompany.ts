@@ -33,7 +33,13 @@ export type ActiveCompanyResp = {
       raisedThisYearUsd: number;
       dataroomFiles: number;
       pendingSoftCircles: number;
-      ownershipPct: number;
+      /* WAVE 75 · ITEM 1 (R70/R47) — `number | null`. The server now COMPUTES this
+         from the cap-table engine on every read (`server/multiCompanyStore.ts`
+         → `withComputedOwnership`), and sends `null` when the engine has nothing to
+         compute from. `Dashboard.tsx:283` already narrows `== null` and
+         `fmtPct(null, 2)` renders the platform's em-dash, so an unknown ownership
+         reaches the founder as `—` rather than as a fabricated `100.00%`. */
+      ownershipPct: number | null;
     };
     collective: { status: string; memberSince?: string };
     billing: {

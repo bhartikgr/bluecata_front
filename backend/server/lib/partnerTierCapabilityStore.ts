@@ -48,6 +48,8 @@
 //   write, mirror or "harmonise" it.
 
 import { wave45Db } from "./applyWave45PricingSchema";
+/* WAVE 56 (R21/R36) — the tier domain is DATA. See partnerTierDomain.ts. */
+import { isTierInDomain, tierDomainSlugs } from "./partnerTierDomain";
 
 export type CapabilityResolution = "configured" | "unlimited" | "not_configured";
 export type CapabilityValueKind = "int_limit" | "bool_flag" | "percent_as_written";
@@ -55,7 +57,13 @@ export type CapabilityValueKind = "int_limit" | "bool_flag" | "percent_as_writte
 export const CAPABILITY_SEAT_LIMIT = "seat_limit";
 export const CAPABILITY_LIVE_SPV_LIMIT = "live_spv_limit";
 
-/** The five authoritative tier slugs. See the report's taxonomy verdict. */
+/** The five authoritative tier slugs. See the report's taxonomy verdict.
+ *
+ *  WAVE 56 (R21/R36): these five are now the SEEDED FLOOR, not the domain. A
+ *  tier the owner creates is a real tier and gets capability rows like any
+ *  other; ask `isCapabilityTierSlug()` / `capabilityTierSlugs()`. Kept as a
+ *  literal so an existing tier can never drop out of a list because a database
+ *  read failed. */
 export const CAPABILITY_TIER_SLUGS = [
   "catalyst",
   "builder",
@@ -64,6 +72,24 @@ export const CAPABILITY_TIER_SLUGS = [
   "founding_member",
 ] as const;
 export type CapabilityTierSlug = (typeof CAPABILITY_TIER_SLUGS)[number];
+
+/** Every tier that may carry capability rows: the database, with the seeded five
+ *  union'd in so nothing existing disappears. */
+export function capabilityTierSlugs(): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of tierDomainSlugs()) { if (!seen.has(s)) { seen.add(s); out.push(s); } }
+  for (const s of CAPABILITY_TIER_SLUGS) { if (!seen.has(s)) { seen.add(s); out.push(s); } }
+  return out;
+}
+
+/** Membership test for a capability write. Database first, seeded five as the
+ *  drop-prevention floor. A slug in neither is refused. */
+export function isCapabilityTierSlug(slug: unknown): boolean {
+  if (typeof slug !== "string" || slug.length === 0) return false;
+  if ((CAPABILITY_TIER_SLUGS as readonly string[]).includes(slug)) return true;
+  return isTierInDomain(slug);
+}
 
 export class CapabilityError extends Error {
   readonly code: string;
@@ -304,11 +330,16 @@ export function setTierCapability(input: SetCapabilityInput): ResolvedCapability
   const db = wave45Db();
   const now = input.now ?? new Date().toISOString();
 
-  if (!(CAPABILITY_TIER_SLUGS as readonly string[]).includes(input.tierSlug)) {
+  // WAVE 56 (R21/R36): membership comes from partner_tier_lifecycle, so an
+  // owner-created tier can be given seat and SPV limits. The refusal for a slug
+  // that does not exist is UNCHANGED and still names the tiers that do — and the
+  // database refuses it too (trg_ptc_tier_must_exist_insert), so this check is
+  // now belt-and-braces rather than the only control.
+  if (!isCapabilityTierSlug(input.tierSlug)) {
     throw new CapabilityError(
       "CAPABILITY_UNKNOWN_TIER",
-      `"${input.tierSlug}" is not one of the five authoritative tiers ` +
-        `(${CAPABILITY_TIER_SLUGS.join(", ")}). Capability rows are keyed on the tier taxonomy the ` +
+      `"${input.tierSlug}" is not one of this platform's tiers ` +
+        `(${capabilityTierSlugs().join(", ")}). Capability rows are keyed on the tier taxonomy the ` +
         `charge path and partner_tier_current actually use.`,
     );
   }

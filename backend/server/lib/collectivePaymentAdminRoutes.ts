@@ -32,11 +32,36 @@ const CADENCES = new Set(["one_time", "monthly", "annual", "quarterly"]);
 
 function actorOf(req: Request): string {
   const ctx = (req as any).userContext;
-  return String(ctx?.identity?.email ?? ctx?.userId ?? "admin");
+  return String(ctx?.identity?.email ?? ctx?.userId ?? "u_unknown_admin");
 }
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/* ── WAVE 57d · D4 — FAIL-CLOSED ACTOR FOR THE DESTRUCTIVE ROUTE ───────────────
+   Same defect and same narrow remedy as server/lib/partnerFeeAdminRoutes.ts:
+   `actorOf()` above falls back to the literal `"u_unknown_admin"`, and
+   `DELETE /api/admin/collective-payments/schedules/:id` expires a COLLECTIVE FEE
+   SCHEDULE — the exact analogue of the partner fee-schedule expiry that
+   independent Review 1 named as destructive and financially material. Wave 57c
+   had it in the "24 non-destructive" set.
+
+   The resolver preserves `actorOf`'s ordering (`identity.email`, then `userId`)
+   so the recorded value for every legitimate call is byte-identical to today; it
+   refuses only the case that used to be recorded as `u_unknown_admin`.
+   `requireAdmin` on the `/api/admin` prefix always assigns `req.userContext`, so
+   the 401 is unreachable under today's mounts. Only the DELETE route is changed;
+   switching the shared helper is the sweeping option and is left as a
+   recommendation for the authorised 57e sweep. */
+function requireActorOrRefuse(req: Request, res: Response): string | null {
+  const ctx = (req as any).userContext;
+  const actor = String(ctx?.identity?.email ?? ctx?.userId ?? "");
+  if (!actor) {
+    res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+    return null;
+  }
+  return actor;
 }
 
 export function registerCollectivePaymentAdminRoutes(app: Express): void {
@@ -177,8 +202,11 @@ export function registerCollectivePaymentAdminRoutes(app: Express): void {
     const id = req.params.id;
     const existing = rawDb().prepare(`SELECT id FROM collective_payment_schedules WHERE id = ?`).get(id);
     if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
+    /* WAVE 57d D4 — bound actor, fail closed BEFORE the expiry write. */
+    const expireActorId = requireActorOrRefuse(req, res);
+    if (!expireActorId) return;
     rawDb().prepare(`UPDATE collective_payment_schedules SET effective_to = ?, updated_at = ? WHERE id = ?`).run(nowIso(), nowIso(), id);
-    appendAdminAudit(actorOf(req), `collective_payment_schedule:${id}`, "collective_payment_schedule.expired", { id });
+    appendAdminAudit(expireActorId, `collective_payment_schedule:${id}`, "collective_payment_schedule.expired", { id });
     res.json({ ok: true });
   });
 

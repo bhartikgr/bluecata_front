@@ -48,7 +48,18 @@ export interface CapTableEntry {
   shareholder: string;
   securityKind: string;
   shares: number;
-  pctOwnership: number; // 0..100, 3-decimal precision
+  /* 0..100, 3-decimal precision — or `null` when the ratio DOES NOT EXIST.
+
+     WAVE 73 · ITEM 9 — WIDENED FROM `number`. On a cap table whose total share
+     count is zero, ownership is 0 ÷ 0: undefined, not zero. The producer
+     (`server/routes.ts`) used to write a fabricated `0`, so every holder on a
+     zero-share PDF was printed at `0.000%` — a specific claim, in the artifact an
+     investor keeps on disk. `null` is the same answer the cap-table ENGINE gives
+     for this case (`packages/cap-table-engine/src/captable/views.ts:105`,
+     ruling D18), so the PDF now agrees with the engine instead of contradicting
+     it. Rendering is handled below: the cell shows an em-dash and the total is
+     not asserted. */
+  pctOwnership: number | null;
   invested: number | null;
   currency: string;
 }
@@ -200,9 +211,19 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.moveDown(0.3);
   doc.fontSize(10);
 
-  /* Compute computed total to verify reconciliation */
+  /* Compute computed total to verify reconciliation.
+
+     WAVE 73 · ITEM 9 — an UNDEFINED ratio is not summable. Adding `null` in as a
+     zero would produce a total that looks like arithmetic and is not, which is
+     precisely the defect this item removes. If ANY holder's ratio is undefined
+     the total is undefined too, and that is what is printed — the same rule the
+     engine's own trace uses (`compute.ts:218-222`, `anyOwnershipUndefined`). */
   let computedPct = 0;
-  for (const e of data.entries) computedPct += e.pctOwnership;
+  let anyPctUndefined = false;
+  for (const e of data.entries) {
+    if (e.pctOwnership == null) anyPctUndefined = true;
+    else computedPct += e.pctOwnership;
+  }
 
   /* Column layout */
   const startY = doc.y;
@@ -229,7 +250,8 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
     doc.text(e.shareholder.slice(0, 28), colShareholder, y, { width: 170 });
     doc.text(e.securityKind.slice(0, 12), colKind, y, { width: 90 });
     doc.text(fmtNumber(e.shares), colShares, y, { width: 80, align: "right" });
-    doc.text(fmtPct(e.pctOwnership), colPct, y, { width: 60, align: "right" });
+    /* WAVE 73 · ITEM 9 — the honest cell. `fmtPct(0)` printed "0.000%". */
+    doc.text(e.pctOwnership != null ? fmtPct(e.pctOwnership) : "—", colPct, y, { width: 60, align: "right" });
     doc.text(e.invested != null ? fmtMoney(e.invested, e.currency) : "—", colInvested, y, { width: 80, align: "right" });
     y += 16;
   }
@@ -238,7 +260,7 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.font("Helvetica-Bold");
   doc.text("Total", colShareholder, y + 8);
   doc.text(fmtNumber(data.totals.totalShares), colShares, y + 8, { width: 80, align: "right" });
-  doc.text(fmtPct(computedPct), colPct, y + 8, { width: 60, align: "right" });
+  doc.text(anyPctUndefined ? "—" : fmtPct(computedPct), colPct, y + 8, { width: 60, align: "right" });
   doc.text(
     fmtMoney(data.totals.totalInvested, data.entries[0]?.currency || "USD"),
     colInvested,
@@ -247,8 +269,20 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   );
   doc.font("Helvetica");
 
+  /* WAVE 73 · ITEM 9 — when the ratio does not exist for at least one holder,
+     the honest note says SO, rather than reporting a discrepancy against 100%
+     that is really an absent denominator. The existing note below is UNCHANGED
+     and still fires for a real discrepancy (R44: it was not false). */
+  if (anyPctUndefined) {
+    doc.moveDown(2);
+    doc.fontSize(9).fillColor("#A12C7B").text(
+      "Note: ownership percentages could not be computed for one or more holders because the company's total share count is zero, so each holder's share of the total is undefined — it is NOT zero. Those cells show a dash and no total is stated. Share counts and invested amounts above are unaffected.",
+    );
+    doc.fillColor("#000");
+  }
+
   /* Reconciliation note if computed pct isn't 100 */
-  if (Math.abs(computedPct - 100) > 0.01) {
+  if (!anyPctUndefined && Math.abs(computedPct - 100) > 0.01) {
     doc.moveDown(2);
     doc.fontSize(9).fillColor("#A12C7B").text(
       `Note: ownership percentages total ${computedPct.toFixed(3)}% (not 100.000%). This is a reconciliation discrepancy; please review the underlying ledger.`,

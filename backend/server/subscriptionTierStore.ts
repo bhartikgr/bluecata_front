@@ -36,6 +36,8 @@
  * immediately on the next read; DB-direct keeps it canonical and restart-safe.
  */
 import { rawDb } from "./db/connection";
+/* WAVE 56 (R21/R36) — the tier domain is DATA. See lib/partnerTierDomain.ts. */
+import { isTierInDomain } from "./lib/partnerTierDomain";
 import { ensureWave7AliasRetired } from "./lib/applyWave7AliasRetirement";
 import { ensureWave7bAliasesRetired } from "./lib/applyWave7bAliasRetirement";
 
@@ -228,14 +230,34 @@ export function upsertTier(args: {
   return tier;
 }
 
-/** The five canonical capability tiers — the taxonomy every live partner is on. */
-const WAVE45_CANONICAL_SLUGS = new Set([
+/** The five canonical capability tiers — the taxonomy every live partner is on.
+ *
+ *  WAVE 56 (R21/R36) — THIS SET WAS A SILENT DROP.
+ *  `projectTierPriceToPartnerTierPrice()` began with
+ *  `if (!WAVE45_CANONICAL_SLUGS.has(slug)) return;` — so an admin who priced a
+ *  newly created tier through this store had the write ACCEPTED and the
+ *  projection into `partner_tier_price` SKIPPED, with no error and no log. The
+ *  tier then never appeared on the pricing page and the charge path refused it,
+ *  while the admin screen showed the price they had just saved.
+ *
+ *  Membership is now a database question. The five are kept as the seeded floor
+ *  so an existing tier can never stop projecting. */
+const WAVE45_SEEDED_SLUGS: readonly string[] = [
   "catalyst",
   "builder",
   "amplifier",
   "nexus",
   "founding_member",
-]);
+];
+
+function isProjectableTierSlug(slug: string): boolean {
+  if (WAVE45_SEEDED_SLUGS.includes(slug)) return true;
+  try {
+    return isTierInDomain(slug);
+  } catch {
+    return false;
+  }
+}
 
 function projectTierPriceToPartnerTierPrice(
   prefix: TierFamily,
@@ -245,7 +267,11 @@ function projectTierPriceToPartnerTierPrice(
   updatedByUserId: string | null,
 ): void {
   if (prefix !== CONSORTIUM_SUBSCRIPTION_PREFIX) return;
-  if (!WAVE45_CANONICAL_SLUGS.has(slug)) return;
+  // WAVE 56 (R21/R36): an owner-created tier projects like any other. A slug
+  // that is in NEITHER the seeded five NOR partner_tier_lifecycle is still not
+  // projected — the eight out-of-domain slugs migration 0153 seeded into
+  // partner_tier_price are deliberately left exactly as they are.
+  if (!isProjectableTierSlug(slug)) return;
 
   const db = rawDb();
   // Before migration 0185 has run (or in a harness that builds a partial schema)
@@ -291,7 +317,7 @@ function projectTierPriceToPartnerTierPrice(
     currency,
     now,
     now,
-    updatedByUserId ?? "admin",
+    updatedByUserId ?? "u_unknown_admin",
   );
 }
 

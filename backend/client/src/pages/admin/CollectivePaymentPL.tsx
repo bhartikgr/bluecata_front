@@ -8,6 +8,7 @@
  */
 import { useState } from "react";
 import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,7 +65,9 @@ const ENTRY_KIND_LABELS: Record<string, string> = {
 
 function fmtMoney(minor: number | null, currency = "USD"): string {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
-  return formatMinor(minor ?? 0, currency, { locale: "en-US" });
+  /* WAVE 55 · R6 — dense collective-payments table: dash, not "$0.00".
+   * A genuine 0 still formats. See WAVE55_REPORT.md. */
+  return formatMinorOrUnavailable(minor, currency, { locale: "en-US" });
 }
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";

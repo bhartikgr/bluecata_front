@@ -372,7 +372,11 @@ function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () =
                   />
                   <div className="flex-1 min-w-0">
                     <div className="font-medium truncate">{h.name || h.email || h.userId}</div>
-                    <div className="text-xs text-muted-foreground truncate">{h.email || h.userId} · {fmtPct(h.ownershipPct)} ownership</div>
+                    {/* WAVE 61a · R47 (closes L-5) — ownership at 2 dp. This site
+                        relied on fmtPct's DEFAULT digits (1); the digits are now
+                        explicit so a future change to the shared default cannot
+                        silently move this precision. Display only (R16). */}
+                    <div className="text-xs text-muted-foreground truncate">{h.email || h.userId} · {fmtPct(h.ownershipPct, 2)} ownership</div>
                   </div>
                 </label>
               ))}

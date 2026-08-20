@@ -19,7 +19,7 @@
 
 import {
   fxFromString, fxToString, fxAdd, fxSub, fxMul, fxDiv,
-  fxLt, fxFloorToShares, FX_ONE, FX_ZERO, type Fixed, fxFromBigInt,
+  fxLt, fxFloorToShares, FX_ONE, FX_ZERO, FX_HUNDRED, type Fixed, fxFromBigInt,
 } from "./fixed.js";
 
 // -------------------- SAFE CONVERSION --------------------
@@ -274,8 +274,16 @@ export function refBroadBasedAD(input: RefAntiDilutionInput): RefAntiDilutionOut
 // Post-money pool: simpler — just (target × postFD) − existingPool, where postFD already
 // includes the not-yet-known new pool.
 
+// WAVE 52c · B4 — PERCENT-AS-WRITTEN (R16 / OR-1), same as the primary engine.
+// `targetPoolPercent` is "10" for 10%, NOT "0.10". The two engines share the
+// `PricedRound.optionPoolPostPercent` wire field, so if only one of them changed
+// units the differential oracle would silently compare two different questions —
+// which is the factor-of-100 class of defect B4 exists to remove. The algebra is
+// restated in percent units (× 100 / 100 on both sides of each fraction); there
+// is no `/100` conversion at any layer.
 export type RefEsopInput = {
   mode: "pre_money" | "post_money";
+  /** PERCENT-AS-WRITTEN. "10" = 10%. */
   targetPoolPercent: string;
   existingShares: bigint;
   existingPool: bigint;
@@ -300,17 +308,19 @@ export function refEsopTopUp(input: RefEsopInput): RefEsopOutput {
     // PPS is calculated. Engine convention here: solve for pool such that
     // pool / (existing + pool + newInv) = target  → pool = target×(existing+newInv) / (1−target).
     // Then subtract any existing pool.
+    // Percent form: totalPool = Pp·(existing + newInv) / (100 − Pp)
     const num = fxMul(target, fxAdd(existing, newInv));
-    const denom = fxSub(FX_ONE, target);
+    const denom = fxSub(FX_HUNDRED, target);
     if (denom <= 0n) throw new Error("ref esop: target ≥ 100%");
     const totalPool = fxDiv(num, denom);
     added = fxSub(totalPool, pool);
     if (added < 0n) added = FX_ZERO;
   } else {
     // post_money: pool / postFD = target where postFD = existing + pool + newInv (pool absorbed)
+    // Percent form: desired = Pp·postFD / 100
     const target2 = target;
     const postFD = fxAdd(fxAdd(existing, pool), newInv);
-    const desired = fxMul(target2, postFD);
+    const desired = fxDiv(fxMul(target2, postFD), FX_HUNDRED);
     added = fxSub(desired, pool);
     if (added < 0n) added = FX_ZERO;
   }

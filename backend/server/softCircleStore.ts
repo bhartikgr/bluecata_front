@@ -303,7 +303,37 @@ export function validateSoftCircle(id: string): SoftCircleRow | null {
   return updateSoftCircleStatus(id, "confirmed");
 }
 
-export function deleteSoftCircle(id: string): boolean {
+/**
+ * WAVE 57c · ITEM 7 (R37 approved order #7) — GUARD ON A DORMANT DESTRUCTIVE
+ * FUNCTION.
+ *
+ * A soft circle is an INVESTOR COMMITMENT. This function hard-deletes the row
+ * (`DELETE FROM soft_circles WHERE id = ?`) and, before this wave, wrote no
+ * audit-log entry at all. It has ZERO callers anywhere in the repo except its
+ * own realtime test — i.e. it is one `import` line away from destroying
+ * financially significant records from a route, unaudited.
+ *
+ * Two things now guard it, and neither disables it:
+ *
+ *  1. AN IMPORT FENCE — `scripts/lint/destructiveStoreFence.ts`
+ *     (`npm run lint:destructive-store-fence`) fails if ANY production source
+ *     file imports, re-exports or calls `deleteSoftCircle` (or the sacred
+ *     `clearLedger` / `clearFundedQueue`). "Zero non-test callers" stops being a
+ *     fact that happens to be true today and becomes an enforced one.
+ *  2. AN OPTIONAL BOUND ACTOR THAT PRODUCES AN AUDIT ENTRY — when a caller
+ *     supplies `{ actorUserId }`, the deletion is recorded in the hash-chained
+ *     `audit_log` with that actor. The parameter is OPTIONAL rather than
+ *     required for one honest reason: the existing behaviour test
+ *     (`server/__tests__/v15_soft_circle_realtime.test.ts:74`) calls
+ *     `deleteSoftCircle(id)` with one argument, and R36 forbids rewriting a
+ *     BEHAVIOUR test to make a wave pass. So the signature stays
+ *     backward-compatible and the fence — not the signature — is what stops an
+ *     unaudited production call from ever existing.
+ */
+export function deleteSoftCircle(
+  id: string,
+  opts?: { actorUserId?: string; reason?: string },
+): boolean {
   // v25.34 (BLOCKER 3): DB-first lookup. If the row isn't in the hot cache,
   // read it from the DB and repopulate the cache so the delete can proceed
   // even after a restart / cross-process write.
@@ -340,6 +370,35 @@ export function deleteSoftCircle(id: string): boolean {
   }
   memCircles.splice(idx, 1);
   if (affected === 0) return false;
+
+  /* WAVE 57c ITEM 7 — audit the destruction of an investor commitment when the
+     caller identifies itself. Dynamic import keeps softCircleStore free of a
+     static dependency on adminPlatformStore (same reason as
+     server/bridgeStore.ts:1541). A failed audit must never resurrect a row that
+     is already gone, so it is logged, not thrown. */
+  const actorUserId = opts?.actorUserId;
+  if (actorUserId) {
+    void (async () => {
+      try {
+        const { appendAdminAudit } = await import("./adminPlatformStore");
+        appendAdminAudit(actorUserId, `soft_circle:${row.id}`, "soft_circle.hard_deleted", {
+          softCircleId: row.id,
+          companyId: row.companyId,
+          roundId: row.roundId,
+          amount: row.amount,
+          status: row.status,
+          reason: opts?.reason ?? null,
+          hardDelete: true,
+        });
+      } catch (err) {
+        log.error(
+          "[softCircleStore.deleteSoftCircle] audit append failed:",
+          (err as Error).message,
+        );
+      }
+    })();
+  }
+
   emitSoftCircleChanged(row, "delete");
   return true;
 }

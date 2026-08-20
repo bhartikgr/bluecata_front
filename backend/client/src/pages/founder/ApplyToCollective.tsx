@@ -72,6 +72,105 @@ function FeeLoading() {
   );
 }
 
+/* ==========================================================================
+ * WAVE 59 · S4 — ONE SOURCE OF TRUTH FOR "REQUIRED" ON PATH B.
+ *
+ * Shadie's 6a: pressing "Submit application" toasts "4 fields need attention —
+ * Please review the highlighted fields below", but (a) none of the four field
+ * labels carried an asterisk or the word "required", and (b) NOTHING was
+ * highlighted. No red border, no outline, no inline error. The only "Required"
+ * text on the page was static helper copy below the form. So the toast sent the
+ * user hunting for a cue the page never rendered — a dead promise (R21), and
+ * worse than the missing asterisks, because it is the toast lying about its own
+ * behaviour.
+ *
+ * The validator (`validateAndSubmit`) already knew all four. The markers and the
+ * error styling now read from THE SAME descriptor it does, so they cannot
+ * diverge: add a rule here and the marker, the inline error and the refusal all
+ * appear together; there is no second list to forget to update.
+ *
+ * The validation itself is UNCHANGED — same four rules, same messages, same
+ * thresholds. Nothing was dropped to silence the toast.
+ * ======================================================================== */
+export type PathBRequiredKey = "pitchDeck" | "asks" | "coverLetter" | "feeAck";
+
+/** The four required fields, in form order. Consumed by BOTH the validator and
+ *  the per-field required markers / inline error states. */
+export const PATH_B_REQUIRED_KEYS: readonly PathBRequiredKey[] = [
+  "pitchDeck",
+  "asks",
+  "coverLetter",
+  "feeAck",
+];
+
+/** `data-testid` of the control each key owns — used for the scroll-to-first-error
+ *  lookup that already existed, now derived from the same table. */
+export const PATH_B_REQUIRED_TESTID: Record<PathBRequiredKey, string> = {
+  pitchDeck: "input-pitch-deck",
+  asks: "textarea-asks-direct",
+  coverLetter: "textarea-cover-letter",
+  feeAck: "checkbox-fee-ack",
+};
+
+/**
+ * THE validator for Path B's required fields. Extracted verbatim from the body
+ * of `validateAndSubmit` so it can be shared with the markers and unit-tested
+ * without a browser. Message strings are byte-identical to the ones Shadie saw.
+ */
+export function pathBRequiredErrors(input: {
+  pitchDeck: string;
+  pitchDeckId: string | null;
+  asks: string;
+  coverLetter: string;
+  feeAcknowledged: boolean;
+}): Partial<Record<PathBRequiredKey, string>> {
+  const errs: Partial<Record<PathBRequiredKey, string>> = {};
+  if (!input.pitchDeck || !input.pitchDeckId) errs.pitchDeck = "A pitch deck file (.pdf/.pptx/.ppt) is required — upload one above.";
+  if (input.asks.length < 20) errs.asks = `Asks must be at least 20 characters (${input.asks.length}/20).`;
+  if (input.coverLetter.length < 100) errs.coverLetter = `Cover letter must be at least 100 characters (${input.coverLetter.length}/100).`;
+  if (!input.feeAcknowledged) errs.feeAck = "You must acknowledge the application fee.";
+  return errs;
+}
+
+/**
+ * WAVE 59 · S4 — the per-field required marker. ADDITIVE copy: the existing
+ * label text is untouched (replacing it would touch the silent-drop guard's
+ * `copy` identity class, and the owner is away and cannot ratify an allowlist
+ * entry). The visible mark is an asterisk; "(required)" is supplied to assistive
+ * technology, because an asterisk alone is not a name.
+ *
+ * `field` is typed to `PathBRequiredKey`, so a marker cannot be rendered for a
+ * field the validator does not actually require.
+ */
+function RequiredMark({ field }: { field: PathBRequiredKey }) {
+  return (
+    <span data-testid={`required-mark-${field}`}>
+      <span aria-hidden="true" className="text-[hsl(0_100%_40%)] font-semibold"> *</span>
+      <span className="sr-only"> (required)</span>
+    </span>
+  );
+}
+
+/** WAVE 59 · S4 — the inline error the toast promised. Renders nothing when the
+ *  field is clean, so it can never become decorative. */
+function FieldError({ field, message }: { field: PathBRequiredKey; message?: string }) {
+  if (!message) return null;
+  return (
+    <p className="text-xs text-rose-700 mt-1 flex items-start gap-1.5" role="alert" data-testid={`field-error-${field}`}>
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
+      <span>{message}</span>
+    </p>
+  );
+}
+
+/** WAVE 59 · S4 — the highlight itself. Appended to a control's className only
+ *  when that control is the one the validator named. */
+function errorRing(hasError: boolean): string {
+  return hasError
+    ? " border-2 border-solid border-rose-500 ring-2 ring-rose-200 focus-visible:ring-rose-400"
+    : "";
+}
+
 const STATUS_BADGE: Record<string, string> = {
   pending_vouch: "bg-amber-50 text-amber-800 border-amber-200",
   vouched: "bg-emerald-50 text-emerald-800 border-emerald-200",
@@ -93,9 +192,16 @@ export default function FounderApplyToCollective() {
   const meQ = useQuery<{ id: string; displayName?: string }>({ queryKey: ["/api/auth/me"] });
   const sessionFounderId: string = (meQ.data as any)?.id ?? (meQ.data as any)?.userId ?? "";
 
+  /* WAVE 60 · A-9 — `useActiveCompanyId()` returns "" (not undefined) until the
+     active company resolves, so this fired GET ...?companyId= with an EMPTY
+     scope parameter and rendered whatever came back as fact. `enabled` keeps the
+     query PENDING instead, matching the pattern already used at
+     founder/Dashboard.tsx:284 and founder/CapTableSnapshots.tsx:86. No copy and
+     no empty state is touched by A-9. */
   const crmQ = useQuery<CrmRow[]>({
     queryKey: ["/api/founder/investor-crm", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
+    enabled: Boolean(companyId),
   });
 
   // C-006 v23.5: fetch the founder's latest application status for banner
@@ -123,11 +229,13 @@ export default function FounderApplyToCollective() {
   const nominationsQ = useQuery<Nomination[]>({
     queryKey: ["/api/founder/collective/nominations", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/collective/nominations?companyId=${companyId}`)).json(),
+    enabled: Boolean(companyId), /* WAVE 60 · A-9 */
   });
 
   const applicationsQ = useQuery<Application[]>({
     queryKey: ["/api/founder/collective/applications", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/collective/applications?companyId=${companyId}`)).json(),
+    enabled: Boolean(companyId), /* WAVE 60 · A-9 */
   });
 
   const promoters = useMemo(
@@ -554,19 +662,27 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
       });
       return;
     }
-    const errs: Record<string, string> = {};
-    if (!pitchDeck || !pitchDeckId) errs.pitchDeck = "A pitch deck file (.pdf/.pptx/.ppt) is required — upload one above.";
-    if (asks.length < 20) errs.asks = `Asks must be at least 20 characters (${asks.length}/20).`;
-    if (coverLetter.length < 100) errs.coverLetter = `Cover letter must be at least 100 characters (${coverLetter.length}/100).`;
-    if (!feeAcknowledged) errs.feeAck = "You must acknowledge the application fee.";
+    /* WAVE 59 · S4 — the four rules moved to `pathBRequiredErrors` at module
+       scope, UNCHANGED (same conditions, same thresholds, byte-identical
+       messages). They are called from here exactly as before; the point of the
+       move is that the per-field markers and the inline error states now read the
+       SAME descriptor, so the form can never again promise a highlight it does
+       not render. Nothing was dropped to silence the toast. */
+    const errs: Record<string, string> = pathBRequiredErrors({
+      pitchDeck, pitchDeckId, asks, coverLetter, feeAcknowledged,
+    }) as Record<string, string>;
     setFieldErrors(errs);
     const errCount = Object.keys(errs).length;
     if (errCount > 0) {
       // field(s) need attention — C-012 v23.5
       toast({ title: `${errCount} field${errCount !== 1 ? "s" : ""} need attention`, description: "Please review the highlighted fields below.", variant: "destructive" });
-      // Scroll to first errored field
-      const firstKey = Object.keys(errs)[0];
-      const el = document.querySelector(`[data-testid="${firstKey === "pitchDeck" ? "input-pitch-deck" : firstKey === "asks" ? "textarea-asks-direct" : firstKey === "coverLetter" ? "textarea-cover-letter" : "checkbox-fee-ack"}"]`);
+      /* Scroll to first errored field. WAVE 59 · S4 — was a four-branch inline
+         ternary chain over hard-coded testids, i.e. a SECOND list that could
+         drift from the validator. It now reads PATH_B_REQUIRED_TESTID, and the
+         "first" error follows PATH_B_REQUIRED_KEYS (form order) rather than
+         object-key insertion order. */
+      const firstKey = PATH_B_REQUIRED_KEYS.find((k) => errs[k]);
+      const el = firstKey ? document.querySelector(`[data-testid="${PATH_B_REQUIRED_TESTID[firstKey]}"]`) : null;
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
@@ -634,14 +750,52 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label>Pitch deck (.pdf, .pptx, or .ppt — max 50MB)</Label>
+            <Label>Pitch deck (.pdf, .pptx, or .ppt — max 50MB)<RequiredMark field="pitchDeck" /></Label>
             {/* v25.45.4 M-7 — REAL upload: bytes go to S3+KMS (FS fallback) via
                 POST /api/founder/collective/pitch-deck before the application is
                 submitted. The returned originalName populates pitchDeckFilename. */}
+            {/* WAVE 59 · S3 — THE `companyId_required` UPLOAD FAILURE.
+
+                Shadie's 4a screenshot showed the toast verbatim: "Pitch deck
+                upload failed" / `companyId_required`. That is a 400 from
+                server/founderCollectiveApplyStore.ts, and the server is RIGHT to
+                send it — it is not changed.
+
+                The defect is on this input. `companyId` comes from
+                `useActiveCompanyId()`, which resolves asynchronously. Every other
+                consumer on this page waits for it; the file input did not, so
+                picking a file before the active company resolved posted
+                `companyId=""` and the request could not possibly succeed.
+
+                The input is now BLOCKED until `companyId` resolves, with the
+                reason stated on screen. A disabled file input cannot open a
+                picker and dispatches no `change` event, so the unsendable
+                request cannot be built. No legitimate operation is suppressed:
+                with a resolved company the input behaves exactly as before. The
+                retracted `AWS_S3_BUCKET` theory is not built for — the request
+                never reaches storage.
+
+                WHY THE GUARD IS NOT ALSO INSIDE THE HANDLER, WHICH IS WHERE IT
+                BELONGS: the anti-silent-drop guard fingerprints event handlers by
+                a DIGEST OF THE HANDLER EXPRESSION, so any edit inside this
+                `onChange` is indistinguishable from deleting it and the build
+                reports a REMOVED event handler. That is a known guard weakness,
+                documented in `scripts/silent-drop-guard/allowlist.json` on the
+                AdminFeesConsolidated refund entry. Forgiving it needs an
+                allowlist entry, the owner is away and cannot ratify one, and
+                WAVE 59's constraints make a needed allowlist entry a STOP. The
+                handler body below is therefore left BYTE-IDENTICAL, and the
+                second layer of defence is the server's own
+                `400 companyId_required` — which is correct and unchanged. This
+                narrowing is recorded in build_log/wave59/WAVE59_REPORT.md §S3
+                and in the OWNER QUESTIONS list. */}
             <input
               type="file"
               accept=".pdf,.pptx,.ppt,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint"
-              className="mt-1 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[hsl(0_100%_40%)] file:px-3 file:py-1.5 file:text-white file:cursor-pointer"
+              disabled={!companyId}
+              aria-invalid={!!fieldErrors.pitchDeck || undefined}
+              aria-describedby={fieldErrors.pitchDeck ? "error-pitch-deck" : undefined}
+              className={"mt-1 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[hsl(0_100%_40%)] file:px-3 file:py-1.5 file:text-white file:cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed rounded-md" + errorRing(!!fieldErrors.pitchDeck)}
               data-testid="input-pitch-deck"
               onChange={async (e) => {
                 const f = e.target.files?.[0];
@@ -683,6 +837,14 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             {!pitchUploading && pitchDeck && (
               <p className="text-xs text-emerald-700 mt-1" data-testid="text-pitch-deck-name">Uploaded: {pitchDeck}</p>
             )}
+            {/* WAVE 59 · S3 — the honest on-screen reason while the input is
+                blocked. Never a spinner with no explanation. */}
+            {!companyId && (
+              <p className="text-xs text-amber-700 mt-1 inline-flex items-center gap-1.5" data-testid="text-pitch-deck-company-pending">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Waiting for your active company to load — an upload sent before it resolves is refused by the server (<span className="font-mono">companyId_required</span>).
+              </p>
+            )}
+            <span id="error-pitch-deck"><FieldError field="pitchDeck" message={fieldErrors.pitchDeck} /></span>
             <p className="text-xs text-muted-foreground mt-1">Stored encrypted via S3 + KMS in production (local filesystem in this environment).</p>
           </div>
 
@@ -702,9 +864,10 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
           </div>
 
           <div>
-            <Label>What you're asking from Collective members (20–2000 chars)</Label>
-            <Textarea rows={3} value={asks} onChange={e => setAsks(e.target.value)} placeholder="Lead investor for Series A, strategic intros to enterprise customers, etc." className="mt-1" data-testid="textarea-asks-direct" />
+            <Label>What you're asking from Collective members (20–2000 chars)<RequiredMark field="asks" /></Label>
+            <Textarea rows={3} value={asks} onChange={e => setAsks(e.target.value)} placeholder="Lead investor for Series A, strategic intros to enterprise customers, etc." aria-invalid={!!fieldErrors.asks || undefined} className={"mt-1" + errorRing(!!fieldErrors.asks)} data-testid="textarea-asks-direct" />
             <div className="text-xs text-muted-foreground mt-1">{asks.length}/2000</div>
+            <FieldError field="asks" message={fieldErrors.asks} />
           </div>
 
           <div>
@@ -713,9 +876,10 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
           </div>
 
           <div>
-            <Label>2-page cover letter (100–8000 chars)</Label>
-            <Textarea rows={8} value={coverLetter} onChange={e => setCoverLetter(e.target.value)} placeholder="Why your company matters, what you've built, what you need from the Collective. Treat this as your founder's letter." className="mt-1" data-testid="textarea-cover-letter" />
+            <Label>2-page cover letter (100–8000 chars)<RequiredMark field="coverLetter" /></Label>
+            <Textarea rows={8} value={coverLetter} onChange={e => setCoverLetter(e.target.value)} placeholder="Why your company matters, what you've built, what you need from the Collective. Treat this as your founder's letter." aria-invalid={!!fieldErrors.coverLetter || undefined} className={"mt-1" + errorRing(!!fieldErrors.coverLetter)} data-testid="textarea-cover-letter" />
             <div className="text-xs text-muted-foreground mt-1">{coverLetter.length}/8000</div>
+            <FieldError field="coverLetter" message={fieldErrors.coverLetter} />
           </div>
 
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
@@ -725,9 +889,11 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             {/* v25.45.4 M-8 — Airwallex is the active payment provider (was Stripe). */}
             <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Airwallex before the application enters the queue. Demo mode does not charge.</p>
             <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
-              <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} className="h-5 w-5 border-2 border-slate-500 bg-white data-[state=checked]:border-primary" data-testid="checkbox-fee-ack" />
+              <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} aria-invalid={!!fieldErrors.feeAck || undefined} className={"h-5 w-5 border-2 border-slate-500 bg-white data-[state=checked]:border-primary" + errorRing(!!fieldErrors.feeAck)} data-testid="checkbox-fee-ack" />
               I understand this is a non-refundable application fee and that submission does not guarantee an invitation.
+              <RequiredMark field="feeAck" />
             </label>
+            <FieldError field="feeAck" message={fieldErrors.feeAck} />
           </div>
 
           {/* v25.48.3 Q-I1 — open-to-refinement opt-in. Signals to Collective

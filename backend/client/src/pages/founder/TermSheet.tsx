@@ -80,7 +80,32 @@ function inferData(r: Round): TermSheetData {
  preMoney: r.preMoney,
  postMoney: r.postMoney,
  pricePerShare: r.pricePerShare,
- fdSharesPreMoney: 12_500_000,
+ /* ═════════════════════════════════════════════════════════════════
+    WAVE 58b · DEFECT 4 (R21) — THE TERM SHEET NO LONGER INVENTS THESE.
+    ═════════════════════════════════════════════════════════════════
+    BEFORE, verbatim (commas removed here only so the source-lock test in
+    `client/src/pages/founder/__tests__/w58b_display_and_wiring.test.ts` cannot be
+    satisfied by this comment quoting the very literals it forbids):
+        fdSharesPreMoney: 12_500_000
+        poolSize: 10
+        poolTiming: "post_money"
+    Three hardcoded figures in a document a founder SENDS TO AN INVESTOR. A
+    founder who set 15% PRE-money on Step 2 of the wizard generated a term sheet
+    stating 10% POST-money — and after Wave 58 made the wizard credible, the two
+    documents visibly contradicted each other (`W58_REVIEW_3_RISK.md` §1.3 / A12).
+
+    ALL THREE NOW READ THE ROUND. `optionPoolPostPercent` and `optionPoolMode` are
+    stored on the round in `extras_json` and re-spread by `roundsStore.rowToRound`;
+    `fdPreMoneyShares` is a first-class `rounds` column. PERCENT-AS-WRITTEN (R16):
+    the stored `"15"` becomes the number 15 and prints as `15%`, with no rescale.
+    ABSENT MEANS ABSENT: a round with no pool produces a clause saying no pool
+    increase is contemplated, and a round with no declared fully-diluted count
+    prints a bracketed blank — never a fabricated 12,500,000. */
+ fdSharesPreMoney: (() => {
+  const raw = (r as unknown as Record<string, unknown>).fdPreMoneyShares;
+  const n = Number(raw);
+  return raw === null || raw === undefined || raw === "" || !Number.isFinite(n) || n <= 0 ? null : n;
+ })(),
  liqPrefMultiple: 1,
  participating: false,
  capParticipation: "non-participating",
@@ -90,8 +115,18 @@ function inferData(r: Round): TermSheetData {
  interestRate: 6,
  maturityMonths: 24,
  mfn: true,
- poolSize: 10,
- poolTiming: "post_money",
+ poolSize: (() => {
+  const raw = (r as unknown as Record<string, unknown>).optionPoolPostPercent;
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  const n = Number(String(raw).trim());
+  /* R16 range [0,100). Out of range is treated as ABSENT rather than clamped:
+     the term sheet must not state a pool the platform would refuse to compute. */
+  return Number.isFinite(n) && n >= 0 && n < 100 ? n : null;
+ })(),
+ poolTiming:
+  String((r as unknown as Record<string, unknown>).optionPoolMode ?? "pre_money") === "post_money"
+   ? "post_money"
+   : "pre_money",
  vestingMonths: 48,
  cliffMonths: 12,
  closeDate: r.closeDate,

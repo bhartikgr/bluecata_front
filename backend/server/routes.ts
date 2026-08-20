@@ -85,10 +85,28 @@ import { registerFeedsRoutes } from "./feedsStore"; // v25.43 R3-4 — live mark
 import { registerBulkMessageRoutes } from "./bulkMessageStore";
 import { registerPortfolioAnalyticsRoutes } from "./portfolioAnalyticsStore";
 import { registerSprint21Routes } from "./sprint21Routes";
-import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/sessionCookie.js";
+import { setSessionCookie, clearSessionCookie, readSessionCookie, extractUserIdFromCookie } from "./lib/sessionCookie.js";
 // Wave C FIX C1 (W-2) — logout must revoke the server-side session, not
 // merely clear cookies on the client. See server/lib/sessionRevocation.ts.
 import { revokeSession } from "./lib/sessionRevocation.js";
+/* REPAIR WAVE 1 · ITEM 4 — THREE SAME-NAMED REVOCATION PATHS, THREE KEY SPACES.
+   Mapped before editing (W57_REVIEW_3_RISK §1.2 point 2):
+     (1) server/lib/sessionRevocation.ts :: revokeSession(userId)
+         in-memory Set keyed on the VERIFIED userId. Consumed by
+         server/lib/userContext.ts:494-500 via isRevoked(resolvedUserId).
+         Imported above, unaliased, because it is this file's primary path.
+     (2) server/lib/auth.ts :: revokeSession(sid)
+         DB `UPDATE auth_sessions SET revoked = 1 WHERE id = ?`, keyed on the
+         `cap_sid` SESSION ID. Consumed by getSession() behind
+         /api/auth/secure/me and /api/auth/secure/2fa/*. Aliased here as
+         `revokeAuthSessionBySid` so the two can never be confused at a call
+         site again — the shared export is deliberately NOT renamed, because a
+         rename would break the source-grep assertions in the suite and is a
+         wider change than this wave's scope.
+     (3) this file's logout handler, which passed `readSessionCookie(req)` — the
+         RAW SIGNED COOKIE BODY — into (1). That value is neither a userId nor a
+         sid, so isRevoked() could never match and revocation never fired. */
+import { revokeSession as revokeAuthSessionBySid } from "./lib/auth.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
 import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
@@ -104,6 +122,23 @@ import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInv
 // migration 0097 has been filling since v25.52 with no reader anywhere.
 import { registerCrmDedupReviewRoutes } from "./crmDedupReviewStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
+/* WAVE 52c · B1 + B2 — the round-math production path. Waves 52/52b landed the
+   arithmetic and the persistence and wired NEITHER: the pricing-order flag was
+   called by no production code, and the disclosure store was imported only by
+   its own test, so migration 0189's tables were never created at runtime. This
+   is the registration that makes both reachable. It MUST come BEFORE
+   registerCaptableCommitRoutes — the B2 commit hook is middleware on the same
+   two paths and the sacred handler ends the request. */
+import { registerRoundMathRoutes } from "./roundMathRoutes";
+/* WAVE 75 · ITEM 1 (R70) — founder ownership is COMPUTED from the engine. */
+import { setFounderOwnershipSecuritiesProvider } from "./lib/founderOwnershipEngine";
+/* WAVE 57c · ITEM 2 (R37 order #2) — the compliance-hold set/release endpoints
+   live in SACRED server/captableCommitStore.ts (:1352, :1366) and wrote no audit
+   at all, with an actor that fell back to `"system"`. The audit and the
+   fail-closed actor binding are installed at the ROUTE-REGISTRATION layer
+   instead of by editing the sacred file. It MUST be registered BEFORE
+   registerCaptableCommitRoutes — same rule as registerRoundMathRoutes above. */
+import { registerComplianceHoldAuditGuard } from "./lib/complianceHoldAuditGuard";
 import { registerFounderOpsRoutes } from "./founderOpsRoutes";
 import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
 import { registerInvestmentSignalsV2548Routes } from "./lib/investmentSignalsV2548"; /* v25.48 B3 + B4 — docs-sent flag + investor wired advisory */
@@ -231,6 +266,7 @@ import { registerCollectiveInterestRoutes } from "./collectiveInterestStore"; /*
 import { registerSprint20Wave2Routes } from "./sprint20Wave2Routes";
 import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /* v25.39 — admin write endpoints for fee/commission config */
+import { registerPartnerTierAdminRoutes } from "./partnerTierAdminRoutes"; /* WAVE 56 (R36 / 56-Q9) — the create/freeze/archive tier write path, which did not exist */
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
 import { registerPartnerClassificationRoutes } from "./partnerClassificationRoutes"; /* WAVE 4B PT-2 — partner classification read/write + admin CRUD over the DB-driven Sector // Sub-sector taxonomy (reporting/filtering only) */
@@ -339,6 +375,18 @@ import { registerSprint21InvitationsRoutes } from "./sprint21InvitationsRoutes";
 import { registerSprint21PortfolioRoutes } from "./sprint21PortfolioRoutes";
 import { registerSprint22Routes } from "./sprint22Routes";
 import { registerTrack1Routes } from "./track1Routes";
+/* WAVE 71 · D11 / D13 / D15 — the ONE stored-terms reader (moved out of this
+   file's closure so `track1Routes.ts` can share it) and the declared
+   option-pool policy ceiling used by BOTH write fences below. */
+import {
+  roundStoredTerms as roundStoredTermsShared,
+  OPTION_POOL_POST_PERCENT_MAX,
+  OPTION_POOL_POST_PERCENT_CEILING_MESSAGE,
+  /* WAVE 81 · ITEM 2 (D4) — the seniority write fence, imported rather than
+     restated, so this route and the other two writers cannot disagree. */
+  validateSeniorityRankStored,
+  optionPoolPostPercentWithinCeiling,
+} from "./lib/roundStoredTerms";
 import { registerTrack4Routes, setSoftCircleSource } from "./track4Routes";
 import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
 // Avi 22-May Issue 2 — PPS derivation helper routes.
@@ -461,6 +509,49 @@ import { companies as _allCompanies } from "./mockData";
 // Sprint-fix: production auth middleware
 import { requireAuth, requireAdmin, requireAuthenticated } from "./lib/authMiddleware";
 import { log } from "./lib/logger";
+/* WAVE 58e · D2 (R31-a) — ONE range rule for the two term fields a date was
+   coerced into on live. Imported from `shared/` so this route and the founder
+   screens cannot diverge; see the block in that file for the authorities. */
+/* WAVE 61b · R50 — the SIBLING fields of those two, bounded by the same
+   discipline and from the same module, so the three HTTP writers cannot drift. */
+import {
+  validateDiscountPercentAsWritten,
+  validateInterestRatePercentAsWritten,
+  validateMaturityMonths,
+  validateExpiryYears,
+  validateStrikePrice,
+  validateValuationCap,
+  validateFdPreMoneyShares,
+  /* WAVE 68 · R56 — a date-shaped value in a MONEY field is WARNED about, never
+     refused. NOT R42's block: the value is stored and no control changes. */
+  dateShapedValueWarning,
+  /* WAVE 77 · R71 — maturity converges on ONE canonical field. The absolute date
+     is DERIVED by this one authority (never a second copy of the arithmetic), and
+     the refusal that keeps it out of every writer is the same imported object at
+     all three writers, so the rule cannot drift. */
+  resolveNoteMaturityDate,
+  MATURITY_DATE_NOT_WRITABLE,
+  /* WAVE 71 · D21 — the projection's OWN `ComputeOptions`, so the dual-engine
+     reconciliation gate reconciles the projection a founder is shown rather than a
+     second reconstruction of it. See `closeGateReconciliationFor` below. */
+  buildPostCloseComputeOptions,
+  /* WAVE 76 · R60 / D5 — the two CLOSED vocabularies, validated by name from the
+     same module that declares the tokens and the same module whose engine path
+     refuses an unknown one. Imported, never restated (R21): before this wave the
+     three HTTP writers behaved three different ways for the same field. */
+  validateAntiDilutionTypeStored,
+  validateSafeCapTypeStored,
+  /* WAVE 80 · ITEM 3 — the six whitelisted term fields this route accepted with
+     HTTP 200 and threw away. Four are persisted through these validators; two are
+     REFUSED BY NAME because they are second spellings of terms the round already
+     stores canonically (the Wave 77 `MATURITY_DATE_NOT_WRITABLE` precedent). */
+  validateSharesAuthorized,
+  validatePoolSize,
+  validateUseOfProceeds,
+  ROUND_CAP_ALIAS_NOT_WRITABLE,
+  EXPIRY_DATE_NOT_WRITABLE,
+  type TermValueVerdict,
+} from "@shared/roundMathEngineAdapter";
 
 /* ---------------------------------------------------------------------
  * Sprint 7 — invitation token store (in-memory mock).
@@ -563,6 +654,104 @@ function resolveArchivedAt(roundId: string, fallback: unknown): string | null {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 58f · F0 — CORRECT THE `captable_commits.discount_pct` DOMAIN FENCE
+     BEFORE ANY ROUTE THAT COULD COMMIT A SAFE IS MOUNTED.
+     ═══════════════════════════════════════════════════════════════════════════
+     Migration 0153 fenced that column to a FRACTION in [0,1]. Owner ruling R30
+     says storage is PERCENT-AS-WRITTEN, `shared/schema.ts:1425` documents it as
+     `"20" = 20%`, and `server/captableCommitStore.ts:575` (SACRED, untouched)
+     writes `round.discount` verbatim. So the database was set to ABORT the
+     exact value the platform is designed to store, and the FIRST SAFE or note
+     committed with a discount would have died on a raw SQLite abort. Verified
+     by execution: `'20'` -> `RAISE(ABORT, 'DISCOUNT_PCT_OUT_OF_DOMAIN:expected
+     fraction 0..1')`. It has never fired only because nothing has ever been
+     committed on any tenant.
+
+     WHY HERE. The numbered migrations DO NOT auto-run (`server/index.ts:246`
+     exits in production) and dev/test SQLite is built from DDL inlined in
+     SACRED `connection.ts`, which this wave may not edit. But 0153's broken
+     trigger DOES reach dev and test, self-healed by
+     `server/lib/applyWave5MoneySchema.ts`. `registerRoutes` is the one
+     non-sacred choke point that every HTTP surface — production boot, dev boot
+     and every supertest harness — passes through, so correcting it here means
+     no route that can write a commit is ever mounted against the wrong fence.
+     Durable production schema is still corrected by `npm run db:migrate`
+     applying `0190_wave58f_discount_pct_domain.sql`; this is the same DDL, read
+     from that same file, so the two cannot drift.
+
+     IDEMPOTENT AND NON-DESTRUCTIVE. `DROP ... IF EXISTS` + `CREATE ... IF NOT
+     EXISTS`. The new domain [0,100) strictly CONTAINS the old [0,1], so no row
+     the old fence accepted can be refused by the new one, and not one committed
+     row is read, rewritten or re-hashed — `discount_pct` enters the commit hash
+     body, and rewriting it would alter immutable history (R17). Failure is
+     logged by name and never silent; see the migration header for the
+     four-authority argument and the read-only live census that must precede it. */
+  try {
+    const { getDbDriver: _w58fDriver, rawDb: _w58fRawDb } = await import("./db/connection");
+    if (_w58fDriver() === "sqlite") {
+      const { ensureWave58fDiscountDomain } = await import("./lib/applyWave58fDiscountDomain");
+      ensureWave58fDiscountDomain(_w58fRawDb());
+    }
+  } catch (err) {
+    /* Never block boot on the heal, but never hide it either: an unfenced or
+       wrongly-fenced money column must be visible in the log. */
+    log.error(
+      "[wave58f] discount_pct domain heal FAILED (captable_commits may still carry 0153's fraction fence):",
+      (err as Error).message,
+    );
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 68 · R49 — INSTALL MIGRATION 0192's FOUR TERM FENCES.
+     ═══════════════════════════════════════════════════════════════════════════
+     TWO holes, one subject, both closed by `0192_wave68_term_domain_fences.sql`:
+       C-3  0190's `discount_pct` triggers test only a RANGE, and in SQLite
+            `CAST('abc' AS REAL)` is `0.0`, which is neither `< 0` nor `>= 100`.
+            So `'abc'` and `'20abc'` PASSED that fence. Reproduced by execution.
+       C-2  NO trigger anywhere named `extras_json` — yet
+            `server/roundsStore.ts:610-643` round-trips every economic term of a
+            SAFE, a note and a warrant through it, and it is where
+            `discount: 20260707` was stored on the corrupt live round
+            `rnd_64e9d6ad728a`.
+
+     THIS MUST RUN AFTER THE 58f BLOCK ABOVE, AND THAT IS NOT COSMETIC.
+     `applyWave58fDiscountDomain` re-creates 0190's WEAKER `discount_pct` pair
+     from the 0190 file on every fresh database. Reversing these two blocks makes
+     `'abc'` acceptable again. `applyWave5MoneySchema` (0153) is not a hazard:
+     all of its trigger statements are `CREATE TRIGGER IF NOT EXISTS` with no
+     removal, so it cannot overwrite a trigger that is already there.
+
+     WHY HERE AT ALL. The numbered migrations DO NOT auto-run
+     (`server/index.ts:246` exits in production) and dev/test SQLite is built
+     from DDL inlined in SACRED `connection.ts`, which this wave may not edit.
+     `registerRoutes` is the one non-sacred choke point every HTTP surface passes
+     through. Durable production schema is still corrected by `npm run db:migrate`
+     applying 0192; this is the SAME DDL, read from that same file, so the two
+     cannot drift.
+
+     TOUCHES NO ROW. 0192 contains no UPDATE, no DELETE and no backfill, and its
+     own postcondition block ABORTS if a row count or any `discount_pct` value
+     moved. `discount_pct` enters the commit hash body (R17).
+
+     R56's date-shaped WARNING is deliberately NOT here: a SQLite trigger cannot
+     warn, only abort. It lives in `@shared/roundMathEngineAdapter` and is applied
+     at the three round writers. */
+  try {
+    const { getDbDriver: _w68Driver, rawDb: _w68RawDb } = await import("./db/connection");
+    if (_w68Driver() === "sqlite") {
+      const { ensureWave68TermFences } = await import("./lib/applyWave68TermFences");
+      ensureWave68TermFences(_w68RawDb());
+    }
+  } catch (err) {
+    /* Never block boot, never hide it: an unfenced economic term must be
+       visible in the log by name. */
+    log.error(
+      "[wave68] term domain fence install FAILED (rounds.extras_json may still be unfenced):",
+      (err as Error).message,
+    );
+  }
+
   /* ------------ v19 Phase C: correlation id MUST be the very first middleware
    * so every downstream log line, audit_log row, and SSE heartbeat can carry
    * the same trace id end-to-end. ------------ */
@@ -908,9 +1097,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           logoUrl: null,
           role: "founder",
           lastActiveAt: new Date().toISOString(),
+          // WAVE 61a · R48 (from R45) — THIS FIELD WROTE `100` AND RENDERED
+          // `10000.0%`.  `kpi.ownershipPct` is consumed as a FRACTION: the
+          // founder dashboard renders `fmtPct((kpi.ownershipPct ?? 0) * 100, …)`
+          // (client/src/pages/founder/Dashboard.tsx), and every other writer
+          // stores a fraction — multiCompanyStore.ts:163/184/205 store
+          // 0.385/0.21/0.51 and the two sibling company-creation paths at
+          // multiCompanyStore.ts:900 and :1265 store 0.  `100` therefore
+          // rendered 100 × 100 = `10000.0%` for every company created through
+          // THIS route.  R16-safe: the unit is not inferred from the magnitude,
+          // it is read off the client's `* 100` and off three sibling writers.
+          // Owner ruled (R48) the intended semantic is a NEW company, so the
+          // correct stored value is `0`, matching :900/:1265.  `1` is NOT
+          // written: that would assert 100% founder ownership as a fact, which
+          // is the defect class this wave removes.  Computing this properly is
+          // Wave 67 (R46), sourced from the cap-table engine — NOT here.
           kpi: {
             capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
-            dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 100,
+            dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 0,
           },
           collective: { status: "none" },
           billing: { plan: "Founder Free" },
@@ -959,6 +1163,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
   registerCrmDedupReviewRoutes(app); /* WAVE 28 / CP-CRM-04 — CRM duplicate-contact review queue (admin) */
+  /* WAVE 52c · B1 + B2 — BEFORE the sacred commit routes, deliberately. The
+     reader is the SAME projection the /api/companies/:id/securities screen is
+     served, bridges included, so the round-math route cannot disagree with the
+     cap table a founder is looking at. */
+  registerRoundMathRoutes(app, (cid: string) => buildCompanySecurities(cid) as never);
+  /* WAVE 75 · ITEM 1 (R70) — THE SAME INJECTION, FOR THE SAME REASON.
+     `server/paymentGatewayAdapter.ts` used to write the literal `ownershipPct: 1.0`
+     onto a brand-new company, which rendered a confident `100.00%` on the founder
+     dashboard. R70 requires the figure be COMPUTED from the engine. The computation
+     lives in `server/lib/founderOwnershipEngine.ts` and needs the SAME rows the
+     round-math route and the cap-table screen are served, so it is wired from the
+     SAME builder rather than through a second reader of the cap table. */
+  setFounderOwnershipSecuritiesProvider((cid: string) => buildCompanySecurities(cid));
+  /* WAVE 57c · ITEM 2 — BEFORE the sacred compliance-hold handlers, deliberately.
+     Express matches in registration order and the sacred handler ends the
+     request, so a hook registered after this line would never run. */
+  registerComplianceHoldAuditGuard(app);
   registerCaptableCommitRoutes(app);
   registerFounderOpsRoutes(app); /* v25.54 G0-1 seed-founder-shares + G0-2 round archive */
   registerCaptableCommitV2548Routes(app); /* v25.48 B2 + B5 — parallel commit wrapper */
@@ -1304,6 +1525,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ v25.39 — Admin write endpoints for application-fee + partner commission-rate config ------------ */
   registerAdminCollectiveFeeRoutes(app);
+  /* WAVE 56 (R36 / 56-Q9). Before this line, four plausible create-a-tier
+     endpoints all returned 404 and every reference to partner_tier_lifecycle in
+     server/ was a read: "add a tier" was an ABSENT capability, not a blocked one. */
+  registerPartnerTierAdminRoutes(app);
   registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
   registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
   /* ------------ WAVE 4B PT-2 — partner classification (Sector // Sub-sector) ------------
@@ -2053,27 +2278,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  app.get("/api/companies/:id/securities", requireAuth, (req, res) => {
-    // v14 Tier-1 Fix 2 — ownership/visibility check: caller must be a
-    // company member OR an investor in a round of that company OR admin.
-    // Closes audit finding F-founder-04 (any auth user could read cap-table
-    // securities for any company).
-    const cid = req.params.id;
-    const ctx = req.userContext ?? getUserContext(req);
-    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
-    /* WAVE 35 · F8 (the SIXTH cap-table sink) + F9.
-       Was: `capTablePositions.some(...)` → 403 on refusal. Both halves were
-       wrong. (a) The equality check is the same predicate as the gate, and an
-       SPV LP satisfies it for their own vehicle, so the W-SAFE / priced ledger
-       bridges below projected every OTHER LP's subscription — name, email,
-       amount — to a co-LP (proven by execution, Review A F8). (b) A 403 for an
-       unrelated company distinguishes "exists" from "does not exist" and so
-       enumerates SPV ids; the policy this file already states at the
-       /api/companies/:id handler is 404. */
-    const access = decideCapTableSinkAccess(ctx as any, String(cid));
-    if (access.outcome === "refuse") {
-      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
-    }
+  /* ── WAVE 52c · B1 — ONE CAP-TABLE PROJECTION, TWO CONSUMERS ──────────────
+     Extracted VERBATIM from the body of GET /api/companies/:id/securities so
+     the round-math route (server/roundMathRoutes.ts) computes on exactly the
+     rows the Projection screen is shown — W-SAFE unpriced bridge and W-CAP
+     priced bridge included. Extracted rather than re-implemented: a second
+     projection would be a second cap table, and this build has already been
+     bitten by rival implementations of the same figure.
+
+     AUTHORISATION AND THE WAVE 35 F8 ROW-SCOPING STAY IN THE HANDLER. This
+     function builds rows; it does not decide who may see them. Every caller
+     makes its own access decision — roundMathRoutes gates on founder-of-company
+     or admin and returns 404 (never 403) on refusal, matching this file. */
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 70 — THE STORED DEAL TERMS THE CAP-TABLE ENGINE USED TO INVENT.
+     ═══════════════════════════════════════════════════════════════════════════
+     `shared/roundMathEngineAdapter.ts` hardcoded four negotiated terms on the
+     engine wire: a 5% note interest rate, a 2027-12-31 maturity, `post_money_cap`
+     for every SAFE, and `broad_based` anti-dilution on the wrong side of the
+     transaction. The fix is that every one of them is READ FROM THE DATABASE
+     (R60 §2, R21) — and the read happens HERE, because this function is the one
+     place `ApiSecurity` rows are built, for the route, the founder screens and
+     the Projection alike.
+
+     WHY NO MIGRATION WAS NEEDED. All five keys already round-trip through
+     `rounds.extras_json`: `antiDilutionType`, `interestRate`, `maturityMonths`,
+     `maturityDate` and `liquidationPreference` were already on
+     `roundsStore.ts`'s `UPDATE_EXTRAS_WHITELIST`, and `safeType` is added to it
+     additively in the same wave. Migrations stay at 173, highest 0192.
+
+     ABSENT IS LEFT ABSENT. This helper NEVER substitutes a value. A term that is
+     not stored arrives at the adapter as `null`, and the adapter is what decides
+     between a named refusal and a stated assumption. A default invented here
+     would be the original defect with a longer call stack. */
+  /* ── WAVE 71 · D11 / D13 — THE READER MOVED, IT DID NOT MULTIPLY ────────────
+     Wave 70's handoff was explicit: `roundStoredTerms` is THE single DB read of a
+     round's stored terms, and Wave 71 must "call those; do not write a third
+     reader". Wave 71's D11 fix lives in `server/track1Routes.ts`, which could not
+     reach a function trapped inside this module's closure — so the BODY moved to
+     `server/lib/roundStoredTerms.ts` (verbatim, plus the two fields D11 and D13
+     need) and BOTH routes now import the same function. Every call site below is
+     unchanged, and there is still exactly one reader.
+     NO MIGRATION: every key it reads was already on `roundsStore.ts`'s
+     `UPDATE_EXTRAS_WHITELIST`, `"mfn"` included (verified in the tree). */
+  const roundStoredTerms = roundStoredTermsShared;
+
+  function buildCompanySecurities(cid: string): Array<Record<string, unknown>> {
     const baseSecurities = securities.filter(s => s.companyId === cid);
     /* W-SAFE (2026-07-14) — ledger->display bridge for UNPRICED positions.
        The commit ledger and the demo `securities` array are decoupled by design
@@ -2124,6 +2374,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           holderEmail: disp.email,                // W-FIX1a A1
           investorId: e.investorId ?? null,
           accruedInterest: 0,
+          /* WAVE 70 — the stored deal terms, from the issuing round. Before this
+             wave these rows reached the engine with NO interest rate at all and
+             the engine substituted 5%; a SAFE reached it with no cap convention
+             and was forced post-money. `null` here means "not on record", and the
+             adapter refuses or states the assumption rather than inventing. */
+          ...roundStoredTerms(e.roundId),
         } as any);
       }
     } catch (bridgeErr) {
@@ -2190,11 +2446,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           else if (/preferred|equity|priced|seed|series/.test(inst)) instrument = "preferred";
           series = (rnd as any)?.series ?? (rnd as any)?.name ?? null;
         } catch { /* defaults */ }
+        /* ═══════════════════════════════════════════════════════════════════
+           WAVE 75 · ITEM 1 (R70/R46) — A FOUNDER SEED BLOCK IS NOT AN INVESTOR.
+           ═══════════════════════════════════════════════════════════════════
+           THE DEFECT, measured. Every ledger-derived row was labelled
+           `holderType: "investor"`, INCLUDING the founder's own common block
+           written by `POST /api/founder/captable/seed-founder-shares`. Probe
+           transcript (build_log/wave75/W75_TESTS.md §"holderType probe"): a company
+           whose only security is an 8,000,000-share founder seed returns
+           `[{ holderType: "investor", instrument: "common", shares: 8000000 }]`.
+           Consequence: `client/src/pages/founder/CapTable.tsx:285-289` sums
+           `holderType === "founder"` for its "Founder ownership" tile, so that tile
+           read a confident **0.00%** — the founder owns nothing — on every company
+           whose cap table came through the commit ledger. That is the same class of
+           fabricated figure R47 and Wave 61a removed, with the opposite sign, and it
+           is what made R70's third pole (a genuine 100% owner must still read
+           100.00%) impossible to satisfy honestly.
+
+           THE RULE IS THE PLATFORM'S OWN MARKER, NOT AN INFERENCE. `founderOpsRoutes
+           .ts:88` writes the DETERMINISTIC invitation id `founder_seed_<companyId>`
+           for exactly this block, and nothing else in the tree produces that id. No
+           magnitude, no name matching and no heuristic is involved (R16). Any other
+           ledger row keeps `"investor"` byte-for-byte.
+
+           SCOPED TO THE PRICED BRIDGE. A founder seed carries a share count, and the
+           sacred commit store REFUSES a share count on an unpriced instrument
+           (`unexpected_shares_on_unpriced`), so a founder seed can only ever arrive
+           here. The unpriced bridge above is untouched. */
+        const isFounderSeed = String(e.invitationId ?? "") === `founder_seed_${String(cid)}`;
         baseSecurities.push({
           id: secId,
           companyId: String(cid),
           holderName,
-          holderType: "investor",
+          holderType: isFounderSeed ? "founder" : "investor",
           instrument,
           series,
           shares,
@@ -2208,11 +2492,90 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           holderEmail: disp.email,                          // W-FIX1a A1
           investorId: e.investorId ?? null,
           accruedInterest: 0,
+          /* WAVE 70 · D1 / R60 — a PRICED row becomes a `preferred` security, and
+             a preferred class is exactly what anti-dilution protects. Its
+             negotiated method and participation term are read from the round that
+             issued it instead of being hardcoded to `broad_based` / `false`. */
+          ...roundStoredTerms(e.roundId),
         } as any);
       }
     } catch (pricedBridgeErr) {
       // Fail-open: a priced-bridge failure must never break the cap-table read.
     }
+    /* WAVE 70 — the BASE rows too, and this is the half that matters most on a
+       live workspace: the demo and DB-hydrated `securities` array carries a
+       per-security `interestRate` but no round-level term at all, so a SAFE or
+       preferred row issued in a round with a recorded anti-dilution method or cap
+       convention never saw it. Each row is enriched from ITS OWN `roundId`, and a
+       value already present on the security WINS — the security is the more
+       specific record, and this must not overwrite it. */
+    return (baseSecurities as unknown as Array<Record<string, unknown>>).map((s) => {
+      const t = roundStoredTerms((s as Record<string, unknown>).roundId);
+      const keep = (k: keyof typeof t) => {
+        const own = (s as Record<string, unknown>)[k];
+        return own === null || own === undefined || String(own).trim() === "" ? t[k] : own;
+      };
+      return {
+        ...s,
+        safeCapType: keep("safeCapType"),
+        antiDilutionType: keep("antiDilutionType"),
+        participatingPreferred: keep("participatingPreferred"),
+        interestRate: keep("interestRate"),
+        /* ── WAVE 77 · R71 — MATURITY DATE IS DERIVED HERE, NOT COPIED ─────────
+           `maturityMonths` is the canonical field (R71 condition 1) and this key
+           is computed from it by the ONE derivation authority in
+           `shared/roundMathEngineAdapter.ts`. It is NOT removed and NOT renamed:
+           `client/src/pages/founder/CapTable.tsx:630` renders it for every
+           outstanding SAFE and note, and R71 condition 2 says a field that
+           displays keeps displaying — "we cannot disable vehicles". Only where
+           the value comes from changed.
+
+           A LEGACY STORED DATE IS STILL READ (R71 condition 3): when there is no
+           usable `maturityMonths`, `resolveNoteMaturityDate` falls back to the
+           stored absolute date, so no existing row is orphaned and no screen
+           loses a value it had yesterday. The census that proves what is stored
+           is `build_log/wave77/W77_MATURITY_CENSUS.md`.
+
+           `keep()` is used for BOTH inputs, so a value on the security itself
+           still wins over the round's term — unchanged from Wave 70. */
+        maturityDate:
+          resolveNoteMaturityDate({
+            maturityMonths: keep("maturityMonths") as number | null,
+            maturityDate: keep("maturityDate") as string | null,
+            issuedAt: ((s as Record<string, unknown>).issuedAt ?? null) as string | null,
+          } as unknown as Parameters<typeof resolveNoteMaturityDate>[0]).maturityDate ?? null,
+        maturityMonths: keep("maturityMonths"),
+        /* WAVE 71 · D13 — the SAFE's most-favored-nation provision, from the
+           issuing round. Without this key `applyMfn` returned every SAFE
+           untouched and the whole MFN implementation had no application caller.
+           A value already on the security WINS, exactly like the six above. */
+        mfn: keep("mfn"),
+      } as Record<string, unknown>;
+    });
+  }
+
+  app.get("/api/companies/:id/securities", requireAuth, (req, res) => {
+    // v14 Tier-1 Fix 2 — ownership/visibility check: caller must be a
+    // company member OR an investor in a round of that company OR admin.
+    // Closes audit finding F-founder-04 (any auth user could read cap-table
+    // securities for any company).
+    const cid = req.params.id;
+    const ctx = req.userContext ?? getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
+    /* WAVE 35 · F8 (the SIXTH cap-table sink) + F9.
+       Was: `capTablePositions.some(...)` → 403 on refusal. Both halves were
+       wrong. (a) The equality check is the same predicate as the gate, and an
+       SPV LP satisfies it for their own vehicle, so the W-SAFE / priced ledger
+       bridges below projected every OTHER LP's subscription — name, email,
+       amount — to a co-LP (proven by execution, Review A F8). (b) A 403 for an
+       unrelated company distinguishes "exists" from "does not exist" and so
+       enumerates SPV ids; the policy this file already states at the
+       /api/companies/:id handler is 404. */
+    const access = decideCapTableSinkAccess(ctx as any, String(cid));
+    if (access.outcome === "refuse") {
+      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
+    }
+    const baseSecurities = buildCompanySecurities(String(cid));
     /* WAVE 35 · F8 — apply the scope decision to what is EMITTED, not merely to
        what is consulted. For an SPV-backed company reached through an investor
        relationship the caller sees THEIR OWN rows and nothing else (unless the
@@ -2509,6 +2872,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const body = req.body ?? {};
     const updates: Record<string, unknown> = {};
+    /* WAVE 58e · D2 — non-blocking market-norm disclosure, returned on success. */
+    const termWarnings: string[] = [];
     // BUG 034 follow-up v23.7.1 — numeric terms (priced fields + instrument
     // extras) must be REJECTED with 400 when present-but-invalid (NaN or
     // negative), not silently dropped. A field absent from the body is left
@@ -2523,6 +2888,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return true;
       }
       updates[key] = n;
+      return false;
+    };
+    /* ═════════════════════════════════════════════════════════════
+       WAVE 61b · R50 — WRITER 1 OF 4. THE BOUNDED SIBLINGS.
+       ═════════════════════════════════════════════════════════════
+       `numericTerm` above is NOT modified and NOT bounded: it has ten callers,
+       and putting a range inside it would silently bound five priced-money
+       fields the owner explicitly ruled must stay unbounded (R50). Instead the
+       four ruled fields plus the share count BYPASS it, exactly as `discount`
+       and `interestRate` do — the pattern this file already established in
+       Wave 58e and whose reason is recorded at the block below.
+
+       The contract is `numericTerm`'s, unchanged: returns TRUE after sending a
+       400 so the caller bails; an ABSENT field is left untouched; an accepted
+       value is written with the SAME parse (`Number`) and therefore the same
+       units and rounding as before. Only the range is new. */
+    const boundedTerm = (key: string, validate: (raw: unknown) => TermValueVerdict): boolean => {
+      const v = validate(body[key]);
+      if (!v.ok) {
+        res.status(400).json({ error: v.error, message: v.message });
+        return true;
+      }
+      /* `""` → ABSENT. Nothing is written. `numericTerm` used to turn `""` into a
+         stored 0; a value nobody typed is not a value. */
+      if (v.value !== "") updates[key] = Number(v.value);
       return false;
     };
     // Priced-round numeric fields.
@@ -2548,14 +2938,486 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // the round's open-ended extras (the Round type carries a [extra: string]
     // index signature, and these values are spread back onto the round on read).
     // v23.7.1: same non-negative validation as the priced fields (400 on NaN/neg).
-    if (numericTerm("valuationCap")) return;
-    if (numericTerm("discount")) return;
-    if (numericTerm("interestRate")) return;
-    if (numericTerm("maturityMonths")) return;
-    if (numericTerm("strikePrice")) return;
-    if (numericTerm("expiryYears")) return;
+    if (boundedTerm("valuationCap", validateValuationCap)) return; // WAVE 61b · R50 — was numericTerm (unbounded)
+    /* ═════════════════════════════════════════════════════════════════════════
+       WAVE 58e · D2 (R31-a) — THE SECOND WRITER, CLOSED WITH THE SAME RULE.
+       ═════════════════════════════════════════════════════════════════════════
+       `numericTerm("discount")` and `numericTerm("interestRate")` accepted ANY
+       non-negative number, which is why THIS route can still write the live
+       corruption today: `PATCH /api/rounds/:id/terms` with `{"discount":20260707}`
+       returned 200 and persisted it. Reproduced over HTTP — see
+       `build_log/wave58e/W58E_CORRUPTION.md` §"Can it still fire?".
+
+       Both fields now go through the SAME `shared/` validators the create route
+       uses, so the two writers cannot drift. `numericTerm` is NOT reused for them:
+       it coerces with `Number()` and reports only "must be a non-negative number",
+       which is the sentence that let a date through.
+
+       ABSENT IS UNTOUCHED. A field missing from the body is not validated and not
+       written — never reset to zero. */
+    /* ══════════════════════════════════════════════════════════════════
+       WAVE 58f · FOLD-IN 1 — THREE STATES, BECAUSE 0% AND "NO DISCOUNT" DIFFER.
+       ══════════════════════════════════════════════════════════════════
+       WHAT WAS WRONG. The Edit-terms dialog seeded `round.discount ?? 0` and sent
+       `discount` UNCONDITIONALLY, so opening and saving a SAFE that had no
+       discount wrote an explicit `0` onto it. A 0% discount and NO discount are
+       different facts about a contract: the first says the parties agreed the
+       investor converts at the round price with no concession; the second says
+       the instrument is silent. Only one of them belongs in a data room.
+
+       THE THREE STATES, matching the pool block below exactly so the two cannot
+       drift apart in a founder's mental model:
+         · ABSENT from the body      → UNTOUCHED. Never reset to zero.
+         · `null` or `""`            → EXPLICIT REMOVAL. Stored as null so every
+                                       reading surface projects "no discount",
+                                       exactly as a round that never had one.
+         · a number                  → VALIDATED, then stored percent-as-written.
+       `0` is a VALUE, not a removal — it stores `0`, and the shared validator
+       accepts it, because a negotiated 0% is a legitimate term. */
+    {
+      const dv = validateDiscountPercentAsWritten(body.discount);
+      if (!dv.ok) return res.status(400).json({ error: dv.error, message: dv.message });
+      if (body.discount !== undefined) {
+        if (body.discount === null || String(body.discount).trim() === "") {
+          updates.discount = null; // explicit removal
+        } else {
+          updates.discount = Number(dv.percent);
+          if (dv.warning) termWarnings.push(dv.warning);
+        }
+      }
+      const iv = validateInterestRatePercentAsWritten(body.interestRate);
+      if (!iv.ok) return res.status(400).json({ error: iv.error, message: iv.message });
+      if (body.interestRate !== undefined) {
+        if (body.interestRate === null || String(body.interestRate).trim() === "") {
+          updates.interestRate = null; // explicit removal
+        } else {
+          updates.interestRate = Number(iv.percent);
+          if (iv.warning) termWarnings.push(iv.warning);
+        }
+      }
+    }
+    /* WAVE 61b · R50 — all three were `numericTerm`, i.e. "any non-negative
+       number", which is the sentence that let a date through. */
+    if (boundedTerm("maturityMonths", validateMaturityMonths)) return;
+    /* ── WAVE 77 · R71 — WRITER 1 OF 3. A SILENT DROP BECOMES A NAMED REFUSAL ──
+       Before this wave THIS route accepted `maturityDate` with HTTP 200 and threw
+       it away: it is on `UPDATE_EXTRAS_WHITELIST` but not on this route's inline
+       allow-list, which is the exact defect Wave 76 measured for two other keys.
+       R71 condition 1 makes the absolute date derived, so the honest behaviour is
+       to REFUSE it by name rather than to accept and discard it, or to accept and
+       store a second spelling that can contradict the canonical one. Nothing that
+       used to be stored stops being stored — this route never stored it. */
+    if ((body as Record<string, unknown>)["maturityDate"] !== undefined) {
+      return res.status(400).json({ ok: false, ...MATURITY_DATE_NOT_WRITABLE });
+    }
+    if (boundedTerm("strikePrice", validateStrikePrice)) return;
+    if (boundedTerm("expiryYears", validateExpiryYears)) return;
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 68 · R56 — WRITER 1 OF 3. THE DATE-SHAPED WARNING.
+       ══════════════════════════════════════════════════════════════════════
+       `20260707` is BOTH 2026-07-07 and a legitimate valuation cap of
+       20,260,707. R55 proved no magnitude ceiling can separate them, so the
+       owner ruled: WARN, DO NOT REFUSE. The value above is already ACCEPTED and
+       written by `boundedTerm`; this only adds a sentence to the same
+       non-blocking `termWarnings` array the market-norm disclosures use.
+
+       NOT R42. R42 blocks. This stores. Do not conflate them.
+       MONEY FIELDS ONLY: `maturityMonths` and `expiryYears` already REFUSE
+       20260707 by range (R50) and must keep refusing — R56 forbids softening a
+       working fence into a warning. `fdPreMoneyShares` is a share count, not
+       money, and is out of the ruling's scope. */
+    for (const _k of ["valuationCap", "strikePrice"] as const) {
+      const _w = dateShapedValueWarning(_k, body[_k]);
+      if (_w) termWarnings.push(_w);
+    }
     // MFN is a boolean SAFE/Note term carried as an extra.
     if (typeof body.mfn === "boolean") updates.mfn = body.mfn;
+
+    /* ═══════════════════════════════════════════════════════════════════════════
+       WAVE 76 · ITEM 1 (R60) and ITEM 2 (D5) — THE TWO CLOSED-VOCABULARY MONEY
+       TERMS. WRITER 1 OF 3.
+       ═══════════════════════════════════════════════════════════════════════════
+       THE FRAMING THIS WAVE WAS GIVEN, AND WHAT MEASUREMENT ACTUALLY FOUND. The
+       brief said a founder "cannot correct" these terms after creation. That is
+       FALSE, and the transcript is in `build_log/wave76/W76_PROBE_TRANSCRIPT.txt`:
+       `PATCH /api/founder/rounds/:id` (`server/roundCarryForwardRoutes.ts`) has
+       always persisted both keys, and `POST /api/rounds` puts every unknown body key
+       into `extras_json`. What was actually wrong is worse and different:
+
+         THIS route          valid value  -> HTTP 200 `{"ok":true}`, SILENTLY DROPPED
+         the founder route   ANY value    -> HTTP 200, PERSISTED UNVALIDATED
+         the create route    ANY value    -> HTTP 200, PERSISTED UNVALIDATED
+
+       Three writers, three behaviours, one field. The dangerous half is the second:
+       `"FULL_RATCHET"` and `"post money"` were both accepted and stored, and
+       `resolvePreferredTerms` then throws `invalid_anti_dilution_type` on the
+       cap-table path — so a capitalised keystroke stops the projection computing at
+       all, with nothing on the terms screen to undo it. Wave 76 closes ALL THREE
+       with the SAME imported validators.
+
+       WHY THE VOCABULARY IS CLOSED AND NOTHING IS COERCED. `full_ratchet`,
+       `broad_based` and `narrow_based` give materially different share counts on one
+       down-round event, and `post_money_cap` / `pre_money_cap` give different
+       conversion prices on identical SAFE terms. A writer that guessed which of them
+       a near-miss meant would be restating a founder's recorded deal term, which is
+       the R60 defect itself rather than a fix for it. Refused BY NAME with the
+       field's own code (`invalid_antiDilutionType` / `invalid_safeType`), never
+       clamped, never lower-cased, never defaulted.
+
+       NO MIGRATION. Both keys are already on `roundsStore.ts`'s
+       `UPDATE_EXTRAS_WHITELIST` — `antiDilutionType` since Wave 70 · D1 and
+       `safeType` since Wave 70 · D5 — so the STORE has always been willing to
+       persist them and only this ROUTE never put them in `updates`. Migrations stay
+       at 173, highest 0192.
+
+       THREE STATES, matching `discount`, the pool block and Wave 75's
+       `liquidationPreference` exactly, so the founder's mental model is one model:
+         · ABSENT from the body → UNTOUCHED. Never reset, never defaulted.
+         · `null` or `""`      → EXPLICIT REMOVAL, stored as null. For `safeType`
+                                  that returns the SAFE to the STATED YC post-money
+                                  assumption the adapter discloses on screen; for
+                                  `antiDilutionType` it returns the class to genuinely
+                                  UNKNOWN, which is what `UnknownAntiDilutionTermError`
+                                  refuses on a down round. Removal is a real thing to
+                                  want, and it is not the same as `"none"`.
+         · a token             → VALIDATED against the closed list, stored as typed. */
+    for (const [key, validate] of [
+      ["antiDilutionType", validateAntiDilutionTypeStored],
+      ["safeType", validateSafeCapTypeStored],
+    ] as ReadonlyArray<readonly [string, (raw: unknown) => TermValueVerdict]>) {
+      if (body[key] === undefined) continue; // ABSENT — untouched
+      if (body[key] === null || String(body[key]).trim() === "") {
+        updates[key] = null; // explicit removal
+        continue;
+      }
+      const v = validate(body[key]);
+      if (!v.ok) {
+        return res.status(400).json({ error: v.error, field: key, message: v.message });
+      }
+      updates[key] = v.value;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       WAVE 75 · ITEM 2 — A REFUSAL THAT INSTRUCTED THE IMPOSSIBLE (W74 finding N-2).
+       ═══════════════════════════════════════════════════════════════════
+       THE DEFECT, measured over HTTP by Wave 74 (`W74_UNVERIFIED_AND_OWNER_QUESTIONS.md`
+       Q1): `GET /api/founder/captable/waterfall` refuses a preferred round with
+       `liquidation_term_not_on_record` and instructs the founder, by name, to
+       *"Record the liquidation preference on the round's terms."* This route — the
+       only post-creation terms writer — then returned **HTTP 200 `{"ok":true}`** and
+       SAVED NOTHING, because `liquidationPreference` was absent from the inline
+       allow-list above. The key was already on `roundsStore.ts`'s
+       `UPDATE_EXTRAS_WHITELIST` (`:636`), so the STORE would have persisted it; only
+       the ROUTE never put it in `updates`. A founder followed the instruction, was
+       told it worked, and the refusal came back unchanged. That is a dead promise
+       that a refusal actively drives users into — forbidden by name.
+
+       NO MIGRATION. The key round-trips through `extras_json`, exactly as
+       `optionPoolPostPercent` (Wave 58b) and `safeType` (Wave 70) do. Migrations stay
+       at 173, highest 0192.
+
+       IT IS FREE TEXT, AND IT STAYS FREE TEXT. `server/lib/roundStoredTerms.ts:89-110`
+       is the single reader: it parses a leading `<number>x` for the MULTIPLE (domain
+       `(0, 10]`) and an explicit `participating` / `non-participating` for the
+       PARTICIPATION, and leaves either `null` when the text does not say. Both must be
+       present or the waterfall REFUSES. So a value is accepted here as typed — real
+       preference language is longer than a multiple ("1x non-participating, senior to
+       Series Seed") and re-typing the founder's own term would be the wrong fix — and
+       a value the reader cannot use produces a NON-BLOCKING warning on the SAME
+       `termWarnings` channel Wave 69 wired to a toast (`Rounds.tsx:612-620`), so the
+       founder is told the round still cannot produce a waterfall figure instead of
+       discovering it at the next refusal.
+
+       THREE STATES, matching `discount` and the pool block exactly:
+         · ABSENT from the body → UNTOUCHED. Never reset.
+         · `null` or `""`      → EXPLICIT REMOVAL, stored as null.
+         · a string            → stored trimmed, as typed. */
+    if (body.liquidationPreference !== undefined) {
+      if (body.liquidationPreference === null || String(body.liquidationPreference).trim() === "") {
+        updates.liquidationPreference = null; // explicit removal
+      } else if (typeof body.liquidationPreference !== "string") {
+        /* A number or an object is not preference language. Refused BY NAME rather
+           than coerced: `String(1)` would store "1", which the reader cannot parse
+           into a multiple (it needs the `x`) and which would silently re-create the
+           dead promise this block removes. */
+        return res.status(400).json({
+          error: "invalid_liquidationPreference",
+          field: "liquidationPreference",
+          message:
+            "liquidationPreference is the round's preference LANGUAGE, recorded as text — for example " +
+            "\"1x non-participating\" or \"2x participating\". Send a string, or null to remove it. " +
+            "The exit waterfall needs BOTH a multiple (a leading \"<number>x\") and an explicit " +
+            "\"participating\" or \"non-participating\"; it refuses rather than assuming either.",
+        });
+      } else {
+        const lpText = body.liquidationPreference.trim();
+        updates.liquidationPreference = lpText;
+        /* The SAME reader the waterfall uses, so the warning cannot disagree with the
+           refusal it is meant to prevent. `roundStoredTerms` reads the STORED round,
+           so the text is parsed here directly by the identical rules, quoted in the
+           declaration block of that module. */
+        const lpLower = lpText.toLowerCase();
+        const mult = /(^|[^0-9.])([0-9]+(?:\.[0-9]+)?)\s*x\b/.exec(lpLower);
+        const multOk = Boolean(mult) && Number(mult![2]) > 0 && Number(mult![2]) <= 10;
+        const partOk = /participating/.test(lpLower);
+        if (!multOk || !partOk) {
+          termWarnings.push(
+            `Saved the liquidation preference as “${lpText}”. The exit waterfall still cannot use it: ` +
+              `it needs BOTH a multiple written as a leading “1x”, “1.5x” or “2x” (up to 10x) AND the ` +
+              `word “participating” or “non-participating”. ` +
+              `${multOk ? "" : "No usable multiple was found. "}${partOk ? "" : "Participation was not stated. "}` +
+              `Until both are present, GET /api/founder/captable/waterfall will keep refusing with ` +
+              `liquidation_term_not_on_record.`,
+          );
+        }
+      }
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 58b · DEFECT 2 — THE OPTION POOL IS EDITABLE AFTER CREATION.
+       ══════════════════════════════════════════════════════════════════════
+       THE DEFECT. The pool percentage was CREATE-TIME ONLY. `W58_BACKCOMPAT.md`
+       §4 claimed "editing the round's terms can now add a percentage", but that
+       was true only of `roundsStore`'s extras whitelist — THIS route's inline
+       allow-list never read either key, so the request was dropped as an unknown
+       field and NO SCREEN SENT IT. A founder who mis-typed 15% could not correct
+       it. That is a dead promise of exactly the R21 class Wave 58 existed to
+       remove, newly created by Wave 58.
+
+       THE IMMUTABILITY RULE THIS HONOURS, found and named rather than invented:
+       `routes.ts` immediately above this block refuses the WHOLE patch with
+       HTTP 409 `closed_round_readonly` when `r.state === "closed" || r.state ===
+       "funded"`. The pool fields are inside that same gate, so a committed round
+       cannot have its pool changed, and the founder is told why by name instead of
+       the field being silently absent. `server/captableCommitStore.ts` (SACRED,
+       unmodified by this wave) is what protects the already-committed record: it
+       imports no engine and derives share counts arithmetically from the round's
+       stored `pricePerShare`, so no edit here can retroactively alter a committed
+       cap table.
+
+       R16 PERCENT-AS-WRITTEN. `"15"` is 15%. Validated in `[0, 100)` BY NAME with
+       the same range and the same refusal code the create route uses
+       (`invalid_optionPoolPostPercent`), so the two writers cannot disagree.
+       `numericTerm` is deliberately NOT reused: it coerces with `Number()` and
+       would turn the exact string `"15"` into the number `15`, losing the
+       as-written form R16 requires be preserved byte for byte.
+
+       CLEARING IS EXPLICIT. `null` (or `""`) removes the pool from the round.
+       Absent from the body means untouched — never a silent reset to zero. */
+    if (body.optionPoolPostPercent !== undefined) {
+      if (body.optionPoolPostPercent === null || body.optionPoolPostPercent === "") {
+        /* Explicit removal. Stored as null so `hasRoundPoolPercent` on every
+           reading surface goes false and the round projects with no pool, which
+           is exactly how a round that never had one behaves. */
+        updates.optionPoolPostPercent = null;
+        updates.optionPoolMode = null;
+      } else {
+        const raw = String(body.optionPoolPostPercent).trim();
+        const n = Number(raw);
+        if (!/^\d+(\.\d+)?$/.test(raw) || !Number.isFinite(n) || n < 0 || n >= 100) {
+          return res.status(400).json({
+            error: "invalid_optionPoolPostPercent",
+            message:
+              "optionPoolPostPercent is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 25 means 25%. " +
+              "It must be a number in [0, 100) and is never rescaled by magnitude — 0.25 is a quarter " +
+              "of one percent, not 25%.",
+          });
+        }
+        /* WAVE 71 · D15 — WRITER 1 OF 2. `99` was inside `[0, 100)` and was
+           ACCEPTED here, producing a 46-digit share count through
+           `projectPostClose` (executed; the QA document recorded a 49-digit total
+           on its own fixture). The ceiling, its rationale and its authority are
+           declared ONCE in `server/lib/roundStoredTerms.ts` so this writer and the
+           create-round writer cannot diverge — which is exactly the single-writer
+           reopening Wave 58e and Wave 61b were caught by. */
+        if (!optionPoolPostPercentWithinCeiling(n)) {
+          return res.status(400).json({
+            error: "invalid_optionPoolPostPercent",
+            message: OPTION_POOL_POST_PERCENT_CEILING_MESSAGE,
+            field: "optionPoolPostPercent",
+            maxPercentAsWritten: OPTION_POOL_POST_PERCENT_MAX,
+          });
+        }
+        /* The EXACT STRING is stored, not the parsed number: R16 forbids a
+           conversion at any layer, and `Number("15.0")` would silently restate
+           the founder's own figure. */
+        updates.optionPoolPostPercent = raw;
+      }
+    }
+    if (body.optionPoolMode !== undefined && body.optionPoolMode !== null) {
+      if (body.optionPoolMode !== "pre_money" && body.optionPoolMode !== "post_money") {
+        return res.status(400).json({
+          error: "invalid_optionPoolMode",
+          message:
+            "optionPoolMode must be \"pre_money\" (the market default — the existing holders bear the " +
+            "pool alone, per Cooley GO \"Negotiating the option pool\") or \"post_money\" (the pool is " +
+            "created after the round and dilutes everyone pro-rata). Both are modelled; neither is guessed.",
+        });
+      }
+      updates.optionPoolMode = body.optionPoolMode;
+    }
+    /* WAVE 58b · DEFECT 3 — the DECLARED fully-diluted pre-money count is now
+       editable too. It is a first-class `rounds` column and has been in
+       `roundsStore.UPDATE_WHITELIST` since Wave C, with a comment recording that
+       THIS route's inline allow-list did not include it "so the Edit-Terms dialog
+       cannot correct the FD count today". It has to be correctable, because the
+       pool base reconciliation (`shared/roundMathEngineAdapter.ts::
+       resolveFdPreMoneyBase`) refuses by name when the declared count and the
+       cap-table ledger disagree, and the named remedy is to correct one of them. */
+    if (boundedTerm("fdPreMoneyShares", validateFdPreMoneyShares)) return; // WAVE 61b · R50 — magnitude + integrality only; see the validator's own caveat
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 80 · ITEM 3 — THE LAST SIX SILENT DROPS ON THIS ROUTE.
+       ═══════════════════════════════════════════════════════════════════════
+       WHAT WAS ACTUALLY WRONG, measured rather than assumed. Six keys are on
+       `roundsStore.UPDATE_EXTRAS_WHITELIST` — `cap`, `expiryDate`, `poolSize`,
+       `proRata`, `sharesAuthorized`, `useOfProceeds` — so the STORE has always
+       been willing to persist them. This route put none of them into `updates`
+       and did not refuse them either: it reached `res.json({ ok: true, … })`
+       having thrown the submitted value away. A regression test PINNED that as
+       correct; Wave 80 corrects the pin as well as the route.
+
+       FOUR PERSIST, TWO REFUSE BY NAME. Nothing is accepted and discarded, which
+       is the rule `maturityDate` established in Wave 77 and the rule the owner
+       states as "no dead promises".
+
+       THREE STATES for every persisted field, identical to `discount`, the pool
+       block and `liquidationPreference` above, so a founder has ONE mental model:
+         · ABSENT from the body → UNTOUCHED. Never reset, never defaulted.
+         · `null` or `""`      → EXPLICIT REMOVAL, stored as null.
+         · a value             → VALIDATED, then stored.
+
+       NO MIGRATION. All four round-trip through `extras_json`, exactly as
+       `optionPoolPostPercent` (Wave 58b), `safeType` (Wave 70) and
+       `liquidationPreference` (Wave 75) do. Migrations stay at 173, highest 0192. */
+
+    /* THE TWO REFUSALS. Both are SECOND SPELLINGS of a term this same route
+       already validates and stores under its canonical name, and two spellings of
+       one fact on one row can disagree with nothing able to say which is true.
+       Refused BY NAME, naming the control that does work (R58), and refused
+       BEFORE anything is written so a patch carrying one changes nothing at all. */
+    if ((body as Record<string, unknown>)["cap"] !== undefined) {
+      return res.status(400).json({ ok: false, ...ROUND_CAP_ALIAS_NOT_WRITABLE });
+    }
+    if ((body as Record<string, unknown>)["expiryDate"] !== undefined) {
+      return res.status(400).json({ ok: false, ...EXPIRY_DATE_NOT_WRITABLE });
+    }
+
+    /* THE TWO SHARE COUNTS. Bounded and integral through the same shared
+       `boundedNumericTerm` helper `fdPreMoneyShares` uses, so three counts of
+       shares cannot acquire three different ceilings. `boundedTerm` already
+       implements "`""` means absent, write nothing"; explicit `null` removal is
+       handled first, because a founder who deletes an authorised-share figure is
+       recording that it is not known, not recording zero. */
+    if (body.sharesAuthorized === null) {
+      updates.sharesAuthorized = null; // explicit removal
+    } else if (boundedTerm("sharesAuthorized", validateSharesAuthorized)) {
+      return;
+    }
+    if (body.poolSize === null) {
+      updates.poolSize = null; // explicit removal
+    } else if (boundedTerm("poolSize", validatePoolSize)) {
+      return;
+    }
+
+    /* PRO-RATA IS A BOOLEAN RIGHT, handled exactly as `mfn` is on the line above —
+       one contractual flag, one shape, no coercion. A non-boolean is REFUSED by
+       name rather than truthiness-cast: `"false"` is a truthy string, and casting
+       it would record the opposite of what the sender said. `null` removes it. */
+    if (body.proRata !== undefined) {
+      if (body.proRata === null || String(body.proRata).trim() === "") {
+        updates.proRata = null; // explicit removal
+      } else if (typeof body.proRata !== "boolean") {
+        return res.status(400).json({
+          error: "invalid_proRata",
+          field: "proRata",
+          message:
+            "proRata is the investor's pro-rata participation right, recorded as true or false. " +
+            "Send a boolean, or null to remove it. It is never inferred from a string: \"false\" is a " +
+            "non-empty string and casting it would record the opposite of what was sent.",
+        });
+      } else {
+        updates.proRata = body.proRata;
+      }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 81 · ITEM 2 (D4) — WRITER 1 OF 2. THE FIELD A REFUSAL INSTRUCTS.
+       ═══════════════════════════════════════════════════════════════════════
+       THE DEFECT, and why it is the worst shape of it found on this route.
+       `GET /api/founder/captable/waterfall` refuses a company with two or more
+       preference classes using `SENIORITY_NOT_ON_RECORD`, and its message tells
+       the founder BY NAME to record each class's seniority on the round. This
+       route then answered HTTP 200 `{"ok":true}` to `{"seniority": 0}` and stored
+       nothing: the platform instructed an action, reported that the action had
+       succeeded, and discarded it. Wave 79 recorded the gap knowingly and left it
+       as an OWNER QUESTION; the owner's answer is that a silent 200 on a
+       discarded money term is not acceptable in any case.
+
+       PERSISTED, NOT REFUSED, and the reasoning is on the validator in
+       `server/lib/roundStoredTerms.ts` next to the reader and the domain.
+
+       IT REMAINS API-ONLY. There is no seniority control anywhere in
+       `client/src` — this makes the field settable over the API and by nothing
+       else. The UI is deliberately not built here: seniority decides the ORDER
+       in which classes are paid at an exit, so a control for it is a money
+       feature that needs its own measured step.
+
+       THREE STATES, identical to `discount`, the option-pool block,
+       `liquidationPreference` and Wave 80's four, so a founder has ONE model:
+         · ABSENT from the body → UNTOUCHED. Never reset, never defaulted, and
+                                  never given an invented rank (R6).
+         · `null` or `""`      → EXPLICIT REMOVAL, stored as null. The waterfall
+                                  then refuses again with
+                                  `seniority_not_on_record`, which is the honest
+                                  outcome of deleting a ranking.
+         · an integer in range → VALIDATED against the reader's own domain, then
+                                  stored.
+
+       NO MIGRATION. It round-trips through `extras_json`. Migrations stay at 173,
+       highest 0192.
+
+       WHAT THIS WAVE DID **NOT** DO, said rather than left to be discovered.
+       `POST /api/rounds` sweeps every unrecognised body key into `extras_json`
+       (`KNOWN_COLS`), so it has ALWAYS accepted `{"seniority": 3.5}` or
+       `{"seniority": 500}` at creation and stored it unvalidated; the reader then
+       returns `null` for it and the waterfall refuses with the bad value sitting
+       on the row. That is a PRE-EXISTING gap, not one opened here, and closing it
+       would turn a request that returns 200 today into a 400 — a behaviour change
+       outside this wave's four defects. It is recorded as an open item in
+       `build_log/wave81/W81_DROPPED_KEYS.md` instead of being fixed unasked. */
+    if (body.seniority !== undefined) {
+      /* REMOVAL IS TESTED ON THE LITERAL VALUE, not on `String(x).trim()`, which
+         is what the fields above use. `String([])` is `""`, so the shared idiom
+         would read an empty ARRAY as "delete the ranking"; a container is a client
+         bug and the validator refuses it by name. Nothing else on this route
+         changes shape — only this field, and only because it orders exit payments. */
+      if (body.seniority === null || (typeof body.seniority === "string" && body.seniority.trim() === "")) {
+        updates.seniority = null; // explicit removal
+      } else {
+        const sv = validateSeniorityRankStored(body.seniority);
+        if (!sv.ok) {
+          return res.status(400).json({ error: sv.error, field: "seniority", message: sv.message });
+        }
+        /* Stored as a NUMBER: the reader parses with `Number()` and the domain is
+           integral, so there is no as-written form to preserve here (unlike R16's
+           percent-as-written, where the exact string is the fact). */
+        updates.seniority = Number(sv.value);
+      }
+    }
+
+    /* USE OF PROCEEDS — the field with live founder AND investor readers, and the
+       one whose silent drop mattered most. Wave 80 accepts BOTH shapes the product
+       writes it in (the wizard's free-text narrative and the structured rows the
+       readers were typed for) and both now RENDER; the decision and the reason it
+       is not derived into rows are declared once, on `validateUseOfProceeds`. */
+    if (body.useOfProceeds !== undefined) {
+      const uv = validateUseOfProceeds(body.useOfProceeds);
+      if (!uv.ok) {
+        return res.status(400).json({ error: uv.error, field: uv.field, message: uv.message });
+      }
+      updates.useOfProceeds = uv.value;
+    }
 
     // v25.45 Bug C (Ozan QA wave) — PERSISTENCE FIX.
     //
@@ -2617,7 +3479,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch { /* non-fatal — a bridge failure must never fail the mutation */ }
     emitMutation({ aggregate: "round", id: persisted.id, change: "update" });
-    res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated" });
+    /* WAVE 58e · D2 — market-norm disclosure on the SUCCESS response (R30.5:
+       warn outside 10–20%, do not block). Omitted entirely when empty. */
+    res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated", ...(termWarnings.length ? { termWarnings } : {}) });
   });
 
   /* W-INVEST BUG B (2026-07-17) — "Active" investor roster flag. Additive,
@@ -3110,6 +3974,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         id: modern.roundId,
         name: round?.name ?? `Round ${modern.roundId}`,
         type: round?.type ?? "unknown",
+        /* WAVE 80 · ITEM 2 — USE OF PROCEEDS REACHES THE INVESTOR WHO WAS INVITED.
+           `InvitationDetail.tsx` has rendered a "Use of proceeds" card since DEF-023,
+           reading `invitation.round.useOfProceeds`. This projection never carried the
+           key, so the only invitations that ever populated it were the static
+           `incomingInvitations` fixtures — a real founder's recorded plan could not
+           reach the screen built to show it. Wave 80 also made the wizard actually
+           persist the value, so without this line the round-trip would stop one hop
+           short of the reader and be a new dead promise.
+           NOT A DISCLOSURE WIDENING: this handler has already established that the
+           caller's email equals the invitation's email, and use of proceeds is deal
+           disclosure the founder wrote FOR the investors they invite. Null when the
+           founder recorded nothing, which the reader already renders as "Not provided". */
+        useOfProceeds: (round as { useOfProceeds?: unknown } | undefined)?.useOfProceeds ?? null,
       },
       state: modern.state,
       receivedAt: modern.createdAt ?? modern.sentAt ?? new Date().toISOString(),
@@ -4742,7 +5619,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const viewerForPdf = (req.userContext ?? getUserContext(req))?.userId ?? null;
       for (const investorId of holderIds) {
         const v = byHolder[investorId];
-        const pct = totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : 0;
+        /* WAVE 73 · ITEM 9 — THE FABRICATED `0` IS GONE. This was
+               `totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : 0`
+           so a zero-share cap table printed `0.000%` beside every holder in the
+           DOWNLOADED PDF — the artifact an investor keeps. 0 ÷ 0 is undefined,
+           not zero, and the cap-table engine already answers `null` for exactly
+           this case (ruling D18). `null` is now passed through and
+           `streamCapTablePdf` renders an em-dash, states no total, and prints a
+           note explaining that the ratio is undefined and NOT zero. Nothing else
+           in this loop changed: share counts, invested amounts, the privacy
+           label resolution and the sort are untouched. */
+        const pct = totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : null;
         const isCoMember = viewerForPdf
           ? areCoMembersOnAnyCapTable(investorId, viewerForPdf)
           : false;
@@ -5915,6 +6802,109 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ]) {
       if (coerceNumeric(key)) return;
     }
+    /* ══════════════════════════════════════════════════════════════════════════
+       WAVE 58e · D2 (owner ruling R31-a) — THE CORRUPTION GUARD AT THE WRITE
+       BOUNDARY. RANGE-CHECKED BY NAME, WARNED BY NAME, NEVER RESCALED.
+       ══════════════════════════════════════════════════════════════════════════
+       WHAT WENT WRONG ON LIVE. Round `rnd_64e9d6ad728a`
+       (`ZZ-GATE0-TEST-ConvertibleNote`) stores `discount: 20260707` and
+       `interestRate: 20261231`. `20260707` is that round's OWN `createdAt` of
+       2026-07-07 written as YYYYMMDD; `20261231` is 2026-12-31, a plausible
+       maturity date. A DATE WAS COERCED INTO TWO NUMERIC FINANCIAL FIELDS.
+       `discount: 20260707` is a twenty-million-percent discount; through the
+       cap-table engine's `× (1 − d)` it prices a $1.00 round at −$202,606.07 a
+       share (exact decimals: `build_log/wave58e/w58e_exact_math.py`).
+
+       WHY IT GOT IN. `coerceNumeric` above rejects only NaN and negatives. A date
+       as YYYYMMDD is a large POSITIVE number, so it passed. The Edit-terms route's
+       `numericTerm` has the identical hole. Neither is a range check.
+
+       WHAT THIS IS NOT. It is not a rescale and not a repair. R16 forbids reading
+       a unit off a magnitude, so nothing here divides by 100 or clamps: an
+       out-of-range value is REFUSED BY NAME and the founder is told what the field
+       means. Existing corrupt rows are NOT rewritten — the owner has confirmed
+       they are test data, and a silent rewrite of a stored financial term is the
+       defect class this build exists to remove. They are surfaced where they
+       render (`RoundDetail` Terms tab, the Edit-terms modal) and a cleanup is
+       PROPOSED in `build_log/wave58e/W58E_CORRUPTION.md`, not performed.
+
+       WARN, DO NOT BLOCK, OUTSIDE THE MARKET NORM (R30.5). 10–20% is the norm
+       (DLA Piper, "SAFE FAQs"); outside it the value is stored exactly as written
+       and a reason is returned in `termWarnings`. A warning that blocks is a block. */
+    const termWarnings: string[] = [];
+    {
+      const dv = validateDiscountPercentAsWritten((body as Record<string, unknown>).discount);
+      if (!dv.ok) return res.status(400).json({ ok: false, error: dv.error, message: dv.message });
+      if (dv.warning) termWarnings.push(dv.warning);
+      const iv = validateInterestRatePercentAsWritten((body as Record<string, unknown>).interestRate);
+      if (!iv.ok) return res.status(400).json({ ok: false, error: iv.error, message: iv.message });
+      if (iv.warning) termWarnings.push(iv.warning);
+    }
+    /* ── WAVE 58 · R27 — SERVER BACKSTOP FOR THE POOL PERCENTAGE ──────────────
+       `optionPoolPostPercent` is PERCENT-AS-WRITTEN (R16 / OR-1): `"15"` is 15%.
+       It is DELIBERATELY NOT put through `coerceNumeric` above, because that
+       helper rewrites the value into a JS Number and a percent must survive as
+       the exact decimal the founder typed — R16 forbids conversions, and a float
+       round-trip is a conversion with a nicer name.
+
+       Instead it is validated as a STRING and REFUSED BY NAME when malformed.
+       The live wizard accepted `0.25` into "Pool size (shares)" with no error at
+       all (W58 live finding 1); this is the server half of closing that. The
+       range is R16's `[0, 100)`: 100% would reserve the whole company and the
+       gross-up divides by (100 − target).
+
+       `0.25` is ACCEPTED and means a quarter of one percent. R16 is explicit that
+       magnitude is not evidence of unit, so there is no "did you mean 25?"
+       coercion here — only an honest range. */
+    if (body.optionPoolPostPercent != null && body.optionPoolPostPercent !== "") {
+      const raw = String(body.optionPoolPostPercent).replace(/[,\s%]/g, "");
+      if (!/^\d+(\.\d+)?$/.test(raw)) {
+        return res.status(400).json({
+          error: "invalid_optionPoolPostPercent",
+          message:
+            "Option pool size must be a number, entered as a percentage of fully-diluted shares " +
+            "(percent-as-written: 15 means 15%). Capavate will not guess at what a non-numeric " +
+            "value meant.",
+        });
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0 || n >= 100) {
+        return res.status(400).json({
+          error: "invalid_optionPoolPostPercent",
+          message:
+            "Option pool size must be a percentage of fully-diluted shares in the range 0 to under " +
+            "100. A pool of 100% or more would reserve the whole company for the option plan.",
+        });
+      }
+      /* WAVE 71 · D15 — WRITER 2 OF 2. Same constant, same message, same source of
+         truth as the terms-PATCH fence above. See
+         `server/lib/roundStoredTerms.ts` for the measured share counts, the
+         gross-up identity that explains why the blow-up happens, the market
+         authority for the figure, and the OWNER QUESTION about its exact value. */
+      if (!optionPoolPostPercentWithinCeiling(n)) {
+        return res.status(400).json({
+          error: "invalid_optionPoolPostPercent",
+          message: OPTION_POOL_POST_PERCENT_CEILING_MESSAGE,
+          field: "optionPoolPostPercent",
+          maxPercentAsWritten: OPTION_POOL_POST_PERCENT_MAX,
+        });
+      }
+      /* Stored as the EXACT STRING that was validated, never as a Number. */
+      body.optionPoolPostPercent = raw;
+    }
+    if (body.optionPoolMode != null && body.optionPoolMode !== "") {
+      const m = String(body.optionPoolMode);
+      if (m !== "pre_money" && m !== "post_money") {
+        return res.status(400).json({
+          error: "invalid_optionPoolMode",
+          message:
+            "Option pool placement must be either pre_money (the existing holders pay for the " +
+            "pool) or post_money (everyone pays for it pro-rata). Placement decides who bears the " +
+            "dilution, so it is not defaulted silently.",
+        });
+      }
+      body.optionPoolMode = m;
+    }
     // v23.9 B3/BUG-039 — a round must not close before it opens. (Checked
     // BEFORE the past-date guard below so a close-before-open pair keeps
     // returning invalid_closeDate, preserving existing contract tests.)
@@ -6167,6 +7157,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             }
           }
           if (has("maturityDate") && !future("maturityDate")) fieldErrors.maturityDate = "Maturity date must be in the future.";
+          /* ── WAVE 77 · R71 — WRITER 2 OF 3. THE ABSOLUTE DATE IS NOT WRITABLE ──
+             The refusal ABOVE is untouched and still fires first for a PAST date:
+             a founder who mistypes a maturity keeps the sentence that names the
+             problem ("must be in the future"), and no working refusal was removed
+             or softened to make this ruling fit. This line adds the SECOND
+             refusal R71 condition 1 requires — the absolute date is derived from
+             `maturityMonths` and cannot be stored independently — and it only
+             speaks when the first has not already claimed the field, so exactly
+             one sentence comes back per field. Same imported rule, same name, at
+             all three writers (R71 condition 4). */
+          if (has("maturityDate") && fieldErrors.maturityDate === undefined) {
+            fieldErrors.maturityDate = MATURITY_DATE_NOT_WRITABLE.message;
+          }
           if (has("maturityMonths") && (num("maturityMonths") ?? 0) <= 0) fieldErrors.maturityMonths = "Maturity (months) must be greater than 0.";
         } else if (instrument === "warrant") {
           if (has("strikePrice") && (num("strikePrice") ?? 0) <= 0) fieldErrors.strikePrice = "Strike price must be greater than 0.";
@@ -6181,6 +7184,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (Object.keys(fieldErrors).length > 0) {
         return res.status(400).json({ error: "validation_failed", fieldErrors });
       }
+      /* WAVE 61b · R50 — ORDER NOTE. The bounded-term fence below sits AFTER this
+         block ON PURPOSE. The `fieldErrors` envelope is the shape the create
+         wizard consumes for per-field highlighting, and pre-empting it would have
+         changed an existing contract: `wave_c_c1a_fd_pre_money.test.ts:229-232`
+         asserts a fractional `fdPreMoneyShares` returns `validation_failed` with a
+         `fieldErrors.fdPreMoneyShares`. My first placement broke that test. The
+         fence adds refusals the existing block does not make; it does not restate
+         or reorder the ones it does. */
+    /* ══════════════════════════════════════════════════════════════════
+       WAVE 61b · R50 — WRITER 2 OF 4. THE HOLE THIS FILE'S OWN COMMENT ADMITTED.
+       ══════════════════════════════════════════════════════════════════
+       The block above says of `coerceNumeric`: *"The Edit-terms route's
+       `numericTerm` has the identical hole. Neither is a range check."* Wave 58e
+       closed the two PERCENT fields on both writers and left the siblings open.
+       R50 closes them, on BOTH writers, in the same wave — Wave 58e's lesson is
+       that a single-writer fix is a fix that reopens.
+
+       ORDER MATTERS AND IS DELIBERATE. This runs AFTER the `coerceNumeric` loop,
+       so `body[key]` is already the parsed Number (thousands separators and a
+       currency symbol stripped). Validating the post-coercion value means the
+       range check sees exactly what would have been persisted, and adds no new
+       parsing rule of its own.
+
+       THE FIVE PRICED-MONEY FIELDS ARE NOT HERE, ON PURPOSE (R50). */
+    {
+      const bounded: Array<[string, (raw: unknown) => TermValueVerdict]> = [
+        ["valuationCap", validateValuationCap],
+        ["maturityMonths", validateMaturityMonths],
+        ["strikePrice", validateStrikePrice],
+        ["expiryYears", validateExpiryYears],
+        ["fdPreMoneyShares", validateFdPreMoneyShares],
+      ];
+      for (const [key, validate] of bounded) {
+        const v = validate((body as Record<string, unknown>)[key]);
+        if (!v.ok) return res.status(400).json({ ok: false, error: v.error, message: v.message });
+        /* The value is NOT restated. `coerceNumeric` already wrote the parsed
+           Number onto `body`, and an accepted value must reach the store byte
+           for byte as it did before this block existed. */
+      }
+      /* WAVE 68 · R56 — WRITER 2 OF 3. Same rule, same array, same reasoning as
+         the block in `PATCH /api/rounds/:id/terms`; the sentence itself is
+         IMPORTED, never restated (R21), so the three writers cannot drift.
+         The value is ACCEPTED and stored — this is a heads-up, not a block. */
+      for (const _k of ["valuationCap", "strikePrice"] as const) {
+        const _w = dateShapedValueWarning(_k, (body as Record<string, unknown>)[_k]);
+        if (_w) termWarnings.push(_w);
+      }
+      /* ══════════════════════════════════════════════════════════
+         WAVE 76 · R60 / D5 — WRITER 2 OF 3. THE CREATE ROUTE VALIDATED NEITHER.
+         ══════════════════════════════════════════════════════════
+         MEASURED (`build_log/wave76/W76_PROBE_TRANSCRIPT.txt`, probe D): this route
+         accepted `antiDilutionType: "nonsense-method"` and
+         `safeType: "nonsense-convention"` with HTTP 200 and persisted both, because
+         `KNOWN_COLS` below sweeps EVERY unrecognised body key into `extras_json`
+         without a whitelist and without a validator. A round could therefore be
+         BORN with a term the cap-table engine will later refuse to read — which is
+         the state the edit screen then could not correct, since the terms PATCH
+         dropped the key. Both halves are closed in this wave.
+
+         SAME VALIDATORS, SAME CODES, SAME SENTENCES as the edit-terms route and the
+         founder route (R21). Creation and editing now agree on what these two fields
+         may contain, which is the specific disagreement Wave 76 was sent to find. */
+      for (const [key, validate] of [
+        ["antiDilutionType", validateAntiDilutionTypeStored],
+        ["safeType", validateSafeCapTypeStored],
+      ] as ReadonlyArray<readonly [string, (raw: unknown) => TermValueVerdict]>) {
+        const v = validate((body as Record<string, unknown>)[key]);
+        if (!v.ok) return res.status(400).json({ ok: false, error: v.error, field: key, message: v.message });
+        /* The value is NOT restated — an accepted token reaches `extras` byte for
+           byte as it did before this block existed. */
+      }
+    }
+
     }
     // Persist via roundsStore (DB + cache) — captures the canonical Round
     // columns and stashes the long-tail Round-form fields into extras_json.
@@ -6273,7 +7349,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     (rounds as unknown as any[]).push(legacyShape);
     emitMutation({ aggregate: "round", id: newRound.id, change: "create" });
     // Note: roundsStore.createRound already emits the B-V11-7 audit event.
-    res.json({ ok: true, ...legacyShape });
+    /* WAVE 58e · D2 — the market-norm warnings ride back on the SUCCESS response.
+       The round was created and the value stored as written; this is disclosure,
+       not a refusal. The key is omitted entirely when there is nothing to say, so
+       no screen has to render an empty list (R6). */
+    res.json({ ok: true, ...legacyShape, ...(termWarnings.length ? { termWarnings } : {}) });
   });
 
   /* ------------------------------------------------------------------
@@ -6295,8 +7375,133 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }));
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 71 · D21 — `runCloseGate` HAS A NON-TEST CALLER.
+     ═══════════════════════════════════════════════════════════════════════════
+     THE DEFECT. `packages/cap-table-engine/src/reconcile/closeGate.ts` implements
+     dual-engine reconciliation, `RoundCloseBlockedError` and a founder + admin
+     sign-off requirement. It has 5 passing tests
+     (`test/reconcile/closeGate.test.ts`) and, before this wave, NOTHING in
+     `server/` or `client/` called it. A reconciliation gate nobody runs is the
+     eighth such safety net found in this project. D21: "wire it into the close
+     path, or state plainly that it is dormant and why that is acceptable. Do not
+     delete it."
+
+     IT IS WIRED, AND HERE IS EXACTLY HOW MUCH OF IT IS WIRED — the honest
+     statement, because half of `runCloseGate` cannot be wired without changing
+     what a close IS:
+
+       WIRED (this route): the RECONCILIATION half. Before the founder confirms a
+       close, the projected post-close cap table is computed by the primary engine
+       (`@capavate/cap-table-engine`) and by the INDEPENDENT reference engine
+       (`@capavate/cap-table-engine-ref`, BigInt scaled fixed-point, deliberately
+       different arithmetic) and compared holder-by-holder to the share. A
+       divergence is reported on the confirmation payload the founder is about to
+       act on. `runCloseGate` is called with NO sign-offs, so it returns
+       `closed: false` and takes the early return — it CANNOT reach
+       `appendTransaction` and CANNOT write anything. This route is a GET and
+       stays a GET.
+
+       NOT WIRED, and why: the SIGN-OFF + LEDGER-WRITE half. `runCloseGate` writes
+       its close entry into the ENGINE's own in-memory `LedgerHandle`, which is not
+       the ledger this platform commits to — that is
+       `server/captableCommitStore.ts`, which is SACRED (read, never edit) and has
+       its own per-commit reconcile on `commitFunded`. Making the engine's ledger
+       authoritative would mean editing a sacred file and changing where a
+       company's cap table lives. That is a STOP, not a wave task. Likewise the
+       founder/admin dual sign-off is a product decision about who may close a
+       round, not a maths defect. Both are OWNER QUESTIONS in
+       `build_log/wave71/`.
+
+     IT CANNOT BLOCK A CLOSE, AND THAT IS DELIBERATE. `POST /api/rounds/:id/close`
+     is untouched. Turning a newly-reachable reconciliation into a hard block on an
+     existing, working close path would be a behaviour change nobody asked for, and
+     on a divergence a founder would be locked out of their own round with no
+     remedy. The gate REPORTS. Whether it should BLOCK is OWNER QUESTION — and note
+     that D21's own brief warns: "Do not test 'round close is blocked on engine
+     divergence' as a live behaviour." It still is not one.
+
+     FAIL-OPEN, NEVER FAIL-CONFUSED. Any error inside the reconciliation is caught
+     and reported as `status: "unavailable"` with its reason. A reconciliation that
+     could not run is NOT reported as a match — R6, and the whole point of the
+     eight dormant safety nets.
+
+     R58 — WHO SEES IT. API-only today. `grep -rl "reconcil" client/src` finds no
+     renderer for this payload, so a founder does not yet see the result. Stated,
+     not implied. */
+  async function closeGateReconciliationFor(companyId: string, roundId: string): Promise<Record<string, unknown>> {
+    try {
+      const round = mergeLegacyAndDbRounds().find((r: any) => r.id === roundId) as any;
+      const preMoney = Number(round?.preMoney ?? NaN);
+      const target = Number(round?.targetAmount ?? NaN);
+      if (!Number.isFinite(preMoney) || preMoney <= 0 || !Number.isFinite(target) || target <= 0) {
+        return {
+          status: "unavailable",
+          reason: "not_projectable",
+          message:
+            "The dual-engine reconciliation needs a pre-money valuation and a target amount, both " +
+            "greater than zero, to project the post-close cap table. This round does not have both on " +
+            "record, so the two engines have nothing to compare. This is NOT a match and must not be " +
+            "read as one.",
+        };
+      }
+      const secs = buildCompanySecurities(String(companyId)) as never;
+      const [{ runCloseGate, emptyLedger }, refEngine] = await Promise.all([
+        import("@capavate/cap-table-engine"),
+        import("@capavate/cap-table-engine-ref"),
+      ]);
+      const terms = roundStoredTermsShared(roundId);
+      /* The SAME adapter the Projection and the round-math route use, so the thing
+         being reconciled is the thing a founder is shown — not a second model. */
+      const adapted = buildPostCloseComputeOptions(secs, {
+        preMoneyValuation: preMoney,
+        investmentAmount: target,
+        series: String(round?.series ?? round?.name ?? roundId),
+        ...(round?.optionPoolPostPercent ? { optionPoolPostPercent: String(round.optionPoolPostPercent) } : {}),
+        ...(round?.optionPoolMode === "post_money" || round?.optionPoolMode === "pre_money"
+          ? { optionPoolMode: round.optionPoolMode }
+          : {}),
+        antiDilutionType: terms.antiDilutionType as never,
+        participating: terms.participatingPreferred,
+      });
+      const outcome = (runCloseGate as any)(
+        { computeOpts: adapted, ledger: (emptyLedger as any)(), roundId },
+        (refEngine as any).referenceComputeCapTable,
+      );
+      const rec = outcome.reconciliation;
+      return {
+        status: rec.status,
+        primaryHash: rec.primaryHash,
+        referenceHash: rec.referenceHash,
+        primaryTotalShares: rec.primaryTotal,
+        referenceTotalShares: rec.referenceTotal,
+        diffCount: rec.diffs.length,
+        diffs: rec.diffs,
+        awaitingSignoffs: outcome.awaitingSignoffs,
+        closed: outcome.closed,
+        engines: ["@capavate/cap-table-engine", "@capavate/cap-table-engine-ref"],
+        blocksClose: false,
+        note:
+          "Dual-engine reconciliation of the projected post-close cap table (WAVE 71 · D21). It " +
+          "REPORTS and does not block: POST /api/rounds/:id/close is unchanged. The sign-off and " +
+          "ledger-write half of runCloseGate is not wired, because the engine's own ledger is not " +
+          "where this platform's cap table lives (server/captableCommitStore.ts is, and it is sacred).",
+      };
+    } catch (err) {
+      const e = err as { name?: string; code?: string; message?: string };
+      return {
+        status: "unavailable",
+        reason: e.code ?? e.name ?? "reconciliation_error",
+        message:
+          `The dual-engine reconciliation could not be run: ${String(e.message ?? "unknown error").slice(0, 600)} ` +
+          `This is NOT a match. A reconciliation that did not run tells you nothing about whether the ` +
+          `two engines agree.`,
+      };
+    }
+  }
+
   // GET — confirmation-page data for the close dialog.
-  app.get("/api/rounds/:id/close", requireAuth, (req, res) => {
+  app.get("/api/rounds/:id/close", requireAuth, async (req, res) => {
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok || !check.companyId) return;
     const id = paramStr(req.params.id);
@@ -6307,6 +7512,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       round,
       alreadyClosed: round.state === "closed" || round.state === "funded",
       capTable: capTableSnapshotForCompany(check.companyId),
+      /* WAVE 71 · D21 — the dual-engine reconciliation, now reachable. */
+      closeGateReconciliation: await closeGateReconciliationFor(String(check.companyId), id),
     });
   });
 
@@ -6348,7 +7555,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerSprint22Routes(app);
 
   /* ------------ v25.0 Track 1: Capavate core endpoints (A1–A8) ------------ */
-  registerTrack1Routes(app);
+  /* WAVE 71 · D11 (3) — the waterfall route's common leg now comes from the REAL
+     cap table. Injected exactly as `registerRoundMathRoutes` above already does,
+     so there is one reader of `buildCompanySecurities` and not a second. */
+  registerTrack1Routes(app, (cid: string) => buildCompanySecurities(String(cid)));
 
   /* ------------ v25.0 Track 4: Cross-component data flow (D1–D3, F1) ------------ */
   registerTrack4Routes(app);
@@ -6491,20 +7701,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------------------------------------------------------------
    * Sprint 23 Wave A — DEF-014: POST /api/auth/logout (PUBLIC — clears session)
    * ------------------------------------------------------------------ */
+  /* ==================================================================
+   * REPAIR WAVE 1 · ITEM 4 — LOGOUT MUST ACTUALLY REVOKE.
+   *
+   * This narrative lives ABOVE the handler on purpose. `v2346_logout_harden.test.ts:41`
+   * pins the handler body with a 1,200-character regex window anchored on the
+   * route registration, so a long comment INSIDE the handler pushes the closing
+   * brace out of that window and turns a green test red for a purely cosmetic
+   * reason. Documenting outside the window keeps that guard meaningful — it still
+   * asserts the handler calls revokeSession and clearSessionCookie, and it still
+   * does. For the same reason nothing below quotes the route path literally.
+   *
+   * WAVE C FIX C1 (W-2) INTENT, RESTATED CORRECTLY. Add the session to the
+   * server-side revocation set BEFORE clearing the cookie, so a captured cookie
+   * (network log, shared machine, disk forensics) cannot continue to
+   * authenticate. A subsequent successful login clears the userId from the set
+   * (server/lib/authRoutes.ts:188/271/308/384 `clearRevocation`), so the
+   * documented "logout → re-login with the same credentials stays idempotent"
+   * behaviour is preserved — `clearRevocation` is keyed on the userId, which is
+   * now exactly the key this handler revokes on.
+   *
+   * WHAT WAS BROKEN — THE KEY MISMATCH. The handler used to pass the result of
+   * `readSessionCookie(req)` into the in-memory revocation set, which returns the RAW
+   * SIGNED 3-PART COOKIE BODY (server/lib/sessionCookie.ts:143-149), while
+   * `isRevoked()` is checked against the VERIFIED userId
+   * (server/lib/userContext.ts:494-500). Two different key spaces over one
+   * in-memory Set, so `isRevoked` could NEVER match: revocation was not partial,
+   * it was ZERO. Fixed by keying on `extractUserIdFromCookie(req)` — the
+   * canonical HMAC-verifying extractor, the same one `resolvePersonaId` uses.
+   *
+   * WHAT WAS ALSO BROKEN — THE SECOND COOKIE FAMILY. `/api/auth/secure/*`
+   * (mounted at :1529) is the real invite/password-set path for investors and
+   * consortium partners. It issues `cap_sid` (HttpOnly, Max-Age 14 DAYS),
+   * `cap_jwt` (30 min) and `cap_csrf` (30 min) via
+   * server/lib/secureAuthRoutes.ts:48-56, and mints a server-side row in
+   * `auth_sessions`. This handler cleared neither `cap_sid` nor `cap_csrf` and
+   * never called the server-side revocation, so for an invited user "Log out"
+   * left `revoked = false` for fourteen days.
+   *
+   * THREE SAME-NAMED REVOCATION PATHS, THREE KEY SPACES — mapped at the imports
+   * (see `revokeAuthSessionBySid`). (1) sessionRevocation.ts keyed on userId,
+   * (2) lib/auth.ts keyed on sid, (3) this handler, which used to pass the raw
+   * cookie into (1).
+   *
+   * `res.clearCookie("cap_jwt")` IS NOT DEAD CODE. `cap_jwt` is set at
+   * server/lib/secureAuthRoutes.ts:54 and read for authentication at :125
+   * (/api/auth/secure/me), :234 and :258, and
+   * server/__tests__/secureAuth.test.ts:29 asserts it is issued. This handler is
+   * the ONLY place the main logout path clears it. An earlier pass classified it
+   * as dead code; independent review refuted that and the refutation is correct.
+   * DO NOT REMOVE IT.
+   * ================================================================== */
   app.post("/api/auth/logout", (req, res) => {
-    // Wave C FIX C1 (W-2): the cookie token value IS the userId in the
-    // Capavate auth model (see lib/userContext.ts::resolvePersonaId). Add
-    // it to the server-side revocation set BEFORE clearing the cookie so
-    // a captured cookie (XSS, network log, shared-machine snoop) cannot
-    // continue to authenticate. A subsequent successful login clears the
-    // userId from the revocation set (see authRoutes.ts clearRevocation),
-    // so the “logout → re-login with same creds” flow stays idempotent.
-    const tokenUserId = readSessionCookie(req);
-    if (tokenUserId) {
-      revokeSession(tokenUserId);
+    // R1·I4: revoke on the VERIFIED userId (was the raw signed cookie body).
+    const revokedUserId = extractUserIdFromCookie(req);
+    if (revokedUserId) revokeSession(revokedUserId);
+    // R1·I4: also end the server-side session, keyed by its own key (cap_sid).
+    const ch = typeof req.headers.cookie === "string" ? req.headers.cookie : "";
+    const parsedSid =
+      (req as typeof req & { cookies?: Record<string, string> }).cookies?.cap_sid ??
+      ch.split(";").map((c) => c.trim()).find((c) => c.startsWith("cap_sid="))?.slice(8);
+    if (typeof parsedSid === "string" && parsedSid.length > 0) {
+      try {
+        revokeAuthSessionBySid(decodeURIComponent(parsedSid));
+      } catch (err) {
+        // Log LOUDLY, never swallow; keep clearing cookies so the browser is out.
+        log.warn(`[auth.logout] cap_sid revocation failed: ${(err as Error).message}`);
+      }
     }
     clearSessionCookie(res);
-    res.clearCookie("cap_jwt", { path: "/" });
+    res.clearCookie("cap_jwt", { path: "/" }); // NOT dead code — see note above.
+    res.clearCookie("cap_sid", { path: "/" }); // R1·I4, appended as a sibling.
+    res.clearCookie("cap_csrf", { path: "/" }); // R1·I4, appended as a sibling.
     res.status(200).json({ ok: true, message: "Logged out" });
   });
 

@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ANONYMOUS_LABEL } from "@/lib/comms/visibility";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 60 · A-1 */
 
 interface ChannelAccessResp {
  exists: boolean;
@@ -40,6 +41,22 @@ export function CapTableChannelCard({
 }: { companyId: string; basePath: "/founder/messages" | "/investor/messages" }) {
  const q = useQuery<ChannelAccessResp>({ queryKey: ["/api/comms/cap-table", companyId] });
  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+ /* WAVE 60 · A-1 — a failed load is not "there is no channel". `!data?.exists`
+  * below is TRUE when the request errored or is PAUSED (offline), so all three
+  * of exists:false / isMember:false / failure rendered the SAME `null`: no card,
+  * no error, no retry, no evidence the feature exists. This new branch is ADDED
+  * ahead of them; the two `return null` paths below are byte-identical and stay
+  * — a non-member must not learn a channel exists. */
+ if (q.isError || q.fetchStatus === "paused") {
+  return (
+   <LoadFailedRefusal
+    what="the cap table channel"
+    testId="w60-cap-table-channel-error"
+    onRetry={() => void q.refetch()}
+    isRetrying={q.isFetching}
+   />
+  );
+ }
  const data = q.data;
  if (!data?.exists || !data.isMember) return null;
  const ch = data.channel;
@@ -100,6 +117,17 @@ export function SoftCircleChannelCard({
 }: { roundId: string; roundName?: string; basePath: "/founder/messages" | "/investor/messages" }) {
  const q = useQuery<ChannelAccessResp>({ queryKey: ["/api/comms/soft-circle", roundId] });
  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+ /* WAVE 60 · A-1 — second site, same defect. See the note on the cap-table card. */
+ if (q.isError || q.fetchStatus === "paused") {
+  return (
+   <LoadFailedRefusal
+    what="the soft-circle channel"
+    testId="w60-soft-circle-channel-error"
+    onRetry={() => void q.refetch()}
+    isRetrying={q.isFetching}
+   />
+  );
+ }
  const data = q.data;
  if (!data?.exists || !data.isMember) return null;
  const ch = data.channel;

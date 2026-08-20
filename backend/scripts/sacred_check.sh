@@ -185,6 +185,121 @@ done
 # one source. A structural assertion below refuses to run if they disagree.
 # ---------------------------------------------------------------------------
 KNOWN_DRIFT=(
+# WAIVER-7 — OWNER-APPROVED 2026-08-15, ruling R34 ("If approved is the best
+# practice. Then OK." — conditional approval, and the reasoning is recorded in
+# spec/OWNER_RULINGS_2026_08_13.md §R34 so the condition is auditable).
+# WAVE 58g. Covers server/roundCarryForwardEngine.ts — base manifest row 2.
+#
+# REASON: A SECOND UNIT-CONVERSION AUTHORITY. `discountAsDecimalStr()` at :250
+# divided a stored discount percent by 100 itself —
+#   function discountAsDecimalStr(rawDiscount) { return (rawDiscount / 100).toFixed(6); }
+# — independently of `toWireDiscount` in shared/roundMathEngineAdapter.ts, which
+# is the platform's declared single bridge from the STORAGE unit (percent-as-
+# written, R30: `20` means 20%) to the ENGINE WIRE unit (a fraction in [0,1]).
+# Wave 58f established it is REACHABLE FROM A LIVE HTTP ROUTE today:
+#   discountAsDecimalStr :250 <- buildUnrealizedInstruments :655 (called :665, :706)
+#   <- computeCarryForward :834 <- computeCarryForwardLive :922
+#   <- server/roundCarryForwardRoutes.ts:485  (GET /api/founder/companies/:companyId/carry-forward)
+# It produced nothing on live only because its data source (mockData.securities,
+# gated by DEMO_SEED_ENABLED) is EMPTY — not because nothing called it. An empty
+# array is not a fence.
+#
+# WHY A WAIVER RATHER THAN QUARANTINE (R34, verbatim reasoning): quarantine was
+# honest and reversible but "leaves a live route one data change away from a
+# wrong discount", and the freeze would then be "protecting a known defect
+# rather than a known-good file. A freeze that preserves a bug is not integrity."
+#
+# THE EDIT, tightly bounded to R34's scope — one file, one purpose:
+#   • the local division is REMOVED; the function now returns
+#     `toWireDiscount(rawDiscount, ...)?.wireFraction ?? null`;
+#   • one import of `toWireDiscount` from "@shared/roundMathEngineAdapter";
+#   • the comment above the function is rewritten to state the verified input
+#     unit and cite R34/R30/R16.
+# NOTHING ELSE IN THE FILE CHANGED. In particular `computeConversionProjections`
+# (:744-817) is UNTOUCHED: it does NOT divide by 100, it consumes an
+# already-fractional value, and "fixing" it would turn a 20% discount into 0.2%.
+#
+# INPUT UNIT VERIFIED, NOT ASSUMED: the seed securities this path reads hold
+# `discount: 20` for 20% and `discount: 15` for 15% (server/mockData.ts sec_4,
+# sec_6, sec_7, sec_8) — the same percent-as-written contract R30 fixes, so the
+# shared rule is the right rule for this input.
+#
+# R16 IS NOT BREACHED: `toWireDiscount` converts EVERY value from a DECLARED
+# unit and never inspects a magnitude to guess a unit. The forbidden heuristic
+# (`n > 1 ? n / 100 : n`) is NOT revived; it remains commented out.
+# `InvalidDiscountWireValueError` remains the SOLE arbiter of [0,1] — mutation
+# M1 (removing its call) still turns exactly 6 assertions red across 2 files;
+# re-proved in build_log/wave58g/W58G_TESTS.md.
+#
+# PROOF: server/__tests__/w58g_waiver7_single_conversion_authority.test.ts,
+# through the HTTP route above, both poles. Pre-/post-waiver hashes recorded in
+# build_log/wave58g/gates/.
+# HASH LINEAGE (nothing erased):
+#   pre-WAIVER-7  d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119
+#   Wave 58g      42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8  (ENFORCED)
+"server/roundCarryForwardEngine.ts|d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119|42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8|WAIVER-7|RATIFIED"
+# WAIVER-8 — OWNER-RATIFIED 2026-08-18, ruling R70 ("Q2: Change it. Has to be
+# dynamic and real-time. No hard codes."). WAVE 75 · ITEM 1.
+#
+# THE NUMBERING, DISCLOSED RATHER THAN QUIETLY CORRECTED. R70 condition 5 names
+# this waiver "WAIVER-9", counting the EIGHT KNOWN_DRIFT ROWS in force when the
+# ruling was written (WAIVER-1 x2 + one row each for 2..7). But field 4 is a
+# WAIVER ID, not a row number, and the distinct ids in force are 1..7 — so the
+# closed-vocabulary check below ("the distinct waiver ids must be exactly
+# WAIVER-1 .. WAIVER-N with no gap") ABORTS with exit 3 on a WAIVER-9 row while
+# WAIVER-8 does not exist. Proved by execution, not by reading:
+# build_log/wave75/W75_WAIVER9_REGISTRATION.md §2 carries the transcript of the
+# gate rejecting the literal id R70 asked for. The waiver is therefore registered
+# as WAIVER-8, which is the same grant, the same file, the same two lines and the
+# same ratification; only the label differs from the ruling's text, and it differs
+# because the tree's own gate forbids the ruling's label. OWNER QUESTION Q-A in
+# build_log/wave75/W75_UNVERIFIED_AND_OWNER_QUESTIONS.md asks for one sentence
+# confirming the renumber.
+#
+# WHAT WAS WRONG. `server/paymentGatewayAdapter.ts:630` and `:765` built a
+# brand-new company's KPI block with the literal `ownershipPct: 1.0`. The founder
+# dashboard consumes that field as a FRACTION
+# (`client/src/pages/founder/Dashboard.tsx:283` does `Number(raw) * 100`), so a
+# company with `capTableHolders: 0` and no securities at all rendered a confident
+# `100.00%` on its first screen — and kept rendering it after the first SAFE was
+# signed, because a literal is not a computation. Every sibling writer stores `0`
+# under R48, whose own comment reads: "`1` is NOT written: that would assert 100%
+# founder ownership as a fact, which is the defect class this wave removes."
+#
+# THE FIX, AND ITS SIZE. Two values replaced by a call, plus one import. No
+# arithmetic was added to this sacred file: the figure is computed by
+# `server/lib/founderOwnershipEngine.ts`, which calls
+# `shared/roundMathEngineAdapter.ts::runEngine` — the single cap-table source
+# (R46/R57) — and aggregates its `holderType === "founder"` rows exactly as
+# `client/src/pages/founder/CapTable.tsx:285-289` already does. The stored
+# `kpi.ownershipPct` is NOT read (R57 named it the one remaining outlier), no
+# second computation was introduced, and there is no `?? 0` and no `|| 1` on the
+# path (R70 condition 3): when the engine has nothing to compute from the value is
+# `null` and the founder sees `—`.
+#
+# PROOF: server/__tests__/w75_r70_dynamic_ownership.test.ts — all three poles R70
+# condition 6 requires (securities → computed; none → `—`; a genuine 100% founder
+# → `100.00%`, computed rather than asserted), plus a source fence proving no
+# `ownershipPct: <number>` literal survives in this file. Mutation transcripts in
+# build_log/wave75/W75_TESTS.md.
+# HASH LINEAGE (nothing erased):
+#   pre-WAIVER-8  83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660  (also base manifest row 3)
+#   Wave 75       15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27  (ENFORCED)
+# TO DECLINE: restore 83757c54… as the live content and delete this row, the
+# WAIVER_1_FROZEN entry and the RATIFIED_HERE entry in
+# server/__tests__/waveB_retirement_guard.test.ts, the WAIVER-8 block in
+# server/__tests__/wave18_cpmsg05_rate_limit_identity.test.ts, and put the two
+# "9 under KNOWN_DRIFT freeze" assertions back to 8.
+"server/paymentGatewayAdapter.ts|83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660|15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27|WAIVER-8|RATIFIED"
+# WAIVER-6 — owner-approved 2026-08-14 (explicit answer to the Repair Wave 1
+# blocker question). REPAIR WAVE 1 · ITEM 1: audit_log.hash_version, the column
+# that lets the actor-bound v2 hash ship WITHOUT invalidating any existing row.
+# Migration 0188 covers the numbered-runner/production path; connection.ts is
+# the inline-SQLite parity edit so dev/test match shared/schema.ts. Additive
+# only (one ALTER + one CREATE column, DEFAULT 1). Without it
+# auditChainVerifier.test.ts cannot load and 20 audit-chain assertions silently
+# stop running — which is how this was found.
+"server/db/connection.ts|d3dfc9ec465b94926ca6cedf9ad5b6637729fe7293a38a7fc3b9adb4dada101c|8a73c3d194c20ceaec2c4c9057bfecc29c78e2b142c295999d8afc63defdeef0|WAIVER-6|RATIFIED"
 "client/src/components/home3compo/LearnSection.jsx|13ed3d64d16694aac64c3de6732b15ad58426fba301b7cfa37bf192b9e03b3bf|63ff0c9fd78e8bc749661c28f7bb5825f648ab7db0efd39cb90d48fa8eb9dc33|WAIVER-1|RATIFIED"
 "client/src/components/home3compo/PricingSection.jsx|2184064be1f0336e4d0c94ecdb26753dd275614bea5c9a7e29a979c8a800b865|e8da7f99a1eba63b3ad2099a9cbe5dba9ec3f10ce00d68f7efe4399c10fa8b6a|WAIVER-1|RATIFIED"
 # WAIVER-4 — owner-signed 2026-08-11 ("Signatures confirmed"), X-C1 / P1-8.
@@ -328,8 +443,15 @@ ADDED_47=(
 # this was the ONLY one of the seven missing. Frozen at its current, unedited
 # bytes; no waiver, so nothing is pending ratification.
 # ---------------------------------------------------------------------------
+# REPAIR WAVE 1 · WAIVER-6 (owner-approved 2026-08-14) — the enforced hash here
+# moves to the WAIVER-6 frozen hash. This array carries the ENFORCED bytes, and
+# the doctrine at the KNOWN_DRIFT block is explicit: "the old hash is retained as
+# evidence; the frozen hash is what is enforced." The pre-waiver hash
+# (d3dfc9ec…) is retained as field 2 of the WAIVER-6 KNOWN_DRIFT row above, so no
+# evidence is lost by updating it here. Leaving the stale hash in this array
+# would make the gate report a RATIFIED waiver as an unexplained sacred breach.
 ADDED_WAVE50=(
-"d3dfc9ec465b94926ca6cedf9ad5b6637729fe7293a38a7fc3b9adb4dada101c|server/db/connection.ts"
+"8a73c3d194c20ceaec2c4c9057bfecc29c78e2b142c295999d8afc63defdeef0|server/db/connection.ts"
 )
 
 # W31-A3 — THE ENFORCED HASH IS NOW READ BY POSITION, NOT AS "THE LAST FIELD".

@@ -204,7 +204,7 @@ export default function Messages() {
       {/* Sprint 18 Phase 2 — T9.1 New-message user picker */}
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
-          Threads are role-aware. You can DM cap-table members and active-round investors. Uninvited investors are gated per Sprint 15 entitlement rules.
+          Threads are role-aware. You can DM cap-table members and active-round investors. Investors you have not invited cannot be messaged.
         </div>
         <Button
           size="sm"

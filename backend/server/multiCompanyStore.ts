@@ -55,6 +55,7 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
 import { resolveCanonicalPlan, planSlugToLabel } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 canonical plan projection */
 import { fromMinor } from "./lib/currency"; /* WAVE 36 · ROW 4 — ISO-4217 exponent, never a hardcoded 100 */
+import { computeFounderOwnershipFraction } from "./lib/founderOwnershipEngine"; /* WAVE 75 · ITEM 1 (R70) */
 import { getDb, rawDb } from "./db/connection";
 import {
   tenants as tenantsTable,
@@ -97,7 +98,14 @@ export type FounderCompanyMembership = {
     raisedThisYearUsd: number;
     dataroomFiles: number;
     pendingSoftCircles: number;
-    ownershipPct: number;
+    /* WAVE 75 · ITEM 1 (R70/R47) — `number | null`. `null` means UNDEFINED, and
+       never means zero: a percentage of a cap table with no securities on it is
+       not a fact. `client/src/lib/format.ts::fmtPct(null)` renders the platform's
+       em-dash, so `null` reaches a founder as `—` rather than as `0.00%` or the
+       fabricated `100.00%` this wave removed. See
+       `server/lib/founderOwnershipEngine.ts` for where the computed value comes
+       from and why it is not a second computation. */
+    ownershipPct: number | null;
   };
   collective: {
     status: "none" | "applied" | "approved" | "lapsed";
@@ -1169,7 +1177,11 @@ export function registerMultiCompanyRoutes(app: Express): void {
   app.get("/api/founder/companies", (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-    const list = getCompaniesForFounder(ctx.userId).map((c) => mergeBillingFromSubscription(c));
+    /* WAVE 75 · ITEM 1 (R70) — the ownership figure is computed from the engine at
+       read time, on the SAME projection the active-company endpoint uses, so the
+       switcher and the dashboard cannot show two different numbers for one
+       quantity (R46: "Two numbers for one quantity is what created this defect"). */
+    const list = getCompaniesForFounder(ctx.userId).map((c) => withComputedOwnership(mergeBillingFromSubscription(c)));
     res.json(list);
   });
 
@@ -1188,7 +1200,11 @@ export function registerMultiCompanyRoutes(app: Express): void {
     const activeId = getActiveCompanyId(ctx.userId);
     const companies = getCompaniesForFounder(ctx.userId);
     const raw = companies.find((x) => x.companyId === activeId) ?? null;
-    const c = raw ? mergeBillingFromSubscription(raw) : null;
+    /* WAVE 75 · ITEM 1 (R70) — see `withComputedOwnership`. THIS is the endpoint
+       the founder dashboard's "Founder ownership" tile is served from
+       (`client/src/lib/useActiveCompany.ts` → `Dashboard.tsx:262`, `:483`, `:585`),
+       so this is the line that decides what a brand-new founder actually SEES. */
+    const c = raw ? withComputedOwnership(mergeBillingFromSubscription(raw)) : null;
     res.json({ activeCompanyId: activeId, company: c });
   });
 
@@ -1457,6 +1473,31 @@ export function mergeBillingFromSubscription(c: FounderCompanyMembership): Found
       invoiceCount: sub.invoicesCount,
     },
   };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 75 · ITEM 1 (R70) — OWNERSHIP IS RE-DERIVED ON EVERY READ.
+   ═══════════════════════════════════════════════════════════════════════════
+   R70 condition 4: *"Real-time means it re-derives when the cap table changes."*
+   A value computed once at company creation and stored is a SNAPSHOT, and R46
+   already named that pattern by its name: *"A stored number nothing recomputes is
+   a dead variable."* So the two endpoints the founder dashboard and the company
+   switcher read are projected through this function, which asks the engine for the
+   figure at READ time. The stored `kpi.ownershipPct` is never rendered — R57 named
+   it "the ONE genuine outlier" and R70 condition 1 forbids reading it.
+
+   WHAT "REAL-TIME" MEANS HERE, PRECISELY, because R70 requires this be stated and
+   not implied: the SERVER re-derives on every request. The BROWSER re-fetches when
+   react-query invalidates `["/api/founder/active-company"]` — which the company
+   switcher does on activate — or on reload. There is no push channel on this key,
+   so a cap-table commit made in another tab is reflected on the dashboard's next
+   fetch, not the same instant. Measured, not assumed; see WAVE75_REPORT.md §1.
+
+   ADDITIVE AND FAIL-SAFE-TO-HONEST. If the engine cannot compute, the field
+   becomes `null` and the founder sees `—`. There is no `?? 0` and no `|| 1` on this
+   path (R70 condition 3). */
+export function withComputedOwnership(c: FounderCompanyMembership): FounderCompanyMembership {
+  return { ...c, kpi: { ...c.kpi, ownershipPct: computeFounderOwnershipFraction(c.companyId) } };
 }
 
 // Expose for tests

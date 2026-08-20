@@ -4,6 +4,7 @@
  */
 import { useState } from "react";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
+import { moneyOrNotProvided } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -146,7 +147,10 @@ export default function PartnerFundDetail() {
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
-            <div className="font-mono">{formatMinor(f.targetRaiseMinor ?? 0, f.currency)}</div>
+            {/* WAVE 55 · R6 / 55-Q1 — a prominent single-value readout, so an
+                explicit named refusal rather than a dash. `?? 0` claimed this
+                fund targets nothing. A fund that genuinely targets 0 still prints. */}
+            <div className="font-mono">{moneyOrNotProvided(f.targetRaiseMinor, f.currency)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>

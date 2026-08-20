@@ -266,6 +266,13 @@ export interface ResolvedCommission {
  * Resolve the commission rate (fraction) for a partner, preferring a
  * per-partner override, then the DB tier config, then the literal-mirror
  * fallback. Purely additive — existing resolver behavior is unchanged.
+ *
+ * WAVE 56 (R36) — THROWS for a tier that has no configured rate.
+ * `getTierCommissionRate` no longer falls through to a 0.02 floor for an
+ * unrecognised tier, so this function now propagates
+ * `UnknownCommissionTierError` instead of returning a plausible 2% on somebody's
+ * revenue. A per-partner override still answers first and is unaffected. The
+ * five configured tiers behave exactly as before.
  */
 export function resolveCommissionRate(partnerId: string, tier: PartnerTier): ResolvedCommission {
   const override = resolveCommissionOverridePct(partnerId);

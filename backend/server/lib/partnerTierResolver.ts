@@ -62,11 +62,23 @@
  */
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+/* WAVE 56 (R21/R36) — the tier domain is DATA. See partnerTierDomain.ts. */
+import { isTierInDomain, tierDomainSlugs } from "./partnerTierDomain";
 import { getById as getCanonicalPartnerContact, type PartnerTier } from "../adminContactsStoreShim";
 
 /** The tier domain, mirroring the CHECK constraint in migration 0161 exactly.
  *  This is a DOMAIN (which strings are legal), never a default: no element of
- *  this list is ever selected by this module on its own initiative. */
+ *  this list is ever selected by this module on its own initiative.
+ *
+ *  WAVE 56 (R21/R36) — THIS ARRAY IS NO LONGER THE DOMAIN.
+ *  Migration 0191 removed the five-slug CHECK from all three tier tables, and
+ *  `partner_tier_lifecycle` is now the domain: an owner-created tier is a real
+ *  tier. This array is retained as the SEEDED FLOOR (see
+ *  partnerTierDomain.LEGACY_SEEDED_TIER_SLUGS) so an existing tier can never
+ *  drop out of a membership test because a read failed — a silent drop is
+ *  forbidden. It cannot admit a tier that does not exist, because every string
+ *  in it is seeded into the database by migration 0185 anyway.
+ *  Ask `isPartnerTier()` / `partnerTierDomainSlugs()`, never this array. */
 export const PARTNER_TIER_DOMAIN = [
   "catalyst",
   "builder",
@@ -95,8 +107,33 @@ export class PartnerTierResolutionError extends Error {
   }
 }
 
+/**
+ * WAVE 56 (R21/R36) — db-driven membership.
+ *
+ * Measured before this change: `isPartnerTier("bridge")` was `false` for a tier
+ * that existed in the database with a lifecycle row, capability rows, a price
+ * and an assignment — and because `readDurableTier()` filters its read through
+ * this predicate, `resolveCanonicalPartnerTier()` threw PARTNER_TIER_UNRESOLVED
+ * for a partner whose tier row the database had accepted. A compiled-in array
+ * outvoted the database.
+ *
+ * The narrowing to `PartnerTier` is kept so no call site's types move; the union
+ * is a compile-time convenience and the DATABASE is the domain.
+ */
 export function isPartnerTier(v: unknown): v is PartnerTier {
-  return typeof v === "string" && (PARTNER_TIER_DOMAIN as readonly string[]).includes(v);
+  if (typeof v !== "string" || v.length === 0) return false;
+  if ((PARTNER_TIER_DOMAIN as readonly string[]).includes(v)) return true;
+  return isTierInDomain(v);
+}
+
+/** Every tier that exists, database first, seeded five union'd in so an existing
+ *  tier is never dropped from a picker or an error message. */
+export function partnerTierDomainSlugs(): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of tierDomainSlugs()) { if (!seen.has(s)) { seen.add(s); out.push(s); } }
+  for (const s of PARTNER_TIER_DOMAIN) { if (!seen.has(s)) { seen.add(s); out.push(s); } }
+  return out;
 }
 
 /* The canonical DDL, verbatim from migration 0161 minus the backfill.
@@ -108,7 +145,14 @@ export function isPartnerTier(v: unknown): v is PartnerTier {
 const PARTNER_TIER_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS partner_tier_current (
   partner_id      TEXT PRIMARY KEY NOT NULL,
-  tier            TEXT NOT NULL CHECK (tier IN ('catalyst','builder','amplifier','nexus','founding_member')),
+  -- WAVE 56 (R21/R36): the five-slug CHECK is GONE, here and in migration 0191.
+  -- It was the single most consequential pin in the tree: this string, not the
+  -- migration, is the definition every dev/test database actually gets, so a
+  -- wave that fixed only the migration would have proved nothing. The domain is
+  -- now partner_tier_lifecycle, enforced at the database layer by the
+  -- referential triggers 0191 installs (trg_ptcur_tier_must_exist_insert /
+  -- _update) — which still refuse a typo, and no longer refuse a real tier.
+  tier            TEXT NOT NULL,
   source          TEXT NOT NULL,
   effective_from  TEXT NOT NULL,
   updated_at      TEXT NOT NULL

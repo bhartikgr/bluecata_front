@@ -21,7 +21,11 @@ export interface TermSheetData {
   preMoney: number;
   postMoney: number;
   pricePerShare: number;
-  fdSharesPreMoney: number;
+  /* WAVE 58b · DEFECT 4 (R21) — NULLABLE, because the honest answer when the
+     round has no declared fully-diluted count is a named blank in the document,
+     not an invented number. It was a hardcoded 12,500,000 at
+     `client/src/pages/founder/TermSheet.tsx:83`. */
+  fdSharesPreMoney: number | null;
   liqPrefMultiple: number;
   participating: boolean;
   capParticipation: string;
@@ -31,7 +35,13 @@ export interface TermSheetData {
   interestRate: number;        // percent (notes)
   maturityMonths: number;
   mfn: boolean;
-  poolSize: number;            // percent
+  /* WAVE 58b · DEFECT 4 (R21) — PERCENT-AS-WRITTEN (R16): 15 means 15%. NULL
+     means the round contemplates NO pool top-up, which the templates state in
+     words. It was hardcoded to 10 at `TermSheet.tsx:93` regardless of what the
+     founder actually agreed in the round wizard. */
+  poolSize: number | null;     // percent-as-written, or null for "no pool"
+  /* WAVE 58b · DEFECT 4 (R21) — read from the round's stored placement. It was
+     hardcoded to "post_money" at `TermSheet.tsx:94`. */
   poolTiming: string;          // "pre_money" | "post_money"
   vestingMonths: number;
   cliffMonths: number;

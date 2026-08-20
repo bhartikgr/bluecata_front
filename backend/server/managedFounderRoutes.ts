@@ -443,7 +443,7 @@ export function registerMfcrmRoutes(app: Express): void {
 
   app.post("/api/admin/mfcrm/capability/:partnerId/seed", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
-    const actor = getUserContext(req)?.userId ?? "admin";
+    const actor = getUserContext(req)?.userId ?? "u_unknown_admin";
     /* WAVE 7B DA-1 — an engine with no route is not shipped. The store now
        accepts an explicit capability seed type; without this the new parameter
        would be unreachable and the defect (a silently UNCLASSIFIED profile for
@@ -464,7 +464,7 @@ export function registerMfcrmRoutes(app: Express): void {
 
   app.patch("/api/admin/mfcrm/capability/:partnerId", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
-    const actor = getUserContext(req)?.userId ?? "admin";
+    const actor = getUserContext(req)?.userId ?? "u_unknown_admin";
     const patch = req.body ?? {};
     try {
       res.json({ capability: managedFounderStore.setCapabilityProfile(String(req.params.partnerId), patch, actor) });
@@ -490,7 +490,7 @@ export function registerMfcrmRoutes(app: Express): void {
   /* Admin: extend/override a Mode-A trial (RF-5 reversible). */
   app.post("/api/admin/mfcrm/engagements/:partnerId/:engagementId/trial-override", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
-    const actor = getUserContext(req)?.userId ?? "admin";
+    const actor = getUserContext(req)?.userId ?? "u_unknown_admin";
     const newExpiry = String((req.body ?? {}).trialExpiresAt ?? "");
     if (!newExpiry) return res.status(400).json({ error: "TRIAL_EXPIRES_AT_REQUIRED" });
     try {
@@ -521,7 +521,7 @@ export function registerMfcrmRoutes(app: Express): void {
   /* Admin: force-confirm a stuck hand-over (override path). */
   app.post("/api/admin/mfcrm/handovers/:partnerId/:handoverId/override", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
-    const actor = getUserContext(req)?.userId ?? "admin";
+    const actor = getUserContext(req)?.userId ?? "u_unknown_admin";
     try {
       const e = managedFounderStore.handoverConfirm(String(req.params.partnerId), String(req.params.handoverId), actor, { adminOverride: true });
       res.json({ engagement: e });

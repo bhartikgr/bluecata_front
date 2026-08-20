@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ShieldCheck, AlertTriangle, Download, RefreshCw } from "lucide-react";
+import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 
 interface ChainVerifyResult {
   table: string;
@@ -59,7 +60,13 @@ interface HistoryRow {
 
 async function getJson<T>(url: string): Promise<T> {
   const r = await fetch(url, { credentials: "include" });
-  if (!r.ok) throw new Error(`http_${r.status}`);
+  /* WAVE 73 · ITEM 1 · R58 — THE WORST OF THE FIVE: THE BODY WAS NEVER READ AT ALL.
+     This wrapper threw the literal `http_500` and discarded the entire response,
+     on the page an admin opens when the AUDIT CHAIN may be broken — where the
+     server's explanation is the whole point of looking. Now the server's own
+     `message` is what the caller (and the page's error banner) receives; when a
+     body carries no explanation, `HTTP <status>` still reaches the screen. */
+  if (!r.ok) throw new Error(await serverRefusalText(r));
   return (await r.json()) as T;
 }
 

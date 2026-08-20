@@ -1,0 +1,65 @@
+-- REPAIR WAVE 1 · ITEM 1 — BIND THE ACTOR INTO THE AUDIT HASH, WITHOUT
+--                          INVALIDATING A SINGLE EXISTING ROW.
+--
+-- THE DEFECT (Review 3 §1.1, W57_REVIEW_3_RISK.md:111-130). The audit-chain
+-- hash body at server/adminPlatformStore.ts is
+--
+--     sha256( prevHash | id | eventType | entity | ts | payloadStr )
+--
+-- and `actor_id` is written to the row but EXCLUDED from that body. The
+-- verifier's own column list (AUDIT_CHAIN_SELECT_SQL) does not even SELECT
+-- `actor_id`. So `verifyTenantAuditChain()` returns ok=true after any row's
+-- actor has been rewritten to anything at all. The chain proves WHAT happened.
+-- It cannot prove WHO did it, and it cannot detect a forged actor.
+--
+-- WHY THE OBVIOUS FIX IS WRONG. Every audit_log row that already exists was
+-- hashed WITHOUT the actor. Simply adding `actorId` to the formula would make
+-- every historical row fail verification — and would deepen the audit-chain
+-- incident already open on `tenant_admin_capavate` (whose Resolve returns
+-- HTTP 409). Repairing that existing chain is explicitly OUT OF SCOPE for this
+-- wave and this migration does not attempt it.
+--
+-- THE DESIGN — VERSION THE HASH, AND LET THE ROW DECLARE ITS OWN VERSION.
+--
+--   hash_version = 1  (LEGACY, the default for every pre-existing row)
+--       body = prevHash | id | eventType | entity | ts | payloadStr
+--       Byte-for-byte the formula documented at adminPlatformStore.ts:566.
+--       UNCHANGED. Every existing row continues to verify exactly as before.
+--
+--   hash_version = 2  (ACTOR-BOUND, every row written from this wave forward)
+--       body = prevHash | id | eventType | entity | ts | payloadStr | actorId
+--       The v1 body is a strict PREFIX of the v2 body — the actor is APPENDED
+--       AT THE END, never interleaved. That keeps the two formulas trivially
+--       auditable side by side, and matches the house rule that additions go
+--       at the end as a sibling rather than as a mid-sequence insertion.
+--
+-- The version is READ FROM THE ROW. It is NOT inferred from a date, a build
+-- number, an env var, or a code constant — a date-based rule would silently
+-- mis-verify any row backfilled or replayed out of order, and would not be
+-- db-driven. `verifyTenantAuditChain()` recomputes each row under the formula
+-- that row itself declares, and now SELECTs `actor_id`, so rewriting an actor
+-- on a v2 row breaks verification at that link.
+--
+-- ADDITIVE ONLY. One ALTER TABLE ADD COLUMN. Nothing is dropped, nothing is
+-- altered, no data is rewritten, no row's `hash` or `prev_hash` is touched.
+--
+-- IDEMPOTENT. SQLite has no `ADD COLUMN IF NOT EXISTS`; re-running raises
+-- "duplicate column name: hash_version", which the numbered runner
+-- (server/db/migrate.ts :: isIdempotentSqliteError) swallows by design, exactly
+-- as it does for the v12 additive ALTERs in server/db/connection.ts. The
+-- companion self-heal installer
+-- (server/lib/applyRepair1AuditActorBindingSchema.ts) checks PRAGMA table_info
+-- first, so it is idempotent without relying on the swallow.
+--
+-- NO INDEX IS CREATED HERE, DELIBERATELY. A plain `CREATE INDEX` that fails is
+-- downgraded to a warning by the runner and leaves the migration UNRECORDED and
+-- pending (WAIVER-3), and `scripts/migration_chain_check.sh` counts index
+-- warnings as failures. The migration:chain gate is expected-RED with exactly
+-- two pinned failures (0040, 0000); a third would be indistinguishable from a
+-- real regression. One column, no index.
+--
+-- MIRROR: a byte-identical copy of this file lives at
+-- server/db/migrations/0188_repair1_audit_actor_binding.sql. Both are read by
+-- the self-heal installer; they must never diverge.
+
+ALTER TABLE audit_log ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;

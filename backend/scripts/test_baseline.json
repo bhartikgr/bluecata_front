@@ -1,4 +1,9 @@
 {
+ "_HISTORICAL_RECORD": true,
+ "_SUPERSEDED_BY": "build_log/wave51/W51_failing_names_BASELINE.txt (460 failing names / 117 files) \u2014 the SOLE operative failing-name gate",
+ "_OWNER_RULING": "2026-08-14 (Wave 57, 57-Q5): RETIRED as an operative gate; kept as a dated historical record. NOT to be cited as a gate by any wave. Do NOT run scripts/test_baseline_check.sh --update: it is FORBIDDEN.",
+ "_RECORDS_AS_OF": "2026-08-10 \u2014 471 failing / 121 files / 6173 total tests. Current reality on 2026-08-14: 460 failing / 117 files / 8425 total tests (W57, three identical runs). Reconciliation: build_log/wave57/W57_BASELINE_RECONCILIATION.txt",
+ "_ANNOTATED_BY": "WAVE 57 \u2014 measurement wave; this header is the ONLY byte changed in work/ by W57 and is a permitted, owner-directed exception to its no-source-edit rule.",
  "generated": "2026-08-10",
  "totalTests": 6173,
  "passed": 5678,

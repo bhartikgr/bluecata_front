@@ -25,9 +25,23 @@ import CloseRoundPanel from "@/components/CloseRoundPanel";
 import { RoundCloseLateAcceptance } from "@/components/founder/RoundCloseLateAcceptance";
 import { emit } from "@/lib/sprint3";
 import { fmtUSD, fmtPct, fmtDate, timeAgo, fmtNum, safeToFixed } from "@/lib/format";
+/* WAVE 72 · DEFECT 2 — the single null-aware ownership formatter (R21/R47). */
+import { ownershipPercentCellText } from "@/lib/captable/ownershipPercent";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
-import { runEngine, projectPostClose, type ApiSecurity } from "@/lib/engineDemo";
+import {
+  runEngine,
+  projectPostClose,
+  /* WAVE 58b · DEFECT 3 — the ONE fully-diluted base resolver, identical to the
+     one the wizard and the server round-math route call. */
+  ledgerFullyDilutedPreMoneyShares,
+  resolveFdPreMoneyBase,
+  unconvertedConvertibleCount,
+  type ApiSecurity,
+  /* WAVE 58e · D3.7 — the ONE discount disclosure, shared with the wizard and the
+     Edit-terms modal so all three surfaces say the same thing. */
+  describeDiscount,
+} from "@/lib/engineDemo";
 import { currencySymbol, fmtCurrency } from "@/lib/currency";
 import { Progress } from "@/components/ui/progress";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -48,9 +62,25 @@ type Round = {
  investorCount?: number;
  currency?: string;
  region?: string;
- useOfProceeds?: UseOfProceedsRow[] | null;
+ /* WAVE 80 · ITEM 2 — TWO SHAPES, BOTH REAL, BOTH RENDERED. The founder round
+    wizard collects use of proceeds as ONE FREE-TEXT NARRATIVE; only
+    `server/mockData.ts` ever produced the `{category, amount, percent}` rows this
+    field was typed for. Wave 80 kept the free text and widened the reader rather
+    than deriving rows, because deriving them would mean this platform inventing
+    per-bucket percentages and dollar amounts a founder never entered and printing
+    them on an investor-facing deal document. The decision and its reason are
+    declared once, on `validateUseOfProceeds` in `shared/roundMathEngineAdapter.ts`. */
+ useOfProceeds?: UseOfProceedsRow[] | string | null;
+ /* WAVE 80 · ITEM 2 — the round narrative the wizard collected and discarded. */
+ notes?: string | null;
  closingChecklist?: ChecklistRow[];
  tranches?: TrancheRow[] | null;
+ /* WAVE 80 · ITEM 2 — the founder's yes/no answer to "does this round close in
+    tranches", and the plan they typed. Deliberately NOT folded into `tranches`
+    above: that key is the structured LEDGER of funded tranche events and is
+    reduced over as an array. Two different facts, two keys. */
+ tranchesEnabled?: boolean;
+ tranchesPlan?: string | null;
  coInvestors?: string[];
  scenarios?: ScenarioRow[] | null;
  termSheetUrl?: string | null;
@@ -830,7 +860,61 @@ export default function RoundDetail() {
  ["Pro-rata", "Pro-rata for $250k+ investors"],
  ["Board composition", "1 founder, 1 investor, 1 mutual"],
  ["Information rights", "Quarterly financials + KPI dashboard"],
- ["ESOP top-up", "10% post-money pool refresh"],
+ /* ═════════════════════════════════════════════════════════════
+    WAVE 58b · DEFECT 4 (R21) — THE USER-VISIBLE HARDCODED 10%.
+    ═════════════════════════════════════════════════════════════
+    WAS: the literal string 10%-post-money-pool-refresh (quoted here with hyphens
+    only so the source-lock test cannot be satisfied by this comment), rendered
+    IDENTICALLY on
+    every round on live v26.17.0, Active and Draft alike — confirmed on production
+    by the 2026-08-15 browser audit (`build_log/wave58b/LIVE_AUDIT_2026_08_15.md`,
+    "THE POOL IS EXPRESSED IN 5 PLACES", item 3: "read-only, and this is the
+    hardcode"). A founder who set 15% PRE-money in the wizard read "10%
+    post-money" here, on the round's own Terms tab.
+
+    NOW: read from the round. `optionPoolPostPercent` / `optionPoolMode` live in
+    `extras_json` and are re-spread by `roundsStore.rowToRound`.
+    PERCENT-AS-WRITTEN (R16): the stored `"15"` prints as `15%`, unrescaled.
+    ABSENT MEANS ABSENT (R6): a round with no pool says so by name rather than
+    displaying somebody else's 10%. */
+ ["ESOP top-up", (() => {
+   const pct = (r as unknown as Record<string, unknown>).optionPoolPostPercent;
+   if (pct === null || pct === undefined || String(pct).trim() === "") {
+     return "No option-pool top-up recorded on this round";
+   }
+   const mode = String((r as unknown as Record<string, unknown>).optionPoolMode ?? "pre_money") === "post_money"
+     ? "post-money"
+     : "pre-money";
+   return `${String(pct)}% of post-money fully-diluted, ${mode} placement`;
+ })()],
+ /* ════════════════════════════════════════════════════════════
+    WAVE 58e · D3.7 — THE TERMS TAB SHOWED NO DISCOUNT AT ALL.
+    ════════════════════════════════════════════════════════════
+    Verified on live v26.17.0 (R31, "Also observed"): the round-detail Terms tab
+    rendered NO discount field, even on SAFE and Note rounds, so the value was
+    reachable only through the rounds-list Edit-terms modal — which is also the only
+    place the corrupt `20260707` was ever visible. A term that governs what every
+    SAFE holder converts into was absent from the round's own terms panel.
+
+    IT IS RENDERED FROM THE ROUND (R21), NOT FROM A FIXED STRING, with BOTH industry
+    forms (R30.2) and the conversion arithmetic (R30.3). ABSENT MEANS ABSENT (R6): a
+    round with no discount says so by name rather than printing 0%.
+
+    OUT-OF-RANGE IS SURFACED, NOT REWRITTEN (R31-a / D2.3). The corrupt live row is
+    test data; it is named here as unreadable, with what to do, and nothing is
+    silently corrected. */
+ ["Discount (% off the round price)", (() => {
+   const raw = (r as unknown as Record<string, unknown>).discount;
+   if (raw === null || raw === undefined || String(raw).trim() === "") {
+     return "No discount recorded on this round";
+   }
+   const dd = describeDiscount(raw, r.pricePerShare);
+   if (!dd) return "No discount recorded on this round";
+   if (dd.refusal) {
+     return `Stored value “${dd.discountPercent}” cannot be read as a discount — it is outside the permitted range of 0 to under 100. Capavate will not guess what it meant and has not changed it. Correct it on Edit terms.`;
+   }
+   return `${dd.bothForms}${dd.conversionArithmetic ? ` Conversion price at this round's price per share: ${dd.conversionArithmetic}.` : " This round stores no price per share, so no conversion price is quoted."}${dd.marketNormNote ? ` ${dd.marketNormNote}` : ""}`;
+ })()],
  ["Drag-along", "Yes — majority of preferred + majority of common"],
  ["ROFR / Co-Sale", "Yes — standard NVCA form"],
  ["Region / formula pack", `${r.region ?? "US"} · ${r.currency ?? "USD"}`],
@@ -842,6 +926,13 @@ export default function RoundDetail() {
  </div>
  <div className="text-xs text-muted-foreground pt-3">
  Editing terms is permitted in <span className="font-mono">draft</span> state; terms lock at <span className="font-mono">terms_set</span> with audit-log entry. Currently: <Badge variant="outline" className="text-[10px] capitalize">{r.state.replace(/_/g, " ")}</Badge>
+ {/* WAVE 58b · DEFECT 2 — THE CAPTION ABOVE PROMISED AN EDITABILITY THIS PANEL
+     NEVER PROVIDED. The 2026-08-15 live audit confirmed the panel is STATIC TEXT
+     in Draft as well as Active, while its caption says editing "is permitted in
+     draft state". The caption is left byte-identical (it is a true statement
+     about the RULE) and the missing half is supplied: where the edit actually
+     happens. That surface now carries the pool fields, which is Defect 2. */}
+ <span data-testid="terms-edit-where"> The editable surface is <strong>Edit terms</strong> on the Rounds list, which can change the round name, the amounts, the valuations, the price, the close date, the fully-diluted pre-money share count, and the option-pool percentage and placement. This panel is read-only. The server refuses every term edit once the round is <span className="font-mono">closed</span> or <span className="font-mono">funded</span>, by name, with <span className="font-mono">closed_round_readonly</span>.</span>
  </div>
  </CardContent>
  </Card>
@@ -849,6 +940,19 @@ export default function RoundDetail() {
 
  <TabsContent value="plan">
  <UseOfProceeds round={r} />
+ {/* ═══════════════════════════════════════════════════════════════
+     WAVE 80 · ITEM 2 — THE READERS FOR THE OTHER THREE RESCUED CONTROLS.
+     ═══════════════════════════════════════════════════════════════
+     APPENDED AT THE END of this container, never inserted at its head: the
+     silent-drop guard reads a head insertion in an ordered container as a mass
+     removal of everything after it, which has cost this project one false alarm
+     across 18 panels already. Both panels render only when the founder actually
+     recorded something, so a round with neither is byte-identical on screen to
+     how it looked before this wave. */}
+ <div className="mt-4 space-y-4">
+ <RoundNarrative round={r} />
+ <TranchePlan round={r} />
+ </div>
  </TabsContent>
 
  <TabsContent value="checklist">
@@ -1094,7 +1198,12 @@ export default function RoundDetail() {
  );
 }
 
-function ProjectionPanel({ round }: { round: Round }) {
+/* WAVE 72 · R58 — EXPORTED so a test can MOUNT it and assert that the projection
+   refusal really reaches the DOM. Additive: no behaviour, no JSX and no call site
+   changes, and the component is still rendered only from this page. R58's rule is
+   that a wave may not claim a user-visible improvement unless a test asserts the
+   string renders, and a page this size cannot be mounted whole in jsdom. */
+export function ProjectionPanel({ round }: { round: Round }) {
  const { toast } = useToast();
  // Patch v4: use the round's companyId (not hardcoded). Engine math unchanged.
  const projCompanyId = (round as any).companyId ?? "";
@@ -1103,10 +1212,54 @@ function ProjectionPanel({ round }: { round: Round }) {
  queryFn: async () => (await apiRequest("GET", `/api/companies/${encodeURIComponent(projCompanyId)}/securities`)).json(),
  enabled: !!projCompanyId,
  });
+
+ /* ══════════════════════════════════════════════════════════════════════════
+    WAVE 73 · ITEM 7 — THIS HOOK MOVED ABOVE THE EARLY RETURNS. IT IS THE WHOLE FIX.
+    ══════════════════════════════════════════════════════════════════════════
+    THE DEFECT, precisely: this `useQuery` used to sit BELOW the two early
+    returns immediately after `securities`. On a cold cache the first render of
+    this panel took `if (!securities.data) return <Loading/>` and therefore ran
+    ONE hook; the render after the holder-list query resolved fell through and
+    ran TWO. React compares hook counts between renders, raised
+    "Rendered more hooks than during the previous render", and the Round Detail
+    projection tab UNMOUNTED INTO THE ErrorBoundary — a founder opening the tab
+    on a cold cache lost the entire projection, not one figure inside it.
+
+    Hooks must be unconditional, so it is hoisted here, ABOVE both returns and
+    beside the other `useQuery`. Nothing else moves: the two early returns, the
+    engine call, every branch and every node below are byte-identical, and the
+    comment that documented this query travels with it. It is not gated on
+    `securities.data`, because a hook that is sometimes skipped is the defect.
+    Reported by Wave 72 as F-1 / OQ-1. */
+
+ /* ── WAVE 52c · B1 + B3 — THE PROJECTION NOW ASKS THE DATABASE ─────────────
+    This panel is the production consumer of the Wave 52 pricing order. Until
+    Wave 52c the engine ran here with NO mode argument, so the platform-level
+    rollback flag — which the owner had been told was the rollback mechanism —
+    could not affect this screen at all: a browser cannot read `platform_config`.
+    It now asks the server, per mount, and passes the resolved mode into the
+    engine. `staleTime: 0` and `refetchOnMount` are deliberate: a flag whose
+    value is cached in the browser is a flag that needs a page reload to roll
+    back.
+
+    B3: the arithmetic on this screen MOVED for any company with a SAFE or a note
+    (measured: founder 56.14% → 53.33%, Series A investors 21.05% → 25.00%, price
+    $3.3333 → $2.6667). The new numbers are the correct ones. The disclosure below
+    is why a founder or an investor is not left to discover that on their own. */
+ const roundMath = useQuery<{
+  ok: boolean;
+  pricingOrder: { mode: "w52_post_pool_post_conversion" | "legacy_pre_w52"; enabled: boolean; source: string; version: number | null };
+  disclosure: { headline: string; body: string };
+ }>({
+  queryKey: ["/api/founder/round-math/pricing-order", (round as any).id],
+  queryFn: async () => (await apiRequest("GET", "/api/founder/round-math/pricing-order")).json(),
+  staleTime: 0,
+  refetchOnMount: "always",
+ });
  if (!projCompanyId) return <div className="py-10 text-center text-muted-foreground">No active company — set one before projecting.</div>;
  if (!securities.data) return <div className="py-10 text-center text-muted-foreground">Loading securities…</div>;
-
- const pre = runEngine(securities.data, "fully_diluted", "US");
+ const pricingOrderMode = roundMath.data?.pricingOrder?.mode;
+ const pre = runEngine(securities.data, "fully_diluted", "US", pricingOrderMode);
  // Wave C4 — a post-close projection is only meaningful with a real (positive)
  // pre-money valuation AND target/investment amount. A freshly-created round
  // often has neither (shown as "Unknown"/$0); feeding 0/0 into the engine
@@ -1116,13 +1269,94 @@ function ProjectionPanel({ round }: { round: Round }) {
  const preMoneyNum = Number(round.preMoney);
  const targetNum = Number(round.targetAmount);
  const canProject = Number.isFinite(preMoneyNum) && preMoneyNum > 0 && Number.isFinite(targetNum) && targetNum > 0;
- const post = canProject
+ /* ── WAVE 58 · R27 — THE PROJECTION READS THE ROUND'S POOL PERCENTAGE ───────
+    THE GAP THIS CLOSES, precisely. This call is the production consumer of the
+    engine, and it passed NO pool field. `compute.ts:457-458` is gated on
+    `optionPoolPostPercent && optionPoolMode === "pre_money"`, so the pool
+    arithmetic could not run here at all — which is why the W58 live walkthrough
+    found that entering a pool changed nothing, and why the reachability claim
+    that recommended this wave was wrong.
+
+    The round now CARRIES the percentage the founder typed (persisted in
+    `extras_json`, re-spread by `roundsStore.rowToRound`), and this panel passes
+    it through. PERCENT-AS-WRITTEN (R16): the stored `"15"` is handed to the
+    engine as `"15"` and read as 15%. No conversion at this boundary.
+
+    Absent means ABSENT. When the round has no pool percentage the spread adds
+    nothing and the projection behaves exactly as it did before — it does not
+    fall back to the ambiguous legacy pool-size extra, because guessing that key's unit
+    is the defect R16 forbids. */
+ /* WAVE 58b · DEFECT 3 — THIS PANEL USES THE SAME BASE RESOLVER AS THE WIZARD.
+    This is the surface that showed a DIFFERENT pool share count from the wizard,
+    because the wizard sized against the typed count and the engine sized against
+    the ledger — 2,500,000 vs 2,000,000 on the canonical example. Both now go
+    through `resolveFdPreMoneyBase`, and when the two disagree the pool is NOT
+    projected and the divergence is stated by name: a named refusal instead of two
+    different numbers on two screens. */
+ const projLedgerFd = ledgerFullyDilutedPreMoneyShares(securities.data);
+ const projFdBase = resolveFdPreMoneyBase({
+  declaredFdPreMoneyShares: (round as unknown as Record<string, unknown>).fdPreMoneyShares as
+   string | number | null | undefined,
+  ledgerFdShares: projLedgerFd,
+  outstandingConvertibles: unconvertedConvertibleCount(securities.data),
+ });
+ const roundPoolPercent = (round as unknown as Record<string, unknown>).optionPoolPostPercent;
+ const roundPoolMode = (round as unknown as Record<string, unknown>).optionPoolMode;
+ const hasRoundPoolPercent =
+ roundPoolPercent !== undefined && roundPoolPercent !== null && String(roundPoolPercent) !== ""
+ /* DEFECT 3 — a pool is only projected once ONE base is settled. */
+ && projFdBase.ok;
+ /* ══════════════════════════════════════════════════════════════════════════
+    WAVE 72 · DEFECT 1 / R58 — THE REFUSAL IS RENDERED, NOT THROWN AT THE PAGE.
+    ══════════════════════════════════════════════════════════════════════════
+    `projectPostClose` refuses BY NAME for a term it will not invent — a missing
+    note rate, an unreadable cap convention, an unprotected down round, and (this
+    wave) a pricing denominator of zero or a pricing solve that did not settle.
+    Called bare in render, every one of those unmounted this whole page into the
+    app-level `ErrorBoundary`: the founder saw a generic failure instead of the
+    sentence the refusal carries, which is R58's "dead promise" — a carefully
+    written refusal discarded at the boundary.
+    Caught here and rendered below in the SAME card, so the refusal replaces the
+    projection's VALUE and not its container (no silent drops). Anything that is
+    not a named refusal is re-thrown untouched — a real bug must still surface. */
+ let post: ReturnType<typeof projectPostClose> | null = null;
+ let postRefusal: { code: string; name: string; field: string | null; message: string } | null = null;
+ try {
+ post = canProject
  ? projectPostClose(securities.data, {
  preMoneyValuation: preMoneyNum,
  investmentAmount: targetNum,
  series: round.name,
- }, "US")
+ ...(hasRoundPoolPercent
+ ? {
+ optionPoolPostPercent: String(roundPoolPercent),
+ /* ══════════════════════════════════════════════════════════
+    WAVE 58b · DEFECT 1.3 — THE FOUNDER'S OWN PLACEMENT NOW REACHES THE ENGINE.
+    ══════════════════════════════════════════════════════════
+    BEFORE: this line was the literal `"pre_money" as const`, so a round whose
+    stored placement was `post_money` was projected under the OTHER convention
+    and an amber sentence explained the mismatch after the fact. The founder's
+    selection was overwritten here — a silent drop of a stored instruction.
+    `compute.ts` now models both placements, so the stored value is passed
+    through unchanged. An absent or unrecognised value resolves to `pre_money`,
+    the market default (Cooley GO, "Negotiating the option pool"), which is also
+    what the engine falls back to — one default, stated in both places. */
+ optionPoolMode:
+ String(roundPoolMode ?? "pre_money") === "post_money"
+ ? ("post_money" as const)
+ : ("pre_money" as const),
+ }
+ : {}),
+ }, "US", pricingOrderMode)
  : null;
+ } catch (err) {
+ const e = err as { code?: string; name?: string; field?: string | null; message?: string };
+ if (typeof e.code === "string" && e.code !== "") {
+ postRefusal = { code: e.code, name: String(e.name ?? "RoundMathTermRefusal"), field: e.field ?? null, message: String(e.message ?? "") };
+ } else {
+ throw err;
+ }
+ }
 
  return (
  <div className="space-y-4">
@@ -1148,6 +1382,22 @@ function ProjectionPanel({ round }: { round: Round }) {
  New investor allocation: <strong className="text-foreground">{fmtUSD(round.targetAmount)}</strong> at <strong className="text-foreground">${safeToFixed(round.pricePerShare, 4)}</strong>/share — {pre.formulaIdsUsed.length} → {post.formulaIdsUsed.length} formulas applied.
  </div>
  </>
+ ) : postRefusal ? (
+ <>
+ {/* WAVE 72 · DEFECT 1 / R58 — THE NAMED REFUSAL, ON THE SCREEN. The pre-close
+     column is UNCHANGED and still renders: only the post-close projection is
+     refused, and the reason is the engine's own sentence rather than a generic
+     "could not compute". A NEW SIBLING BRANCH — nothing in the two branches
+     around it is moved, removed or re-nested. */}
+ <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+ <SideTable title="Pre-close (current cap table)" rows={pre.rows} totalShares={pre.totalShares} testid="table-pre" />
+ <div className="rounded-lg border border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5 p-4 text-xs space-y-2" data-testid="projection-refused">
+ <div className="text-sm font-semibold">The post-close projection was refused</div>
+ <p className="text-muted-foreground leading-relaxed" data-testid="projection-refused-message">{postRefusal.message}</p>
+ <p className="text-[10px] text-muted-foreground">Refusal code: <code className="font-mono" data-testid="projection-refused-code">{postRefusal.code}</code>{postRefusal.field ? <> · field: <code className="font-mono">{postRefusal.field}</code></> : null}. Capavate shows no post-close figures while this is unresolved: every share count and percentage in that column is derived from the price per share.</p>
+ </div>
+ </div>
+ </>
  ) : (
  <>
  {/* Wave C4 — projection gated until the round has a positive pre-money + target. */}
@@ -1167,13 +1417,119 @@ function ProjectionPanel({ round }: { round: Round }) {
  <Check className="h-4 w-4 mr-2" /> Validate soft circle (commit projection)
  </Button>
  </div>
+ {/* WAVE 58 · R27 — APPENDED AT THE END AS A SIBLING, for the same reason the
+     Wave 52c block below was: nothing above is moved, removed or re-nested, so
+     the silent-drop guard census cannot change shape.
+
+     Every percentage on this screen must name its denominator, and the pool is
+     the reason the numbers above are what they are, so it is disclosed rather
+     than left for the founder to infer. */}
+ {hasRoundPoolPercent && (
+ <div className="mt-4 rounded-md border border-border p-3 text-xs space-y-1" data-testid="disclosure-w58-option-pool">
+ <div className="font-medium">Option pool applied to this projection</div>
+ <div className="flex justify-between font-mono">
+ <span>Target pool</span>
+ <span>{String(roundPoolPercent)}% of post-money fully-diluted shares</span>
+ </div>
+ <div className="flex justify-between font-mono">
+ <span>Placement recorded on the round</span>
+ <span>{String(roundPoolMode ?? "pre_money") === "post_money" ? "Post-money — everyone pays" : "Pre-money — the existing holders pay"}</span>
+ </div>
+ <p className="text-[10px] text-muted-foreground">
+ Percent as written: {String(roundPoolMode ?? "pre_money") === "post_money" ? "this figure is" : "this figure is"} {String(roundPoolPercent)} meaning {String(roundPoolPercent)}%.
+ {String(roundPoolMode ?? "pre_money") === "post_money"
+ ? " The pool top-up is OUTSIDE the pricing denominator, so it does not change the price per share; it dilutes the existing holders and the incoming investor in exact proportion to what each holds after the raise, and that dilution is already reflected in every share count and percentage in the post-close column above."
+ : " The pool top-up is inside the pricing denominator, so it lowers the price per share and it is already reflected in every share count and percentage in the post-close column above."}
+ </p>
+ {/* WAVE 58b · DEFECT 1.3 — REPLACES A WARNING THAT IS NO LONGER TRUE. The
+     amber block that used to sit here said the figures applied the PRE-MONEY
+     convention because that was the only one the engine modelled. Both are now
+     modelled, so the honest statement is which one was applied and what it
+     means — not an apology for applying the wrong one. */}
+ {String(roundPoolMode ?? "pre_money") === "post_money" && (
+ <p className="text-[10px] text-muted-foreground" data-testid="disclosure-w58-pool-placement-warning">
+ This round records a POST-MONEY placement and the figures above apply it: the price per share is the
+ pre-money valuation divided by the fully-diluted count BEFORE the new reserve, so the effective
+ pre-money is the full headline figure and the pool's dilution is shared pro-rata with the incoming
+ investor. Post-money placement is a negotiated departure from the NVCA/Cooley model form, which
+ assumes the pre-money convention.
+ </p>
+ )}
+ </div>
+ )}
+ {/* ════════════════════════════════════════════════════════════════
+     WAVE 58b · DEFECT 3 — WHICH FULLY-DILUTED BASE THIS PROJECTION USED.
+     ════════════════════════════════════════════════════════════════
+     OUTSIDE the pool card deliberately: when the declared count and the ledger
+     disagree the pool is not projected at all, so a message inside the pool card
+     would not render. APPENDED AT THE END AS A SIBLING — nothing above is moved,
+     removed or re-nested, so the silent-drop guard census stays additive. */}
+ <div className="mt-4 rounded-md border border-border p-3 text-xs" data-testid="disclosure-w58b-fd-base">
+ <div className="font-medium">{projFdBase.ok ? "Fully-diluted pre-money base used by this projection" : "The fully-diluted pre-money base could not be settled"}</div>
+ <p className="mt-1 text-[10px] text-muted-foreground">{projFdBase.ok ? projFdBase.label : projFdBase.reason}</p>
+ {!projFdBase.ok && (
+ <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{projFdBase.code}</code>. No option pool is applied to the figures above while this is unresolved — sizing it against one of two disagreeing counts would show you a number the round wizard does not agree with.</p>
+ )}
+ </div>
+ {/* WAVE 52c · B3 — APPENDED AT THE END AS A SIBLING. Nothing above is moved,
+     removed or re-nested, so the silent-drop guard census cannot change shape. */}
+ {roundMath.data?.disclosure && (
+ <div
+ className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-xs"
+ data-testid="disclosure-w52c-pricing-order"
+ >
+ <div className="font-semibold mb-1">{roundMath.data.disclosure.headline}</div>
+ <p className="text-muted-foreground">{roundMath.data.disclosure.body}</p>
+ <p className="text-muted-foreground mt-1.5">
+ Pricing order in force: <span className="font-mono">{roundMath.data.pricingOrder.mode}</span>
+ {" "}(source: {roundMath.data.pricingOrder.source}
+ {roundMath.data.pricingOrder.version != null ? `, revision ${roundMath.data.pricingOrder.version}` : ""}).
+ Percentages in the tables above are the <strong>% of fully-diluted shares</strong>.
+ </p>
+ </div>
+ )}
+ {roundMath.isError && (
+ <div className="mt-4 rounded-md border border-border p-3 text-xs text-muted-foreground" data-testid="disclosure-w52c-unavailable">
+ The platform pricing-order setting could not be read, so this projection was computed on the
+ engine's own default ordering. This is stated rather than hidden.
+ </div>
+ )}
  </CardContent>
  </Card>
  </div>
  );
 }
 
-function SideTable({ title, rows, totalShares, testid, highlight }: { title: string; rows: { holderName: string; holderType: string; kind: string; shares: bigint; ownershipPercent: string }[]; totalShares: bigint; testid: string; highlight?: boolean }) {
+/* ── WAVE 71 · D18 — THE UNDEFINED RATIO, WITHOUT CHANGING THE CELL'S SHAPE ───
+   `ownershipPercent` is `string | null`; `null` means the view's denominator was
+   zero, i.e. 0 / 0, which owner ruling R47 says is UNDEFINED and not zero. The
+   numeric part is replaced by an em-dash rather than by `0.00`.
+   WHY THE `%` AND THE sr-only SPAN STAY AS DIRECT CHILDREN of the cell: the
+   silent-drop guard baselines this cell's rendered child shape
+   (`td … child=#text#1`, `childorder={expr}|#text`). Wrapping the whole cell in a
+   ternary of fragments REMOVED two baselined panel-body items and the guard blocked
+   the build — correctly, because it could not tell an honesty fix from a deletion.
+   Keeping `{expr}` + the `%` text child + the span preserves the shape exactly.
+   THE `—%` COMBINATION IS UNREACHABLE ON THIS SURFACE, stated rather than assumed:
+   `SideTable` renders the pre/post projection, which only renders when `canProject`
+   is true (`RoundDetail.tsx`, `preMoney > 0 && target > 0`), so the denominator is
+   never zero here. The branch exists because the engine's CONTRACT allows null, not
+   because this screen can reach it. */
+function ownershipCellText(v: string | null): string {
+  /* WAVE 72 · DEFECT 2 — DELEGATES, so there is ONE definition of "what an
+     undefined ownership percentage looks like" instead of two. This page was the
+     null-aware one; `client/src/pages/founder/CapTable.tsx` was not, and rendered
+     `NaN%`. Two implementations of one display rule is how the two screens came to
+     disagree, so the rule now lives in `@/lib/captable/ownershipPercent` and both
+     pages import it. Behaviour here is byte-identical: `null` → `—`, `"0"` → `0.00`. */
+  return ownershipPercentCellText(v);
+}
+
+/* WAVE 71 · D18 — `ownershipPercent` is `string | null` on the engine contract;
+   `null` means a zero-share denominator (0 ÷ 0, undefined — R47). This prop type
+   now matches the engine rather than narrowing it, and the cell below renders the
+   em-dash instead of a confident 0.00%. */
+function SideTable({ title, rows, totalShares, testid, highlight }: { title: string; rows: { holderName: string; holderType: string; kind: string; shares: bigint; ownershipPercent: string | null }[]; totalShares: bigint; testid: string; highlight?: boolean }) {
  return (
  <div className={`rounded-lg border ${highlight ? "border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" : "border-border"}`}>
  <div className={`px-4 py-3 border-b ${highlight ? "border-[hsl(0_100%_40%)]/30" : "border-border"} flex items-center justify-between`}>
@@ -1185,7 +1541,7 @@ function SideTable({ title, rows, totalShares, testid, highlight }: { title: str
  <tr className="text-[10px] uppercase text-muted-foreground border-b border-border/60">
  <th className="text-left font-medium px-4 py-2">Holder</th>
  <th className="text-right font-medium px-2 py-2">Shares</th>
- <th className="text-right font-medium px-4 py-2">%</th>
+ <th className="text-right font-medium px-4 py-2">%<span className="ml-1 font-normal normal-case text-muted-foreground">of fully-diluted</span></th>
  </tr>
  </thead>
  <tbody>
@@ -1196,7 +1552,7 @@ function SideTable({ title, rows, totalShares, testid, highlight }: { title: str
  <div className="text-[9px] text-muted-foreground capitalize">{r.kind} · {r.holderType}</div>
  </td>
  <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtNum(Number(r.shares))}</td>
- <td className="px-4 py-1.5 text-right font-mono tabular-nums">{parseFloat(r.ownershipPercent).toFixed(2)}%</td>
+ <td className="px-4 py-1.5 text-right font-mono tabular-nums">{ownershipCellText(r.ownershipPercent)}%<span className="sr-only"> of fully-diluted shares</span></td>
  </tr>
  ))}
  </tbody>
@@ -1311,10 +1667,40 @@ function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles:
  );
 }
 
-function UseOfProceeds({ round }: { round: Round }) {
- const { toast } = useToast();
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 80 · ITEM 2 + ITEM 4.3 — USE OF PROCEEDS: BOTH SHAPES RENDER, AND THE
+   BUTTON THAT ADMITTED IT WAS A STUB NO LONGER REPORTS SUCCESS FOR NOTHING.
+   ════════════════════════════════════════════════════════════════════════════
+   Two things were wrong on this one card.
+
+   ONE — THE SHAPE CONTRADICTION. The founder wizard collects use of proceeds as a
+   single free-text narrative; this reader was typed for an array of
+   `{category, amount, percent}` rows that only `server/mockData.ts` ever produced.
+   Wave 80 keeps the free text and renders BOTH shapes here. It does NOT derive
+   rows from a sentence: that would mean inventing per-bucket percentages and
+   dollar amounts the founder never entered and putting them on a document
+   investors read. The rows path below is unchanged, so every existing structured
+   round renders exactly as it did.
+
+   TWO — THE DEAD CONTROL. "Add use of proceeds" fired a toast titled "Add use of
+   proceeds" whose body admitted the editor was stubbed. A control that reports
+   success while doing nothing is worse than one that says it is unavailable, so it
+   is now DISABLED with a plain sentence naming the surface that DOES record this
+   value today (R58: never name a control that is not there). It is not deleted —
+   the vehicle stays, visibly and honestly unavailable. */
+export function UseOfProceedsNarrative({ text }: { text: string }) {
+ return (
+ <div className="space-y-2" data-testid="uop-narrative">
+ <p className="text-sm whitespace-pre-wrap leading-relaxed">{text}</p>
+ <p className="text-xs text-muted-foreground">Recorded as written on the round wizard. Capavate does not split this into per-bucket percentages, because that would mean inventing figures you did not enter.</p>
+ </div>
+ );
+}
+export function UseOfProceeds({ round }: { round: Round }) {
  const sym = currencySymbol(round.region ?? "US");
- const data = round.useOfProceeds ?? [];
+ const raw = round.useOfProceeds ?? null;
+ const narrative = typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+ const data: UseOfProceedsRow[] = Array.isArray(raw) ? raw : [];
  const total = data.reduce((s, r) => s + r.amount, 0);
  return (
  <Card>
@@ -1323,10 +1709,13 @@ function UseOfProceeds({ round }: { round: Round }) {
  <p className="text-sm text-muted-foreground mt-0.5">{round.name} target: {fmtCurrency(round.targetAmount, round.region ?? "US", { compact: true })}. Actual deployment to be reported quarterly per IRA.</p>
  </CardHeader>
  <CardContent>
- {data.length === 0 ? (
+ {narrative ? (
+ <UseOfProceedsNarrative text={narrative} />
+ ) : data.length === 0 ? (
  <div className="text-sm text-muted-foreground italic py-6 text-center border border-dashed border-border rounded-md">
  No use-of-proceeds plan documented yet.
- <div className="mt-3"><Button size="sm" variant="outline" onClick={() => toast({ title: "Add use of proceeds", description: "Use-of-proceeds editor stubbed for the preview." })} data-testid="button-add-uop"><Plus className="h-3.5 w-3.5 mr-1" />Add use of proceeds</Button></div>
+ <div className="mt-3"><Button size="sm" variant="outline" disabled data-testid="button-add-uop"><Plus className="h-3.5 w-3.5 mr-1" />Add use of proceeds</Button></div>
+ <p className="mt-2 text-xs not-italic" data-testid="uop-editor-unavailable">Editing use of proceeds on this screen is not yet available. You can record it when you create a round, under &ldquo;Use of proceeds&rdquo; on the round wizard.</p>
  </div>
  ) : (
  <div className="space-y-3">
@@ -1334,7 +1723,7 @@ function UseOfProceeds({ round }: { round: Round }) {
  <div key={i} data-testid={`uop-row-${i}`}>
  <div className="flex justify-between text-sm mb-1">
  <span className="font-medium">{row.category}</span>
- <span className="font-mono tabular-nums">{sym}{row.amount.toLocaleString()} <span className="text-muted-foreground ml-1.5">{row.percent}%</span></span>
+ <span className="font-mono tabular-nums">{sym}{row.amount.toLocaleString()} <span className="text-muted-foreground ml-1.5">{row.percent}%<span className="sr-only"> of the total committed capital</span></span></span>
  </div>
  <div className="h-2 rounded-full bg-secondary overflow-hidden">
  <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${row.percent}%` }} />
@@ -1346,6 +1735,59 @@ function UseOfProceeds({ round }: { round: Round }) {
  <span className="font-mono tabular-nums">{sym}{total.toLocaleString()} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>
  </div>
  </div>
+ )}
+ </CardContent>
+ </Card>
+ );
+}
+
+/**
+ * WAVE 80 · ITEM 2 — "Round narrative for investors", the wizard field whose value
+ * used to exist only inside the wizard's own review step and then vanish on submit.
+ * It is the founder's own prose, rendered verbatim; nothing is summarised or
+ * reformatted. Renders nothing at all when the round has no narrative, so a round
+ * created before this wave shows exactly what it showed before.
+ */
+export function RoundNarrative({ round }: { round: Round }) {
+ const text = (round.notes ?? "").trim();
+ if (text.length === 0) return null;
+ return (
+ <Card data-testid="card-round-narrative">
+ <CardHeader className="pb-3">
+ <CardTitle className="text-base">Round narrative for investors</CardTitle>
+ <p className="text-sm text-muted-foreground mt-0.5">Recorded when this round was created. Investors you invite read this alongside the terms.</p>
+ </CardHeader>
+ <CardContent>
+ <p className="text-sm whitespace-pre-wrap leading-relaxed" data-testid="text-round-narrative">{text}</p>
+ </CardContent>
+ </Card>
+ );
+}
+
+/**
+ * WAVE 80 · ITEM 2 — "Round closes in tranches" and the tranche plan.
+ *
+ * SEPARATE FROM `TranchesPanel` ON PURPOSE. That panel renders the structured
+ * LEDGER of funded tranche events (`round.tranches`, an array it reduces over).
+ * This one renders the founder's stated INTENT: the yes/no answer and the plan
+ * they typed. Two different facts about a round; conflating them into one key is
+ * the shape collision Wave 80 refused to create.
+ */
+export function TranchePlan({ round }: { round: Round }) {
+ const enabled = round.tranchesEnabled === true;
+ const plan = (round.tranchesPlan ?? "").trim();
+ if (!enabled && plan.length === 0) return null;
+ return (
+ <Card data-testid="card-tranche-plan">
+ <CardHeader className="pb-3">
+ <CardTitle className="text-base">Tranche plan</CardTitle>
+ <p className="text-sm text-muted-foreground mt-0.5" data-testid="text-tranches-enabled">{enabled ? "This round closes in tranches." : "This round does not close in tranches."}</p>
+ </CardHeader>
+ <CardContent>
+ {plan.length === 0 ? (
+ <p className="text-sm text-muted-foreground italic" data-testid="text-tranche-plan-empty">No tranche plan was recorded when this round was created.</p>
+ ) : (
+ <p className="text-sm whitespace-pre-wrap leading-relaxed" data-testid="text-tranche-plan">{plan}</p>
  )}
  </CardContent>
  </Card>
@@ -1577,7 +2019,17 @@ function ScenariosPanel({ round }: { round: Round }) {
  <CardTitle className="text-base flex items-center gap-2"><GitBranch className="h-4 w-4 text-[hsl(0_100%_40%)]" />What-if scenarios <HelpTip>Compare alternate term scenarios side-by-side. Founders use this to negotiate pre-money with the lead investor.</HelpTip></CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">Side-by-side sensitivity on pre-money and dilution. Math is reconstructed by the engine on the live ledger.</p>
  </div>
- <Button size="sm" variant="outline" onClick={() => toast({ title: "Add scenario", description: "Scenario editor stubbed for the preview — wire this to the engine in production." })} data-testid="button-add-scenario"><Plus className="h-3.5 w-3.5 mr-1" /> Add scenario</Button>
+ {/* WAVE 80 · ITEM 4 — the same treatment as "Add use of proceeds" above, and for
+     the same reason: this button's only effect was a toast titled "Add scenario"
+     whose body admitted the editor was stubbed and told the reader to wire it to
+     the engine in production. Kept in place, disabled, with the honest sentence
+     rendered beside it instead of inside a toast that disappears. */}
+ {/* NOT WRAPPED IN A NEW CONTAINER. An extra <div> around the button changes the
+     CardHeader's own child ORDER, which the silent-drop guard correctly reads as a
+     panel-body change — the ordinal trap this project has already paid for once.
+     The sentence is appended as a SIBLING after the button instead. */}
+ <Button size="sm" variant="outline" disabled data-testid="button-add-scenario"><Plus className="h-3.5 w-3.5 mr-1" /> Add scenario</Button>
+ <p className="text-xs text-muted-foreground mt-1.5 max-w-xs text-right" data-testid="text-scenario-editor-unavailable">Adding your own what-if scenario is not yet available. The scenarios already recorded on this round are shown below and are computed by the engine.</p>
  </CardHeader>
  <CardContent>
  {scenarios.length === 0 ? (
@@ -1599,8 +2051,8 @@ function ScenariosPanel({ round }: { round: Round }) {
  <div className="space-y-1.5 text-xs">
  <div className="flex justify-between"><span className="text-muted-foreground">Pre-money</span><span className="font-mono tabular-nums">{sym}{(s.preMoney / 1e6).toFixed(1)}M</span></div>
  <div className="flex justify-between"><span className="text-muted-foreground">Post-money</span><span className="font-mono tabular-nums">{sym}{((s.preMoney + s.raise) / 1e6).toFixed(1)}M</span></div>
- <div className="flex justify-between"><span className="text-muted-foreground">New investor %</span><span className="font-mono tabular-nums">{s.dilutionPct.toFixed(1)}%</span></div>
- <div className="flex justify-between border-t border-border/60 pt-1.5"><span className="text-muted-foreground">Founder % after</span><span className="font-mono tabular-nums font-semibold">{s.founderPctAfter.toFixed(1)}%</span></div>
+ <div className="flex justify-between"><span className="text-muted-foreground">New investor %<span className="ml-1"> of fully-diluted</span></span><span className="font-mono tabular-nums">{s.dilutionPct.toFixed(1)}%</span></div>
+ <div className="flex justify-between border-t border-border/60 pt-1.5"><span className="text-muted-foreground">Founder % after<span className="ml-1"> of fully-diluted</span></span><span className="font-mono tabular-nums font-semibold">{s.founderPctAfter.toFixed(1)}%</span></div>
  </div>
  <p className="text-[11px] text-muted-foreground mt-3 italic">{s.note}</p>
  </div>

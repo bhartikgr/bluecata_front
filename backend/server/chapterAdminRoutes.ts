@@ -273,6 +273,28 @@ export function registerChapterAdminRoutes(app: Express): void {
     requireCollectiveEnabled,
     requireAdmin,
     (req: Request, res: Response): void => {
+      /* ── WAVE 57d · D4 — BIND THE ACTOR, FAIL CLOSED, BEFORE THE DEMOTION ────
+         This handler REMOVES AN ADMIN PRIVILEGE and then audited the change under
+         `userContext?.userId ?? "system:admin"` (:346-350). Wave 57c classified
+         it among "24 non-destructive" sites; independent Review 1 found that
+         classification false and named this site specifically. An audit row
+         attributed to `system:admin` for a privilege removal looks like a record
+         and is not one (R35).
+
+         Established pattern, reused not reinvented (server/bridgeStore.ts:1500,
+         and 57c's four fixes): refuse BEFORE the mutation rather than fabricate
+         an actor afterwards. `requireAdmin` is mounted on this route directly
+         (see above) and always assigns `req.userContext`, so this branch is
+         unreachable under today's mounts and NO legitimate demotion is affected
+         — the point is that it can no longer become reachable silently. The
+         last-admin 409 safeguard, the request contract and the response shape are
+         all unchanged. */
+      const demoteActorId = (req as Request & { userContext?: { userId?: string } })
+        .userContext?.userId;
+      if (!demoteActorId) {
+        res.status(401).json({ ok: false, error: "missing_identity", code: "missing_identity" });
+        return;
+      }
       const chapterId = String(req.params.chapterId ?? "").trim();
       const userId = String(req.params.userId ?? "").trim();
       if (!chapterId || !userId) {
@@ -344,11 +366,9 @@ export function registerChapterAdminRoutes(app: Express): void {
         return;
       }
       try {
-        const actor =
-          (req as Request & { userContext?: { userId?: string } }).userContext
-            ?.userId ?? "system:admin";
+        /* WAVE 57d D4 — actor resolved and refused at the top of the handler. */
         appendAdminAudit(
-          actor,
+          demoteActorId,
           `chapter_membership:${existing.id}`,
           "collective.chapter_admin.demoted",
           {

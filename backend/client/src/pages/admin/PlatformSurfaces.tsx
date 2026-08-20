@@ -571,7 +571,7 @@ export default function PlatformSurfaces() {
                     value={evidence}
                     onChange={(e) => setEvidence(e.target.value)}
                     rows={3}
-                    placeholder="Chain re-verified for all tenants; see server/lib/wave15AuditIncidents.ts"
+                    placeholder="e.g. Chain re-verified for all tenants on 2026-03-04"
                     data-testid="input-incident-evidence"
                   />
                 </div>
@@ -630,8 +630,8 @@ export default function PlatformSurfaces() {
                       </span>
                       <span className="block mt-1" data-testid="text-bridge-owner-required">
                         {bridgeQ.data.disclosure.ownerDecisionRequired
-                          ? "An owner ruling is required before this can be flipped."
-                          : "No owner ruling outstanding."}
+                          ? "This cannot be changed yet: the policy it enforces has not been settled."
+                          : "No outstanding policy decision."}
                       </span>
                     </div>
                     <div>

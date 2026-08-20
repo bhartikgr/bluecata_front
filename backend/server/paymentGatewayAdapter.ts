@@ -62,6 +62,10 @@ import {
 } from "./subscriptionStore";
 import { emitBillingEvent } from "./lib/billingEvents";
 import { resolveCanonicalPlan } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 shared canonical plan projection */
+/* WAVE 75 · ITEM 1 — owner ruling R70, SACRED WAIVER-8. The ONLY reason this
+   sacred file was opened: the two `ownershipPct: 1.0` literals below are now
+   computed from the single cap-table engine. No arithmetic lives in this file. */
+import { computeFounderOwnershipFraction } from "./lib/founderOwnershipEngine";
 import { getDb, rawDb } from "./db/connection"; // v25.32 deep — webhook claim+finalize transaction (top-level import so the lazy require() is never evaluated INSIDE a better-sqlite3 transaction, which breaks the tsx TS-require hook)
 import * as pricingTiers from "./pricingTiersStore"; // v25.32 deep — static import: the plan-label lookup runs INSIDE the webhook transaction, where a first-time lazy require() of a .ts module throws "Unexpected token 'const'" under the createRequire shim. No circular dep (pricingTiersStore -> pricingModelStore only).
 
@@ -625,9 +629,19 @@ export function registerPaymentGatewayRoutes(app: Express): void {
         logoUrl: null,
         role: "founder",
         lastActiveAt: new Date().toISOString(),
+        /* WAVE 75 · ITEM 1 — owner ruling R70, SACRED WAIVER-8. This line read
+           `ownershipPct: 1.0`, which the founder dashboard consumes as a FRACTION
+           and rendered as a confident `100.00%` beside `capTableHolders: 0`. The
+           owner ruled: *"Has to be dynamic and real-time. No hard codes."* The
+           figure is now COMPUTED from the single cap-table engine
+           (`shared/roundMathEngineAdapter.ts::runEngine`, via
+           `server/lib/founderOwnershipEngine.ts`). It is `null` — rendered `—` —
+           only when the engine has nothing to compute from, which is what a
+           company with no securities honestly is. No `?? 0`, no `|| 1`. */
         kpi: {
           capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
-          dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 1.0,
+          dataroomFiles: 0, pendingSoftCircles: 0,
+          ownershipPct: computeFounderOwnershipFraction(newId),
         },
         collective: { status: "none" },
         billing: { plan: "Founder Free", monthlyUsd: 0, nextBillingDate: "—", cardLast4: null, invoiceCount: 0 },
@@ -760,9 +774,13 @@ export function registerPaymentGatewayRoutes(app: Express): void {
               logoUrl: null,
               role: "founder",
               lastActiveAt: new Date().toISOString(),
+              /* WAVE 75 · ITEM 1 — owner ruling R70, SACRED WAIVER-8. The second of
+                 the two sites; see the block at the "Founder Free" creation above.
+                 Same defect, same fix, same single engine. */
               kpi: {
                 capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
-                dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 1.0,
+                dataroomFiles: 0, pendingSoftCircles: 0,
+                ownershipPct: computeFounderOwnershipFraction(newId),
               },
               collective: { status: "none" },
               billing: { plan: "Founder Pro", monthlyUsd: 0, nextBillingDate: "—", cardLast4: null, invoiceCount: 0 },

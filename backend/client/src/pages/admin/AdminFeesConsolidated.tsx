@@ -86,7 +86,9 @@ import {
    unchanged and stays fractional; only the render gains the missing ×100. */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { currencyExponent, formatMinor, fromMinor, toMinor } from "@/lib/currency";
-import { minorToMajorString } from "@/lib/moneyDisplay";
+import { minorToMajorString, formatMinorOrUnavailable } from "@/lib/moneyDisplay";
+/* WAVE 56 (R36 / 56-Q9) — the create/freeze/archive tier surface. */
+import { PartnerTierLifecycleAdmin } from "@/components/admin/PartnerTierLifecycleAdmin";
 
 /* ==========================================================================
  * Money helpers (single implementation for the whole fee area — the audit's
@@ -651,7 +653,7 @@ function CapavateAnnualTab() {
         productLine: CAPAVATE_ANNUAL_PRODUCT_LINE,
         slug: newSlug,
         name: newName,
-        description: "Created from /admin/fees (D2.5 R1).",
+        description: "Created from the Fees admin screen.",
         status: "draft",
         currency: "USD",
         basePriceMinor: minor,
@@ -781,7 +783,7 @@ function CapavateAnnualTab() {
 
       <AppCard>
         <div className="flex items-start justify-between gap-4">
-          <SectionTitle hint="Every founder pricing model row, including drafts and deprecated revisions. Create/promote/clone/delete keep their existing endpoints.">
+          <SectionTitle hint="Every founder pricing model row, including drafts and deprecated revisions. Create, promote, clone and delete all still work from here.">
             All founder pricing models
           </SectionTitle>
           <Button
@@ -1028,11 +1030,11 @@ function CollectiveTiersTab() {
                 >
                   <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                   <span>
-                    Publishing is deploy-gated: the package amount must equal the
-                    gateway tier amount resolved from{" "}
+                    This package cannot be published until the amount matches the
+                    payment provider's own tier amount, which is set from{" "}
                     <code>AIRWALLEX_COLLECTIVE_{String(r.airwallexTier).toUpperCase()}_AMOUNT_MINOR</code>.
-                    Changing the charged amount at the gateway boundary is Slice 3 / M14 —
-                    not this page. Zero Airwallex code touched here.
+                    Changing what the provider actually charges is done there, not on
+                    this page. This screen never writes to the payment provider.
                   </span>
                 </div>
 
@@ -1273,7 +1275,7 @@ function ConsortiumPromotionsTab() {
             Legacy slug aliases still resolve for back-compat:{" "}
             <code>partner_basic → catalyst</code>, <code>partner_pro → builder</code>,{" "}
             <code>partner_enterprise → amplifier</code>. Unknown slugs fail closed.
-            Source: <code>server/lib/partnerTiers.ts</code>.{" "}
+            Unknown slugs are refused rather than guessed.{" "}
             {/* WAVE 7 X-C3 — the alias RESOLVES but no longer has a price row of
                 its own. Said out loud here because an admin who remembers the
                 $2,499 line disappearing from the list above deserves to know it
@@ -1282,9 +1284,8 @@ function ConsortiumPromotionsTab() {
                 the same way, so all three are now retired. The alias MAP above
                 is deliberately kept; only the duplicate price rows are gone. */}
             None of the three legacy slugs has its own subscription-tier row any
-            more: <strong>partner_enterprise</strong> was retired by migration
-            0163, and <strong>partner_basic</strong> and{" "}
-            <strong>partner_pro</strong> by migration 0164, because each merely
+            more: <strong>partner_enterprise</strong>, <strong>partner_basic</strong>
+            and <strong>partner_pro</strong> were all retired, because each merely
             duplicated the price of the canonical tier it aliases
             (<code>amplifier</code> $1,499, <code>catalyst</code> $499,{" "}
             <code>builder</code> $999). A partner still carrying a legacy slug is
@@ -1345,8 +1346,8 @@ function ConsortiumPromotionsTab() {
               data-testid="spv-deployment-fee-unconfigured"
             >
               <strong>Not provided.</strong> No SPV deployment fee is configured.
-              This platform has no compiled-in default (WAVE 46 / R6 + R21
-              removed the $5,000 the read path used to substitute), so pushing an
+              This platform has no built-in default amount and will not substitute
+              one, so pushing an
               SPV live will REFUSE to charge and record a retryable pending
               obligation until an amount is saved here.
             </p>
@@ -1357,8 +1358,8 @@ function ConsortiumPromotionsTab() {
               data-testid="spv-deployment-fee-divergence"
             >
               <strong>Deliberate overrides in effect.</strong> This value is the
-              authoritative source for the SPV deployment fee (WAVE 46 / R22 —
-              the charge path reads this exact row), but{" "}
+              authoritative source for the SPV deployment fee — the charge path
+              reads this exact row — but{" "}
               {spvDivergences.length} retained per-tier / per-partner override
               row(s) take precedence for the subjects they name:{" "}
               {spvDivergences
@@ -1543,8 +1544,8 @@ function ApplicationFeeTab() {
         >
           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
-            Known unit quirk (unchanged by this slice):{" "}
-            <code>server/adminPlatformFeesRoutes.ts</code> mirror-writes this value into{" "}
+            Known unit quirk:{" "}
+            this value is also mirror-written into{" "}
             <code>collective_application_fee_config.amount_minor</code> as{" "}
             <code>Math.round(amountMinor / 100)</code> because that legacy table stores
             DISPLAY dollars. Lossy on non-round-dollar amounts. Reconciling the two
@@ -1617,10 +1618,8 @@ function DiscountCodesTab() {
                Editing here now changes what a real checkout charges, immediately. */}
             <div className="font-semibold">These codes are LIVE — creating one applies immediately.</div>
             <p className="mt-1">
-              <code>pricing_models.discountCodes</code> is read directly by{" "}
-              <code>calcCouponDiscountCents</code> in <code>server/paymentStore.ts</code> on every
-              charge (via <code>findDiscountCodeByCode</code>) — there is no separate
-              hardcoded map anymore. A code you add, deactivate, or expire here takes effect
+              <code>pricing_models.discountCodes</code> is read directly on every
+              charge — there is no separate hardcoded list anymore. A code you add, deactivate, or expire here takes effect
               on the very next checkout that uses it, across every pricing model and product line.
             </p>
           </div>
@@ -1628,7 +1627,7 @@ function DiscountCodesTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="Admin-authored discount codes across every pricing model. Percent codes are STORED AS A FRACTION (1 = 100% off, 0.3 = 30% off) — the same fraction server/paymentStore.ts multiplies the charge by — and are DISPLAYED as a percent. Enter a percent code as percent-as-written: type 100 for 100%.">
+        <SectionTitle hint="Admin-authored discount codes across every pricing model. Percent codes are STORED AS A FRACTION (1 = 100% off, 0.3 = 30% off) — the same fraction the charge is multiplied by — and are DISPLAYED as a percent. Enter a percent code as percent-as-written: type 100 for 100%.">
           Discount codes
         </SectionTitle>
         <div className="mt-4 space-y-6">
@@ -1721,7 +1720,7 @@ function DiscountCodesTab() {
            so a separate "hardcoded coupon map" card would be actively misleading.
            CP10 / FOUNDER20 / COLLECTIVE5 still resolve identically today only because
            Slice 3 seeded them as real rows on a draft carrier model — see the note below. */}
-        <SectionTitle hint="The legacy CP10/FOUNDER20/COLLECTIVE5 codes still work — not because of source code anymore, but because Slice 3 seeded them as real rows on a draft carrier pricing model so their public behavior wouldn't change.">
+        <SectionTitle hint="The legacy CP10/FOUNDER20/COLLECTIVE5 codes still work — not because they are written into the software anymore, but because they exist as real discount rows on a draft carrier pricing model, so their public behaviour did not change.">
           Legacy code compatibility
         </SectionTitle>
         <div className="mt-4">
@@ -2067,6 +2066,35 @@ function LedgerInvoicesTab() {
                 ) : (
                   invoices.slice(0, 50).map((inv) => {
                     const isPaid = inv.status === "paid";
+                    /* ═════════════════════════════════════════════════════
+                       WAVE 61b · R42 — A REFUND WITH AN UNKNOWN AMOUNT IS BLOCKED.
+                       ═════════════════════════════════════════════════════
+                       The row was internally contradictory: the amount cell above
+                       already prints `—` through `formatMinorOrUnavailable` when the
+                       amount or the currency is unknown (Wave 55 · R6), and then
+                       the button beside it offered to refund `$0.00`, because the
+                       confirm text used `?? 0` and `?? "USD"`. Money leaves the
+                       platform on that click.
+
+                       R42 is an OWNER-AUTHORISED EXCEPTION to the no-silent-drops
+                       rule, for THIS control only, with two binding conditions,
+                       both met here:
+                         1. THE CONTROL REMAINS VISIBLE AND EXPLAINS ITSELF. The
+                            button still mounts, keeps its `data-testid`, and its
+                            LABEL states the reason — mirroring the `Refund (not
+                            paid)` idiom this row already used. A hidden button, or
+                            a disabled one with no stated reason, would still be a
+                            silent drop and is still forbidden.
+                         2. `$0.00` IS NEVER SHOWN AS IF IT WERE THE AMOUNT.
+                       A GENUINE `amountMinor: 0` is NOT blocked: zero is a fact,
+                       and a real $0.00 invoice is a legitimate refund. That is the
+                       whole distinction this block exists to draw.
+                       DO NOT GENERALISE THIS TO ANY OTHER CONTROL (R42). */
+                    const amountKnown =
+                      inv.amountMinor != null &&
+                      Number.isFinite(Number(inv.amountMinor)) &&
+                      typeof inv.currency === "string" &&
+                      inv.currency.length > 0;
                     return (
                       <TableRow key={inv.id} data-testid={`row-invoice-${inv.id}`}>
                         <TableCell>
@@ -2086,7 +2114,13 @@ function LedgerInvoicesTab() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          {formatMinor(inv.amountMinor ?? 0, inv.currency ?? "USD")}
+                          {/* WAVE 55 · R6 — was `?? 0` on BOTH the amount and the
+                              currency, so an invoice with no recorded total printed
+                              "$0.00" in US dollars. Passing the currency through
+                              unchanged means an unknown denomination also refuses,
+                              rather than being silently relabelled USD. The company
+                              and status cells beside it already use this dash. */}
+                          {formatMinorOrUnavailable(inv.amountMinor, inv.currency)}
                         </TableCell>
                         <TableCell>{inv.status ?? "—"}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -2096,10 +2130,21 @@ function LedgerInvoicesTab() {
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={!isPaid || refund.isPending}
+                            disabled={!isPaid || refund.isPending || !amountKnown}
                             data-testid={`button-refund-invoice-${inv.id}`}
                             onClick={() => {
-                              const amt = formatMinor(inv.amountMinor ?? 0, inv.currency ?? "USD");
+                              /* WAVE 61b · R42 — belt and braces. The button is
+                                 disabled above, and the handler refuses too, so no
+                                 programmatic click, re-render race or future caller
+                                 can confirm an amount the platform does not have. */
+                              if (!amountKnown) return;
+                              /* WAVE 61b · R42 — was `formatMinor(inv.amountMinor ?? 0,
+                                 inv.currency ?? "USD")`: two fabrications on one
+                                 line, in a money-moving confirmation. The honest
+                                 helper is the one the amount cell above already
+                                 uses, and it is exponent-aware, so a JPY invoice is
+                                 never restated in dollars. */
+                              const amt = formatMinorOrUnavailable(inv.amountMinor, inv.currency);
                               if (
                                 window.confirm(
                                   `Refund invoice ${inv.id} for ${amt}? This moves real money and cannot be undone from this screen.`,
@@ -2109,8 +2154,24 @@ function LedgerInvoicesTab() {
                               }
                             }}
                           >
-                            {isPaid ? "Refund" : "Refund (not paid)"}
+                            {!isPaid ? "Refund (not paid)" : amountKnown ? "Refund" : "Refund (amount unknown)"}
                           </Button>
+                          {/* WAVE 61b · R42 — the half of the ruling that turns a
+                              disabled button from a forbidden silent drop into an
+                              authorised, explained refusal: it names WHAT is
+                              missing and WHERE to resolve it. Appended AFTER the
+                              button so no existing node moves. */}
+                          {isPaid && !amountKnown && (
+                            <div
+                              className="mt-1 text-xs text-rose-700"
+                              role="alert"
+                              data-testid={`refund-blocked-${inv.id}`}
+                            >
+                              This invoice has no recorded amount or currency, so a refund cannot be
+                              submitted. Record the invoice total and its currency on the invoice, then
+                              refund.
+                            </div>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -2173,7 +2234,7 @@ function ConfigTab() {
   return (
     <div className="space-y-6" data-testid="tab-config">
       <AppCard>
-        <SectionTitle hint="Trial length is read live by startSubscription() for the founder plan (Slice 3 Fix 2). Editing it here changes new founder signups immediately — the managed-founder path is a separate ?? 90 default not yet wired to this field.">
+        <SectionTitle hint="Trial length is read live for the founder plan. Editing it here changes new founder signups immediately. Managed founders are on a separate 90-day default that this field does not yet control.">
           Trial
         </SectionTitle>
         <div className="mt-4 space-y-6">
@@ -2209,12 +2270,10 @@ function ConfigTab() {
             >
               <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               <span>
-                Editing the trial length affects new founder signups immediately —{" "}
-                <code>server/subscriptionsStore.ts</code>'s <code>startSubscription()</code>{" "}
-                reads this field first and only falls back to <code>?? 14</code> if no live
-                model or no trial is configured. The separate managed-founder path
-                (<code>server/managedFounderStore.ts</code>, <code>?? 90</code>) is not wired
-                to this field yet.
+                Editing the trial length affects new founder signups immediately: this
+                field is read first, and a 14-day trial is used only when no live pricing
+                model or no trial length is configured. Managed founders are on a separate
+                90-day default, which this field does not yet control.
               </span>
             </div>
           </FieldWithSource>
@@ -2233,7 +2292,7 @@ function ConfigTab() {
               unit: "integer (days)",
               editableHere: false,
               editableVia:
-                "nothing to edit — no grace logic exists. Blocked on Ozan's policy decision (M17).",
+                "nothing to edit — no grace-period logic exists yet. The policy it would enforce has not been settled.",
               testId: "grace-period",
             }}
           >
@@ -2248,7 +2307,7 @@ function ConfigTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="WAVE 14 / FE-16 — the renewal worker is now configured from collective_renewal_worker_config and is editable here. The environment variable survives only as an emergency override, and only while the row permits it.">
+        <SectionTitle hint="The renewal worker is configured from the stored dunning schedule and is editable here. The environment variable survives only as an emergency override, and only while the stored row permits it.">
           Dunning schedule
         </SectionTitle>
         <div className="mt-4 space-y-6">
@@ -2274,7 +2333,7 @@ function ConfigTab() {
                 answer to "where is this configured". */}
             <details className="rounded-md border p-3 text-sm" data-testid="dunning-schedule-env-reference">
               <summary className="cursor-pointer text-xs uppercase tracking-wide text-muted-foreground">
-                Pre-FE-16 environment reference (kept for operators)
+                Earlier environment-variable reference (kept for operators)
               </summary>
               <ul className="mt-2 space-y-1" data-testid="dunning-schedule-values">
                 <li>
@@ -2303,7 +2362,7 @@ function ConfigTab() {
                 </li>
                 <li>
                   Failures before <code>past_due</code>: <strong>3</strong> — hard-coded{" "}
-                  <code>MAX_CONSECUTIVE_FAILURES</code> until Wave 14; now the stored
+                  <code>MAX_CONSECUTIVE_FAILURES</code> previously; now the stored
                   <code className="mx-1">max_consecutive_failures</code> column.
                 </li>
                 <li>Capavate founder equivalent: none.</li>
@@ -2314,18 +2373,18 @@ function ConfigTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="STRICTLY READ-ONLY mirror of the gateway adapter's own two GET endpoints. This panel exists because retiring the old Pricing &amp; Billing page removed the ONLY client consumer of GET /api/admin/payment-gateway/config and /webhook-events; dropping it would have been a silent functional regression, not a consolidation. Nothing here writes, and the gateway adapter is untouched (sacred).">
+        <SectionTitle hint="A read-only view of the live payment-gateway configuration and its recent webhook events. Nothing on this panel writes: gateway settings are changed where the provider is configured, not here.">
           Payment gateway (read-only)
         </SectionTitle>
         <div className="mt-4">
           <FieldWithSource
             source={{
-              table: "(none — in-process adapter state, not a table)",
+              table: "(not stored in a table — read live from the payment provider)",
               column: "gatewayConfig()",
               unit: "text",
               editableHere: false,
               editableVia:
-                "NOT editable anywhere in the fee area — shown only so an admin reconciling a fee against a charge can see which gateway and which mode (test/live) that charge went through. Gateway selection/mode is owned by server/paymentGatewayAdapter.ts (SACRED FILE) and its env vars; provider credentials live under /admin/integrations.",
+                "NOT editable anywhere in the fee area — shown only so an admin reconciling a fee against a charge can see which gateway and which mode (test or live) that charge went through. The gateway and its mode are set by the platform's payment configuration, not from this screen; provider credentials live under /admin/integrations.",
               readEndpoint: "GET /api/admin/payment-gateway/config",
               testId: "payment-gateway-config",
             }}
@@ -3251,6 +3310,12 @@ function PartnerFeeScheduleSection() {
 function FeeSchedulesTab() {
   return (
     <div className="space-y-6" data-testid="tab-fee-schedules">
+      {/* WAVE 56 (R36 / 56-Q9) — the tier catalogue itself, added here because
+          every band, price and rate below is keyed on a tier and until this wave
+          there was NO surface anywhere in the product that could create one.
+          Placed ABOVE the schedules deliberately: a fee band for a tier that
+          does not exist is meaningless. Nothing on this tab was removed. */}
+      <PartnerTierLifecycleAdmin />
       <CollectiveScheduleSection />
       <PartnerFeeScheduleSection />
     </div>

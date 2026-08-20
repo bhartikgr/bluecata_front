@@ -42,6 +42,7 @@ import { useRef } from "react";
 import { LegalConsentCheckbox, type LegalConsentCheckboxRef } from "@/components/LegalConsentCheckbox";
 import capavateLogoUrl from "@/assets/capavate-logo.png";
 import { formatMinor } from "@/lib/currency";
+import { serverRefusalMessage, serverRefusalMessageFromBody } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 
 /* ---------- Types ---------- */
 interface Subscription {
@@ -383,7 +384,15 @@ export default function FounderSubscribe() {
           try {
             const rr = await apiRequest("POST", "/api/founder/workspace/reactivate", { companyId });
             const rj = await rr.json();
-            if (!rj?.ok) throw new Error(rj?.error ?? "reactivate_failed");
+            /* WAVE 73 · ITEM 1 · R58 — THE FOUNDER-FACING ONE. This read `rj.error`
+               only, so a founder who had just PAID and whose workspace could not
+               be un-archived was told `reactivate_failed` — a literal enum — in a
+               toast, while whatever the server explained sat unread in `message`
+               beside it. `serverRefusalMessageFromBody` reads that sentence; the
+               old `rj?.error ?? "reactivate_failed"` chain is kept UNDERNEATH it
+               unchanged, so a body with no explanation still says exactly what it
+               said before (R44: ADD, do not replace). */
+            if (!rj?.ok) throw new Error(serverRefusalMessageFromBody(rj) ?? rj?.error ?? "reactivate_failed");
             queryClient.invalidateQueries({ queryKey: ["/api/founder/workspace/archive-state"] });
             queryClient.invalidateQueries({ queryKey: ["/api/founder/workspace/archive-status"] });
             toast({ title: "Workspace reactivated", description: "Welcome back — your workspace is active again." });
@@ -392,7 +401,12 @@ export default function FounderSubscribe() {
           } catch (reErr: any) {
             toast({
               title: "Reactivation failed",
-              description: reErr?.message ?? "Payment succeeded but we could not reactivate the workspace. Please retry.",
+              /* WAVE 73 · ITEM 1 — when the failure arrived as an `ApiError` from
+                 `apiRequest`, `reErr.message` is the GENERIC 240-character
+                 substitute `queryClient` installs, not the server's sentence
+                 (Wave 69 §2). Read the payload first, exactly as Wave 69's
+                 consumers do; the existing fallbacks are untouched. */
+              description: serverRefusalMessage(reErr) ?? reErr?.message ?? "Payment succeeded but we could not reactivate the workspace. Please retry.",
               variant: "destructive",
             });
             return;

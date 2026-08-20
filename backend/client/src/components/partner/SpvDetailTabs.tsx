@@ -599,7 +599,7 @@ export function SpvDetailTabs({
           <Edu testid="spv-edu-capital-accounts">{SPV_EDU.capitalAccounts}</Edu>
           <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-capital-accounts-source">
             {capitalAccountsSource === "endpoint"
-              ? "Read live from the SPV capital-account endpoint."
+              ? "Read live from this vehicle's capital accounts."
               : "Showing the figures carried on the SPV detail payload."}
           </div>
           {capitalAccountRows.length === 0 ? (
@@ -1378,7 +1378,7 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
               ({hurdleUsed.source === "spv_terms" ? "the SPV's agreed term" : hurdleUsed.source === "request" ? "typed above, overriding the agreed term" : "no term set"})
             </div>
           )}
-          <div className="text-[10px] text-[var(--cv-color-text-faint)]">{split.tiered ? "Tiered waterfall (preferred return + GP catch-up engaged)." : "Simple waterfall (return of capital, then carry)."} This is a preview only — no money moves.</div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]">{split.tiered ? "Tiered waterfall (preferred return + GP catch-up engaged)." : "Simple waterfall (return of capital, then carry)."} This is a projection only — no money moves.</div>
         </div>
       )}
     </div>

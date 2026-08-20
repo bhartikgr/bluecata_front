@@ -101,7 +101,7 @@ function partnerIdOf(req: Request): string {
 
 function actorOf(req: Request): string {
   const ctx = (req as any).partnerContext ?? {};
-  return String((req as any).user?.id ?? (req as any).userId ?? ctx.userId ?? "unknown");
+  return String((req as any).user?.id ?? (req as any).userId ?? ctx.userId ?? "u_unknown");
 }
 
 function intOrNull(v: unknown): number | null {
@@ -762,9 +762,18 @@ export function registerWave14MoneyRoutes(app: Express): void {
       const db = rawDb();
       const live = db
         .prepare(
+          /* WAVE 73 · ITEM 2 — `s.currency` IS NOW SELECTED. The column is
+             `TEXT NOT NULL` on `partner_subscription` and is populated, but this
+             read never asked for it, so the admin screen had nothing to render
+             and hard-coded "USD" against three money figures
+             (`client/src/pages/admin/AdminPartnerBillingOps.tsx:555/560/561`).
+             A wrong currency symbol on a money figure is a money defect, and
+             "EVERYTHING db-driven" is the standing rule. No other column, join,
+             filter or ordering changed. */
           `SELECT s.id, s.subject_id AS partnerId, s.tier_slug AS tierSlug, s.cycle, s.status,
                   s.amount_minor AS amountMinor, s.list_amount_minor AS listAmountMinor,
                   s.discount_minor AS discountMinor, s.price_derivation AS priceDerivation,
+                  s.currency AS currency,
                   c.legal_name AS partnerName, c.status AS contactStatus
              FROM partner_subscription s
              LEFT JOIN contacts c ON c.id = s.subject_id

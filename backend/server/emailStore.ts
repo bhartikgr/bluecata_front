@@ -194,7 +194,7 @@ export function upsertTemplate(
   ).run({
     slug: merged.slug, id: merged.id, subject: merged.subject, bodyHtml: merged.bodyHtml,
     bodyText: merged.bodyText, variables: JSON.stringify(merged.variables), category: merged.category,
-    now, by: updatedBy ?? "admin",
+    now, by: updatedBy ?? "u_unknown_admin",
   });
   templateCache.set(merged.slug, merged);
   return merged;
@@ -681,7 +681,7 @@ export function registerEmailRoutes(app: Express): void {
     const slug = String(req.params.slug);
     const { subject, bodyHtml, bodyText, variables, category } = req.body ?? {};
     const ctx = (req as unknown as { userContext?: { userId?: string } }).userContext;
-    const updatedBy = ctx?.userId ?? "admin";
+    const updatedBy = ctx?.userId ?? "u_unknown_admin";
     const updated = upsertTemplate(slug, { subject, bodyHtml, bodyText, variables, category }, updatedBy);
     if (!updated) return res.status(404).json({ error: "not_found" });
     res.json(updated);

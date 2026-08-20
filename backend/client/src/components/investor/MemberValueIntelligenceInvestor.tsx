@@ -26,6 +26,7 @@ import { MessageSquare, Rss, Users } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 60 · A-2 */
 
 type PortfolioPosition = {
   id: string;
@@ -157,13 +158,29 @@ export function MemberValueIntelligenceInvestor() {
             </div>
 
             {/* Co-member table */}
+            {/* WAVE 60 · A-2 — `coMembersQ.data ?? []` erased the difference
+                between "this company has no co-members" and "we could not read
+                them", and the branch below then printed a factual claim about
+                who is on a cap table, manufactured from a failed request. The
+                refusal is ADDED here; the existing copy and its <div> are
+                byte-identical and its condition is narrowed to isSuccess only.
+                isSuccess, not `!isLoading && !isError` — a PAUSED query is
+                neither (see LoadFailedRefusal.tsx:20-26). */}
+            {(coMembersQ.isError || coMembersQ.fetchStatus === "paused") && (
+              <LoadFailedRefusal
+                what="the co-member list"
+                testId="w60-comembers-error"
+                onRetry={() => void coMembersQ.refetch()}
+                isRetrying={coMembersQ.isFetching}
+              />
+            )}
             {coMembersQ.isLoading ? (
               <div className="space-y-2">
                 {[1, 2, 3].map((i) => (
                   <Skeleton key={i} className="h-10 w-full" />
                 ))}
               </div>
-            ) : members.length === 0 ? (
+            ) : coMembersQ.isSuccess && members.length === 0 ? (
               <div className="text-sm text-muted-foreground py-4 text-center">
                 No co-members found for {activePosition?.company ?? "this company"}.
               </div>

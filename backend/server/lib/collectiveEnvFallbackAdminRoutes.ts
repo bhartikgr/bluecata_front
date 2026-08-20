@@ -36,7 +36,7 @@ const VALID_TIERS = new Set(["basic", "standard", "premium"]);
 
 function actorOf(req: Request): string {
   const ctx = (req as any).userContext;
-  return String(ctx?.identity?.email ?? ctx?.userId ?? "admin");
+  return String(ctx?.identity?.email ?? ctx?.userId ?? "u_unknown_admin");
 }
 
 export function registerCollectiveEnvFallbackAdminRoutes(app: Express): void {

@@ -78,7 +78,7 @@ function actorOf(req: Request): string {
   const ctx = (req as Request & {
     userContext?: { identity?: { email?: string }; userId?: string };
   }).userContext;
-  return String(ctx?.identity?.email ?? ctx?.userId ?? "admin");
+  return String(ctx?.identity?.email ?? ctx?.userId ?? "u_unknown_admin");
 }
 
 function isAdminRequest(req: Request): boolean {

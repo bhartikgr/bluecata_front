@@ -44,7 +44,7 @@ export function registerAdminPitchDeckDownloadRoute(app: Express): void {
       // Audit the download without ever logging the raw storage key.
       try {
         appendAdminAudit(
-          req.userContext?.userId ?? "unknown",
+          req.userContext?.userId ?? "u_unknown",
           `pitch-deck:${deck.id}`,
           "collective.pitch_deck.downloaded",
           { deckId: deck.id, companyId: deck.companyId, applicationId: deck.applicationId },

@@ -13,6 +13,7 @@
 
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose,
 } from "@/components/ui/dialog";
@@ -230,7 +231,26 @@ export function DiscussWithCapTableDialog({
               </div>
             )}
 
-            {!coMembersQuery.isLoading && members.length === 0 && (
+            {/* WAVE 55b · OQ-3 — the recipient list is the cap table, read through
+                GET /api/investor/companies/:id/co-members. The gate was
+                `!isLoading && members.length === 0`, so a 404 / 403 / 500 told the
+                investor `No co-members found for this company.` — a claim about who
+                is on the cap table, made from a failed request. The sibling refusal
+                is added and the existing empty copy re-gated on `isSuccess`; the copy
+                itself, the Select-all control, the recipient list, the message body
+                and the send button are all untouched. */}
+            {coMembersQuery.isError && (
+              <div className="py-3">
+                <LoadFailedRefusal
+                  what="the co-members on this cap table"
+                  testId="discuss-comembers-error"
+                  onRetry={() => void coMembersQuery.refetch()}
+                  isRetrying={coMembersQuery.isFetching}
+                />
+              </div>
+            )}
+
+            {coMembersQuery.isSuccess && members.length === 0 && (
               <div className="text-sm text-muted-foreground py-3 text-center">
                 No co-members found for this company.
               </div>

@@ -10,10 +10,10 @@ import { refEsopTopUp } from "../src/refMath.js";
 
 describe("Reference ESOP top-up", () => {
   it("Pre-money 10% pool: existing 8M, 2M new investor shares → pool ≈ 1,111,111", () => {
-    // pool = 0.10 × (8M + 2M) / (1 − 0.10) = 1,000,000 / 0.9 = 1,111,111.11...
+    // percent form: pool = 10 × (8M + 2M) / (100 − 10) = 100,000,000 / 90 = 1,111,111.11...
     const r = refEsopTopUp({
       mode: "pre_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 8000000n,
       existingPool: 0n,
       newInvestorShares: 2000000n,
@@ -21,10 +21,10 @@ describe("Reference ESOP top-up", () => {
     expect(r.poolSharesToAdd).toBe(1111111n);
   });
 
-  it("Post-money 10% pool: same inputs → pool = 0.10 × 10M = 1,000,000", () => {
+  it("Post-money 10% pool: same inputs → pool = 10 × 10M / 100 = 1,000,000", () => {
     const r = refEsopTopUp({
       mode: "post_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 8000000n,
       existingPool: 0n,
       newInvestorShares: 2000000n,
@@ -35,7 +35,7 @@ describe("Reference ESOP top-up", () => {
   it("Existing pool reduces top-up needed", () => {
     const r = refEsopTopUp({
       mode: "post_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 7000000n,
       existingPool: 500000n,
       newInvestorShares: 2000000n,

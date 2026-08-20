@@ -62,7 +62,7 @@ describe("IN default formula pack", () => {
     expect(f).toBeDefined();
     const result = computeEsopTopUp({
       mode: "pre_money",
-      targetPoolPercent: "0.10",
+      targetPoolPercent: "10",  // WAVE 52c · B4 — percent-as-written (R16)
       existingShares: 9_000_000n,
       existingPool: 0n,
       newInvestorShares: 1_000_000n,

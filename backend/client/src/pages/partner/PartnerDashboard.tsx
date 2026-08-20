@@ -53,6 +53,12 @@ interface PartnerMeResp {
      server, which is why the label below treats undefined as "unknown" and
      falls back to neutral wording rather than to the old false claim. */
   subscriptionState?: "subscribed" | "unsubscribed" | "unknown" | null;
+  /* WAVE 69 · V-4 (R58 row 4) — additive, DISPLAY-only. Wave 56b added this field
+     to `GET /api/partner/me` (`server/partnerRoutes.ts:761/767-770/832`) so a
+     partner learns WHY their plan is missing. It had ZERO client consumers, so it
+     said why to nobody. Read here for the first time. Optional, so an older
+     server that omits it renders exactly what it renders today. */
+  effectivePlanError?: { code: string; tier: string; message: string } | null;
 }
 
 interface DashboardSnapshot {
@@ -278,6 +284,33 @@ export default function PartnerDashboard() {
               </div>
             </AppCard>
           )}
+          {/* ═══════════════════════════════════════════════════════════
+              WAVE 69 · V-4 (R58 row 4) — A MISSING CARD NOW EXPLAINS ITSELF.
+              ═══════════════════════════════════════════════════════════
+              `effectivePlanError` is non-null in EXACTLY the case `effectivePlan`
+              is null — so the `&&` above evaluated false and the whole "Plan &
+              quota" card VANISHED, with no explanation anywhere on the page. That
+              is the cleanest silent-drop-by-omission in the tree.
+
+              NOTHING IS FABRICATED HERE. `commissionPct` is `null` in this state
+              (`server/partnerRoutes.ts:793-794`) and is deliberately NOT rendered:
+              printing a `0%` commission would be a false statement about money,
+              which is the whole reason Wave 56 exists. No `?? 0`, no substituted
+              rate, no invented price. The message is the server's own.
+
+              APPENDED after `card-plan` and BEFORE `card-recent`, both of which
+              carry literal testids, so no sibling identity moves. */}
+          {!planQ.data?.effectivePlan && planQ.data?.effectivePlanError && (
+            <AppCard className="md:col-span-3" data-testid="card-plan-unavailable">
+              <div className="cv-card-title text-sm font-semibold mb-2">Plan &amp; quota unavailable</div>
+              <p className="text-sm text-amber-900" role="alert" data-testid="plan-unavailable-reason">
+                {planQ.data.effectivePlanError.message}
+              </p>
+              <p className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="plan-unavailable-tier">
+                Tier on file: {planQ.data.effectivePlanError.tier}
+              </p>
+            </AppCard>
+          )}
           <AppCard className="md:col-span-3" data-testid="card-recent">
             <div className="cv-card-title text-sm font-semibold mb-3">Recent activity</div>
             <div>
@@ -327,11 +360,28 @@ export default function PartnerDashboard() {
           <div className="md:col-span-3" data-testid="card-venture-markets">
             <VentureMarketsCard />
           </div>
+          {/* ═══════════════════════════════════════════════════════════════════
+              WAVE 80 · ITEM 4.1 + ITEM 1 — THE CARD THAT ADVERTISED A SPRINT NUMBER.
+              ═══════════════════════════════════════════════════════════════════
+              WHAT A PARTNER SAW. A routed, tier-gated card containing one sentence:
+              "Coming with Sprint 32 consent ledger." No data read, no action, no
+              route. It named this project's internal delivery schedule to a paying
+              Consortium Partner, which is exactly what Q25 forbids, and it promised a
+              date the partner has no way to hold anyone to.
+
+              WHAT IT SAYS NOW. The same card, in the same place, kept rather than
+              deleted ("we cannot disable vehicles"). It states the BEHAVIOUR and the
+              REASON — cross-portfolio overlap needs each investor's consent before one
+              partner can be shown that an investor also appears in another partner's
+              portfolio — and it states plainly that the feature is not yet available.
+              No sprint, no date, no promise anyone has to keep. There is no control on
+              this card to disable, because there never was one: it has never had an
+              action, so nothing here can report a success it did not earn. */}
           {tierAtLeast(role.identity.tier, "nexus") && (
             <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
               <div className="cv-card-title text-sm font-semibold mb-3">Cross-portfolio investor overlap</div>
               <div>
-                <div className="text-xs text-[var(--cv-color-text-muted)]">Coming with Sprint 32 consent ledger.</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="text-cross-portfolio-unavailable">Not yet available. Showing you that an investor in your portfolio also appears in another partner's portfolio requires that investor's recorded consent, and Capavate will not surface an overlap without it.</div>
               </div>
             </AppCard>
           )}

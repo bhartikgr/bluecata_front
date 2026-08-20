@@ -57,7 +57,10 @@ import type { PartnerTier } from "./adminContactsStoreShim";
 /* v25.41 Q1 (Avi authorized = A): DB-driven per-tier commission rate resolver.
    ADDITIVE import only — Avi's COMMISSION_RATE literal table below stays
    byte-identical and remains the ultimate fallback. */
-import { getCommissionRate as resolveCommissionRateFromDb } from "./lib/partnerCommissionRateResolver";
+import {
+  getCommissionRate as resolveCommissionRateFromDb,
+  isUnknownCommissionTierError,
+} from "./lib/partnerCommissionRateResolver";
 
 /* ============================================================
  * Commission rate table (industry standard angel-network economics)
@@ -77,11 +80,85 @@ function commissionPct(tier: PartnerTier): number {
   // is the single commission-rate helper used by BOTH the P&L summary path and
   // the partner_billing_entries ledger-insert path (commissionForLedgerInsert),
   // so wrapping it here makes both DB-driven per Avi's unifying directive.
+  //
+  // WAVE 56 (R36) — THE 2% FLOOR NO LONGER CATCHES AN UNKNOWN TIER.
+  // The `catch` below used to swallow EVERY error and fall to
+  // `COMMISSION_RATE[tier] ?? 0.02`, so a tier the platform had never heard of
+  // was paid 2% with a 200 OK and nothing logged. A missing rate is now
+  // RE-THROWN by name; a transient DB read failure still falls through to the
+  // literal mirror, which is what that fallback was actually for.
+  //
+  // AVI-CODE PRESERVATION (standing rule): the COMMISSION_RATE literal above and
+  // the `return COMMISSION_RATE[tier] ?? 0.02;` line below are UNCHANGED, and
+  // both remain reachable for the five tiers they cover. Nothing of Avi's is
+  // removed, modified or overridden — a refusal is added ABOVE it for the case
+  // it answered wrongly.
   try {
     const resolved = resolveCommissionRateFromDb(tier);
     if (typeof resolved?.rate === "number" && resolved.source === "db") return resolved.rate;
-  } catch { /* fall through to literal */ }
+  } catch (err) {
+    if (isUnknownCommissionTierError(err)) throw err; // refuse by name, never 2%
+    /* transient read failure — fall through to literal */
+  }
   return COMMISSION_RATE[tier] ?? 0.02;
+}
+
+/* ============================================================
+ * WAVE 56b — THE REFUSAL IS ANSWERED BY THIS ROUTE, NOT BY EXPRESS.
+ *
+ * Wave 56 (R36/R38) made `commissionPct()` refuse BY NAME for a tier with no
+ * configured rate instead of silently paying catalyst's 2%. That fix is correct
+ * and is UNCHANGED here (the `COMMISSION_RATE` literal above and the re-throw
+ * inside `commissionPct` are byte-identical).
+ *
+ * What was wrong: BOTH call sites invoked `commissionPct(tier)` ABOVE their
+ * `try {`, so the refusal escaped the handler and Express answered a bare 500
+ * on the partner's own P&L / billing page — no name, no tier, no instruction,
+ * and it reads as "the platform is broken" when the truth is "one admin field
+ * is unset".
+ *
+ * This helper answers the SAME refusal honestly:
+ *   • 409 — the request cannot be satisfied in the platform's current
+ *     configuration, and the fix is a data fix an admin can make (the same
+ *     status the R20 approval refusal uses for the same class of fault);
+ *   • the tier is NAMED, and so is the exact admin surface that sets the rate;
+ *   • NO rate is invented. Inheriting 2% is the money defect Wave 56 removed:
+ *     on one $250k deal at 4.1% it underpaid by $5,000 of $10,250;
+ *   • the fault is NOT swallowed into an empty 200 page — a partner is told why
+ *     their billing figures cannot be computed.
+ *
+ * Returns `null` AFTER responding, so the caller must return immediately. Any
+ * OTHER error is rethrown untouched (a transient DB read failure still falls to
+ * the literal mirror inside `commissionPct`, exactly as before).
+ * ============================================================ */
+export const E_PARTNER_COMMISSION_RATE_UNRESOLVED = "PARTNER_COMMISSION_RATE_UNRESOLVED";
+
+/* Admin location VERIFIED in the tree on 2026-08-17: Admin → Fees & Billing →
+ * "Consortium Partner Promotions" tab → "Partner commission rates" card
+ * (client/src/pages/admin/AdminFeesConsolidated.tsx:1376-1408, inside
+ * ConsortiumPromotionsTab, read surface), written through
+ * PUT /api/admin/partner/commission-rates/:tier. NOTE FOR THE NEXT READER: the
+ * card is NOT on the "Fee Schedules" tab — that tab holds partner_fee_schedules
+ * (subscription / SPV fee rows), not commission rates. Naming the wrong tab
+ * would send the admin to a screen that cannot fix this. */
+function commissionPctOrRefuse(res: Response, tier: PartnerTier): number | null {
+  try {
+    return commissionPct(tier);
+  } catch (err) {
+    if (!isUnknownCommissionTierError(err)) throw err;
+    res.status(409).json({
+      error: E_PARTNER_COMMISSION_RATE_UNRESOLVED,
+      tier: String(tier),
+      message:
+        `Your commission figures cannot be computed: no commission rate is configured for ` +
+        `tier "${String(tier)}". An administrator must set it in Admin \u2192 Fees & Billing \u2192 ` +
+        `"Consortium Partner Promotions" tab \u2192 "Partner commission rates" ` +
+        `(PUT /api/admin/partner/commission-rates/${String(tier)}). Nothing has been charged, ` +
+        `paid or recorded, and no default rate has been assumed \u2014 showing a guessed rate ` +
+        `would put a wrong number on real money.`,
+    });
+    return null;
+  }
 }
 
 function newId(prefix: string): string {
@@ -112,7 +189,10 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
       const ctx = req.partnerContext!;
       const pid  = ctx.partnerId;
       const tier = ctx.tier as PartnerTier;
-      const pct  = commissionPct(tier);
+      /* WAVE 56b — the unresolved-rate refusal is answered HERE (named 409)
+         instead of escaping this handler as a bare Express 500. */
+      const pct  = commissionPctOrRefuse(res, tier);
+      if (pct === null) return;
 
       try {
         const db = rawDb();
@@ -334,7 +414,10 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
       const ctx = req.partnerContext!;
       const pid  = ctx.partnerId;
       const tier = ctx.tier as PartnerTier;
-      const pct  = commissionPct(tier);
+      /* WAVE 56b — the unresolved-rate refusal is answered HERE (named 409)
+         instead of escaping this handler as a bare Express 500. */
+      const pct  = commissionPctOrRefuse(res, tier);
+      if (pct === null) return;
 
       try {
         const db = rawDb();

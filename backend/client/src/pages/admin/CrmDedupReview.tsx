@@ -279,7 +279,7 @@ export default function CrmDedupReviewPage(): JSX.Element {
 
         {!loading && !loadError && reviews.length === 0 && (
           <p className="mt-4 text-sm text-muted-foreground">
-            Nothing in this view. Duplicate groups are added by migration 0097 and by the scan above.
+            Nothing in this view. Duplicate groups are added by the scan above.
           </p>
         )}
 
