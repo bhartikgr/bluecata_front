@@ -46,6 +46,21 @@ describe("W-FIX2b SPV-BUG-2 — fee-type change keeps form state valid", () => {
   it("keeps the step-2 advance gate on a chosen fee type", () => {
     // W-FIX2d S1 co-located the required carry basis onto the Fees step, so the
     // step-2 gate now also keys off carryBasis. The fee-type condition remains.
-    expect(src).toMatch(/if \(step === 2\) return !!w\.mgmtFeeType(\s*&&\s*!!w\.carryBasis)?;/);
+    /* ═════════════════════════════════════════════════════════════════════════
+       UPDATED BY WAVE 82 · ITEM 2 — the CONDITION is unchanged; the source line
+       that expresses it moved.
+       ═════════════════════════════════════════════════════════════════════════
+       This pinned the literal gate `if (step === 2) return !!w.mgmtFeeType…`.
+       WAVE 82 made the step-2 gate numerically bounded as well, because it
+       accepted any carry percentage at all and that produced a non-atomic launch:
+       an attested vehicle and mandate created, the fee row refused, and a red
+       toast. The gate is now `feeStepRefusal() === null`, and `feeStepRefusal()`
+       still refuses when `mgmtFeeType` is unset — the SAME condition this test
+       exists to protect. Asserted on the predicate and on the fee-type refusal
+       itself, so a refactor cannot make this test lie about what is required.
+       Recorded test-by-test in build_log/wave82/W82_TESTS.md.
+       ═════════════════════════════════════════════════════════════════════════ */
+    expect(src).toMatch(/if \(step === 2\) return feeStepRefusal\(\) === null;/);
+    expect(src).toContain('if (!w.mgmtFeeType) return "Choose a management fee type to continue.";');
   });
 });

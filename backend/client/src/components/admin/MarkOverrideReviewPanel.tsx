@@ -271,7 +271,7 @@ function DecisionForm({ row, onDone }: { row: MarkOverrideRow; onDone: () => voi
         onChange={(e) => setNote(e.target.value)}
         rows={2}
         className="text-sm"
-        placeholder="Why this override is accepted or refused. Stored on the override as approval_note."
+        placeholder="Why this override is accepted or refused. Recorded on the override as the reviewer's note."
         data-testid={`input-decision-note-${row.id}`}
       />
       <span className="block text-[11px] text-muted-foreground" data-testid={`decision-note-hint-${row.id}`}>
@@ -375,7 +375,7 @@ function ApprovalModeControl({ liveMode }: { liveMode: "able_to" | "required" | 
             </span>
             <span className="block text-xs text-muted-foreground" data-testid="text-approval-mode-meaning">
               {shown === "able_to"
-                ? "able_to — a GP override takes effect the moment it is written; approval is a review recorded afterwards."
+                ? "A GP override takes effect the moment it is written; approval is a review recorded afterwards."
                 : shown === "required"
                   ? "required — a GP override does NOT move a reported mark until it is approved here."
                   : "Unknown — no consequence is being claimed for a value that could not be read."}
@@ -401,7 +401,7 @@ function ApprovalModeControl({ liveMode }: { liveMode: "able_to" | "required" | 
                       required — approval gates effectiveness
                     </SelectItem>
                     <SelectItem value="able_to" data-testid="option-approval-mode-able-to">
-                      able_to — effective on write, reviewed after
+                      Effective on write, reviewed after
                     </SelectItem>
                   </SelectContent>
                 </Select>
@@ -536,7 +536,8 @@ export function MarkOverrideReviewPanel() {
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge
-                          variant={row.approvalState === "approved" ? "default" : row.approvalState === "rejected" ? "destructive" : "secondary"}
+                          /* WAVE 101 - approved and rejected were BOTH red. Colour only. */
+                          variant={row.approvalState === "approved" ? "positive" : row.approvalState === "rejected" ? "destructive" : "secondary"}
                           data-testid={`override-state-${row.id}`}
                         >
                           {row.approvalState}

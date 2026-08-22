@@ -810,7 +810,18 @@ describe("W70-HTTP — the refusals reach the API by name", () => {
     expect(body.refusalName).toBe("UnknownAntiDilutionTermError");
     expect(body.field).toBe("antiDilutionType");
     expect(String(body.message)).toContain("DOWN ROUND");
-    expect(String(body.message)).toContain("owner ruling R60");
+    /* WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 removed the ruling citation from
+       this founder-visible refusal. Both strings, verbatim:
+         OLD: "one nobody negotiated is the defect this refusal exists to prevent (owner ruling R60). Record the "
+         NEW: "one nobody negotiated is the defect this refusal exists to prevent. Record the "
+       THE REFUSAL REMAINS FULLY IDENTIFIABLE TO A CALLER — four machine-readable
+       identifiers are asserted above and all four still pass: `error`, `refusal`
+       ("unknown_anti_dilution_term"), `refusalName` ("UnknownAntiDilutionTermError")
+       and `field`. "owner ruling R60" was provenance, never the identifier. What is
+       asserted instead is the SUBSTANCE the refusal must state: that no method is on
+       record and that the platform therefore declines to state a share count. */
+    expect(String(body.message)).toContain("no anti-dilution method on record for this class");
+    expect(String(body.message)).toContain("it will not state a share count");
   });
 
   it("W70-HTTP-e — CLOSING POLE: the up round still answers 200 after every fixture is restored", async () => {

@@ -252,7 +252,7 @@ function TierPricesTab() {
         {c.unpriced > 0 && (
           <p className="mt-3 text-sm" data-testid="coverage-unpriced-list">
             Unpriced: {c.unpricedPairs.map((p) => `${p.tierSlug}/${p.cadence}`).join(", ")}. A checkout against an
-            unpriced tier is refused by the engine (<code>TIER_PRICE_UNPRICED</code>) rather than charged at a guessed
+            unpriced tier is refused outright rather than charged at a guessed
             amount. A tier priced at <strong>0</strong> is a real free tier and counts as priced.
           </p>
         )}
@@ -366,7 +366,7 @@ function PromotionsTab() {
     <AppCard title={`Promotions (${rows.length}, ${promos.data?.pendingCount ?? 0} awaiting moderation)`} data-testid="admin-promotions">
       <p className="mb-3 text-xs text-muted-foreground" data-testid="promotions-invariant-note">
         A promotion cannot be active unless it is approved — the database enforces
-        <code className="mx-1">CHECK (active = 0 OR moderation_state = 'approved')</code>, so no code path, including this
+        this rule, so no code path, including this
         one, can produce an active unapproved discount. Percentage values are stored as exact integers (scale 1e9), never
         as floats.
       </p>
@@ -825,9 +825,9 @@ function DecisionsTab() {
                 <tr className="border-b bg-amber-500/5 last:border-0" key={row.id} data-testid={`percent-policy-open-${row.id}`}>
                   <td className="px-3 py-2 font-mono text-xs">{row.rulingKey}</td>
                   <td className="px-3 py-2">{row.rulingStatus}</td>
-                  <td className="px-3 py-2">Percent-policy question recorded in percent_policy_record</td>
+                  <td className="px-3 py-2">Percent-policy question, recorded in the percent-policy register</td>
                   <td className="px-3 py-2">{row.notes ?? "—"}</td>
-                  <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">percent_policy_record</td>
+                  <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">Percent-policy register</td>
                 </tr>
               ))}
             </tbody>

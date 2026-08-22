@@ -8,6 +8,36 @@ This is the **presence** analog of the sacred byte-check: the byte-check proves
 sacred files did not *change*; this guard proves tracked functionality did not
 *vanish*. It protects every subsequent v26.1.x wave from silent drops (rule #8).
 
+> ### CORRECTION — WAVE 0, 2026-08-21. THIS README UNDER-SELLS THE GUARD.
+>
+> The section below documents **three** inventories. `extract-inventory.ts`
+> actually maintains **eight**, plus a ninth derived one: `routes`,
+> `clientRoutes`, `nav`, `tabs`, `buttons`, `events`, `copy`, `panels`, plus
+> `routeTargets`. A clean run prints all of them, e.g.
+> *"OK: 1178 routes, 208 pages, 108 nav, 208 route targets, 306 tabs, 1129
+> buttons, 2475 events, 8079 copy, 17827 panels — no silent drops"*.
+> The stale text was causing the guard to be **under-trusted**, so this note is
+> here rather than a rewrite: the three descriptions below are still accurate for
+> the three they describe.
+>
+> ### WHAT THE GUARD DOES NOT COVER — and where that is covered instead
+>
+> Three holes were located in this file's source during the design-system
+> pre-flight. All three are the kind a **restyle** falls through:
+>
+> | # | Hole | Where in this directory | Sites |
+> |---|---|---|---|
+> | H1 | A copy attribute whose value is an **expression** is skipped: `if (v && !v.startsWith("<expr:")) out.copy.add(…)` | `extract-inventory.ts` | 143 |
+> | H2 | **Toast copy is not inventoried at all** — the string `toast` appears nowhere in `extract-inventory.ts` | — | 1,141 strings |
+> | H3 | **JSX expression children are not copy** — the walk handles `ts.isJsxText` only, so `<td>{formatMinor(x)}</td>` is invisible, and that is where every rendered NUMBER lives | the `visitLive` callback | 8,176 |
+>
+> H1–H3 are covered by **`scripts/restyle-drop-detector/`**, which is wired into
+> `npm run preflight` as `npm run drop:restyle`. Its both-poles proof
+> (`npm run drop:restyle:poles`) includes a mutation that empties a money figure
+> while leaving its `data-testid` in place — a mutation THIS guard, the
+> reachability gate, `tsc` and the whole vitest suite all pass.
+> **Neither instrument replaces the other. Run both.**
+
 ## What "primary functionality" means
 
 Three inventories are extracted by a static scan of **source** (never build

@@ -869,6 +869,22 @@ describe("W58F-P — the percent-policy registry entry now agrees with R30", () 
     const entry = s.slice(i, i + 500);
     expect(entry).toContain('inputForm: "percent_as_written"');
     expect(entry).not.toContain('inputForm: "fraction"');
+    /* WAVE 85 — THIS ASSERTION IS UNCHANGED, AND THE SOURCE WAS RESTORED TO MEET IT.
+       Wave 83's copy sweep edited this `rationale`, which was OUTSIDE ITS OWN STATED
+       SCOPE: its driver docstring says "only strings that REACH A SCREEN are
+       rewritten". This entry has NO CALLER (W58F-Pb, green), so its rationale cannot
+       reach a screen, a toast or an API payload — it is a policy record. Both strings,
+       verbatim:
+         OLD (pre-83):  "SAFE/note discount, PERCENT-AS-WRITTEN under owner ruling R30: '20' means 20%."
+         WAVE 83:       "SAFE/note discount, percent-as-written: '20' means 20%."
+         WAVE 85 (now): "SAFE/note discount, percent-as-written under R30: '20' means 20%."
+       The ruling reference is restored in its minimum form — the shouting caps and the
+       words "owner ruling" stay gone, so Wave 83's intent is preserved. The written
+       record now agrees again with migration 0190's trigger, which ships the same
+       citation: 'DISCOUNT_PCT_OUT_OF_DOMAIN:expected percent-as-written 0..<100 (R30)'.
+       NOTE: the CONVENTION ITSELF NEVER MOVED. `inputForm: "percent_as_written"` was
+       intact throughout, so no money figure was ever at risk. Proof, with a computed
+       example: build_log/wave85/W85_PERCENT_CONVENTION.md. */
     expect(entry).toContain("R30");
   });
 

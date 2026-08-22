@@ -43,6 +43,7 @@ import {
   LP_ONLY_HEADLINE,
   LP_INTERESTS_UNAVAILABLE_COPY,
 } from "@/lib/investor/lpVehicleInterests";
+import { displayName } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 (M-3) */
 
 /* -------------------------------------------------------------------- */
 /* Typed views over the spine's raw shapes (render-only, no derivation). */
@@ -227,7 +228,12 @@ export function PortfolioStandingPanel() {
                 >
                   <div className="min-w-0">
                     {/* rule #13 — full company name rendered verbatim */}
-                    <div className="text-sm font-medium truncate">{h.company ?? h.companyId}</div>
+                    {/* WAVE 90 · ITEM 3 (M-3) — the `?? h.companyId` fallback printed
+                        a raw `co_…` id AS the company name. `displayName` keeps the
+                        verbatim name when there is one and DESCRIBES the row when
+                        there is not, per Wave 83's precedent. R77: the id stays
+                        available as the key and the `data-testid`. */}
+                    <div className="text-sm font-medium truncate">{displayName(h.company, "company", h.companyId)}</div>
                     {h.sector && (
                       <div className="text-[11px] text-muted-foreground truncate">{h.sector}</div>
                     )}
@@ -280,7 +286,10 @@ export function PortfolioStandingPanel() {
 const STAGE_TONE: Record<SpineActivityEvent["stage"], string> = {
   invited: "bg-muted text-muted-foreground border-border",
   viewed: "bg-muted text-muted-foreground border-border",
-  accepted: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] border-[hsl(0_100%_40%)]/40",
+  /* WAVE 101 - `accepted` is a positive rung of the decision ladder that ends
+     at `funded` in emerald; it was painted the brand-red negative anchor.
+     Colour only. */
+  accepted: "bg-emerald-700/10 text-emerald-700 border-emerald-700/40",
   soft_circled: "bg-amber-500/10 text-amber-700 border-amber-500/40",
   confirmed: "bg-[hsl(333_75%_35%)]/10 text-[hsl(333_75%_35%)] border-[hsl(333_75%_35%)]/40",
   signed: "bg-[hsl(333_75%_35%)]/10 text-[hsl(333_75%_35%)] border-[hsl(333_75%_35%)]/40",

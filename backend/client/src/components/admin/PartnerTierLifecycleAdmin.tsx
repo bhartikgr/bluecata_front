@@ -192,7 +192,8 @@ export function PartnerTierLifecycleAdmin() {
                 </span>
                 <code className="text-[11px] text-muted-foreground">{t.slug}</code>
                 <Badge
-                  variant={t.state === "active" ? "default" : "outline"}
+                  /* WAVE 101 - active tier chip was brand red. Colour only. */
+                  variant={t.state === "active" ? "positive" : "outline"}
                   className="text-[10px]"
                   data-testid={`badge-tier-state-${t.slug}`}
                 >

@@ -505,7 +505,70 @@ describe("W58G-A — the second conversion authority is gone, and nothing else m
        The two cap-table hashes pinned above did NOT move and must not be re-pinned
        casually — they are sacred files and R34 names them explicitly.
        ────────────────────────────────────────────────────────────────────────── */
-    expect(sha(ADAPTER)).toBe("b8ef97f45eef9852f357c34671349770b8d1b64259fb0982f96b95279545c7cd");
+    /* ── RE-PINNED 2026-08-21 · WAVE 85 · THE COPY SWEEP FIRED THIS TRIPWIRE ───────
+       Previous pin: b8ef97f45eef9852f357c34671349770b8d1b64259fb0982f96b95279545c7cd
+       New pin:      19fabf89354a1d53af623272c05f4ff129c7f1af11f86a3bf783ed48ecf158cd
+
+       This tripwire fired a TENTH time, which is what it is for. Wave 83 edited this
+       file on purpose, as part of the owner-approved copy sweep ("I don't want any
+       exposure of our internal process. This needs to be investor grade and
+       professional."). It then reported "failing multiset unchanged" WITHOUT
+       collecting an after-run, which is how this reached Wave 85 as a surprise.
+
+       WHAT WAVE 83 CHANGED, exhaustively — ten string edits, all PROSE INSIDE MESSAGE
+       LITERALS AND COMMENTS, enumerated with exact before/after in
+       `build_log/wave83/w83_copy_edits_server.py`:
+         · :415, :464, :1898  "It is PERCENT-AS-WRITTEN (owner ruling R16): ..."
+                              -> "It is percent-as-written: ..."
+         · :613               dropped "(owner ruling R16)" from the no-clamp sentence
+         · :1022, :1300       dropped "(owner ruling R60)" from two refusal sentences
+         · :1187              "(owner ruling R16 / R30), so type 6 for 6% a year."
+                              -> "— so type 6 for 6% a year."
+         · :1722              dropped "(owner ruling R71; the bound is R50)"
+         · :2848              dropped "(owner ruling R16)"
+         · :2852              "this refusal code and the detail below"
+                              -> "this message and the detail below"
+       NO export, type, constant, signature, refusal CONDITION, branch or arithmetic
+       was touched. No line was added or deleted.
+
+       THE PROVING RUN, in full, before this pin moved — measured, not pasted:
+         1. NOT SACRED. `npm run sacred` -> "SACRED OK: 48/48 files byte-identical
+            (9 under KNOWN_DRIFT freeze ... all 9 waivers OWNER-RATIFIED)". This file
+            has never been in the 48-entry manifest, and `release/SACRED_DOC` §4 lists
+            it as EDITABLE. This pin catches UNINTENDED change; it does not freeze the
+            file.
+         2. THE TWO GENUINELY SACRED CAP-TABLE HASHES ASSERTED ABOVE ARE UNCHANGED and
+            still pass: `server/captableCommitStore.ts` = e5045ecb... (identical to its
+            own entry in `sacred_baseline/SACRED_SHA256.txt:1`) and
+            `server/lib/capTableMembership.ts` = 688b5554... (its ratified WAIVER-7
+            state). WAIVER-7 touched ONE file, and that is still true.
+         3. WAIVER-7's SUBJECT IS BYTE-IDENTICAL, recomputed per declaration on the
+            post-Wave-83 file with Wave 72's own method
+            (`build_log/wave72/scratch/block_hashes.py`) — all five SAME, and the same
+            five digests Waves 71b and 72 recorded:
+              toWireDiscount                c98dbcb03723ff10e970310a1bae1a9a835451196df62c2c8b934a1c16cf7a3e
+              readDiscountFraction          61a232cd6a50a94fe7a7549799cce3e4c5776ab0735584a914fb1f2df3ebfd47
+              InvalidDiscountWireValueError 86347904fa505846e09c92fd83e3e425644fd813806f9b4bd94dd6e8a85ece05
+              toWireInterestRate            f40603bb7ff12eae380512be08b2e0b72e0206b8209ad1c26693b166ab040e1b
+              toEngineDiscount              5200e910c76bf095a833b439a7e377260ada9588ec072c6adfca59fb579714a4
+         4. THE MONEY MATH IS UNMOVED. Exactly one `.div(100)` for the discount (`:300`,
+            inside `toWireDiscount`); `DISCOUNT_STORED_PERCENT_MAX = 100` unchanged;
+            `percentPolicy.ts` still declares `captable.discountPct` as
+            `percent_as_written`. Computed end-to-end example:
+            `build_log/wave85/W85_PERCENT_CONVENTION.md`.
+         5. `computeConversionProjections` WAS NOT TOUCHED (R69), by Wave 83 or by
+            Wave 85. Tripwire `W58F-F2f` green.
+         6. THE PRE-WAVE HASH EQUALLED THE OLD PIN EXACTLY, so the only delta is Wave
+            83's: `build_log/wave83/W83_BEFORE_HASHES.txt:20` records
+            b8ef97f4... for this file, which is the pin being replaced. Nothing else
+            has moved underneath it.
+       WHAT IS NOT WEAKENED: this is still an exact equality on the WHOLE file, so the
+       next unintended byte still fires it. Only the expected value moved.
+       PRE-WAVE-83 HASH, kept on the record rather than erased:
+         b8ef97f45eef9852f357c34671349770b8d1b64259fb0982f96b95279545c7cd
+       Evidence: build_log/wave85/WAVE85_TRIAGE.md §5, W85_PERCENT_CONVENTION.md,
+       W85_TESTS.md. */
+    expect(sha(ADAPTER)).toBe("19fabf89354a1d53af623272c05f4ff129c7f1af11f86a3bf783ed48ecf158cd");
   });
 
   it("W58G-A7 — the waiver is registered at BOTH enforcement points", () => {

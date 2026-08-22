@@ -34,6 +34,7 @@ import { MemberBillingPanel } from "@/components/collective/MemberBillingPanel";
 import { minorToMajorString } from "@/lib/moneyDisplay";
 /* WAVE 24 · ITEM 3a — a failed price fetch must not render a buyable card. */
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 // ----- Types --------------------------------------------------------------
 
@@ -104,10 +105,17 @@ function formatMoneyMinor(amountMinor: number | null, currency: string | null): 
   }
 }
 
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function formatIsoDate(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString();
+    return fmtLocaleDate(iso, undefined, undefined, iso);
   } catch {
     return iso;
   }
@@ -127,10 +135,12 @@ function periodLabel(billingPeriod: string | undefined): string {
 
 function statusBadgeVariant(
   status: BillingDTO["status"],
-): "default" | "secondary" | "destructive" | "outline" {
+): "positive" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "active":
-      return "default";
+      /* WAVE 101 - "default" is the brand red, so an ACTIVE membership was the
+         same colour as `past_due` below.  Colour only. */
+      return "positive";
     case "pending":
       return "secondary";
     case "past_due":

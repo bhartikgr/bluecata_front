@@ -250,7 +250,7 @@ export function MfcrmCapabilityPanel({ partnerId }: { partnerId: string }) {
       </div>
       <p className="text-xs text-[var(--cv-color-text-muted)] mb-4">
         This profile is the prerequisite the partner's Managed Founders page reports. Until it is
-        classified, that page refuses every engagement with CAPABILITY_UNCLASSIFIED; Mode A additionally
+        classified, that page refuses every engagement; Mode A additionally
         requires delegated agency plus an unexpired authority artifact.
       </p>
 

@@ -12,8 +12,18 @@ import { Activity as ActivityIcon, Download, Search, Shield } from "lucide-react
 import { fmtDateTime } from "@/lib/format";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+import { safeActorLabel, safeTargetLabel } from "@/lib/actorLabel";
 
-type ActivityRow = { id: string; ts: string; actor: string; action: string; target: string; threadId?: string; postId?: string };
+type ActivityRow = {
+  id: string; ts: string; actor: string; action: string; target: string;
+  threadId?: string; postId?: string;
+  /* WAVE 93 · ITEM 1 — resolved labels, already on the wire from
+     `/api/activity` (server/routes.ts, W-FIX1a A2). This page never read them,
+     which is why `user:u_founder_1782301936139_9tqnpg` rendered verbatim in the
+     founder Activity feed on the live site (register PART 11 / M-11 class). */
+  actorLabel?: string | null;
+  targetLabel?: string | null;
+};
 
 /**
  * v23.4.5 Phase 8 — actor display formatting.
@@ -26,14 +36,37 @@ type ActivityRow = { id: string; ts: string; actor: string; action: string; targ
  *      audit correlation.
  *   3. Else (legacy demo seed rows like “Maya Chen”) pass through.
  */
-function formatActor(actor: string, selfId: string | null, selfName: string | null): string {
+/* WAVE 93 · ITEM 1 — THE LEAK, AND WHAT REPLACED IT.
+ *
+ *   `return actor;`  ← the last line of the old body.
+ *
+ * Any actor id that was not the signed-in user and did not start with `usr_`
+ * was printed RAW into the Actor column. `u_founder_1782301936139_9tqnpg` is
+ * exactly that shape, and that is what a founder saw on the live site. The
+ * `User abc12345` branch was no better: a truncated key is still a key, and
+ * "User 178230" identifies nobody to a human.
+ *
+ * Now: the server's resolved label first (it can BIND the id to a real name
+ * from the users table), then a client-side description of what the record IS.
+ * `safeActorLabel` never returns a key. The raw id is still carried in the row
+ * and still exported to CSV — R77 keeps the machine-readable value.
+ */
+function formatActor(
+  actor: string,
+  selfId: string | null,
+  selfName: string | null,
+  serverLabel?: string | null,
+): string {
   if (!actor) return "";
   if (selfId && actor === selfId) return selfName ?? "You";
-  if (actor.startsWith("usr_")) {
-    const tail = actor.slice(4, 12); // 8 chars is plenty for human recognition
-    return `User ${tail}`;
-  }
-  return actor;
+  return safeActorLabel(serverLabel, actor);
+}
+
+/* WAVE 93 · ITEM 1 — the Target column is an identity position too: the live
+   leak was `user:u_founder_…` rendered there. Same rule, same guard. */
+function formatTarget(target: string, serverLabel?: string | null): string {
+  if (!target) return "";
+  return safeTargetLabel(serverLabel, target);
 }
 
 type MeShape = { isAuthed?: boolean; userId?: string | null; identity?: { name?: string | null; displayName?: string | null } | null; name?: string | null };
@@ -159,6 +192,13 @@ export default function ActivityPage() {
   );
 
   // Display names for the actor filter dropdown (raw id remains the option value).
+  /* WAVE 93 · ITEM 1 — the option VALUE stays the raw id (it is the filter key
+     the server matches on, R77); only the visible option TEXT is humanised. */
+  const actorLabelById = useMemo(() => {
+    const m = new Map<string, string | null | undefined>();
+    for (const r of rows) if (!m.has(r.actor)) m.set(r.actor, r.actorLabel);
+    return m;
+  }, [rows]);
   const actors = useMemo(
     () => Array.from(new Set(rows.map((r) => r.actor))).sort(),
     [rows],
@@ -171,7 +211,7 @@ export default function ActivityPage() {
     if (to && r.ts > to + "T23:59:59Z") return false;
     if (q) {
       const needle = q.toLowerCase();
-      const actorDisplay = formatActor(r.actor, selfId, selfName).toLowerCase();
+      const actorDisplay = formatActor(r.actor, selfId, selfName, r.actorLabel).toLowerCase();
       if (
         !r.actor.toLowerCase().includes(needle) &&
         !actorDisplay.includes(needle) &&
@@ -244,7 +284,7 @@ export default function ActivityPage() {
                   <SelectTrigger className="mt-1" data-testid="select-actor"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All actors</SelectItem>
-                    {actors.map(actor => <SelectItem key={actor} value={actor}>{formatActor(actor, selfId, selfName)}</SelectItem>)}
+                    {actors.map(actor => <SelectItem key={actor} value={actor}>{formatActor(actor, selfId, selfName, actorLabelById.get(actor))}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -283,15 +323,15 @@ export default function ActivityPage() {
                         {/* Sprint 19 J — make message/post activity rows clickable */}
                         {activityLink(x) ? (
                           <Link href={activityLink(x)!} className="text-sm hover:underline">
-                            <span className="font-medium">{formatActor(x.actor, selfId, selfName)}</span>{" "}
+                            <span className="font-medium" data-testid={`activity-actor-${x.id}`} data-actor-id={x.actor}>{formatActor(x.actor, selfId, selfName, x.actorLabel)}</span>{" "}
                             <span className="text-muted-foreground">{x.action}</span>{" "}
-                            <span className="font-medium">{x.target}</span>
+                            <span className="font-medium" data-testid={`activity-target-${x.id}`} data-target-id={x.target}>{formatTarget(x.target, x.targetLabel)}</span>
                           </Link>
                         ) : (
                           <span className="text-sm">
-                            <span className="font-medium">{formatActor(x.actor, selfId, selfName)}</span>{" "}
+                            <span className="font-medium" data-testid={`activity-actor-${x.id}`} data-actor-id={x.actor}>{formatActor(x.actor, selfId, selfName, x.actorLabel)}</span>{" "}
                             <span className="text-muted-foreground">{x.action}</span>{" "}
-                            <span className="font-medium">{x.target}</span>
+                            <span className="font-medium" data-testid={`activity-target-${x.id}`} data-target-id={x.target}>{formatTarget(x.target, x.targetLabel)}</span>
                           </span>
                         )}
                         <Badge variant="outline" className="text-[10px]">{TYPE_LABEL[type]}</Badge>

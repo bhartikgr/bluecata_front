@@ -28,7 +28,10 @@ const STATUS_LABELS: Record<string, string> = {
 const STATUS_COLORS: Record<string, string> = {
   not_pursuing: "#CBD5E1",
   exploring: "#A78BFA",
-  active: "#cc0001",
+  /* WAVE 101 - `active` was #cc0001, the ratified NEGATIVE anchor, while
+     `closed` below is green.  Repainted to the info anchor, which is not
+     already used in this map, so the arcs stay distinguishable. */
+  active: "#356BB5",
   closing: "#F59E0B",
   closed: "#10B981",
 };

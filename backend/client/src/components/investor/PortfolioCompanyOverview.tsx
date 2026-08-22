@@ -208,16 +208,40 @@ function KvCard({
   value: string;
   hint?: string;
   testid: string;
-  accent?: boolean;
+  /**
+   * Emphasis for this tile.
+   *
+   * `true` keeps the original brand accent and is used for neutral emphasis
+   * (a capital requirement, a conversion price) where no sign is implied.
+   * `"positive"` / `"negative"` are for tiles whose value carries a direction:
+   * an unrealised gain must not be painted in the failure colour.  Colour only
+   * — no tile changes what it renders.
+   */
+  accent?: boolean | "positive" | "negative";
 }) {
   return (
-    <Card data-testid={testid} className={accent ? "border-primary" : ""}>
+    <Card
+      data-testid={testid}
+      className={
+        accent === "positive"
+          ? "border-emerald-700"
+          : accent
+            ? "border-primary"
+            : ""
+      }
+    >
       <CardContent className="p-4">
         <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
           {label}
         </div>
         <div
-          className={`text-lg font-semibold tabular-nums mt-0.5 ${accent ? "text-primary" : ""}`}
+          className={`text-lg font-semibold tabular-nums mt-0.5 ${
+            accent === "positive"
+              ? "text-emerald-700"
+              : accent
+                ? "text-primary"
+                : ""
+          }`}
         >
           {value}
         </div>
@@ -249,7 +273,7 @@ function CompanyKpiStrip({ position: p }: { position: Position }) {
         value={fmtUSD(p.currentValue, { compact: true })}
         hint={`${m >= 1 ? "+" : ""}${fmtUSD(p.currentValue - p.invested, { compact: true })} unrealised`}
         testid="kpi-co-mark"
-        accent
+        accent={m >= 1 ? "positive" : "negative"}
       />
       <KvCard
         label="Ownership"

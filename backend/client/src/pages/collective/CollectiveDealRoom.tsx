@@ -15,6 +15,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Briefcase, Search } from "lucide-react";
+/* WAVE 87 · ITEM 1 — a DATE-ONLY value must not be parsed by `new Date()`:
+   `new Date("2026-06-15")` is UTC midnight, which prints ONE DAY EARLY in every
+   zone west of UTC (the owner is in New York). `fmtLocaleDate` keeps the exact
+   rendered format of the call it replaces and removes only the shift.
+   Shape evidence for each field is in build_log/wave87/W87_DATE_CENSUS.md §2. */
+import { fmtLocaleDate } from "@/lib/format";
 
 interface DealRoomCompany {
   companyId: string;
@@ -237,7 +243,7 @@ export default function CollectiveDealRoom() {
                     <TableCell>
                       <span className="text-xs text-slate-500">
                         {company.lastRaise
-                          ? new Date(company.lastRaise).toLocaleDateString()
+                          ? fmtLocaleDate(company.lastRaise)
                           : "—"}
                       </span>
                     </TableCell>

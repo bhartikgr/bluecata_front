@@ -17,6 +17,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Info, Clock, ChevronDown, ChevronRight } from "lucide-react";
+import { safePersonDisplayName } from "@/lib/personName";
+
+/* WAVE 83 · ITEM 3 — the server no longer sends a raw id in this column, and
+   this renderer will not print one either if any other writer ever does. The
+   fallback says WHAT THE ROW IS rather than showing the key. */
+function holderLabel(holderName: string, investorId: string | null): string {
+  const fallback = investorId && /^u_redeemed_/.test(investorId)
+    ? "Redeemed holder"
+    : "Holder (name not recorded)";
+  return safePersonDisplayName(holderName, fallback);
+}
 
 interface SnapshotPosition {
   id: string;
@@ -25,6 +36,9 @@ interface SnapshotPosition {
   shares: number;
   investmentAmount: number;
   roundId: string | null;
+  /* WAVE 83 · ITEM 3 — already on the wire (server/captableSnapshotsStore.ts);
+     read here only so the Holder fallback can say what the row IS. */
+  investorId?: string | null;
 }
 interface SnapshotsResponse {
   ok: boolean;
@@ -62,7 +76,7 @@ function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: 
         <tbody>
           {positions.map((p) => (
             <tr key={p.id} className="border-b border-border/50" data-testid={`snapshot-row-${p.id}`}>
-              <td className="px-2 py-1.5">{p.holderName}</td>
+              <td className="px-2 py-1.5">{holderLabel(p.holderName, p.investorId ?? null)}</td>
               <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[10px]">{p.instrument}</Badge></td>
               <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtShares(p.shares)}</td>
               <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtMoney(sym, p.investmentAmount)}</td>

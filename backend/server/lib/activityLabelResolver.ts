@@ -11,6 +11,7 @@
  *   - getRoundById       (server/roundsStore.ts)
  */
 import { resolveDisplayName } from "./displayNameResolver";
+import { describeActor } from "./actorIdentityDescriber";
 import { resolveCompanyName } from "./userContext";
 import { getRoundById as roundsGetById } from "../roundsStore";
 
@@ -18,9 +19,16 @@ import { getRoundById as roundsGetById } from "../roundsStore";
 export function resolveActorLabel(actor: string | null | undefined): string {
   const id = String(actor ?? "").trim();
   if (!id) return "";
+  /* WAVE 93 · ITEM 1 — FIXED AT THE SOURCE. This used to delegate straight to
+     `resolveDisplayName`, whose fallback knows only three cases, so every one of
+     the 45 measured unbound actor shapes that is NOT a plain `u_…` id came back
+     as the literal words "Pending member" — an automated Stripe event, an
+     unidentified administrator, a company and a partner organisation all read as
+     a pending person. `describeActor` binds from data first and otherwise says
+     what the record actually IS. It never returns a raw key. */
   try {
-    const r = resolveDisplayName(id);
-    if (r?.name) return r.name;
+    const d = describeActor(id);
+    if (d.label) return d.label;
   } catch { /* fail-open */ }
   return "Someone";
 }
@@ -52,6 +60,10 @@ export function resolveEntityLabel(entity: string | null | undefined): string {
       const nm = (resolveCompanyName(idPart) ?? "").trim();
       if (nm && isClean(nm)) return nm;
     } else if (isUser) {
+      /* WAVE 93 · ITEM 1 — the same describer, so an entity that happens to be
+         an unbound actor is described rather than degraded to "a user". */
+      const d = describeActor(idPart);
+      if (d.label && isClean(d.label)) return d.label;
       const r = resolveDisplayName(idPart);
       if (r?.name && isClean(r.name)) return r.name;
     } else if (isRound) {

@@ -67,8 +67,13 @@ function CollapsibleJson({ data }: { data: unknown }) {
 
 // ── Status badge helpers ──────────────────────────────────────────────────
 
-function statusVariant(s: string): "default" | "secondary" | "destructive" | "outline" {
-  if (s === "delivered" || s === "resolved") return "default";
+/* WAVE 99 · ITEM 2.2 — `delivered` and `resolved` are SUCCESS states and were
+ * painted `"default"`, which in admin is the LOGO RED #CC0001, the ratified
+ * NEGATIVE anchor — the same family as `dead_letter` and `failed` one line
+ * below.  Now the ratified positive #2C7346.  The union type gains the new
+ * variant name; no branch, predicate or return path changes. */
+function statusVariant(s: string): "positive" | "default" | "secondary" | "destructive" | "outline" {
+  if (s === "delivered" || s === "resolved") return "positive";
   if (s === "dead_letter" || s === "failed") return "destructive";
   if (s === "queued") return "secondary";
   return "outline";

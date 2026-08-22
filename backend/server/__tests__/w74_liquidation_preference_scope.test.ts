@@ -29,6 +29,12 @@ import request from "supertest";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
+/* WAVE 88 — exact reconciliation of the three legs. `Decimal.clone` gives this
+   test its OWN instance; `Decimal.set` is NEVER called, because it mutates the
+   shared instance the sacred engine imports and once faked a result by ~80 orders
+   of magnitude. Same construction as `w79_waterfall_split_seniority_and_clock`. */
+import { Decimal } from "decimal.js";
+const D120 = Decimal.clone({ precision: 120 });
 
 const ROOT = path.resolve(__dirname, "../..");
 const ROUTE_SRC = path.join(ROOT, "server/track1Routes.ts");
@@ -164,7 +170,63 @@ describe("W74 · R67 — the liquidation-preference refusal is scoped to preferr
     ["common", "common", true],
   ];
 
+  /* ════════════════════════════════════════════════════════════════════
+     UPDATED BY WAVE 88 — W74 FINDING N-3 IS CLOSED, SO THIS POLE HAD TO MOVE.
+     ════════════════════════════════════════════════════════════════════
+     The block below used to assert, for the three CONVERTIBLE instruments, that
+     the round "appears NOWHERE on the response" and that its $10,000,000 of
+     invested capital is "invisible to the waterfall" — recorded deliberately, with
+     the instruction that "a future wave that closes it fails HERE and has to say
+     so". This is that wave, and this is it saying so.
+
+     WHAT WAS ACTUALLY HAPPENING, and why the recorded gap was worse than it read:
+     the SAFE was not merely invisible, it was PAID $0 while the founders were paid
+     the entire $50,000,000 exit. A $10,000,000 instrument outstanding on the cap
+     table, with its valuation cap on record, was shown nothing and not even named.
+
+     AFTER WAVE 88, per instrument:
+       · `safe_post` / `safe_pre` — still HTTP 200, and the SAFE is now NAMED and
+         PAID in `byConvertible`. It is deliberately still absent from
+         `nonPreferenceClasses`: that array is the preference-stack disclosure, and
+         a paid leg is not a disclosure of an exclusion.
+       · `convertible_note` — now HTTP 422 `NOTE_EXIT_CLAIM_NOT_DETERMINABLE`. This
+         is an INTENTIONAL loss of a 200. A note's claim is principal plus accrued
+         interest, this route has no exit date, no day-count convention and no
+         change-of-control multiple, and the measured spread between the two ends of
+         the range is $1,687,763.71 on one fixture. R67 condition 4 said these
+         instruments must not be refused FOR LACKING A LIQUIDATION PREFERENCE, and
+         they are not: this refusal names a different, real, missing fact. */
+  const CONVERTIBLE_AFTER_W88: ReadonlySet<string> = new Set(["safe_post", "safe_pre"]);
+
   for (const [key, instrument, carriesShares] of NON_PREFERENCE) {
+    if (instrument === "convertible_note") {
+      it(`W74-R67-B · ${instrument} — REFUSES BY NAME after Wave 88, and is never paid $0`, async () => {
+        const co = await buildCompany({ key: `np_${key}`, instrument });
+        const res = await waterfall(co);
+        expect(res.status, JSON.stringify(res.body).slice(0, 400)).toBe(422);
+        expect(res.body.error).toBe("NOTE_EXIT_CLAIM_NOT_DETERMINABLE");
+        expect(res.body.refusal).toBe("note_exit_claim_not_determinable");
+        expect(res.body.refusalName).toBe("note_exit_claim_not_determinable");
+        expect(res.body.field).toBe("interestRate");
+        /* NOT the liquidation-preference refusal R67 removed for this instrument. */
+        expect(res.body.error).not.toBe("LIQUIDATION_TERM_NOT_ON_RECORD");
+        /* It NAMES what is missing, machine-readably, so a caller can act on it. */
+        expect(res.body.missingFacts).toEqual([
+          "exit_date", "day_count_convention", "change_of_control_repayment_multiple",
+        ]);
+        /* And it explains itself in prose — a refusal reduced to a code is a
+           regression (Wave 73). */
+        expect(String(res.body.message).length).toBeGreaterThan(200);
+        expect(String(res.body.message)).toContain("ACCRUED");
+        expect(String(res.body.message)).toContain("NO EXIT DATE");
+        expect(String(res.body.message)).toContain("DAY-COUNT CONVENTION");
+        /* NO FIGURE IS PUBLISHED. Not a payout schedule, and above all NOT a $0. */
+        expect(res.body.founderProceeds).toBeUndefined();
+        expect(res.body.convertibleProceeds).toBeUndefined();
+        expect(res.body.ok).toBe(false);
+      }, 60_000);
+      continue;
+    }
     it(`W74-R67-B · ${instrument} — computes and no longer refuses (R67 condition 4)`, async () => {
       const co = await buildCompany({ key: `np_${key}`, instrument });
       const res = await waterfall(co);
@@ -209,7 +271,33 @@ describe("W74 · R67 — the liquidation-preference refusal is scoped to preferr
            waterfall. This assertion exists so the gap is a recorded fact rather
            than a surprise, and so a future wave that closes it fails HERE and
            has to say so. */
-        expect(mine, `${instrument}: N-3 no longer reproduces — re-read the finding`).toBeUndefined();
+        /* WAVE 88 — STILL absent from `nonPreferenceClasses`, for a DIFFERENT and
+           deliberate reason: a SAFE is no longer a disclosed exclusion, it is a
+           PAID LEG. N-3 is closed, and the assertion that closes it is below. */
+        expect(mine, `${instrument} must not be in the preference-stack disclosure`).toBeUndefined();
+        expect(CONVERTIBLE_AFTER_W88.has(instrument), "unexpected instrument on this path").toBe(true);
+        /* ── W74 FINDING N-3, CLOSED AND ASSERTED ────────────────────────────
+           The $10,000,000 is no longer invisible: the instrument is NAMED, its
+           purchase amount and cap are on the response, and it is PAID a figure
+           greater than zero. */
+        const byConv = res.body.byConvertible as Array<Record<string, unknown>>;
+        expect(Array.isArray(byConv), "byConvertible is missing").toBe(true);
+        const paid = byConv.filter((c) => String(c.className).includes("Under Test"))[0];
+        expect(paid, `${instrument}: the convertible is STILL not named — N-3 has reopened`).toBeDefined();
+        expect(String(paid.instrument)).toBe(instrument);
+        expect(paid.purchaseAmountMinor).toBe("1000000000");
+        expect(paid.valuationCapMinor).toBe("2000000000");
+        expect(String(paid.election)).toBe("as_converted");
+        expect(new D120(String(paid.proceeds)).gt(0), "the SAFE is being paid $0 again").toBe(true);
+        /* THE FOUNDERS ARE NO LONGER PAID THE WHOLE EXIT. */
+        expect(String(res.body.founderProceeds)).not.toBe("5000000000");
+        /* And the three legs still reconcile to the exit EXACTLY. */
+        expect(
+          new D120(String(res.body.founderProceeds))
+            .plus(new D120(String(res.body.lpProceeds)))
+            .plus(new D120(String(res.body.convertibleProceeds)))
+            .toFixed(),
+        ).toBe("5000000000");
       }
     }, 60_000);
   }
@@ -348,8 +436,32 @@ describe("W74 · R67 — the liquidation-preference refusal is scoped to preferr
        arrive there and be told it owns the whole exit: that is the fabricated
        money figure class R48 rules out. */
     const s = src();
-    expect(s).toContain(
-      "if (totalPrefSharesNum === 0 && preferred.length === 0 && nonPreferenceClasses.length === 0) {",
+    /* ── UPDATED BY WAVE 88 ────────────────────────────────────────────────────
+       THE FENCE IS STRICTLY STRONGER, AND THAT IS WHY THIS STRING CHANGED. Wave 88
+       routes a convertible round out of the classification loop through
+       `convertibleRounds`, so it never touches `nonPreferenceClasses` and R67's
+       three-clause fence would no longer have stopped a SAFE-only company from
+       reaching this branch and being handed 100% of the exit. A FOURTH clause was
+       added, `convertibleRounds.length === 0`, and the condition was wrapped over
+       two lines. Asserted here clause by clause rather than as one literal, so a
+       future reformat does not fail this test while a REMOVED clause still does.
+       Wave 88's `R67F-15` asserts the same property at runtime: a SAFE-only
+       company with no common on record refuses `COMMON_SHARES_NOT_ON_RECORD`
+       rather than reaching this branch. */
+    const fence = s.slice(
+      s.indexOf("if (\n    totalPrefSharesNum === 0"),
+      s.indexOf("// No ledger data — return zero proceeds with empty breakdown"),
     );
+    expect(fence.length, "the `no ledger data` fence was not found at all").toBeGreaterThan(0);
+    for (const clause of [
+      "totalPrefSharesNum === 0",
+      "preferred.length === 0",
+      "nonPreferenceClasses.length === 0",
+      /* WAVE 88 — the new clause. Without it a $10,000,000-SAFE-only company is
+         told the founders keep the entire exit. */
+      "convertibleRounds.length === 0",
+    ]) {
+      expect(fence, `${clause} is no longer fencing the \`no ledger data\` branch`).toContain(clause);
+    }
   });
 });

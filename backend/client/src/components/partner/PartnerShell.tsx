@@ -15,6 +15,7 @@ import type { PartnerTier, PartnerSubRole, PartnerStatus } from "@/lib/partner/u
 // canonical Capavate primitives (PageHeader + AppCard) instead of ad-hoc chrome.
 import { PageHeader } from "@/components/ui/page-header";
 import { AppCard } from "@/components/ui/app-card";
+import { PortalVersionFooter } from "@/components/PortalVersionFooter"; /* WAVE 90 · ITEM 2 (M-1 / R81) */
 
 const TIER_COLORS: Record<PartnerTier, string> = {
   catalyst: "bg-gray-200 text-gray-800",
@@ -162,6 +163,45 @@ export function PartnerShell({
       </div>
       {status && status !== "active" && <PartnerStatusBanner status={status} />}
       {children}
+      {/* ═══════════════════════════════════════════════════════════════════════
+          WAVE 90 · ITEM 2 (register PART 11 · M-1, OWNER RULING R81).
+
+          THE PARTNER PORTAL REPORTED NO VERSION AT ALL, on any screen. The admin
+          footer said 26.19.0 and the investor footer said a hardcoded 0.23.0, so
+          "the live version" was three different answers depending on where you
+          looked — and Avi's "26.19.0 installed" confirmation came from the one
+          surface that happened to be right.
+
+          R81 (owner, 2026-08-21): "It's all one install … Avi updates the entire
+          platform in one go." So one correct surface IS sufficient evidence —
+          but ONLY once no portal carries a hardcoded literal. This is the third
+          of the three portals, and it closes that condition.
+
+          ── OWNERSHIP, STATED BECAUSE IT MATTERS ────────────────────────────────
+          WAVE 1D owns the partner area. Wave 90 owns VERSION REPORTING, and R81
+          names the partner version string as a Wave 90 deliverable explicitly.
+          This is the minimum possible intersection of the two:
+            · PURELY ADDITIVE — appended as the last child. No existing element,
+              control, prop, data-testid, class or ordinal is touched, so no
+              partner control moves and nothing is removed.
+            · NOT A RESTYLE — no colour, spacing, border or type decision is made
+              here beyond the muted 10px footer convention already used by
+              BuildVersionMarker on the admin dashboard.
+            · IT IS IN THE SHELL, NOT PER-PAGE, deliberately: per-page placement
+              would make the partner portal report a version on some screens and
+              not others, which is the M-1 defect in miniature.
+          Guard impact: ONE added copy string, ZERO removals. Wave 1D's redesign
+          can restyle this freely; it must not delete it.
+
+          The value is NOT a literal. It is read from GET /api/healthz, which the
+          server resolves from the shipped package.json — the SAME source the
+          admin footer reads. See build_log/wave90/W90_VERSION_TRUTH.md.
+          ═══════════════════════════════════════════════════════════════════════ */}
+      <PortalVersionFooter
+        productName="Capavate Consortium Partner Platform"
+        testId="partner-portal-version"
+        className="mt-8 block text-center text-[10px] text-[var(--cv-color-text-muted)] select-text"
+      />
     </div>
   );
 }

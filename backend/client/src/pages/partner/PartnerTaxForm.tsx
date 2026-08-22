@@ -10,6 +10,9 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError, queryClient } from "@/lib/queryClient";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
+/* WAVE 102 · ITEM 3 — Wave 87's timezone-safe formatter. See the block above
+   `formatDate` below for why this file needs it. */
+import { fmtLocaleDate } from "@/lib/format";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -35,11 +38,41 @@ type TaxForm = {
 
 const FORM_TYPES = ["W-9", "W-8BEN", "W-8BEN-E", "T4A"];
 
+/* ══ WAVE 102 · ITEM 3 — THIS RENDERED A TAX-FORM EXPIRY ONE DAY EARLY ══════════
+   The body was `new Date(value).toLocaleDateString(…)`. For a DATE-ONLY value
+   that is a one-day shift in every zone behind UTC, and the owner is in New
+   York. Reviewer C proved it by execution:
+
+     TZ=UTC                 expires_at="2026-06-15" -> Jun 15, 2026
+     TZ=America/New_York    expires_at="2026-06-15" -> Jun 14, 2026   <- the owner
+     TZ=Pacific/Auckland    expires_at="2026-06-15" -> Jun 15, 2026
+
+   THE VALUE IS DATE-ONLY, PROVED FROM THE TREE AND THE SCHEMA, NOT FROM THE NAME:
+     · the input at :151 carries `placeholder="YYYY-MM-DD"` and NO `type="date"`,
+       so the partner types a bare calendar date;
+     · `server/lib/partnerSelfServiceRoutes.ts:416` takes `body.expiresAt.trim()`
+       and `:434` stores that string VERBATIM into `partner_tax_forms.expires_at`
+       — no normalisation, no `new Date()`, no `.toISOString()`;
+     · the column is `expires_at TEXT` (nullable) in BOTH places a database can
+       come from: `migrations/0054_v25_33_partner_payment_model.sql:75` and the
+       inline DDL in `server/db/connection.ts:1998`.
+
+   WHY THE WAVE 87 FENCE EXCUSED IT: `expiresAt` is on `TIMESTAMP_FIELDS` while
+   `expiresOn` is in the date-only registry — two near-identical names, opposite
+   treatment — and `firstDateOnlyField` consults the timestamp list FIRST. The
+   fence's blind spot is fixed in the same wave (see the WAVE 102 block in
+   `scripts/lint/dateOnlyRenderFence.ts`), so this site cannot silently come back.
+
+   THE FIX handles BOTH kinds correctly, which matters because this one helper
+   renders two different kinds on the same row:
+     `expiresAt`   date-only  -> local midnight of that calendar day, no shift
+     `collectedAt` an instant (`nowIso()` at routes :427) -> localised as before
+   `fmtLocaleDate` is Wave 87's own helper and it discriminates on the VALUE'S
+   SHAPE, not on any field name. The rendered format is byte-identical: the same
+   `locales`/`options` are passed straight through.
+   ═══════════════════════════════════════════════════════════════════════ */
 function formatDate(value: string | null) {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return fmtLocaleDate(value, undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 export default function PartnerTaxForm() {

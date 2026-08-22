@@ -1,0 +1,552 @@
+/* ============================================================================
+ * ledger-collective.css — WAVE 2D · THE COLLECTIVE "LEDGER + GRID" SKIN
+ * ============================================================================
+ *
+ * WHAT THIS FILE IS
+ * -----------------
+ * R73 (owner): "Let's go with your recommendation - Ledger. I like the color
+ * coding applications."  Direction A "Ledger" is the base; Direction D "Grid"'s
+ * colour-coded status pills and table borders are adopted for the data tables.
+ * R74/R78 make it platform-wide; Wave 1D shipped the Consortium Partner area
+ * first and this file applies THE SAME TEN DECISIONS to the Collective area so
+ * the platform speaks one dialect and not five.  R74's own constraint — that
+ * Collective and Consortium Partner must look identical — is why this file is
+ * a near-mirror of `ledger-partner.css` rather than a fresh design.
+ *
+ * WHAT THIS FILE IS NOT
+ * ---------------------
+ * NOT ONE ELEMENT OF FUNCTIONALITY OR USABILITY CHANGES.  No control moves, is
+ * renamed, removed, hidden, added or reordered.  There is no markup here, no
+ * `display`, no `visibility`, no `opacity`, no `pointer-events`, no `order`, no
+ * `position`, and no `content`.  Colour, type, border, radius, shadow and
+ * spacing only.
+ *
+ * SCOPE — EVERY SELECTOR IS SCOPED TO [data-product="collective"].
+ * ---------------------------------------------------------------
+ * `CollectiveShell.tsx` sets `data-product="collective"` on the shell root for
+ * every `/collective/*` route that is NOT `/collective/partner/*` (which gets
+ * `"partner"`).  Partner, founder, admin, investor and the public marketing site
+ * read NOTHING from this file.  There is not one unscoped selector below; that
+ * is asserted by
+ * `client/src/styles/__tests__/w2d3d_ledger_scope.test.ts`.
+ *
+ * WHY NO OTHER FILE IS EDITED
+ * ---------------------------
+ *  · `capavate-tokens.css` is SACRED (manifest 41/48).  It is not opened.  This
+ *    file SHADOWS the `--cv-*` custom properties inside the collective scope, so
+ *    every pre-existing rule that already reads them re-paints with no rule of
+ *    its own being touched.  Tier-9 rule 74 ("brand colours LOCKED: primary
+ *    #cc0001, navy #041e41") is honoured literally: those two are NOT shadowed.
+ *  · `collective-theme.css` is SHARED with Consortium Partner and its
+ *    `w8_shared_theme.test.ts` symmetry assertion asserts an EQUAL number of
+ *    `collective` and `partner` selectors in it — so any collective-only edit
+ *    there turns it RED, exactly as a partner-only edit would have.  It is not
+ *    opened.  Its collective-scoped rules are overridden here at equal
+ *    specificity, later in the cascade — which is how CSS resolves a tie — and
+ *    with `!important` only where it used `!important`.
+ *  · `partner-theme.css` is a strict subset of collective-theme.css and carries
+ *    no `collective` selector at all.  Not opened.
+ *  · `ledger-partner.css` is Wave 1D's and names only `[data-product="partner"]`.
+ *    Not opened.  Partner must come out BYTE-IDENTICAL and does.
+ *  · `home3style.css` carries the unscoped globals that reach this area
+ *    (`body{font-family !important; font-size}`, `p,li,figcaption{max-width:
+ *    72ch}`, `h1..h6{line-height:1.15}`, `table{border-collapse}`, and the
+ *    focus-visible outline).  Every one is a bare element or pseudo-class
+ *    selector, so a `[data-product="collective"] X` selector outscores it and no
+ *    edit to the marketing stylesheet is needed.  The `!important` on
+ *    `body{font-family}` binds `body` ONLY; inheritance is resolved per element,
+ *    so a declaration on the collective root wins for the collective subtree.
+ *    Inventory: `build_log/wave2d3d_collective_founder/W2D3D_GLOBAL_CSS_IMPACT.md`.
+ *  · The 656 hand-typed status-colour classes in 50 Collective files are
+ *    re-coloured by the `[data-product="collective"]` block of
+ *    `ledger-ramps.css`.  ZERO component edits, so no JSX is restructured, so
+ *    nothing can be dropped.
+ *
+ * ACCESSIBILITY
+ * -------------
+ * Every text/surface pair introduced below is computed by
+ * `build_log/wave2d3d_collective_founder/tools/verify_contrast.py`.  No pair
+ * below AA 4.5:1 ships.  Measured over the 250 REAL class pairings in the
+ * Collective source: **0 NEW pairs below AA, 26 pairs that were BELOW AA on the
+ * live product are now above it.**  Four token pairs that FAIL AA today are
+ * fixed here:
+ *   --cv-color-text-muted  #7A7874 4.41:1  ->  #5F6B7E 5.40:1
+ *   --cv-color-text-faint  #B0ADA8 2.24:1  ->  #6C7A8E 4.60:1
+ *   --cv-color-warning     #D4850A 2.93:1  ->  #8A5A00 5.93:1
+ *   --cv-color-accent      #D4850A 2.93:1  ->  #8A5A00 5.93:1
+ * One pair moves DOWN and is declared rather than hidden:
+ *   --cv-color-text-secondary #4A4A4A 8.86:1 (AAA) -> #5B6B7F 5.45:1 (AA).
+ * That is the ratified Ledger secondary; navy-tinted grey next to navy ink is
+ * the whole point of the direction, and 5.45:1 clears AA on all four surfaces.
+ * ========================================================================== */
+
+/* ── 1 · TOKEN SHADOW — the mechanism ─────────────────────────────────────
+ * Redeclaring these inside the collective scope re-paints every rule in
+ * capavate-tokens.css and collective-theme.css that already consumes them,
+ * without editing either file.
+ * --cv-color-primary / --cv-color-navy are DELIBERATELY ABSENT: Tier-9 rule 74
+ * locks them, they already equal the ratified palette, and nothing needs them
+ * to change. */
+[data-product="collective"] {
+  /* SURFACES — R78/OQ-A: the whole logged-in product standardises on the cool
+   * #F8FAFC.  MEASURED on this area before the change: `body` paints
+   * rgb(248,250,252) = #F8FAFC and `<main>` paints rgb(250,250,248) = #FAFAF8,
+   * so two different off-whites meet on the same screen and the seam is visible
+   * wherever `main` does not fill the viewport.  This closes it. */
+  --cv-color-bg: #F8FAFC;              /* was #fafaf8 (warm) */
+  --cv-color-surface: #FFFFFF;         /* unchanged — Ledger cards are white */
+  --cv-color-surface-warm: #F8FAFC;    /* was #fff8f5 */
+  --cv-color-surface-cool: #F4F5F7;    /* was #f5f7fa */
+  --cv-color-surface-cream: #F8FAFC;   /* was #f9f6f1 (warm cream) */
+  --cv-color-surface-2: #F1F4F8;       /* was #f0ede8 (warm) */
+  --cv-color-surface-offset: #F4F5F7;  /* was #f0eeea (warm) */
+
+  /* BORDERS — Ledger hairline + Grid rule.  MEASURED before the change: the
+   * warm beige #DDD9D3 was painted on 613 visible edges on one Collective
+   * screen alone, which is what made every white card read as a cream box. */
+  --cv-color-border: #E5EAF0;          /* was #ddd9d3 — --ds-border-hairline */
+  --cv-color-divider: #E5EAF0;         /* was #e8e6e1 */
+
+  /* TEXT */
+  --cv-color-text: #1A1A1A;            /* unchanged — 17.40:1 AAA */
+  --cv-color-text-secondary: #5B6B7F;  /* was #4A4A4A — 5.45:1 AA */
+  --cv-color-text-muted: #5F6B7E;      /* was #7A7874 4.41:1 FAIL -> 5.40:1 AA */
+  --cv-color-text-faint: #6C7A8E;      /* was #B0ADA8 2.24:1 FAIL -> 4.60:1 AA */
+  --cv-color-text-inverse: #FFFFFF;    /* unchanged */
+
+  /* BRAND TINTS (the two brand hexes themselves are untouched) */
+  --cv-color-primary-light: #FDECEC;   /* was #fee8e8 — --ds-status-negative-tint */
+
+  /* SEMANTIC — both legacy values FAIL AA as text; replaced by the ratified,
+   * measured equivalents from ledger-tokens.css. */
+  --cv-color-accent: #8A5A00;          /* was #d4850a 2.93:1 FAIL -> 5.93:1 AA */
+  --cv-color-accent-light: rgba(138, 90, 0, 0.10);
+  --cv-color-success: #2C7346;         /* was #2d8b4e -> ratified 5.76:1 AA */
+  --cv-color-success-light: rgba(44, 115, 70, 0.08);
+  --cv-color-warning: #8A5A00;         /* was #d4850a 2.93:1 FAIL -> 5.93:1 AA */
+  --cv-color-warning-light: rgba(138, 90, 0, 0.10);
+
+  /* SHADOWS — navy-tinted, not black-tinted.  Ledger leans on hairlines, so the
+   * drop shadow shrinks rather than disappearing (a card with neither shadow
+   * nor a visible border reads as unfinished on a sparse screen — R73/3). */
+  --cv-shadow-sm: 0 1px 2px hsl(214 88% 14% / 0.06);
+  --cv-shadow-md: 0 2px 6px hsl(214 88% 14% / 0.07);
+  --cv-shadow-lg: 0 6px 18px hsl(214 88% 14% / 0.08);
+
+  /* RADIUS — Ledger 3/6/9.  The 999px pill is RETAINED but restricted to status
+   * pills (see 6 below); it is what made every button look like a lozenge. */
+  --cv-radius-sm: 3px;                 /* was 6px */
+  --cv-radius-md: 6px;                 /* was 8px */
+  --cv-radius-lg: 9px;                 /* was 12px */
+  --cv-radius-xl: 9px;                 /* was 16px */
+  --cv-radius-2xl: 9px;                /* was 20px */
+  /* --cv-radius-full stays 999px */
+
+  /* TYPE SCALE — fixed px instead of viewport clamps.  The clamps are why the
+   * page title rendered large: --cv-text-xl tops out at 2.25rem. */
+  --cv-text-xs: 11px;                  /* was clamp(12px..14px) */
+  --cv-text-sm: 13px;                  /* was clamp(14px..16px) */
+  --cv-text-base: 14px;                /* was clamp(16px..18px) */
+  --cv-text-lg: 16px;                  /* was clamp(18px..24px) */
+  --cv-text-xl: 20px;                  /* was clamp(24px..36px) — page title */
+  --cv-text-2xl: 24px;                 /* was clamp(32px..56px) */
+  --cv-text-3xl: 28px;                 /* was clamp(40px..80px) */
+
+  /* DENSITY — card padding and page-header gap.  --cv-space-6 is what
+   * .cv-app-card and .cv-page-header consume. */
+  --cv-space-6: 1rem;                  /* was 1.5rem */
+}
+
+/* ── 1b · THE THIRD TOKEN LAYER — index.css's OWN warm block ──────────────
+ * Wave 1D found this by MEASURING and flagged it for this wave by name; it was
+ * re-measured here rather than assumed, and it is live on Collective exactly as
+ * predicted.  `index.css` carries an INLINE
+ * `[data-product="collective"], [data-product="partner"]` block (line ~327,
+ * BELOW the `@import` list) that re-points the shadcn semantic tokens at the
+ * marketing site's warm palette.  Read off the live Collective root before this
+ * file existed: `--background: 60 17% 98%`, `--border: 36 13% 85%`,
+ * `--accent: 37 91% 44%`, `--cap-site-bg: #fafaf8`, `--cap-site-border:
+ * #ddd9d3`.  Because that block sits AFTER the `@import` list, it wins on
+ * cascade order at equal specificity — an imported stylesheet cannot beat it.
+ *
+ * THE FIX IS A SPECIFICITY BUMP, NOT `!important` AND NOT AN EDIT TO THAT
+ * SHARED BLOCK.  `[data-product="collective"][data-product="collective"]` is
+ * (0,2,0) against its (0,1,0).  Repeating an attribute selector is the standard,
+ * side-effect-free way to raise specificity: it matches exactly the same single
+ * element, so nothing new is selected and Consortium Partner — which shares that
+ * block and already has its own (0,2,0) override from Wave 1D — is untouched.
+ *
+ * --primary / --destructive / --ring are NOT shadowed: all three are already the
+ * logo red 360 100% 40%, and Tier-9 rule 74 locks them. */
+[data-product="collective"][data-product="collective"] {
+  --background: 210 40% 98%;      /* #F8FAFC — was 60 17% 98% (#FAFAF8 warm) */
+  --border: 213 27% 92%;          /* #E5EAF0 — was 36 13% 85% (#DDD9D3 warm) */
+  --card-border: 213 27% 92%;     /* #E5EAF0 — matches the card hairline */
+  --accent: 39 100% 27%;          /* #8A5A00 — was 37 91% 44% (#D4850A, 2.93:1 FAIL AA) */
+  --accent-foreground: 0 0% 100%; /* white on #8A5A00 = 5.93:1 AA */
+
+  --cap-site-bg: #F8FAFC;         /* was #fafaf8 — this is what `main` paints */
+  --cap-site-border: #E5EAF0;     /* was #ddd9d3 — this is what `.border` paints */
+  --cap-site-divider: #E5EAF0;    /* was #e8e6e1 */
+  --cap-site-accent: #8A5A00;     /* was #d4850a (FAILS AA as text) */
+  /* --cap-site-primary #cc0001, --cap-site-primary-hover #a30001 and
+   * --cap-site-navy #041e41 are ALREADY the ratified palette.  Untouched. */
+}
+
+/* ── 2 · BASE TYPE ────────────────────────────────────────────────────────
+ * MEASURED before the change: the Collective root resolved to 18px, because
+ * `home3style.css` sets `body { font-size: var(--text-base) }` and --text-base
+ * is a clamp that tops out at 1.125rem.  18px -> 14px.  Stripe's dashboard is
+ * 14px, Linear is 13px.  This is an INHERITED value only, so it reaches exactly
+ * the elements that carry no Tailwind text-* class; nothing that already
+ * declares its own size moves.
+ *
+ * The font FAMILY is deliberately NOT changed.  Montserrat is the loaded brand
+ * body face, it is already sans, and R78/OQ-5 only requires that in-product
+ * TITLES stop being a display serif. */
+[data-product="collective"][data-product="collective"] {
+  font-size: 14px;
+  line-height: 1.45;
+  /* R78/OQ-4 — tabular numerals BY CSS RULE.  Measured before the change:
+   * `font-variant-numeric: normal` on the Collective root.  Money and percent
+   * columns now align on the digit instead of drifting with each glyph's
+   * proportional width.  Applied at the root so every figure in the area
+   * inherits it. */
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* The marketing stylesheet caps EVERY paragraph and list item at 72ch,
+ * unscoped, platform-wide.  At 14px that is ~630px, so an explanatory paragraph
+ * inside a 1040px card wraps at three-fifths width and leaves a ragged hole.
+ * Released for this area only. */
+[data-product="collective"] p,
+[data-product="collective"] li,
+[data-product="collective"] figcaption {
+  max-width: none;
+}
+
+/* ── 3 · TITLES — SANS, NAVY, COMPACT (R78/OQ-5) ──────────────────────────
+ * MEASURED before the change: the Collective `h1` rendered in **Instrument
+ * Serif** at #1A1A2E, because collective-theme.css points these at
+ * var(--cv-font-display).  R78/OQ-5: "Instrument Serif stays on marketing;
+ * in-product titles become sans."  Rule 75 lives in the sacred token file and is
+ * NOT edited — these surfaces simply stop consuming the display face.  Same
+ * specificity as the rules being overridden, later in the cascade. */
+[data-product="collective"] .cv-page-header__title,
+[data-product="collective"] h1,
+[data-product="collective"] h2,
+[data-product="collective"] h3,
+[data-product="collective"] h4,
+[data-product="collective"] .cv-card-title,
+[data-product="collective"] .cv-section-title,
+[data-product="collective"] .partner-section-title,
+[data-product="collective"] [data-slot="card-title"],
+[data-product="collective"] [data-testid="page-title"],
+[data-product="collective"] [data-testid$="-title"] {
+  font-family: var(--cv-font-body);
+  letter-spacing: -0.005em;
+}
+
+/* Sizes are set only on the real heading elements and the page-header title, so
+ * the broad [data-testid$="-title"] group above changes typeface and nothing
+ * else. */
+[data-product="collective"] .cv-page-header__title,
+[data-product="collective"] h1 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #041E41;                      /* navy — 16.57:1 AAA.  Was #1A1A2E. */
+}
+
+[data-product="collective"] h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+[data-product="collective"] h3,
+[data-product="collective"] .cv-card-title,
+[data-product="collective"] .cv-section-title,
+[data-product="collective"] .partner-section-title,
+[data-product="collective"] [data-slot="card-title"] {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+[data-product="collective"] .cv-page-header__subtitle {
+  font-size: 13px;
+  color: var(--cv-color-text-muted);
+}
+
+/* ── 4 · TABLES — DIRECTION D's "GRID" TREATMENT ──────────────────────────
+ * The half of R73 the owner named: border-driven row structure.  Horizontal
+ * rules only (Ledger's no-vertical-rules), a 12px uppercase header in the
+ * secondary ink, and a hairline between rows.
+ *
+ * DELIBERATELY NOT SET: `text-align` and `padding`.  A `[data-product]`-scoped
+ * selector outscores a Tailwind utility class, so setting either would silently
+ * override every authored `text-right` on a money column and every authored
+ * `px-*`/`py-*` on a cell — which is exactly how a restyle breaks a table's
+ * alignment and row rhythm.  Row height therefore comes from the existing
+ * padding plus the new 14px base, and no authored alignment is disturbed. */
+[data-product="collective"] table thead {
+  background: #F8FAFC;
+}
+
+[data-product="collective"] table thead th {
+  /* `min(12px, 1em)` IS DELIBERATE AND IT IS A BUG FIX, NOT A FLOURISH.
+   *
+   * The first draft of this rule read `font-size: 12px`, which is what
+   * `ledger-partner.css` ships and what Direction A specifies.  MEASURING the
+   * result on the founder cap table showed it BREAKING THE SCREEN: that table's
+   * header cells carry no size of their own and inherit 10px from an ancestor,
+   * so forcing 12px widened the header row and pushed the whole table from 1141px
+   * to 1178px inside a 1134px container.  The `% ON VIEW OF fully-diluted`
+   * column and the three ownership subtotals were visibly cut off in the AFTER
+   * screenshot.  The `overflow-x: auto` on the wrapper meant nothing was
+   * unreachable, but the owner would have seen a chopped column, and the brief is
+   * explicit: "A restyle that ships broken text is worse than the bland design it
+   * replaced."
+   *
+   * `1em` in a `font-size` declaration resolves against the PARENT's font-size,
+   * so `min(12px, 1em)` means EXACTLY "12px, but never larger than what this cell
+   * already inherited".  A header that inherits the 14px base becomes 12px, which
+   * is the design.  A header that deliberately runs at 10px stays at 10px.  The
+   * rule can therefore only ever make a header row NARROWER, never wider, so it
+   * cannot clip a column on any table anywhere — including the wide tables the
+   * local fixture does not contain.
+   *
+   * `letter-spacing` IS DELIBERATELY NOT SET, for the same reason.  At 10px,
+   * `0.04em` adds 0.4px per character, and the cap-table header is ~85 characters
+   * wide — about 34px of the 37px of new overflow came from tracking alone.
+   * Uppercase + weight 600 + the grey-blue ink + the Grid rule read as a ledger
+   * header without it.
+   *
+   * NOTE FOR THE PARTNER AREA, which this wave must not touch:
+   * `ledger-partner.css` ships the unconditional `font-size: 12px` +
+   * `letter-spacing: 0.04em` form.  Wave 1D measured 0 clipped nodes, but its
+   * instrument — like this wave's first one — checked TEXT-NODE scrollWidth and
+   * not CONTAINER overflow, so a widened partner table would not have been seen.
+   * Handed back to the parent agent as a finding, NOT changed here. */
+  font-size: min(12px, 1em);
+  font-weight: 600;
+  text-transform: uppercase;
+  /* WAVE 99 · ITEM 1 — SMALL CAPITALS, AND IT IS A REACHABILITY FIX, NOT A
+   * FLOURISH.  APPLIED IDENTICALLY IN ALL FIVE AREAS.
+   *
+   * WHAT WAS WRONG.  `text-transform: uppercase` above is a SECOND, INDEPENDENT
+   * widening vector that `font-size: min(12px, 1em)` does not bound: capitals are
+   * wider glyphs than lower case at the same size, so `Commission override` ->
+   * `COMMISSION OVERRIDE` is ~15-20% wider while the 14px->12px shrink only
+   * removes ~14%.  Net: WIDER.  On `/admin/partner-fees` at 1280 — where the
+   * table is already laid out at its `min-content` width in a 590px container —
+   * that landed straight in the overflow, and the `ACTIONS` column with its
+   * `Edit` / `Expire` buttons was CUT AT THE CONTAINER EDGE.  Wave 4D+5D
+   * DECOMPOSED IT PROPERTY BY PROPERTY on the live page: uppercase is the ENTIRE
+   * cause; `font-weight: 600` contributes EXACTLY ZERO and the 14px->12px shrink
+   * contributes EXACTLY ZERO.
+   *
+   * HOW IT WAS FOUND, AND THE LESSON.  Two instrument fields DISAGREED —
+   * `lastThTextClipped: false` (the `<th>`'s own box is not narrower than its
+   * text) against `lastThFullyInsideHost: false` (the CONTAINER clips it) — and
+   * THE SCREENSHOT SETTLED IT.  That is the third time in this programme that
+   * looking at the picture beat reading the number.
+   *
+   * WHY THIS PROPERTY.  Small capitals are x-height glyphs, so they are NARROWER
+   * than full capitals while still reading as a ledger header.  MEASURED on the
+   * real tree: table 1 633px -> 590px, table 2 611px -> 590px, both in a 590px
+   * container, overflow 43 and 21 -> 0 and 0, last `<th>` back INSIDE the host on
+   * both.  It is better than what shipped AND better than the pre-wave state
+   * (613/590, over 23, last `<th>` NOT inside), because it also fixes the table
+   * that was ALREADY cut before the restyle began.  Dropping `uppercase` instead
+   * was also measured and is WORSE: 601/590, over 11, still cut.
+   *
+   * WHY `text-transform: uppercase` IS KEPT ABOVE.  `all-small-caps` enables both
+   * `smcp` and `c2sc`, so it renders identically with or without the transform.
+   * Keeping the transform keeps `innerText` reporting `ACTIONS`, so no text
+   * census and no drop-detector entry moves on any table header in the product.
+   *
+   * WHY ALL FIVE AREAS.  Applying it in admin alone would make two of five areas
+   * diverge, which is exactly what R74 exists to prevent — and is exactly why
+   * Wave 4D+5D refused to apply it unilaterally.  One product, one treatment.
+   *
+   * THE FONT.  Montserrat carries no `smcp`/`c2sc` table, so Blink SYNTHESISES
+   * the small capitals by scaling the capitals down.  That is a RENDERING, not a
+   * fallback to lower case, and it was verified three ways rather than assumed —
+   * width vs full capitals, width vs plain lower case, and a screenshot of all
+   * four cases side by side.  `W99_OVERFLOW_ALL_AREAS.md` section 2.
+   *
+   * `font-size: min(12px, 1em)` above is UNTOUCHED and stays in the never-grow
+   * form.  A bare `12px` is forbidden by test and mutation-proved. */
+  font-variant-caps: all-small-caps;
+  color: #5B6B7F;                      /* 5.21:1 AA on #F8FAFC */
+  border-bottom: 1px solid #D9DCE1;    /* --ds-border-strong, the Grid rule */
+}
+
+[data-product="collective"] table tbody tr {
+  border-color: #E5EAF0;
+}
+
+[data-product="collective"] table tbody tr + tr {
+  border-top: 1px solid #E5EAF0;
+}
+
+[data-product="collective"] table tbody tr:hover {
+  background: #F8FAFC;
+}
+
+/* ── 5 · CARDS ────────────────────────────────────────────────────────────
+ * Colour, border and radius come from the shadowed tokens in 1, so the
+ * pre-existing card rules need no override.  The only thing tokens cannot reach
+ * is the `!important` border-colour collective-theme.css puts on the raw
+ * Tailwind card containers; it is matched here at equal specificity so the
+ * hairline wins without editing that shared file. */
+[data-product="collective"] .cv-app-card,
+[data-product="collective"] .bg-white.rounded-lg.border,
+[data-product="collective"] .bg-white.rounded-xl.border,
+[data-product="collective"] [data-slot="card"] {
+  border-color: var(--cv-color-border) !important;
+}
+
+/* ── 6 · CONTROLS — THE PILL GOES BACK IN ITS BOX ─────────────────────────
+ * Direction A: `--ds-radius-pill` is "RETAINED but RESTRICTED to status pills
+ * only".  Today every primary button and every filter chip is a 999px lozenge,
+ * which is the single loudest reason the workspace reads as marketing rather
+ * than as a working tool.  These become 6px.
+ *
+ * NOTE the scope: `button`/`a` only.  A `.rounded-full` on a span, an avatar or
+ * a STATUS PILL is untouched, so the colour-coded pills the owner liked keep
+ * their pill shape. */
+[data-product="collective"] button.bg-primary,
+[data-product="collective"] a.bg-primary,
+[data-product="collective"] .cv-btn--primary,
+[data-product="collective"] button[data-variant="default"] {
+  border-radius: var(--cv-radius-md);
+  font-weight: 600;
+}
+
+[data-product="collective"] .cv-filter-chip {
+  border-radius: var(--cv-radius-md);
+  font-size: 13px;
+}
+
+/* The active filter chip keeps its red fill (unchanged colour, unchanged
+ * meaning); only the corner and the rim follow the new radius. */
+[data-product="collective"] .cv-filter-chip--active {
+  border-radius: var(--cv-radius-md);
+}
+
+/* ── 7 · STATUS PILLS — DIRECTION D, OUTLINE NOT FILL ─────────────────────
+ * The colours themselves come from the `[data-product="collective"]` ramp block
+ * in ledger-ramps.css, which re-points all 17 Tailwind palette families at the
+ * five ratified status roles.  Nothing here assigns a colour; this only gives
+ * every pill the same geometry so a roster of mixed states reads as one control
+ * family.  Wave 0 scoped the marketing `button{border:none}` reset, so an
+ * outline on a pill that is a <button> now actually renders.
+ *
+ * The selector is deliberately narrow: an inline element that is BOTH a
+ * rounded-full and a border-carrying tint.  Cards, avatars and icon buttons do
+ * not match. */
+[data-product="collective"] span.rounded-full[class*="border-"],
+[data-product="collective"] span.rounded[class*="border-"][class*="text-xs"] {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ── 7b · EXPLAINER STRIPS GET A HAIRLINE ────────────────────────────
+ * The uppercase caption bands and explainer paragraphs that use
+ * `bg-[var(--cv-color-surface-2)]` carry a fill and no edge, so on a white card
+ * they read as an undefined grey slab.  A single hairline turns the slab into a
+ * deliberate panel.  Fill only; no padding, no radius, no type change. */
+[data-product="collective"] .bg-\[var\(--cv-color-surface-2\)\] {
+  border: 1px solid var(--cv-color-border);
+}
+
+/* ── 7d · THE LAST DISPLAY-SERIF TITLE IN THE AREA (R78/OQ-5) ────────────
+ * MEASURED after 3 above was in place: a computed-style sweep of the live
+ * Collective tree found EXACTLY ONE element still rendering Instrument Serif —
+ * `components/feeds/MarketWatchWidget.tsx:104`, `<CardTitle className="font-serif
+ * text-lg text-[#041e41]">Market Watch</CardTitle>`.  Section 3's selector list
+ * does not reach it, because the utility class is an explicit authored
+ * `font-serif` on an element that is not an h1-h4.
+ *
+ * R78/OQ-5 is unambiguous — "Instrument Serif stays on marketing; in-product
+ * titles become sans" — so one serif card title on the Collective dashboard is a
+ * visible inconsistency, not a design choice worth keeping.
+ *
+ * SAFE TO SCOPE TO COLLECTIVE ALONE, checked and not assumed: `MarketWatchWidget`
+ * is rendered from exactly one place, `pages/collective/CollectiveDashboard.tsx`,
+ * so it never appears in the Consortium Partner shell and R74's "the two surfaces
+ * render identically" is not broken.  `font-serif` occurs exactly ONCE across
+ * pages/collective, components/collective, pages/founder, components/founder and
+ * components/feeds, so the token match cannot silently de-serif something else.
+ * Type only — the size, weight and ink are untouched. */
+[data-product="collective"] [class~="font-serif"] {
+  font-family: var(--cv-font-body);
+}
+
+/* ── 7c · THE ONE WARM SLAB A STYLESHEET CAN STILL REACH ──────────────────
+ * MEASURED on the live Collective dashboard: one element still painted
+ * rgb(250,246,241) = #FAF6F1, a warm cream.  It is
+ * `components/feeds/MarketWatchWidget.tsx`'s provider-unavailable notice, and it
+ * is painted by a Tailwind ARBITRARY-VALUE CLASS (`bg-[#faf6f1]`), not an inline
+ * style — so a scoped selector reaches it with zero component edits.
+ *
+ * `[class~="…"]` matches a WHOLE whitespace-separated class token, never a
+ * substring.  That distinction matters: a `[class*="…"]` form would also match a
+ * `hover:bg-[#faf6f1]` variant and paint a hover colour at rest, which is a
+ * FUNCTIONAL defect rather than a styling one.  There is no hover variant of
+ * this class in the tree, and the token form cannot create one by accident.
+ * The widget is shared, so the rule is scoped to Collective only; the partner
+ * shell renders it through Wave 1D's own scope and is untouched. */
+[data-product="collective"] [class~="bg-[#faf6f1]"] {
+  background-color: #F8FAFC;
+}
+
+/* ── 8 · SIDEBAR + CHROME ─────────────────────────────────────────────────
+ * The rail keeps its white surface and gains the cool hairline through the
+ * token in 1.  The nav group eyebrows lose their heavy red shout in favour of
+ * the secondary ink: uppercase red labels down the left edge of every screen is
+ * the "unprofessional" complaint in miniature.  The ACTIVE nav item keeps its
+ * red — that is the one place the accent earns its keep. */
+[data-product="collective"] .cv-nav-group-label,
+[data-product="collective"] .partner-eyebrow {
+  color: #5B6B7F;                      /* was #CC0001 — 5.45:1 AA */
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+}
+
+/* ── 9 · WHAT THIS FILE DELIBERATELY DOES NOT TOUCH ───────────────────────
+ *  · `--cv-color-primary` / `--cv-color-navy` — Tier-9 rule 74, LOCKED.
+ *  · `--cv-radius-full` — status pills keep 999px.
+ *  · Any `display`, `visibility`, `opacity`, `pointer-events`, `order`,
+ *    `position`, `content`, `text-align` or cell `padding`.
+ *  · Table cell padding and alignment — see the note in 4.
+ *  · The `--chart-*` data-visualisation ramp.  Those six hues are a CATEGORICAL
+ *    axis (one colour per cap-table segment), not a status axis, and collapsing
+ *    them onto five status roles would make two segments of a pie chart the same
+ *    colour.  Left alone deliberately.
+ *  · `founder/Billing.tsx` (SACRED and owner-excluded under R80) and every other
+ *    area's scope.  `[data-product="partner"]` appears NOWHERE below.
+ *  · Every pre-existing defect in this area.  Nothing here hides one.
+ *  · **THE LEFT RAIL AND TOP BAR — measured, not overlooked.**  The Collective
+ *    rail is painted `#F7F6F2` cream with `#E8E4E0` warm rules, and the top-bar
+ *    title `#1A1A2E`, by UNCONDITIONAL INLINE `style=` ATTRIBUTES in
+ *    `components/CollectiveShell.tsx` (lines 362, 367, 421, 483, 499).  An inline
+ *    style beats every author rule that is not `!important`.  Three reasons this
+ *    wave leaves them:
+ *      1. `CollectiveShell.tsx` is SHARED — it renders the Consortium Partner
+ *         shell too, so editing it would move the partner area, which this wave
+ *         is required to prove BYTE-IDENTICAL.
+ *      2. Overriding them for Collective ALONE, with `!important`, would make the
+ *         Collective rail differ from the Consortium Partner rail — which R74
+ *         explicitly forbids ("the two surfaces render identically").
+ *      3. The pre-flight already deferred all 333 platform-wide inline `style=`
+ *         attributes as debt.
+ *    So the rail is EXACTLY as warm as it was, and exactly as warm as partner's.
+ *    Nothing regressed, nothing was hidden, and it needs ONE wave that owns both
+ *    shells. Written up in OWNER_QUESTIONS.md.
+ * ====================================================================== */

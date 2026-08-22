@@ -18,6 +18,76 @@
    member of the shared theme. */
 @import "./styles/collective-theme.css";
 @import "./styles/partner-theme.css";
+/* WAVE 0 (2026-08-21) — the additive design-system layer. TWO new files, both
+   generated, both inert today:
+     · ledger-tokens.css declares the `--ds-*` vocabulary. NOTHING consumes it
+       yet, so it renders nothing. The SACRED capavate-tokens.css is NOT edited.
+     · ledger-ramps.css supplies the 125 `--ramp-*` values that tailwind.config.ts
+       now reads for the 17 hand-typed palette families, globally and once per
+       [data-product] area. Every value equals the stock Tailwind value it
+       replaces, so this is a NO-OP; proof in build_log/wave0_design.
+   Imports are APPENDED after the existing ones, never inserted before them, so
+   the cascade order of every pre-existing rule is unchanged and the `--cap-*`
+   values that brandColorVars.test.ts and designTokensExposed.test.ts assert on
+   this file are all still present. */
+@import "./styles/ledger-tokens.css";
+@import "./styles/ledger-ramps.css";
+/* WAVE 1D (2026-08-21) — the Consortium Partner "Ledger + Grid" skin (R73/R74,
+   R78 OQ-A/OQ-4/OQ-5). ONE new file, EVERY selector scoped to
+   [data-product="partner"], APPENDED LAST so it resolves after the shared
+   collective-theme.css and partner-theme.css it overrides — a later rule of
+   equal specificity wins, which is why neither of those two shared files has to
+   be opened (collective-theme.css is Wave 2's, and w8_shared_theme.test.ts's
+   symmetry assertion turns RED on any partner-only edit to it). Colour, type,
+   border, radius, shadow and spacing only: no control, handler, route, query,
+   permission, label or workflow is touched by a stylesheet. */
+@import "./styles/ledger-partner.css";
+/* WAVE 2D + 3D (2026-08-21) — the Collective skin and the Capavate founder skin
+   (R73/R74, R78, R80). TWO new files, APPENDED LAST so they resolve after the
+   shared collective-theme.css / partner-theme.css they override — a later rule
+   of equal specificity wins, which is why neither of those two shared files has
+   to be opened (w8_shared_theme.test.ts's collective/partner symmetry assertion
+   turns RED on any single-area edit to collective-theme.css).
+
+   · ledger-collective.css — EVERY selector scoped to [data-product="collective"].
+   · ledger-founder.css    — EVERY selector scoped to [data-product="founder"]
+     AND guarded with `:not(:has([data-testid="card-collective-application-fee"]))`
+     so `pages/founder/Billing.tsx` is EXCLUDED and renders unchanged. R80, the
+     owner verbatim: "Founder Billing Page: OK. Keep it different." The founder
+     status ramps live in that file under the same guard, which is why the
+     [data-product="founder"] block of ledger-ramps.css is BYTE-IDENTICAL.
+
+   Colour, type, border, radius, shadow and spacing only: no control, handler,
+   route, query, permission, label or workflow is touched by a stylesheet. */
+@import "./styles/ledger-collective.css";
+@import "./styles/ledger-founder.css";
+/* WAVE 4D + 5D (2026-08-21) — the ADMIN skin and the INVESTOR skin, the last two
+   of the five areas, completing the platform-wide design programme (R73/R74,
+   R78/OQ-1, R82).  TWO new files, APPENDED LAST after every pre-existing import,
+   never inserted at the head, so the cascade order of every pre-existing rule is
+   unchanged.
+
+   · ledger-admin.css    — EVERY selector scoped to [data-product="admin"].
+   · ledger-investor.css — EVERY selector scoped to [data-product="investor"].
+
+   NEITHER FILE CARRIES THE R80 BILLING GUARD, AND THAT IS DELIBERATE AND
+   CORRECT, NOT AN OMISSION.  `pages/founder/Billing.tsx` renders under
+   [data-product="founder"], so it is not a descendant of either selector above
+   and neither file can reach it.  ledger-founder.css is NOT opened, its guard is
+   neither weakened nor re-implemented, and Billing's screenshot is proved
+   byte-identical.  R80, the owner verbatim: "Founder Billing Page: OK. Keep it
+   different."
+
+   The admin and investor status ramps live in the [data-product="admin"] and
+   [data-product="investor"] blocks of ledger-ramps.css — the two slots Wave 0
+   declared and left byte-identical to :root for exactly this purpose.  :root and
+   the partner / collective / founder blocks of that file are BYTE-IDENTICAL, so
+   no other area's colour can have moved.
+
+   Colour, type, border, radius, shadow and weight only: no control, handler,
+   route, query, permission, label or workflow is touched by a stylesheet. */
+@import "./styles/ledger-admin.css";
+@import "./styles/ledger-investor.css";
 
 @tailwind base;
 @tailwind components;

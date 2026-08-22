@@ -81,10 +81,28 @@ export interface CaptableSnapshotsResponse {
  */
 type SecuritiesReader = () => any[];
 
+/* WAVE 83 · ITEM 3 — NEVER RENDER A KEY WHERE A NAME BELONGS.
+   `u_redeemed_1782888492403` was shown to a founder in the Holder column of the
+   projected cap table. Both builders below fell back to the raw `investorId`,
+   and for an invite-redeemed persona that id is a synthetic `u_redeemed_<ts>`
+   minted at runtime with no `users` row — the same root cause as the unbound
+   actor records tracked elsewhere. This says WHAT THE ROW IS instead. */
+function humanHolderLabel(raw: unknown, investorId: unknown): string {
+  const name = String(raw ?? "").trim();
+  const isRawId = (v: string) => /^u_[A-Za-z0-9_]*$/.test(v);
+  if (name && !isRawId(name)) return name;
+  const id = String(investorId ?? "").trim();
+  if (/^u_redeemed_/.test(id)) return "Redeemed holder";
+  if (id === "u_public") return "Public applicant";
+  if (id && isRawId(id)) return "Holder (name not recorded)";
+  if (id) return id.length <= 40 && !isRawId(id) ? id : "Holder (name not recorded)";
+  return "Holder (name not recorded)";
+}
+
 function ledgerRowToPosition(e: any): SnapshotPosition {
   const holderName = (e.holderFirstName || e.holderLastName)
     ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
-    : (e.investorId ?? "Investor");
+    : humanHolderLabel(null, e.investorId);
   const unpriced = (e.instrumentClass ?? "priced") === "unpriced";
   let instrument = unpriced ? "safe" : "equity";
   try {
@@ -118,7 +136,7 @@ function baseSecToPosition(s: any): SnapshotPosition {
   return {
     id: String(s.id),
     companyId: String(s.companyId),
-    holderName: String(s.holderName ?? s.investorId ?? "Holder"),
+    holderName: humanHolderLabel(s.holderName, s.investorId),
     holderType: String(s.holderType ?? "investor"),
     instrument: String(s.instrument ?? "equity"),
     series: s.series ?? null,

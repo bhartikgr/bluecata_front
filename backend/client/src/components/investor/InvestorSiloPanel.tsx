@@ -43,10 +43,17 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinor } from "@/lib/currency";
+/* WAVE 90 · ITEM 3 (M-3) — raw `rnd_…` ids and raw state enums were rendered as
+   this panel's primary labels. `displayName` prefers the name the server now
+   projects and DESCRIBES the row when there is none (Wave 83's `u_redeemed_...`
+   -> "Redeemed holder" precedent); it never prints any part of an id. */
+import { displayName, decisionStateLabel } from "@shared/investorDisplayLabels";
 
 /** Mirrors the projection at server/routes.ts:2758. */
 export interface WatchlistItem {
   roundId: string;
+  /** WAVE 90 · ITEM 3 — human round name, projected by server/routes.ts. */
+  roundName?: string | null;
   companyId: string | null;
   amount: number | null;
   amountMinor: number | null;
@@ -71,6 +78,8 @@ export interface ActivityEvent {
   ts: string;
   kind: string;
   roundId?: string;
+  /** WAVE 90 · ITEM 3 — human round name, projected by server/routes.ts. */
+  roundName?: string | null;
   companyId?: string;
   amount?: string | null;
   amountMinor?: number | null;
@@ -81,6 +90,8 @@ export interface ActivityEvent {
 export interface SoftCircleItem {
   id: string;
   roundId: string;
+  /** WAVE 90 · ITEM 3 — human round name, projected by server/routes.ts. */
+  roundName?: string | null;
   companyId: string | null;
   amount: number | null;
   amountMinor: number | null;
@@ -201,7 +212,7 @@ export function InvestorSiloPanel() {
                     data-testid={`investor-watchlist-row-${w.roundId}`}
                   >
                     <span>
-                      <span className="font-medium">{w.roundId}</span>
+                      <span className="font-medium" data-round-id={w.roundId}>{displayName(w.roundName, "round", w.roundId)}</span>
                       <span className="ml-2 text-xs text-muted-foreground">
                         added {shortTs(w.addedAt)}
                       </span>
@@ -252,7 +263,7 @@ export function InvestorSiloPanel() {
                   data-testid={`investor-discover-row-${d.id}`}
                 >
                   <span>
-                    <span className="font-medium">{d.name ?? d.id}</span>
+                    <span className="font-medium" data-round-id={d.id}>{displayName(d.name, "round", d.id)}</span>
                     {d.invited && (
                       <Badge variant="secondary" className="ml-2" data-testid={`investor-discover-invited-${d.id}`}>
                         Invited
@@ -293,10 +304,10 @@ export function InvestorSiloPanel() {
                   data-testid={`investor-soft-circle-row-${s.id}`}
                 >
                   <span>
-                    <span className="font-medium">{s.roundId}</span>
+                    <span className="font-medium" data-round-id={s.roundId}>{displayName(s.roundName, "round", s.roundId)}</span>
                     {s.state && (
-                      <Badge variant="outline" className="ml-2">
-                        {s.state}
+                      <Badge variant="outline" className="ml-2" data-state={s.state}>
+                        {decisionStateLabel(s.state)}
                       </Badge>
                     )}
                     {s.wireFundedAt && (
@@ -338,7 +349,7 @@ export function InvestorSiloPanel() {
                   <span>
                     <span className="font-medium">{activityLabel(e.kind)}</span>
                     {e.roundId && (
-                      <span className="ml-2 text-xs text-muted-foreground">{e.roundId}</span>
+                      <span className="ml-2 text-xs text-muted-foreground" data-round-id={e.roundId}>{displayName(e.roundName, "round", e.roundId)}</span>
                     )}
                     <span className="ml-2 text-xs text-muted-foreground">{shortTs(e.ts)}</span>
                   </span>

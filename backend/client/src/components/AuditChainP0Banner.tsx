@@ -47,6 +47,27 @@ export function AuditChainP0Banner() {
           <p className="font-semibold">
             Audit chain integrity incident — immediate review required
           </p>
+          {/* WAVE 93 · ITEM 2 — THIS ALARM IS REAL, AND IT IS NOT SUPPRESSED.
+              The wave established the truth before touching anything
+              (build_log/wave93/W93_AUDIT_CHAIN.md): an EMPTY chain verifies clean and a
+              canonically-appended single row verifies clean, so "link 0 of 1" is
+              neither an off-by-one nor an empty chain misreported. It means the one
+              record in that ledger does not match its own hash, because a retired
+              script formula wrote it directly instead of through the append path.
+              Wave 51 fixed the writers; the already-written record is still there.
+
+              So NOTHING here hides the alarm. What is ADDED is the plain-English
+              meaning and the one instruction an operator needs, because an alarm
+              that says only "chain broken at link 0 of 1" on every page for weeks
+              is what actually teaches people to ignore alarms. The raw key, status
+              and technical detail are all still rendered underneath, unchanged. */}
+          <p className="mt-1 text-sm text-white/90">
+            One record in the ledger below does not match its own integrity hash, so
+            the ledger cannot be proved unaltered from that record onwards. No record
+            has been lost and new records are still being written and verified. Do not
+            clear this — the platform will refuse to clear it while the mismatch is
+            real. It needs an integrity repair, not a dismissal.
+          </p>
           <ul className="mt-1 space-y-0.5 text-sm text-white/90">
             {incidentRows.map((r) => (
               <li key={r.key} data-testid={`audit-chain-incident-${r.key}`}>

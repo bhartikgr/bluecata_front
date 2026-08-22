@@ -36,7 +36,27 @@ describe("W-FIX2d S1 — carry basis co-located on the Fees step, still required
     expect(fees).toContain("setW({ ...w, carryBasis: cb })");
   });
   it("keeps carry basis REQUIRED — step 2 canAdvance and launch both gate on it", () => {
-    expect(wizard).toContain("if (step === 2) return !!w.mgmtFeeType && !!w.carryBasis;");
+    /* ═══════════════════════════════════════════════════════════════════════════
+       UPDATED BY WAVE 82 · ITEM 2 — the REQUIREMENT is unchanged; the source line
+       that expresses it moved.
+       ═══════════════════════════════════════════════════════════════════════════
+       This assertion pinned the literal source text
+       `if (step === 2) return !!w.mgmtFeeType && !!w.carryBasis;`. WAVE 82 made
+       the step-2 gate numerically bounded as well — the wizard accepted any carry
+       percentage at all, which produced a non-atomic launch: an attested vehicle
+       and mandate created, the fee row refused, and a red toast. The gate is now
+       `feeStepRefusal() === null`, and `feeStepRefusal()` still returns a refusal
+       when `mgmtFeeType` or `carryBasis` is missing — the SAME two conditions,
+       plus the numeric bounds. Asserted on the PREDICATE now rather than on one
+       line of source, so a future refactor cannot make this test lie about what
+       is required. This is the ONE pre-existing test WAVE 82 modified, and it is
+       recorded test-by-test in build_log/wave82/W82_TESTS.md.
+       ═══════════════════════════════════════════════════════════════════════════ */
+    expect(wizard).toContain("if (step === 2) return feeStepRefusal() === null;");
+    // carry basis still refuses, and fee type still refuses — inside feeStepRefusal.
+    expect(wizard).toContain('if (!w.carryBasis) return "Choose a carry basis to continue.";');
+    expect(wizard).toContain('if (!w.mgmtFeeType) return "Choose a management fee type to continue.";');
+    // The launch button gate is untouched.
     expect(wizard).toMatch(/disabled=\{!w\.carryBasis \|\|/);
   });
 });

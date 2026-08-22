@@ -34,18 +34,32 @@ import { appendAdminAudit } from "./adminPlatformStore";
 // Patch v6 — free-plan activation needs a company + user context.
 import { getUserContext } from "./lib/userContext";
 import { addCompanyForFounder, getCompaniesForFounder, getActiveCompanyId, setActiveCompanyId, type FounderCompanyMembership } from "./multiCompanyStore";
-// v19 Wave A / Change 3 — AirWallex is the new default gateway. The resolver
-// picks between AirWallex and Stripe per env (PAYMENT_GATEWAY_DEFAULT). We do
-// NOT touch the existing chargeSubscription / chargeRefund signatures — those
-// remain stable. We do, however, augment getPublicConfig() to return BOTH
-// gateways and add per-gateway webhook handlers below.
+// v19 Wave A / Change 3 — AirWallex is the default gateway. The resolver picks
+// the gateway per env (PAYMENT_GATEWAY_DEFAULT). We do NOT touch the existing
+// chargeSubscription / chargeRefund signatures — those remain stable. We do,
+// however, augment getPublicConfig() to report the resolved gateway and add
+// per-gateway webhook handlers below.
+//
+// WAVE 97B (2026-08-21) · R86 — STRIPE REMOVED FROM THIS FILE.
+//   Owner: "remove stripe. I can add this at a later date. We are using
+//   Airwallex today." Four things went, and nothing else:
+//     1. the static `import ... from "./lib/stripeGateway"` that stood here;
+//     2. the `POST /api/webhooks/payment-gateway/stripe` registration;
+//     3. Stripe's name and card-method list from the admin config endpoint;
+//     4. the `verifyStripeSig` branch inside handleGatewayWebhook.
+//   THE SEAM IS UNTOUCHED. `handleGatewayWebhook` is still parameterised by
+//   gateway id, every `gateway === "airwallex"` branch and its `else` are still
+//   here, and `getPublicGatewayList()` still returns whatever the resolver
+//   lists. Widening `GatewayId` in server/lib/paymentGatewayResolver.ts and
+//   adding one `app.post` beside the Airwallex one is the whole job — see the
+//   EXTENSION POINT comments below and build_log/wave97b/W97B_REMOVAL.md §5.
 import {
   getDefaultGatewayId,
   listPublicGatewayConfig,
   isGatewayReady,
+  type GatewayId,
 } from "./lib/paymentGatewayResolver";
 import { verifyWebhookSignature as verifyAirwallexSig } from "./lib/airwallexGateway";
-import { verifyWebhookSignature as verifyStripeSig } from "./lib/stripeGateway";
 import { requireAuth } from "./lib/authMiddleware"; /* v25.17 Lane C NC6 */
 import { log } from "./lib/logger";
 // v24.2 Airwallex wiring — the per-gateway webhook now flips the Capavate
@@ -315,19 +329,24 @@ export function chargeRefund(input: ChargeRefundInput): { ok: boolean; refundEnt
 /**
  * Public gateway configuration returned to the admin Payment Gateway tab.
  *
- * v19 Wave A / Change 3: now reports the v19 default gateway (AirWallex)
- * alongside Stripe. The legacy single-gateway shape is preserved for
- * back-compat — callers that want the per-gateway list should hit
- * `getPublicGatewayList()`.
+ * v19 Wave A / Change 3: reports the v19 default gateway (AirWallex). The
+ * legacy single-gateway shape is preserved for back-compat — callers that want
+ * the per-gateway list should hit `getPublicGatewayList()`.
+ *
+ * WAVE 97B · R86 — this is the body served by
+ * `GET /api/admin/payment-gateway/config` below, and it is the surface that
+ * named Stripe to an administrator as a selectable gateway. The `: "Stripe"`
+ * label and its `["card","sepa","ach"]` method list are gone.
+ * EXTENSION POINT — a second gateway's label and method list plug in HERE, as
+ * one more arm of a switch on `def`; the resolver's `GatewayId` union is what
+ * makes that arm reachable.
  */
 export function getPublicConfig(): GatewayConfig & { defaultGateway?: string; defaultWebhookUrl?: string } {
   const def = getDefaultGatewayId();
   return {
-    name: def === "airwallex" ? "AirWallex" : "Stripe",
+    name: "AirWallex",
     mode: process.env.NODE_ENV === "production" ? "live" : "test",
-    supportedMethods: def === "airwallex"
-      ? ["card", "wechat_pay", "alipay", "bank_transfer"]
-      : ["card", "sepa", "ach"],
+    supportedMethods: ["card", "wechat_pay", "alipay", "bank_transfer"],
     // Legacy generic webhook path — PRESERVED for back-compat with sprint28 tests
     // and existing integrations. The v19 per-gateway path is exposed in
     // `defaultWebhookUrl` below.
@@ -1009,26 +1028,38 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * v19 Wave A / Change 3 — per-gateway webhook handlers.
    *
    * `/api/webhooks/payment-gateway/airwallex`
-   * `/api/webhooks/payment-gateway/stripe`
    *
-   * Both verify the inbound HMAC signature against the gateway-specific
-   * secret. Verification is REQUIRED in production (NODE_ENV === "production")
-   * but advisory in dev/test (where shared secrets are typically unset).
+   * WAVE 97B · R86 — `/api/webhooks/payment-gateway/stripe` was listed here and
+   * registered below. It is gone: owner, 2026-08-21, "remove stripe. I can add
+   * this at a later date. We are using Airwallex today." Leaving a
+   * signature-verifying webhook mounted for a provider the platform does not
+   * use is the thing that instruction removes.
+   *
+   * The handler verifies the inbound HMAC signature against the
+   * gateway-specific secret. Verification is REQUIRED in production
+   * (NODE_ENV === "production") but advisory in dev/test (where shared secrets
+   * are typically unset).
    *
    * Payloads are normalised to the existing `{ type, intentId, status,
    * companyId }` shape and forwarded through the same dispatch logic used by
    * the legacy `/api/webhooks/payment-gateway` endpoint.
    */
-  function handleGatewayWebhook(gateway: "airwallex" | "stripe", req: Request, res: Response) {
+  function handleGatewayWebhook(gateway: GatewayId, req: Request, res: Response) {
     // v25.32 burndown — item 40: opportunistic, best-effort retention reap of
     // the idempotency claim table. Runs before the finalize transaction so it
     // never participates in (and cannot roll back) the transactional claim.
     _reapProcessedWebhookEvents();
     const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? {});
     const isProd = process.env.NODE_ENV === "production";
-    const sigOk = gateway === "airwallex"
-      ? verifyAirwallexSig(req.headers as Record<string, string | string[] | undefined>, rawBody)
-      : verifyStripeSig(req.headers as Record<string, string | string[] | undefined>, rawBody);
+    /* WAVE 97B · R86 — was a ternary: `gateway === "airwallex" ? verifyAirwallexSig(...)
+       : verifyStripeSig(...)`. `verifyStripeSig` came from ./lib/stripeGateway,
+       which was deleted with the gateway, so the ternary had exactly one arm
+       left and is now the call itself.
+       EXTENSION POINT — a second gateway's verifier plugs in HERE, ahead of the
+       Airwallex call:  gateway === "newgateway" ? verifyNewGatewaySig(...) : ...
+       Everything below this line is already gateway-agnostic or already
+       branches on `gateway`, so nothing else moves. */
+    const sigOk = verifyAirwallexSig(req.headers as Record<string, string | string[] | undefined>, rawBody);
 
     /* v25.18 Lane C NC4 (hard close) — the pre-v25.18 check was
          `isProd && isGatewayReady(gateway) && !sigOk` which fails OPEN when
@@ -1196,9 +1227,21 @@ export function registerPaymentGatewayRoutes(app: Express): void {
   app.post("/api/webhooks/payment-gateway/airwallex", (req: Request, res: Response) => {
     handleGatewayWebhook("airwallex", req, res);
   });
-  app.post("/api/webhooks/payment-gateway/stripe", (req: Request, res: Response) => {
-    handleGatewayWebhook("stripe", req, res);
-  });
+  /* WAVE 97B · R86 — the second registration stood HERE:
+   *   app.post("/api/webhooks/payment-gateway/stripe", (req, res) => {
+   *     handleGatewayWebhook("stripe", req, res);
+   *   });
+   * Removed under the owner's instruction of 2026-08-21. Allowlisted as a
+   * documented removal in scripts/silent-drop-guard/allowlist.json.
+   *
+   * EXTENSION POINT — THIS IS WHERE A FUTURE GATEWAY'S WEBHOOK PLUGS IN. Adding
+   * a gateway is: (1) widen `GatewayId` in
+   * server/lib/paymentGatewayResolver.ts, (2) add its credential /readiness/
+   * webhook-source/public-config entries at that file's six EXTENSION POINTs,
+   * (3) add its `verifyWebhookSignature` module mirroring lib/airwallexGateway,
+   * (4) add ONE line above the signature check for its verifier, and (5) copy
+   * the three-line `app.post` above with the new id. No other call site
+   * changes — they all go through getDefaultGatewayId()/resolveActiveGateway(). */
 
   /**
    * v25.45 Bug A - CLIENT-RETURN RECONCILIATION (webhook-independent unlock).

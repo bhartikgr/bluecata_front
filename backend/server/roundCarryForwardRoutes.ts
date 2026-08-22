@@ -67,7 +67,7 @@ import {
 /* WAVE 81 · ITEM 2 (D4) — WRITER 2 OF 2 needs the SAME fence as writer 1, because
    this handler hands every patch key to `updateRound` and `seniority` joined
    `UPDATE_EXTRAS_WHITELIST` in the same wave. Imported, never restated. */
-import { validateSeniorityRankStored } from "./lib/roundStoredTerms";
+import { validateSeniorityRankStored, validateParticipationCapStored } from "./lib/roundStoredTerms";
 import { listPendingCommitments, lapsePendingWithinTx, emitLapsedMutations, type PendingCommitment } from "./lib/roundClosePendingLapse"; /* v25.48.2 Q13/MF5/MF6 — warn + atomically lapse un-confirmed soft-circles inside the close tx (parallel module, no cap-table math) */
 /* v25.17 Lane A NH8 — computeCarryForwardLive is already imported from
    roundCarryForwardEngine below and reused for server-side digest recompute. */
@@ -1017,6 +1017,27 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
         const sv = validateSeniorityRankStored((patch as Record<string, unknown>)["seniority"]);
         if (!sv.ok) {
           return res.status(400).json({ ok: false, error: sv.error, field: "seniority", message: sv.message });
+        }
+      }
+      /* ═══════════════════════════════════════════════════════════════
+         WAVE 94 · ITEM 1 (R83.2) — WRITER 3 OF 3: THE PARTICIPATION CAP.
+         ═══════════════════════════════════════════════════════════════
+         `capParticipation` joined `roundsStore.UPDATE_EXTRAS_WHITELIST` in this
+         same wave, and this handler hands every patch key straight to
+         `updateRound` — so without this fence the key would have become writable
+         here, unvalidated, in the same commit that made it reach the sacred
+         engine's payout clamp. That is the precise shape Wave 76 measured on this
+         route for `antiDilutionType`, and the reason the whitelist entry and the
+         fence ship together rather than one wave apart.
+
+         SAME IMPORTED SENTENCE, SAME CODE, SAME DOMAIN as writers 1 and 2. ABSENT
+         IS UNTOUCHED: a patch that does not mention the key is unaffected, and
+         `null` still reaches `updateRound` as an explicit removal, which means the
+         class is UNCAPPED. */
+      {
+        const cv = validateParticipationCapStored((patch as Record<string, unknown>)["capParticipation"]);
+        if (!cv.ok) {
+          return res.status(400).json({ ok: false, error: cv.error, field: "capParticipation", message: cv.message });
         }
       }
       /* ══════════════════════════════════════════════════════════════════════

@@ -412,7 +412,7 @@ export function validateDiscountPercentAsWritten(raw: unknown): TermRangeVerdict
       error: "invalid_discount",
       message:
         `Discount (% off the round price) must be at least 0 and less than 100. "${String(raw)}" is outside that ` +
-        `range, so Capavate will not store it. It is PERCENT-AS-WRITTEN (owner ruling R16): 20 means 20% off, ` +
+        `range, so Capavate will not store it. It is percent-as-written: 20 means 20% off, ` +
         `and it is never rescaled by how big it looks. A value of 100 or more would price the shares at zero or ` +
         `below. If you are seeing an 8-digit number here, it is a date that was written into this field by ` +
         `mistake — the live example is 20260707, which is 2026-07-07.`,
@@ -461,7 +461,7 @@ export function validateInterestRatePercentAsWritten(raw: unknown): TermRangeVer
       error: "invalid_interestRate",
       message:
         `Interest rate (% APR) must be at least 0 and no more than ${INTEREST_RATE_PERCENT_MAX}. ` +
-        `"${String(raw)}" is outside that range. It is PERCENT-AS-WRITTEN (owner ruling R16): 6 means 6% a ` +
+        `"${String(raw)}" is outside that range. It is percent-as-written: 6 means 6% a ` +
         `year. An 8-digit value here is a date written into a rate field — the live example is 20261231, ` +
         `which is 2026-12-31.`,
     };
@@ -610,7 +610,7 @@ function boundedNumericTerm(args: {
         `${label} must be ${range}. Capavate received "${String(raw)}", which is outside that range, so it ` +
         `has NOT been stored. ${meaning} If you are looking at an 8-digit number here, it is a DATE that was ` +
         `typed into a numeric field by mistake — the live example is 20260707, which is 2026-07-07. Capavate ` +
-        `does not rescale or clamp a value to make it fit (owner ruling R16); correct the field and save again.`,
+        `does not rescale or clamp a value to make it fit; correct the field and save again.`,
     };
   }
   return { ok: true, value: String(n) };
@@ -1019,7 +1019,7 @@ function closedVocabularyTerm(args: {
         (nearMiss
           ? `stored. Did you mean "${nearMiss}"? Capavate will not assume so: these values are read by the ` +
             `cap-table engine as written, and quietly rewriting one of a founder's recorded deal terms into ` +
-            `another is the defect this refusal exists to prevent (owner ruling R60). Send the exact value. `
+            `another is the defect this refusal exists to prevent. Send the exact value. `
           : `stored. ${meaning} `) +
         (nearMiss ? meaning : ""),
     };
@@ -1184,7 +1184,7 @@ export class MissingNoteInterestRateError extends RoundMathTermRefusal {
         `share the holder receives depends on that rate. Capavate will NOT assume one: before this wave the ` +
         `engine used a hardcoded 5% and the carry-forward suggestion used 6%, and neither was the rate anybody ` +
         `agreed to. Enter the note's annual interest rate on the round's terms — it is PERCENT-AS-WRITTEN ` +
-        `(owner ruling R16 / R30), so type 6 for 6% a year. If the note genuinely bears no interest, enter 0.`,
+        `— so type 6 for 6% a year. If the note genuinely bears no interest, enter 0.`,
     );
     this.name = "MissingNoteInterestRateError";
   }
@@ -1297,7 +1297,7 @@ export class UnknownAntiDilutionTermError extends RoundMathTermRefusal {
         `protection therefore applies — and Capavate has no anti-dilution method on record for this class, so ` +
         `it will not state a share count. The three industry methods give materially different answers on the ` +
         `same facts (full ratchet, broad-based weighted average, narrow-based weighted average), and asserting ` +
-        `one nobody negotiated is the defect this refusal exists to prevent (owner ruling R60). Record the ` +
+        `one nobody negotiated is the defect this refusal exists to prevent. Record the ` +
         `class's anti-dilution term on the round that issued it, then re-run the projection.`,
     );
     this.name = "UnknownAntiDilutionTermError";
@@ -1719,7 +1719,7 @@ export const MATURITY_DATE_NOT_WRITABLE = {
     "and computes the maturity date from it every time it is read. The absolute date cannot be " +
     "stored directly, because two spellings of one date can disagree and nothing could then say " +
     "which one is true. Set it on Founder -> Rounds -> the round -> Edit terms -> Maturity (months), " +
-    `which accepts 0 to ${MATURITY_MONTHS_MAX} months (owner ruling R71; the bound is R50).`,
+    `which accepts 0 to ${MATURITY_MONTHS_MAX} months.`,
 } as const;
 
 /** A preferred class the ledger holds with NO anti-dilution term on record. */
@@ -1895,7 +1895,7 @@ function eventToTransaction(e: ApiCapTableEvent): Transaction {
   if (!/^\d+(\.\d+)?$/.test(pct)) {
     throw new CapTableEventRefusal(
       "invalid_target_percent", "targetPercent",
-      `The pool target "${pct}" is not a number. It is PERCENT-AS-WRITTEN (owner ruling R16): "12" means ` +
+      `The pool target "${pct}" is not a number. It is percent-as-written: "12" means ` +
       `12%, and "0.12" means a tenth of one percent — it is never rescaled by how big it looks.`,
     );
   }
@@ -2845,11 +2845,11 @@ export function tryLedgerFullyDilutedPreMoneyShares(secs: ApiSecurity[]): Ledger
             "is still outside the permitted range after that conversion. The live example is a row holding " +
             "20260707, which is a date (2026-07-07) written into a percentage field, not a discount. Capavate " +
             "will not guess what it was meant to be — the magnitude of a number is not evidence of its unit " +
-            "(owner ruling R16), and a wrong guess here changes what every SAFE holder converts into. "
+            "— and a wrong guess here changes what every SAFE holder converts into. "
           : "One of your committed positions holds a share count that is missing, fractional, or not a whole " +
             "number of shares, and a share count cannot be rounded into existence. ") +
         "Nothing has been changed and nothing has been computed. Correct the position on the cap table, or send " +
-        "this refusal code and the detail below to support.",
+        "this message and the detail below to support.",
       detail,
     };
   }

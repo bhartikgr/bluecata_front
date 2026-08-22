@@ -130,12 +130,45 @@ function pricedRoundCore(d: TermSheetData, instrumentLabel: string): TermSheetSe
     {
       id: "liq",
       heading: "7. Liquidation Preference",
-      body: (x) =>
-        `${x.liqPrefMultiple}× ${x.participating ? "participating" : "non-participating"} liquidation preference. ` +
-        (x.participating
-          ? `On a Deemed Liquidation Event the holders of ${instrumentLabel} will receive ${x.liqPrefMultiple}× their Original Issue Price (plus declared but unpaid dividends) and thereafter share pro-rata with the Common Stock${x.capParticipation ? `, subject to a participation cap of ${x.capParticipation}× the Original Issue Price` : ""}. `
-          : `On a Deemed Liquidation Event the holders of ${instrumentLabel} will receive the greater of (i) ${x.liqPrefMultiple}× their Original Issue Price (plus declared but unpaid dividends), or (ii) the amount they would have received had they converted to Common Stock immediately prior. `) +
-        `A sale of all or substantially all of the Company's assets, a merger, consolidation, or similar transaction will constitute a "Deemed Liquidation Event."`,
+      /* ══════════════════════════════════════════════════════════════
+         WAVE 92 · ITEM 3 (open item N-3 / OQ-W94-2) — THE CLAUSE STATES WHAT IS
+         ON RECORD, AND SAYS SO WHEN NOTHING IS.
+         ══════════════════════════════════════════════════════════════
+         The three values this clause renders were HARDCODED at
+         `client/src/pages/founder/TermSheet.tsx` — `1`, `false`, and the WORD
+         "non-participating" in the `×` slot below. They now read the round, and
+         `null` means the round does not record the term.
+
+         A TERM SHEET IS A DOCUMENT A FOUNDER SENDS TO AN INVESTOR. Where the term
+         is not on record this clause now says exactly that, quotes whatever
+         wording IS stored, and names the control that records it — instead of
+         asserting a liquidation preference nobody negotiated. That is the same
+         "absent means absent" rule Wave 58b applied to the fully-diluted share
+         count and the option pool in this same template. */
+      body: (x) => {
+        if (x.liqPrefMultiple === null || x.participating === null) {
+          return (
+            `[TO BE AGREED — NOT ON RECORD] The liquidation preference for the ` +
+            `${instrumentLabel} has not been recorded on this round, so Capavate has not ` +
+            `stated one here. ` +
+            (x.liquidationPreferenceRaw
+              ? `The round's terms currently say "${x.liquidationPreferenceRaw}", which does not state ` +
+                `BOTH a multiple and whether the ${instrumentLabel} is participating. `
+              : `No liquidation preference is stored against this round at all. `) +
+            `Record it on the round's terms — for example "1× non-participating" or ` +
+            `"1× participating, capped at 2×" — and regenerate this term sheet. ` +
+            `A sale of all or substantially all of the Company's assets, a merger, ` +
+            `consolidation, or similar transaction will constitute a "Deemed Liquidation Event."`
+          );
+        }
+        return (
+          `${x.liqPrefMultiple}× ${x.participating ? "participating" : "non-participating"} liquidation preference. ` +
+          (x.participating
+            ? `On a Deemed Liquidation Event the holders of ${instrumentLabel} will receive ${x.liqPrefMultiple}× their Original Issue Price (plus declared but unpaid dividends) and thereafter share pro-rata with the Common Stock${x.capParticipation ? `, subject to a participation cap of ${x.capParticipation}× the Original Issue Price` : ", with no cap on participation recorded"}. `
+            : `On a Deemed Liquidation Event the holders of ${instrumentLabel} will receive the greater of (i) ${x.liqPrefMultiple}× their Original Issue Price (plus declared but unpaid dividends), or (ii) the amount they would have received had they converted to Common Stock immediately prior. `) +
+          `A sale of all or substantially all of the Company's assets, a merger, consolidation, or similar transaction will constitute a "Deemed Liquidation Event."`
+        );
+      },
       editable: true,
     },
     {
@@ -798,7 +831,13 @@ export function reconcileTerms(round: TermSheetData, uploaded: UploadedTerms): R
       match: Math.abs(uploaded.valuationCap - round.valuationCap) < 1,
     });
   }
-  if (uploaded.liqPrefMultiple !== undefined && round.liqPrefMultiple) {
+  /* WAVE 92 · ITEM 3 — `round.liqPrefMultiple` is now `number | null`. The
+     existing truthiness test already skips `null`, which is the correct
+     behaviour: a term the round does not record cannot be COMPARED against an
+     uploaded document, and reporting "match: false" against an absent term would
+     be a fabricated disagreement. The guard is made explicit rather than left to
+     coincide. */
+  if (uploaded.liqPrefMultiple !== undefined && round.liqPrefMultiple !== null && round.liqPrefMultiple) {
     diffs.push({
       field: "Liquidation preference multiple",
       roundValue: `${round.liqPrefMultiple}×`,

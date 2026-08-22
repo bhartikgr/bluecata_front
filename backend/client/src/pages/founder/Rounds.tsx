@@ -64,6 +64,41 @@ import {
   SAFE_CAP_TYPES_FOR_INPUT,
   type ApiSecurity,
 } from "@shared/roundMathEngineAdapter";
+/* WAVE 83 · ITEM 2.2 — the ONE rule for a past target close date, shared with
+   the other three writers (the wizard, the create route and the terms route). */
+import { pastTargetCloseNotice } from "@shared/roundTargetCloseRule";
+
+/* WAVE 83 · ITEM 4 — WHAT A SAVE CONFIRMATION HAS TO SAY.
+   Built ONLY from the server's response, so it cannot claim a value the server
+   did not store. Money and percentages are shown as the server returned them.
+   If the response carries no recognisable term, the sentence says only what is
+   certain — that the round was saved and the screen now shows the stored row. */
+function savedTermsSummary(round: unknown): string {
+  const r = (round ?? {}) as Record<string, unknown>;
+  const parts: string[] = [];
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v.toLocaleString() : null);
+  const push = (label: string, value: string | null) => { if (value) parts.push(`${label} ${value}`); };
+  push("target", num(r.targetAmount));
+  push("pre-money", num(r.preMoney));
+  push("price per share", num(r.pricePerShare));
+  push("valuation cap", num(r.valuationCap));
+  push("discount", typeof r.discount === "number" ? `${r.discount}%` : null);
+  push("interest", typeof r.interestRate === "number" ? `${r.interestRate}%` : null);
+  push("maturity", typeof r.maturityMonths === "number" ? `${r.maturityMonths} months` : null);
+  push("liquidation preference", typeof r.liquidationPreference === "string" && r.liquidationPreference.trim() ? r.liquidationPreference.trim() : null);
+  push("anti-dilution", typeof r.antiDilutionType === "string" && r.antiDilutionType.trim() ? r.antiDilutionType.trim() : null);
+  /* The pool percentage NAMES ITS DENOMINATOR, exactly as the percent fence
+     requires: the same figure is a different number against a different base. */
+  push(
+    "option pool",
+    typeof r.optionPoolPostPercent === "number" || typeof r.optionPoolPostPercent === "string"
+      ? `${r.optionPoolPostPercent}% of post-money fully-diluted shares`
+      : null,
+  );
+  if (parts.length === 0) return "The round now shows the values Capavate has stored.";
+  return `Stored: ${parts.join(" · ")}. The list below now shows what Capavate stored, not what was typed.`;
+}
+
 /* WAVE 69 · R58 — `ApiError.message` is capped at 240 chars by queryClient.ts:63
    and replaced with a generic sentence; the real refusal (424-543 chars) lives on
    `ApiError.payload.message`. See the module header. */
@@ -194,7 +229,7 @@ export default function Rounds() {
           // (invalid interactive nesting), the shared cause of the primary-action
           // "first click no-ops" symptom. A real button acts on the first click.
           <Button
-            className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white"
+            className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white"
             data-testid="button-new-round"
             onClick={() => setLocation("/founder/rounds/new")}
           >
@@ -259,7 +294,9 @@ export default function Rounds() {
                             <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)} of target</div>
                           </div>
                           <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                            <div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                            {/* WAVE 101 - progress toward the round target is an achievement bar, not a
+   fault indicator; it was painted the negative anchor. */}
+                            <div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />
                           </div>
                         </div>
 
@@ -641,10 +678,23 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
          price the platform has already proved wrong. Never save a price the
          platform can prove is wrong. */
       if (editPriceContradicted && editPriceAgreement) {
-        throw new Error(
-          `price_contradicts_pool: the round would store $${editPriceAgreement.savedExact} while this pool ` +
+        /* WAVE 86B · ITEM 3 (R77) — THE IDENTIFIER IS BACK, AND IT IS NOT ON SCREEN.
+           Wave 83 removed `price_contradicts_pool` from the rendered prose, which
+           was right, AND from the error object, which was an over-correction: a
+           caller could no longer tell WHICH rule refused the save. R77 bans the
+           identifier in RENDERED text and ALLOWS it as a machine-readable value,
+           so it returns as a non-rendered `.code` / `.refusalName`. The founder
+           reads the sentence; an integration reads the code; neither has to parse
+           the other's format. THE MESSAGE BELOW IS BYTE-IDENTICAL to Wave 83's —
+           the copy is not touched, and nothing rendered changes (the toast still
+           shows `error.message`). */
+        const refusal = new Error(
+          `The price per share contradicts this option pool: the round would store $${editPriceAgreement.savedExact} while this pool ` +
             `derives $${editPriceAgreement.derivedExact} (difference $${editPriceAgreement.differenceExact}).`,
-        );
+        ) as Error & { code?: string; refusalName?: string };
+        refusal.code = "price_contradicts_pool";
+        refusal.refusalName = "price_contradicts_pool";
+        throw refusal;
       }
       /* WAVE 58e · D2/D3.5 — SAME BELT AND BRACES FOR THE TERM RANGES. This dialog
          is the ONLY post-creation edit surface for the discount, and on live it
@@ -671,7 +721,22 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
     },
     onSuccess: (data) => {
       if (data?.ok) {
-        toast({ title: "Terms saved", description: `Bridge event ${data.eventType} emitted.` });
+        /* WAVE 83 · ITEM 4 — RE-RENDER FROM THE SERVER'S RESPONSE, NOT LOCAL
+           STATE. `data.round` is the PERSISTED row. Writing it into the cache
+           before the invalidate means the list shows what was actually stored,
+           so a term the server silently dropped cannot look saved. The
+           invalidate below still runs, so the durable read remains the
+           authority. */
+        if (data?.round && typeof data.round === "object") {
+          queryClient.setQueryData<Round[] | undefined>(["/api/rounds"], (prev) =>
+            Array.isArray(prev)
+              ? prev.map((r) => (r.id === round.id ? { ...r, ...(data.round as Partial<Round>) } : r))
+              : prev,
+          );
+        }
+        /* WAVE 83 · ITEM 4 — the confirmation now NAMES WHAT WAS STORED, read
+           back off the server's response. No event name, no internal identifier. */
+        toast({ title: "Terms saved", description: savedTermsSummary(data?.round) });
         /* WAVE 69 · V-2 (R58 row 5) — the server's `termWarnings` channel had ZERO
            client consumers, so R56's approved warning was invisible. It is a
            SECOND toast, not a replacement: `TOAST_LIMIT` is 5, so it stacks
@@ -952,8 +1017,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                 Unticking this REMOVES the pool from the round: the percentage and the placement are cleared and
                 the projection returns to showing no pool. Nothing is reset silently — leaving this dialog without
                 saving changes nothing. This round can be edited because it is not yet closed or funded; once it is,
-                the server refuses every term edit with <code className="font-mono">closed_round_readonly</code> and
-                the “Edit terms” button is locked.
+                Capavate refuses every term edit and the “Edit terms” button is locked.
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1083,7 +1147,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                 <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-xs" data-testid="edit-pool-base-refusal">
                   <div className="font-medium">The fully-diluted base cannot be settled</div>
                   <p className="mt-1">{editBase.reason}</p>
-                  <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{editBase.code}</code></p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">Nothing has been changed and no base has been guessed. Correct the field named above and this clears itself.</p>
                 </div>
               )}
               {editBase && editBase.ok && (
@@ -1093,7 +1157,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                 <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-xs" data-testid="edit-pool-refusal">
                   <div className="font-medium">The pool share count cannot be derived yet</div>
                   <p className="mt-1">{editPoolDerivation.reason}</p>
-                  <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{editPoolDerivation.code}</code></p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">Nothing has been changed and no share count has been guessed. Correct the field named above and this clears itself.</p>
                 </div>
               )}
               {/* ═════════════════════════════════════════════════════════
@@ -1174,7 +1238,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                   <div className="font-medium">Your cap-table ledger could not be read</div>
                   <p className="mt-1">{editLedger.reason}</p>
                   <p className="mt-1 text-[10px] text-muted-foreground">
-                    Refusal code: <code className="font-mono">{editLedger.code}</code>
+                    Nothing has been changed. The detail below is what Capavate received when it tried to read the ledger.
                   </p>
                   <p className="mt-1 text-[10px] font-mono text-muted-foreground" data-testid="edit-ledger-unreadable-detail">
                     {editLedger.detail}
@@ -1228,6 +1292,13 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           <div>
             <Label>Target close date</Label>
             <Input type="date" value={closeDate?.slice(0, 10)} onChange={e => setCloseDate(e.target.value)} className="mt-1" data-testid="input-close-date" />
+            {/* WAVE 83 · ITEM 2.2 — the same sentence as the wizard, from the same
+                shared module, appended as the LAST child of this field's div. */}
+            {pastTargetCloseNotice(closeDate) ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="edit-close-date-past-warning">
+                {pastTargetCloseNotice(closeDate)}
+              </p>
+            ) : null}
           </div>
           <div className="col-span-2">
             <Label>Terms summary</Label>

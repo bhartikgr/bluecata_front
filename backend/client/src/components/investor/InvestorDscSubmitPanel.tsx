@@ -36,6 +36,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest } from "@/lib/queryClient";
+import { statusLabel } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 (M-3) */
 
 /** Mirrors `DscSubmission` (server/adminDscRoutes.ts). */
 export interface DscSubmissionRow {
@@ -63,8 +64,10 @@ export function dscErrorCopy(error: string | null | undefined): string {
   return DSC_ERROR_COPY[error] ?? `That was refused (${error}). Nothing was stored.`;
 }
 
-export function dscStatusVariant(status: string): "default" | "secondary" | "outline" | "destructive" {
-  if (status === "promoted" || status === "accepted") return "default";
+export function dscStatusVariant(status: string): "positive" | "secondary" | "outline" | "destructive" {
+  /* WAVE 101 - "default" is the brand red, so `promoted`/`accepted` were the
+     same colour as `declined`/`rejected` two lines down.  Colour only. */
+  if (status === "promoted" || status === "accepted") return "positive";
   if (status === "pending") return "secondary";
   if (status === "declined" || status === "rejected") return "destructive";
   return "outline";
@@ -154,8 +157,9 @@ export function InvestorDscSubmitPanel({ companyId }: { companyId: string }) {
                     {String(s.submittedAt).slice(0, 10)}
                   </span>
                 </span>
-                <Badge variant={dscStatusVariant(s.status)} data-testid={`investor-dsc-status-${s.id}`}>
-                  {s.status}
+                {/* WAVE 90 · ITEM 3 (M-3) — the raw status enum was the badge text. */}
+                <Badge variant={dscStatusVariant(s.status)} data-testid={`investor-dsc-status-${s.id}`} data-status={s.status}>
+                  {statusLabel(s.status)}
                 </Badge>
               </li>
             ))}

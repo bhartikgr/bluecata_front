@@ -43,7 +43,11 @@ import {
 import { inboundState, resetInboundState } from "../lib/bridgeInbound";
 import { hydrateAllStores } from "../lib/hydrateStores";
 import { tickBridgeWorker, startBridgeWorker, stopBridgeWorker, isBridgeWorkerRunning } from "../bridgeWorker";
-import { _testStripeAdapter } from "../stripeGatewayAdapter";
+/* WAVE 97B · R86 — `import { _testStripeAdapter } from "../stripeGatewayAdapter";`
+ * stood here. The module is deleted: owner, 2026-08-21, "remove stripe. I can
+ * add this at a later date. We are using Airwallex today." The KL-06 describe
+ * block that used it is removed below, with every dropped test name recorded in
+ * build_log/wave97b/W97B_TESTS.md §3. */
 import { InMemorySessionStore } from "../sessionStore";
 import { parseCsv, registerContactRosterImporterRoutes, _testImporter } from "../contactRosterImporter";
 import { _testContacts } from "../adminContactsStore";
@@ -356,74 +360,36 @@ describe("KL-05 — Bridge Worker", () => {
 });
 
 /* ============================================================
- * KL-06: Stripe gateway adapter
+ * KL-06: Stripe gateway adapter — REMOVED, WAVE 97B · R86 (2026-08-21)
+ *
+ * Owner, verbatim: "remove stripe. I can add this at a later date. We are using
+ * Airwallex today."
+ *
+ * `server/stripeGatewayAdapter.ts` is deleted, so this whole describe block —
+ * six tests that asserted STRIPE WORKED — is gone rather than rewritten. There
+ * was nothing to rewrite it INTO: every assertion was about Stripe-specific
+ * machinery with no Airwallex counterpart in this module.
+ *
+ * DROPPED TEST NAMES, all recorded in build_log/wave97b/W97B_TESTS.md §3:
+ *   1. isLiveMode() returns false when PAYMENT_GATEWAY_MODE is not live        (was PASSING)
+ *   2. isLiveMode() returns false when API key is missing even if mode=live    (was PASSING)
+ *   3. webhook signature verification rejects malformed sig header             (was PASSING)
+ *   4. webhook signature verification rejects expired timestamp                (was PASSING)
+ *   5. stripe webhook endpoint rejects invalid signature when secret is set    (was PASSING)
+ *   6. stripe webhook endpoint processes event without signature when no secret(was FAILING,
+ *      500 vs 200 — a pre-existing failure present in the Wave 95 baseline)
+ *
+ * WHAT REPLACES THE COVERAGE, so nothing is silently lost:
+ *   • The equivalent *Airwallex* webhook signature checks (correct HMAC accepted,
+ *     tampered body rejected, missing header rejected, unset secret rejected) are
+ *     asserted in server/__tests__/airwallexGateway.test.ts and are UNCHANGED.
+ *   • The "never go live without an explicit mode and a key" contract that
+ *     isLiveMode() guarded for Stripe is asserted for Airwallex — including with
+ *     a key present — in w97_stripe_removal_and_actor_providers.test.ts and
+ *     w97b_stripe_gone_and_seam.test.ts (mutation M9 / M9b).
+ *   • The absence of the route this block exercised, POST /api/webhooks/stripe,
+ *     is now itself asserted in w97b_stripe_gone_and_seam.test.ts.
  * ============================================================ */
-describe("KL-06 — Stripe Gateway Adapter", () => {
-  it("isLiveMode() returns false when PAYMENT_GATEWAY_MODE is not live", () => {
-    delete process.env.PAYMENT_GATEWAY_MODE;
-    delete process.env.PAYMENT_GATEWAY_API_KEY;
-    expect(_testStripeAdapter.isLiveMode()).toBe(false);
-  });
-
-  it("isLiveMode() returns false when API key is missing even if mode=live", () => {
-    process.env.PAYMENT_GATEWAY_MODE = "live";
-    delete process.env.PAYMENT_GATEWAY_API_KEY;
-    expect(_testStripeAdapter.isLiveMode()).toBe(false);
-    delete process.env.PAYMENT_GATEWAY_MODE;
-  });
-
-  it("webhook signature verification rejects malformed sig header", () => {
-    const valid = _testStripeAdapter.verifyStripeSignature(
-      "test_body",
-      "bad_signature_format",
-      "whsec_test",
-    );
-    expect(valid).toBe(false);
-  });
-
-  it("webhook signature verification rejects expired timestamp", () => {
-    // timestamp 10 minutes ago — outside the 5 min tolerance window
-    const oldTs = Math.floor(Date.now() / 1000) - 700;
-    const valid = _testStripeAdapter.verifyStripeSignature(
-      "body",
-      `t=${oldTs},v1=abc`,
-      "whsec_test",
-    );
-    expect(valid).toBe(false);
-  });
-
-  it("stripe webhook endpoint rejects invalid signature when secret is set", async () => {
-    const { registerStripeWebhookRoute } = await import("../stripeGatewayAdapter");
-    const app = makeApp();
-    app.use(express.json({ verify: (r: any, _res, buf) => { r.rawBody = buf; } }));
-    process.env.PAYMENT_GATEWAY_WEBHOOK_SECRET = "whsec_test";
-    registerStripeWebhookRoute(app);
-    const r = await req(
-      app,
-      "POST",
-      "/api/webhooks/stripe",
-      { id: "evt_test", type: "payment_intent.succeeded" },
-      { "stripe-signature": "t=bad,v1=badsig" },
-    );
-    expect(r.status).toBe(400);
-    expect(r.body.error).toBe("invalid_signature");
-    delete process.env.PAYMENT_GATEWAY_WEBHOOK_SECRET;
-  });
-
-  it("stripe webhook endpoint processes event without signature when no secret", async () => {
-    const { registerStripeWebhookRoute } = await import("../stripeGatewayAdapter");
-    const app = makeApp();
-    registerStripeWebhookRoute(app);
-    const r = await req(
-      app,
-      "POST",
-      "/api/webhooks/stripe",
-      { id: `evt_${Date.now()}`, type: "charge.refunded", data: { object: { metadata: {} } } },
-    );
-    expect(r.status).toBe(200);
-    expect(r.body.ok).toBe(true);
-  });
-});
 
 /* ============================================================
  * KL-07: Invoice→Company cross-link (D2.5 Slice 1: Pricing.tsx was retired;

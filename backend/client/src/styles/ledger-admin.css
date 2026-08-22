@@ -1,0 +1,483 @@
+/* ============================================================================
+ * ledger-admin.css — WAVE 4D · THE ADMIN "LEDGER + GRID" SKIN
+ * ============================================================================
+ *
+ * WHAT THIS FILE IS
+ * -----------------
+ * R73 (owner): "Let's go with your recommendation - Ledger. I like the color
+ * coding applications."  Direction A "Ledger" is the base; Direction D "Grid"'s
+ * colour-coded status pills and table borders are adopted for the data tables.
+ * R74/R78 make it platform-wide.  Waves 1D (Consortium Partner) and 2D+3D
+ * (Collective, founder) shipped the first three areas; this file applies THE
+ * SAME TEN DECISIONS to the ADMIN area, and `ledger-investor.css` applies them
+ * to the fifth, so the platform speaks ONE dialect and not five.
+ *
+ * ADMIN IS THE MOST TABLE-DENSE AREA ON THE PLATFORM, so the highest risk in
+ * this file is a table header that grows and pushes a column off the screen.
+ * That risk is closed structurally in §4 and MEASURED in OVERFLOW.md.
+ *
+ * WHAT THIS FILE IS NOT
+ * ---------------------
+ * NOT ONE ELEMENT OF FUNCTIONALITY OR USABILITY CHANGES.  No control moves, is
+ * renamed, removed, hidden, added or reordered.  There is no markup here, no
+ * `display`, no `visibility`, no `opacity`, no `pointer-events`, no `order`, no
+ * `position`, no `content`, no `width`, no `height`, no `text-align`, no
+ * `padding` and no `cursor`.  Colour, type, border, radius, shadow and weight
+ * only.  Asserted by
+ * `client/src/styles/__tests__/w4d5d_ledger_admin_investor_scope.test.ts`.
+ *
+ * SCOPE — EVERY SELECTOR IS SCOPED TO [data-product="admin"].
+ * ----------------------------------------------------------
+ * `AppShell.tsx:747` sets `data-product={product}` on the shell root, and
+ * resolves `"admin"` for every `/admin/*` route.  MEASURED on the live local
+ * tree before a line of this was written: all fifteen admin screens report
+ * `data-product="admin"` on their root.  Consortium Partner, Collective,
+ * founder, investor and the public marketing site read NOTHING from this file.
+ * There is not one unscoped selector below.
+ *
+ * R80 — `pages/founder/Billing.tsx` IS NOT REACHABLE FROM HERE AT ALL.
+ * -------------------------------------------------------------------
+ * The owner, verbatim: "Founder Billing Page: OK. Keep it different."  Wave
+ * 2D+3D honoured that by putting a `:not(:has([data-testid=
+ * "card-collective-application-fee"]))` switch on every rule in
+ * `ledger-founder.css`, and Wave 96 carried it character for character into its
+ * five new rules.  THIS FILE DOES NOT NEED THAT SWITCH AND DELIBERATELY DOES NOT
+ * CARRY ONE, because `[data-product="admin"]` is not an ancestor of any founder
+ * route: Billing renders under `data-product="founder"`.  The guard is therefore
+ * neither weakened, narrowed nor re-implemented — `ledger-founder.css` is not
+ * opened, and Billing's screenshot comes out byte-identical.  Adding a
+ * copy of the founder switch here would be worse, not better: it would imply
+ * that an admin selector can reach a founder page, which is false.
+ *
+ * WHY NO OTHER FILE IS EDITED
+ * ---------------------------
+ *  · `capavate-tokens.css` is SACRED (manifest 41/48).  NOT OPENED.  Where this
+ *    file needs the ratified navy it READS `var(--cv-color-navy)` /
+ *    `var(--cv-color-navy-light)` out of that file rather than declaring a hex,
+ *    exactly as Wave 96 did.  Tier-9 rule 74 ("brand colours LOCKED: primary
+ *    #cc0001, navy #041e41") is honoured literally.
+ *  · `index.css`'s `:root` block — SHARED with every area.  NOT OPENED.  Every
+ *    token the admin area needs is SHADOWED inside the admin scope instead.
+ *    (A third token layer sits INLINE in `index.css` AFTER the `@import` list
+ *    and beats every imported stylesheet — but MEASURED, its two scoped blocks
+ *    name only `[data-product="collective"]` and `[data-product="partner"]`, so
+ *    not one of its declarations reaches this area.  Verified by rendering, not
+ *    by reading: §0 below.)
+ *  · `ledger-partner.css`, `ledger-collective.css`, `ledger-founder.css` — other
+ *    waves'.  NOT OPENED.  All three areas come out byte-identical.
+ *  · `collective-theme.css` / `partner-theme.css` — the `w8` symmetry contract
+ *    makes a one-area edit RED, and neither names `admin`.  NOT OPENED.
+ *  · `home3style.css` + the 19 marketing components — SACRED / global.  NOT
+ *    OPENED.  `home3style.css` is why the admin root MEASURED at 18px
+ *    (`body { font-size: var(--text-base) }`) and why every `p`/`li` is capped at
+ *    72ch; both are BARE ELEMENT selectors that a `[data-product="admin"] X`
+ *    selector outscores, so no edit to the marketing stylesheet is needed.
+ *  · The 775 hand-typed status-colour classes in 51 admin files are re-coloured
+ *    by the `[data-product="admin"]` block of `ledger-ramps.css`.  ZERO component
+ *    edits, so no JSX is restructured, so nothing can be dropped.
+ *  · `computeConversionProjections` — R69.  NOT OPENED.  It lives in a server
+ *    file and this wave opened no server file at all.
+ *  · `components/ui/**` — pre-flight §4.6 forbids it outside Wave 0.4.  NOT
+ *    OPENED.  Every effect on a shadcn primitive is achieved from the scope.
+ *  · `AuditChainVerifyPage.tsx` and the rest of WAVE 95's audit-chain surfaces,
+ *    including the PERMANENT HONESTY PANEL that states the pre-anchor record is
+ *    not provable and the re-anchor action.  NOT OPENED.  This file STYLES them
+ *    and does not alter one word of that copy or any of its behaviour: a
+ *    stylesheet cannot.
+ *  · WAVE 90's 19 de-enumerated label sites and the single-sourced
+ *    `PortalVersionFooter`; WAVE 93/97's corrected actor descriptions.  NOT
+ *    OPENED.  No raw enum value is reintroduced and no name is restyled into an
+ *    id, because no text is touched at all.
+ *  · `RoundNew.tsx`, the term-sheet generator and the founder exit surfaces —
+ *    WAVE 92 owns those and is active.  `server/` — WAVE 97B may be active.
+ *    NOT OPENED, NOT READ.
+ *
+ * WHAT MEASUREMENT SAID BEFORE ANY OF THIS WAS WRITTEN
+ * ---------------------------------------------------
+ * Read off the live local admin tree with `tools/probe.mjs` on fifteen screens,
+ * not from a document:
+ *   root font-size            18px            -> 14px
+ *   font-variant-numeric      normal          -> tabular-nums lining-nums
+ *   h1 / page title           20px Montserrat 600 #141F34  -> same size and
+ *                             family, ink -> the ratified #041E41.  ALREADY 20px
+ *                             AND ALREADY SANS, so R78/OQ-5 needs no size here.
+ *   body background           #F8FAFC         -> UNCHANGED.  Already the cool
+ *                              surface; the warm/cool seam Collective had does
+ *                              not exist here and nothing was "fixed".
+ *   default border            #DADFE7 / #E0E5EB / #C2CAD6  -> #E5EAF0 / #D9DCE1
+ *   secondary / muted fill    #ECEFF4 / #EFF2F5             -> #F1F4F8
+ *   rail + top header         #1C2C4A (a SECOND navy)       -> #041E41 ratified
+ *   button / card radius      already 6px / 9px from tailwind.config.ts -> NO
+ *                              CHANGE NEEDED.  The 999px-lozenge problem is a
+ *                              `--cv-radius-full` problem specific to the
+ *                              Collective/partner shell; MEASURED here, 6px is
+ *                              already the commonest radius (51 elements on
+ *                              /admin/fees) and 9999px appears on 3.
+ *   table thead th            14px weight 500, no transform, no rule beneath
+ *                              -> min(12px,1em) weight 600 UPPERCASE on a pale
+ *                              band with the Grid rule under it
+ *   --muted-foreground        #5B667B, 5.53:1 on #F8FAFC -> already AA, LEFT
+ *                              ALONE.  There is no sub-AA TOKEN in this area to
+ *                              fix; the sub-AA PAIRINGS are fixed by the ramps.
+ *
+ * ACCESSIBILITY
+ * -------------
+ * Computed by `tools/verify_contrast.py` over the REAL class pairings in the
+ * admin source.  No pair below AA 4.5:1 is introduced.  Transcript:
+ * `build_log/wave4d5d_admin_investor/STATUS_COLOURS.md`.
+ * ========================================================================== */
+
+/* ── 0 · THE THIRD TOKEN LAYER, RE-MEASURED RATHER THAN TAKEN ON TRUST ─────
+ * Wave 1D flagged, and Wave 2D+3D confirmed, that `client/src/index.css` carries
+ * a THIRD token layer INLINE, AFTER the `@import` list, which therefore beats
+ * every imported stylesheet regardless of what this file says.  It was checked
+ * again for this area rather than assumed:
+ *
+ *   · its `:root` block is unscoped and IS inherited by the admin subtree — so
+ *     everything this file needs to move is SHADOWED in the admin scope below,
+ *     which outranks `:root` on specificity, not on order.  That is why nothing
+ *     here relies on being imported last.
+ *   · its two `[data-product=...]` blocks name ONLY `collective` and `partner`.
+ *     Not one of their declarations reaches `[data-product="admin"]`.  So unlike
+ *     Wave 2D+3D — which had to override `collective-theme.css` at equal
+ *     specificity — this file has no inline competitor to beat.
+ *
+ * The `@import` for this file is nevertheless APPENDED LAST in `index.css`,
+ * never inserted at the head, so the cascade order of every pre-existing rule is
+ * unchanged.  The brief: "Append at the end of a container — inserting at the
+ * HEAD reads as a mass removal." */
+
+/* ── 1 · SEMANTIC TOKEN SHADOW ────────────────────────────────────────────
+ * The admin area does NOT consume the `--cv-*` namespace (measured: zero warm
+ * `--cv-*` values are painted anywhere in it — the Collective/partner warm-beige
+ * problem does not exist here).  It resolves the shadcn semantic tokens from
+ * `:root`.  Redeclaring them inside the admin scope re-paints every
+ * `border-border`, `bg-card`, `bg-secondary`, `bg-muted` and `border-input` site
+ * in the area without editing `:root`, which every other area shares.
+ *
+ * --primary / --accent / --ring / --destructive are NOT shadowed: --primary and
+ * --accent are already the logo red, and Tier-9 rule 74 locks them.  MEASURED:
+ * the admin primary button already paints rgb(204,0,0) = #CC0001 at 6px. */
+[data-product="admin"] {
+  /* SURFACE — already cool.  Nudged the last two points onto the ratified
+   * #F8FAFC so all five product areas paint the SAME off-white and a screenshot
+   * of one can be laid beside a screenshot of another. */
+  --background: 210 40% 98%;      /* #F8FAFC — was 210 33% 98% (#F8FAFB) */
+
+  /* BORDERS — Ledger hairline + Grid rule.  MEASURED before the change: THREE
+   * near-identical greys, #DADFE7 / #E0E5EB / #C2CAD6, differing by one or two
+   * points of lightness for no stated reason.  Now TWO, and the same two the
+   * Consortium Partner, Collective and founder areas use. */
+  --border: 213 27% 92%;          /* #E5EAF0 — was 215 20% 88% (#DADFE7) */
+  --card-border: 213 27% 92%;     /* #E5EAF0 — was 215 20% 90% (#E0E5EB) */
+  --popover-border: 213 27% 92%;  /* #E5EAF0 — matches the card hairline */
+  --input: 214 12% 87%;           /* #D9DCE1 — was 215 20% 80% (#C2CAD6).
+                                   * --ds-border-strong.  A form field's rim is
+                                   * the Grid rule, one step firmer than a
+                                   * hairline so an input still reads as a well. */
+
+  /* NEUTRAL FILLS — the ratified neutral tint, replacing two near-identical
+   * greys.  MEASURED: #ECEFF4 was painted on 35 elements of /admin/fees alone. */
+  --secondary: 214 33% 96%;       /* #F1F4F8 — was 215 25% 94% (#ECEFF4) */
+  --muted: 214 33% 96%;           /* #F1F4F8 — was 215 25% 95% (#EFF2F5) */
+
+  /* THE LEFT RAIL IS **NOT** MOVED BY TOKEN, AND THAT IS WAVE 96'S CORRECTION.
+   * `--sidebar` is consumed as `hsl(var(--sidebar))`, and the nearest HSL triplet
+   * to the ratified #041E41 renders #041F43 — one point off the locked brand hex.
+   * Wave 96 proved that and moved the rail by CLASS instead; §6 below does the
+   * same.  --sidebar / --sidebar-border / --sidebar-accent / --sidebar-primary:
+   * UNTOUCHED here.  The rail's own DIVIDERS stay lighter than the rail, because
+   * a divider that matches its surface is not a divider. */
+
+  /* SHADOWS — navy-tinted on the RATIFIED navy hue (214 88% 14%) rather than the
+   * legacy 219 45% 14%.  Same weights; Ledger leans on hairlines, not on lift. */
+  --shadow-2xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.04);
+  --shadow-xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.05);
+  --shadow-sm: 0px 1px 2px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow: 0px 2px 4px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow-md: 0px 4px 8px -2px hsl(214 88% 14% / 0.08), 0px 2px 4px -1px hsl(214 88% 14% / 0.05);
+  --shadow-lg: 0px 8px 16px -4px hsl(214 88% 14% / 0.10), 0px 4px 6px -1px hsl(214 88% 14% / 0.05);
+  --shadow-xl: 0px 16px 32px -8px hsl(214 88% 14% / 0.14);
+  --shadow-2xl: 0px 24px 48px -12px hsl(214 88% 14% / 0.20);
+}
+
+/* ── 2 · BASE TYPE ────────────────────────────────────────────────────────
+ * MEASURED before the change on all fifteen admin screens: the admin root
+ * resolved to 18px, because `home3style.css` sets `body { font-size:
+ * var(--text-base) }` and --text-base is a clamp topping out at 1.125rem.
+ * 18px -> 14px: Stripe's dashboard number, and the same number the other four
+ * areas now use.
+ *
+ * This is an INHERITED value only, so it reaches exactly the elements that carry
+ * no Tailwind `text-*` class.  Nothing that already declares its own size moves.
+ *
+ * The font FAMILY is deliberately NOT changed.  Montserrat is already the loaded
+ * brand body face and the admin titles are already sans, so R78/OQ-5 ("in-product
+ * titles become sans") is ALREADY SATISFIED in this area and no size is set. */
+[data-product="admin"] {
+  font-size: 14px;
+  line-height: 1.45;
+  /* R78/OQ-4 — tabular numerals BY CSS RULE.  MEASURED before the change:
+   * `font-variant-numeric: normal`.  This is the one rule the pre-flight asked
+   * for by name, and after the founder cap table this is where it matters most:
+   * the fees table, partner billing operations, reconciliation and the audit log
+   * are columns of money and hashes that must stack. */
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* The marketing stylesheet caps EVERY paragraph and list item at 72ch,
+ * unscoped, platform-wide.  At 14px that is ~630px, so an explanatory paragraph
+ * inside a wide admin card wraps at three-fifths width and leaves a ragged hole
+ * — which matters here because WAVE 95's permanent honesty panel is prose.
+ * Released for this area only.  This WIDENS text; it cannot clip it. */
+[data-product="admin"] p,
+[data-product="admin"] li,
+[data-product="admin"] figcaption {
+  max-width: none;
+}
+
+/* ── 3 · TITLES — NAVY ────────────────────────────────────────────────────
+ * MEASURED: the admin `h1` is ALREADY 20px Montserrat 600 — `AppShell`'s
+ * `PageHeader` renders `text-xl font-semibold tracking-tight` — so R78/OQ-5
+ * needs NOTHING done here and NO SIZE IS SET BELOW.  Only the INK changes:
+ * #141F34, a fourth near-navy that exists nowhere in the ratified palette,
+ * becomes the ratified #041E41 at 16.57:1 AAA.
+ *
+ * `h2`/`h3` sizes are deliberately NOT set.  Admin headings resolve from
+ * authored Tailwind classes, and overriding them from the area scope would
+ * silently outrank every authored `text-base`/`text-lg` a page chose. */
+[data-product="admin"] h1,
+[data-product="admin"] [data-testid="text-page-title"] {
+  color: #041E41;                      /* navy — 16.57:1 AAA.  Was #141F34. */
+  letter-spacing: -0.005em;
+}
+
+/* ── 4 · TABLES — DIRECTION D's "GRID" TREATMENT ──────────────────────────
+ * The half of R73 the owner named: border-driven row structure.  Horizontal
+ * rules only (Ledger's no-vertical-rules), a small uppercase header in the
+ * secondary ink, and a hairline between rows.  This is the single most visible
+ * improvement in the admin area, because admin IS tables: fifteen screens carry
+ * eleven of them, up to nine columns wide.
+ *
+ * DELIBERATELY NOT SET: `text-align`, `padding`, `width`.  A `[data-product]`-
+ * scoped selector outscores a Tailwind utility class, so setting any of them
+ * would silently override every authored `text-right` on a money column, every
+ * authored `px-*`/`py-*` on a cell and every authored column width — which is
+ * exactly how a restyle breaks a table's alignment and row rhythm.  Row height
+ * therefore comes from the existing padding plus the new 14px base, and no
+ * authored alignment moves. */
+[data-product="admin"] table thead {
+  background: #F8FAFC;
+}
+
+[data-product="admin"] table thead th {
+  /* `min(12px, 1em)` IS DELIBERATE AND IT IS A BUG FIX, NOT A FLOURISH.  A HARD
+   * `12px` HERE IS THE SINGLE HIGHEST RISK IN THIS WAVE.
+   *
+   * WHAT HAPPENED WHEN A PREVIOUS WAVE SHIPPED THE HARD FORM.  Wave 2D+3D's
+   * first draft read `font-size: 12px`.  On the founder cap table — whose header
+   * cells carry no size of their own and inherit 10px from an ancestor — forcing
+   * 12px widened the header row and pushed the table from 1141px to 1178px inside
+   * a 1134px container.  The `% ON VIEW OF fully-diluted` column and three
+   * ownership subtotals were visibly CUT OFF.  The instrument reported
+   * "clipped 8→8" and passed it, because it counted TEXT NODES, not container
+   * overflow.  It was caught by LOOKING AT THE SCREENSHOT.
+   *
+   * WHY IT MATTERS MORE HERE THAN ANYWHERE.  Admin is the most table-dense area
+   * on the platform, AND — measured — two of its tables sit in a wrapper whose
+   * `overflow-x` is `hidden`, not `auto`: `/admin/users` (1134px of content in a
+   * 1184px container) and `/admin/investors` (1134px in 1184px, nine columns).
+   * On those two, content that outgrows the container is not merely
+   * scroll-to-reach, it is GONE.  Both have only 50px of headroom.
+   *
+   * `1em` in a `font-size` declaration resolves against the PARENT's font-size,
+   * so `min(12px, 1em)` means EXACTLY "12px, but never larger than what this cell
+   * already inherited".  A header that inherits the 14px base becomes 12px, which
+   * is the design.  A header that deliberately runs at 10px stays at 10px.  The
+   * rule is MONOTONE: it can only ever make a header row NARROWER, never wider,
+   * so it cannot clip a column on any table anywhere — including the wide, busy
+   * tables real admin data will have and this fixture does not.  That is a proof
+   * about every possible table, not a measurement of the eleven here.
+   *
+   * `letter-spacing` IS DELIBERATELY NOT SET, for the same reason.  At 10px,
+   * `0.04em` adds 0.4px per character; a nine-column admin header is ~90
+   * characters wide, i.e. ~36px of pure tracking — more than the 50px of headroom
+   * the two `overflow-x: hidden` tables have.  Uppercase + weight 600 + the
+   * grey-blue ink + the Grid rule read as a ledger header without it.  This is
+   * also why `ledger-partner.css`'s `letter-spacing: 0.04em` is NOT copied here:
+   * it is Wave 1D's file, it is not opened, and its tracking is Wave 96's
+   * OWNER QUESTION Q2, not this wave's to answer. */
+  font-size: min(12px, 1em);
+  font-weight: 600;
+  text-transform: uppercase;
+  /* WAVE 99 · ITEM 1 — SMALL CAPITALS, AND IT IS A REACHABILITY FIX, NOT A
+   * FLOURISH.  APPLIED IDENTICALLY IN ALL FIVE AREAS.
+   *
+   * WHAT WAS WRONG.  `text-transform: uppercase` above is a SECOND, INDEPENDENT
+   * widening vector that `font-size: min(12px, 1em)` does not bound: capitals are
+   * wider glyphs than lower case at the same size, so `Commission override` ->
+   * `COMMISSION OVERRIDE` is ~15-20% wider while the 14px->12px shrink only
+   * removes ~14%.  Net: WIDER.  On `/admin/partner-fees` at 1280 — where the
+   * table is already laid out at its `min-content` width in a 590px container —
+   * that landed straight in the overflow, and the `ACTIONS` column with its
+   * `Edit` / `Expire` buttons was CUT AT THE CONTAINER EDGE.  Wave 4D+5D
+   * DECOMPOSED IT PROPERTY BY PROPERTY on the live page: uppercase is the ENTIRE
+   * cause; `font-weight: 600` contributes EXACTLY ZERO and the 14px->12px shrink
+   * contributes EXACTLY ZERO.
+   *
+   * HOW IT WAS FOUND, AND THE LESSON.  Two instrument fields DISAGREED —
+   * `lastThTextClipped: false` (the `<th>`'s own box is not narrower than its
+   * text) against `lastThFullyInsideHost: false` (the CONTAINER clips it) — and
+   * THE SCREENSHOT SETTLED IT.  That is the third time in this programme that
+   * looking at the picture beat reading the number.
+   *
+   * WHY THIS PROPERTY.  Small capitals are x-height glyphs, so they are NARROWER
+   * than full capitals while still reading as a ledger header.  MEASURED on the
+   * real tree: table 1 633px -> 590px, table 2 611px -> 590px, both in a 590px
+   * container, overflow 43 and 21 -> 0 and 0, last `<th>` back INSIDE the host on
+   * both.  It is better than what shipped AND better than the pre-wave state
+   * (613/590, over 23, last `<th>` NOT inside), because it also fixes the table
+   * that was ALREADY cut before the restyle began.  Dropping `uppercase` instead
+   * was also measured and is WORSE: 601/590, over 11, still cut.
+   *
+   * WHY `text-transform: uppercase` IS KEPT ABOVE.  `all-small-caps` enables both
+   * `smcp` and `c2sc`, so it renders identically with or without the transform.
+   * Keeping the transform keeps `innerText` reporting `ACTIONS`, so no text
+   * census and no drop-detector entry moves on any table header in the product.
+   *
+   * WHY ALL FIVE AREAS.  Applying it in admin alone would make two of five areas
+   * diverge, which is exactly what R74 exists to prevent — and is exactly why
+   * Wave 4D+5D refused to apply it unilaterally.  One product, one treatment.
+   *
+   * THE FONT.  Montserrat carries no `smcp`/`c2sc` table, so Blink SYNTHESISES
+   * the small capitals by scaling the capitals down.  That is a RENDERING, not a
+   * fallback to lower case, and it was verified three ways rather than assumed —
+   * width vs full capitals, width vs plain lower case, and a screenshot of all
+   * four cases side by side.  `W99_OVERFLOW_ALL_AREAS.md` section 2.
+   *
+   * `font-size: min(12px, 1em)` above is UNTOUCHED and stays in the never-grow
+   * form.  A bare `12px` is forbidden by test and mutation-proved. */
+  font-variant-caps: all-small-caps;
+  color: #5B6B7F;                      /* 5.21:1 AA on #F8FAFC */
+  border-bottom: 1px solid #D9DCE1;    /* --ds-border-strong, the Grid rule */
+}
+
+[data-product="admin"] table tbody tr {
+  border-color: #E5EAF0;
+}
+
+[data-product="admin"] table tbody tr + tr {
+  border-top: 1px solid #E5EAF0;
+}
+
+[data-product="admin"] table tbody tr:hover {
+  background: #F8FAFC;
+}
+
+/* ── 5 · STATUS PILLS — DIRECTION D GEOMETRY ──────────────────────────────
+ * The colours come from the `[data-product="admin"]` ramp block in
+ * `ledger-ramps.css`.  Nothing here assigns a colour; this only gives every pill
+ * the same weight so a roster of mixed states reads as one control family.
+ * The pill radius is kept for EXACTLY THIS and nothing else, which is what makes
+ * a status chip read as status again.
+ *
+ * The selector is deliberately narrow: an inline element that is BOTH a
+ * rounded-full and a border-carrying tint.  Cards, avatars and icon buttons do
+ * not match, and NO RADIUS IS SET, so an avatar stays round and an icon button
+ * is never wrongly boxed. */
+[data-product="admin"] span.rounded-full[class*="border-"],
+[data-product="admin"] span.rounded[class*="border-"][class*="text-xs"] {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ── 6 · ONE NAVY — THE HARDCODED LEGACY-NAVY SITES IN THIS AREA ──────────
+ * WHAT IS WRONG.  Two navies coexist in the admin area: the ratified #041E41
+ * that §3 above puts on the page titles, and a legacy #1C2C4A —
+ * `hsl(219 45% 20%)` — painted on the LEFT RAIL and the TOP HEADER.  MEASURED:
+ * `aside` and `header` both report `rgb(28, 44, 74)` on all fifteen screens.
+ *
+ * WHY THE RAIL AND THE HEADER MOVE IN THE SAME EDIT.  Wave 2D+3D tried moving
+ * the founder rail alone by re-pointing `--sidebar`, RENDERED it, and found the
+ * ratified navy rail now met a legacy navy header and OPENED A SEAM WHERE NONE
+ * EXISTED — because `AppShell.tsx:631` paints the header with a hardcoded
+ * `bg-[hsl(219_45%_20%)]` class, not the token.  It correctly reverted.  Wave 96
+ * fixed it by moving BOTH IN ONE EDIT.  This file does the same: the seam cannot
+ * open if neither side of it is left behind.  Measured on every screen, §3 of
+ * the report.
+ *
+ * WHY `[class~=]` AND NOT `[class*=]` — WAVE 96'S CORRECTION.  Wave 2D+3D
+ * recorded that reaching these sites "requires matching a class SUBSTRING, which
+ * would also catch the `hover:` variant and paint a hover colour at rest".  That
+ * is TRUE of `[class*=…]` and FALSE of `[class~=…]`: `~=` matches a COMPLETE
+ * whitespace-separated token, and `hover:bg-[hsl(219_45%_15%)]` is a DIFFERENT
+ * token from `bg-[hsl(219_45%_20%)]`, so the rest-state rules below cannot see
+ * the hover class at all.  The hover rules carry a real `:hover`, so they cannot
+ * apply at rest either.  Both properties are asserted and mutation-proved.
+ *
+ * WHY THESE TWO VALUES AND NO NEW ONES.  `--cv-color-navy` (#041e41) and
+ * `--cv-color-navy-light` (#0c2d55) are both declared in the SACRED
+ * `capavate-tokens.css` (NOT OPENED), which already pairs them for exactly this
+ * control: `.cv-btn--secondary { background: var(--cv-color-navy) }` /
+ * `:hover { background: var(--cv-color-navy-light) }`.  So the rest/hover
+ * relationship below is the platform's own ratified navy button, not a shade this
+ * wave invented.  NOTHING HERE DECLARES A HEX.
+ *
+ * WHAT IS DELIBERATELY LEFT, with reasons, in STATUS_COLOURS.md §5: the rail's
+ * own `--sidebar-border` / `--sidebar-accent` DIVIDERS (measured #2B3F64 — they
+ * are deliberately LIGHTER than the rail and a divider that matches its surface
+ * is not a divider), and the `/admin/login` `text-[hsl(219_45%_20%)]` (the login
+ * page renders OUTSIDE `AppShell` and carries no `data-product`, so no selector
+ * in this file can reach it — reported, not half-done).
+ *
+ * COLOUR ONLY.  `background-color` and `border-color`; no geometry, no layout,
+ * no state, no `content`. */
+
+/* the rail — moved with the header below, which is the seam Wave 2D+3D measured */
+[data-product="admin"] [class~="bg-sidebar"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* the top header (AppShell.tsx:631) + the dark button fills in this area */
+[data-product="admin"] [class~="bg-[hsl(219_45%_20%)]"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* the same buttons' rims, so a rim never disagrees with its fill */
+[data-product="admin"] [class~="border-[hsl(219_45%_20%)]"] {
+  border-color: var(--cv-color-navy);
+}
+
+/* the hover fill.  `:hover` is REQUIRED here — this is the rule that a
+ * `[class*=…]` form would have painted at rest, which is the functional defect
+ * Wave 2D+3D refused to ship. */
+[data-product="admin"] [class~="hover:bg-[hsl(219_45%_15%)]"]:hover {
+  background-color: var(--cv-color-navy-light);
+}
+
+/* the hover rim */
+[data-product="admin"] [class~="hover:border-[hsl(219_45%_15%)]"]:hover {
+  border-color: var(--cv-color-navy-light);
+}
+
+/* ── 7 · WHAT THIS FILE DELIBERATELY DOES NOT TOUCH ───────────────────────
+ *  · WAVE 95's audit-chain surfaces' COPY AND BEHAVIOUR, including the permanent
+ *    honesty panel and the re-anchor action.  Styled, never altered — a
+ *    stylesheet cannot alter either.
+ *  · WAVE 90's de-enumerated labels and `PortalVersionFooter`.  No raw enum value
+ *    can be reintroduced by a colour.
+ *  · WAVE 93/97's corrected actor descriptions.  No name is restyled into an id.
+ *  · The `--chart-*` ramp.  Categorical axes; collapsing them is information
+ *    loss, exactly as Wave 96 recorded for the cap-table holder tones.
+ *  · `text-align`, `padding`, `width`, `height`, `display`, `visibility`,
+ *    `opacity`, `pointer-events`, `position`, `order`, `content`, `z-index`,
+ *    `float`, `transform`, `overflow`, `flex-direction`,
+ *    `grid-template-columns`, `cursor`, `user-select`.  None is declared
+ *    anywhere in this file, so it cannot hide, move, disable or reorder anything
+ *    even by accident.  Asserted and mutation-proved.
+ *  · `letter-spacing` on table headers — see §4.
+ *  · Any radius.  The admin area's 6px buttons and 9px cards already come from
+ *    `tailwind.config.ts`; the pill survives only on status chips because no rule
+ *    here removes it.
+ * ========================================================================== */

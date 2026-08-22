@@ -593,7 +593,26 @@ describe("S — the five sites no longer hold a hardcoded exponent", () => {
   it("S3 track1Routes no longer multiplies the waterfall invested amount by a literal 100", () => {
     const src = read("server/track1Routes.ts");
     expect(src).not.toMatch(/Math\.round\(Number\(e\.amount\) \* 100\)/);
-    expect(src).toMatch(/toMinor\(Number\(e\.amount\), roundCurrency\)/);
+    /* ── RE-POINTED BY WAVE 86B, AND WHY THE PROPERTY IS UNCHANGED ─────────────
+       This pinned the literal `toMinor(Number(e.amount), roundCurrency)`. WAVE 86B
+       removed the `Number(...)` from that expression, because it was one of the
+       seven narrowings that destroyed a dollar on the exit-waterfall API: the
+       `toMinor(amount: number, …)` SIGNATURE forced a double on every ledger
+       amount. The call is now `toMinorExact(e.amount, roundCurrency)`.
+
+       WHAT THIS TEST DEFENDS IS UNCHANGED AND STILL PROVED: no hardcoded ISO 4217
+       exponent, and the ROUND'S OWN currency drives the conversion. `toMinorExact`
+       derives its exponent from `currencyExponent(currency)` — the SAME single
+       source of truth `toMinor` uses (`server/lib/currency.ts`) — and performs the
+       same half-up rounding of the sub-minor residue. Asserted below on both
+       poles, so neither a hardcoded exponent NOR the narrowing can come back.
+       Evidence: build_log/wave86b/W86B_MONEY_EXACTNESS.md §3, and the over-HTTP
+       JPY (exponent 0) fixture in transcripts/07_item1_http_after.txt. */
+    expect(src).toMatch(/toMinorExact\(e\.amount, roundCurrency\)/);
+    expect(src).not.toMatch(/toMinor\(Number\(e\.amount\), roundCurrency\)/);
+    /* The exponent still comes from the currency table, never a literal. */
+    expect(src).toMatch(/new MoneyDec\(10\)\.pow\(currencyExponent\(currency\)\)/);
+    expect(src).not.toMatch(/\* 100\b/);
   });
 
   it("S4 track4Routes performs no minor-unit arithmetic in SQL at all", () => {

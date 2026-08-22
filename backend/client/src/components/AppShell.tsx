@@ -91,6 +91,24 @@ function useFounderNav(): NavGroup[] {
         // landing page hosting the Team sub-tab (Team moved out of Settings).
         { href: "/founder/company-management", label: "Company Management", icon: Users, testId: "nav-company-management" },
         { href: "/founder/captable", label: "Cap Table", icon: PieChart },
+        /* WAVE 92 — THE ENTRY POINT FOR THE EXIT WATERFALL (pre-flight `OQ-W-8`).
+           `GET /api/founder/captable/waterfall` had ZERO client callers, so the
+           corrected exit maths of Waves 88, 91 and 94 was unreachable through the
+           product: a founder could type liquidation-preference terms into the round
+           wizard, be told those terms feed the exit waterfall, and then find
+           nowhere in Capavate to see one.
+
+           APPENDED AT THE END of this group, never inserted at the head — an
+           ordinal insertion shifts every following item and is how this project has
+           previously tripped the drop detector (R82). It sits directly after Cap
+           Table because that is the screen whose share counts are this
+           calculation's inputs.
+
+           The nav item was chosen over a link inside `founder/CapTable.tsx`
+           deliberately: `CapTable.tsx` is one of the seven files the
+           `drop:restyle` detector already flags as owner-hand-edited, and the nav
+           item touches one line in a file the owner has not hand-edited. */
+        { href: "/founder/captable/waterfall", label: "Exit Waterfall", icon: DollarSign, testId: "nav-exit-waterfall" },
       ],
     },
     {
@@ -707,8 +725,44 @@ export function AppShell({ children }: { children: ReactNode }) {
     else if (location.startsWith("/investor") && role !== "investor") setRole("investor");
     else if (location.startsWith("/admin") && role !== "admin") setRole("admin");
   }, [location, role, setRole]);
+  /* WAVE 0 · 0.2 — `data-product` on the shell.
+   *
+   * WHY. `CollectiveShell` already sets `data-product="collective" | "partner"`,
+   * which is how `collective-theme.css` and `partner-theme.css` re-theme those
+   * two areas from ONE stylesheet with zero component edits. `AppShell` set no
+   * such attribute, so founder, investor and admin all shared the unscoped
+   * `:root` and could not be themed independently — a `:root` change would hit
+   * all three at once. This attribute is the scope hook that lets Waves 3, 4
+   * and 5 be sequenced separately. R78/OQ-1: there are FIVE customer-facing
+   * areas, not four; `investor` is one of them and is included here.
+   *
+   * HOW IT IS DERIVED — from real routing, then real context, never a guess.
+   * The URL prefix is the authority because it is correct on the FIRST render;
+   * `role` is synced from the URL by the effect above, so on a direct load of
+   * /admin the role is still the default `"founder"` for one render and reading
+   * it alone would emit the wrong scope for that frame. Outside the three
+   * prefixes (there is no such route today — every AppShell route is under
+   * /founder, /investor or /admin) we fall back to the role from context, and
+   * only if that is somehow not one of the three do we fall back to `"founder"`,
+   * which is `RoleProvider`'s own initial value. There is therefore NO code path
+   * on which AppShell renders without a `data-product`.
+   *
+   * NO FUNCTIONAL CHANGE. One extra HTML attribute on an element that already
+   * exists. No control, route, query, permission or handler is touched, and no
+   * stylesheet consumes `[data-product="founder" | "investor" | "admin"]` yet,
+   * so nothing looks different until an area's wave opts in.
+   */
+  const product: "founder" | "investor" | "admin" = location.startsWith("/admin")
+    ? "admin"
+    : location.startsWith("/investor")
+      ? "investor"
+      : location.startsWith("/founder")
+        ? "founder"
+        : role === "admin" || role === "investor"
+          ? role
+          : "founder";
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
+    <div data-product={product} className="min-h-screen bg-background text-foreground flex flex-col">
       <Header onMobileMenu={() => setMobileOpen(true)} />
       <div className="flex flex-1 min-h-0">
         <aside className="hidden md:flex w-64 shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex-col">

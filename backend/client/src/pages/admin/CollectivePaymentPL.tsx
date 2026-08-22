@@ -24,6 +24,7 @@ import {
 import { BarChart3, CheckCircle2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 interface PLEntry {
   id: string;
@@ -69,9 +70,16 @@ function fmtMoney(minor: number | null, currency = "USD"): string {
    * A genuine 0 still formats. See WAVE55_REPORT.md. */
   return formatMinorOrUnavailable(minor, currency, { locale: "en-US" });
 }
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleDateString(); } catch { return "—"; }
+  try { return fmtLocaleDate(iso); } catch { return "—"; }
 }
 
 export default function CollectivePaymentPL() {
@@ -157,7 +165,7 @@ export default function CollectivePaymentPL() {
                       <TableCell>{ENTRY_KIND_LABELS[e.entryKind || ""] || e.entryKind}</TableCell>
                       <TableCell>{fmtMoney(e.amountMinor, e.currency)}</TableCell>
                       <TableCell>
-                        <Badge variant={e.status === "paid" ? "default" : "secondary"}>{e.status}</Badge>
+                        <Badge variant={e.status === "paid" ? "positive" : "secondary"}>{e.status}</Badge>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{e.computedVia || "—"}</TableCell>
                       <TableCell className="text-xs">{fmtDate(e.createdAt)}</TableCell>

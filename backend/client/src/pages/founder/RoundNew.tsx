@@ -67,6 +67,9 @@ import {
   dateShapedValueWarning,
   type ApiSecurity,
 } from "@shared/roundMathEngineAdapter";
+/* WAVE 83 · ITEM 2.2 — the ONE rule for a past target close date, shared with
+   the other three writers (the wizard, the create route and the terms route). */
+import { pastTargetCloseNotice } from "@shared/roundTargetCloseRule";
 /* WAVE 69 · V-1b (R58) — read the server's OWN sentence. `ApiError.message` is
    replaced with a generic string by `queryClient.ts:63` for anything ≥ 240 chars,
    and every R50 refusal is 424-543. */
@@ -603,6 +606,76 @@ export default function RoundNew() {
  useOfProceeds: (form.useOfProceeds ?? "").trim() || null,
  tranchesEnabled: form.tranches === true,
  tranchesPlan: form.tranches === true ? ((form.tranchesPlan ?? "").trim() || null) : null,
+ /* ══════════════════════════════════════════════════════════════════════════
+    WAVE 92 · ITEM 2 — THE FIFTH DEAD CONTROL, AND THE ONE THAT MATTERS MOST.
+    ══════════════════════════════════════════════════════════════════════════
+    WHAT WAS WRONG. This wizard renders "Participation cap (×)" at `:2155`, binds
+    it to `form.capParticipation`, accepts whatever a founder types, POSTs, and
+    returns success — and the value appeared NOWHERE in this payload, so **every
+    participation cap a founder has ever typed into Capavate was silently
+    discarded on submit.** It was found by accident by Wave 94, which had just
+    spent a whole wave making the platform honour caps CORRECTLY: 766 of 4,000
+    randomised cap tables published a wrong figure while a recorded cap was
+    ignored, 556 of them UNDERPAID THE FOUNDERS, zero overpaid them, and the
+    largest single error measured was $32,129,870.13. The platform now applies a
+    ceiling exactly right and there was NO WAY IN THE PRODUCT TO SET ONE.
+
+    This is the same class as Wave 80's four dead wizard controls (`notes`,
+    `useOfProceeds`, `tranches`, `tranchesPlan`, immediately above) — the FIFTH
+    instance of it. The full field-by-field sweep of both wizards, and the count,
+    is `build_log/wave92/W92_DEAD_CONTROL_SWEEP.md`.
+
+    WHY THE LIQUIDATION PREFERENCE IS SENT IN THE SAME OBJECT, AND WHY SENDING THE
+    CAP ALONE WOULD HAVE BEEN WRONG. `liqPrefMultiple` (`:2142`) and
+    `participating` (`:2150`) were discarded by this same payload. A participation
+    cap on a class with no participation recorded is INERT BY CONSTRUCTION — the
+    waterfall publishes `participationCapInert: true` for it and the ceiling can
+    never bind — so wiring the cap on its own would have persisted a value that
+    cannot affect any figure. That is a new dead promise wearing a fix's clothes,
+    which is the phrase Wave 80 used about exactly this trap. And worse: without
+    the multiple the exit waterfall refuses the class outright, so **through this
+    wizard it was not possible to create a preferred class whose exit proceeds
+    Capavate could compute at all.**
+
+    THE FORMAT IS THE ONE THE SERVER ALREADY READS, NOT A NEW ONE.
+    `server/lib/roundStoredTerms.ts:360-380` parses the free-text
+    `liquidationPreference` field STRICTLY — a multiple matching
+    `(^|[^0-9.])([0-9.]+)\s*x\b` inside `(0, 10]`, and an EXPLICIT
+    "non-participating" or "participating" for the flag, with anything ambiguous
+    left `null` so the route refuses rather than assumes. The string below is
+    composed to match that reader exactly, in the same wording Wave 94's own
+    fixtures use. NO SECOND FORMAT AND NO SECOND READER IS INTRODUCED (R21).
+
+    VALIDATION IS THE SERVER'S, IMPORTED THERE, NOT RESTATED HERE. Wave 94 fenced
+    all three writers of the cap with one shared validator, this wizard's endpoint
+    among them: `POST /api/rounds` refuses `"FULL_RATCHET"`, `50`, `0` and `-1`
+    with HTTP 400 and one sentence, and accepts `7`, which is inside the domain.
+    The client therefore sends what the founder typed, trimmed and nothing else,
+    and lets the one validator answer. A second client-side domain check would be
+    a second source of truth that drifts from `PARTICIPATION_CAP_MAX`.
+
+    EMPTY IS ABSENT, NEVER A VALUE. A blank cap box means "uncapped", so the key
+    is OMITTED rather than sent as `""` or `0`: ABSENT and UNREADABLE are
+    different things to the reader, and Wave 94 made that distinction the whole
+    point of its three new refusals.
+
+    PERSISTENCE, AND NO MIGRATION. Both keys travel the path
+    `optionPoolPostPercent`, `parentRoundId` and Wave 80's four already travel —
+    `POST /api/rounds` stashes non-column keys into `rounds.extras_json` and
+    `roundsStore.rowToRound` re-spreads them on hydrate. `capParticipation` is on
+    `roundsStore.UPDATE_EXTRAS_WHITELIST` (Wave 94). Migrations stay at 173 `.sql`,
+    177 entries, highest `0192`.
+
+    APPENDED AT THE END OF THIS OBJECT, never inserted among the existing keys —
+    an ordinal insertion is how this project has previously shifted every
+    following entry and tripped the drop detector (R82). */
+ liquidationPreference:
+ usesField("liqPrefMultiple") && (form.liqPrefMultiple ?? "").trim() !== ""
+ ? `${(form.liqPrefMultiple ?? "").trim()}x ${form.participating === true ? "participating" : "non-participating"}`
+ : null,
+ ...(usesField("capParticipation") && form.participating === true && (form.capParticipation ?? "").trim() !== ""
+ ? { capParticipation: (form.capParticipation ?? "").trim() }
+ : {}),
  };
  return (await apiRequest("POST", "/api/rounds", payload)).json();
  },
@@ -1377,9 +1450,9 @@ export default function RoundNew() {
  refusals: [
  "Ownership % cannot be previewed: it depends on the next round's price and denominator, " +
  "neither of which exists yet.",
- "Conversion trigger is not a stored field in this build. Whether this instrument converts in " +
- "a given financing is therefore UNDETERMINED, which fails closed: it is excluded from any " +
- "pricing denominator and any price computed alongside it is provisional.",
+ "Whether this instrument converts in a given financing is not recorded on the round, so " +
+ "Capavate will not assume it: the instrument is left out of every pricing denominator, and " +
+ "any price computed alongside it is provisional.",
  ],
  };
  }
@@ -2044,7 +2117,7 @@ export default function RoundNew() {
  and can no longer assert an `FD =` figure it never read from the
  fully-diluted field. With the fallback removed, a blank field produces
  a refusal here instead of a substituted number. */}
- PPS = pre_money ÷ FD_pre_money_shares{poolTopUpPct > 0 ? " (incl. option-pool top-up)" : (addonPool && addonPoolDraft.poolMode === "post_money" && addonPoolDraft.poolSize !== "" ? " (option-pool top-up EXCLUDED — post-money placement)" : "")}
+ Price per share = pre-money valuation ÷ fully-diluted pre-money shares{poolTopUpPct > 0 ? " (incl. option-pool top-up)" : (addonPool && addonPoolDraft.poolMode === "post_money" && addonPoolDraft.poolSize !== "" ? " (option-pool top-up EXCLUDED — post-money placement)" : "")}
  {fdPreMoneyShares > 0
  ? ` — fully-diluted pre-money shares used = ${Math.round(fdPreMoneyShares).toLocaleString()}`
  : " — no price yet: enter fully-diluted pre-money shares. Capavate will not substitute the new-share count for it."}
@@ -2258,7 +2331,10 @@ export default function RoundNew() {
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
  <div><Label className="flex items-center gap-1">Open date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(openDateMalformed || openDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p> : openDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-required">Open date is required.</p> : null}</div>
- <div><Label className="flex items-center gap-1">Target close date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed || closeDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p> : closeDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-required">Target close date is required.</p> : null}</div>
+ <div><Label className="flex items-center gap-1">Target close date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed || closeDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p> : closeDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-required">Target close date is required.</p> : null}
+{/* WAVE 83 · ITEM 2.2 — THE ONE RULE, WARN AND NEVER BLOCK. Appended as the
+    LAST child of this field's own <div>, so no container ordinal moves. */}
+{pastTargetCloseNotice(form.closeDate) ? <p className="text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="close-date-past-warning">{pastTargetCloseNotice(form.closeDate)}</p> : null}</div>
  {dateRangeInvalid && (
  <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
  )}
@@ -2271,7 +2347,7 @@ export default function RoundNew() {
  <Switch checked={form.tranches} onCheckedChange={v => update("tranches", v)} data-testid="switch-tranches" />
  <div className="flex-1">
  <LabelWithTip tip="For larger rounds: split the close into two or more tranches tied to milestones. Each tranche is its own funded event."><Label className="cursor-pointer">Round closes in tranches</Label></LabelWithTip>
- <p className="text-xs text-muted-foreground mt-0.5">Toggle on for milestone-gated tranches. Each tranche emits its own immutable round_close-tranche telemetry event.</p>
+ <p className="text-xs text-muted-foreground mt-0.5">Toggle on for milestone-gated tranches. Each tranche is recorded as its own permanent closing event.</p>
  {form.tranches && (
  <Textarea rows={3} className="mt-2" placeholder="Tranche 1: $X concurrent with signing. Tranche 2: $Y on milestone Z by date.…" value={form.tranchesPlan} onChange={e => update("tranchesPlan", e.target.value)} data-testid="input-tranches-plan" />
  )}
@@ -2977,7 +3053,7 @@ export default function RoundNew() {
  <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-xs pl-3" data-testid="addon-pool-refusal">
  <div className="font-medium">The pool share count cannot be derived yet</div>
  <p className="mt-1">{poolDerivation.reason}</p>
- <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{poolDerivation.code}</code></p>
+ <p className="mt-1 text-[10px] text-muted-foreground">Nothing has been changed and no share count has been guessed. Correct the field named above and this clears itself.</p>
  </div>
  )}
  {addonPool && poolDerivation && poolDerivation.ok && (
@@ -3043,7 +3119,7 @@ export default function RoundNew() {
  <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-xs" data-testid="addon-pool-implied-capitalisation-refusal">
  <div className="font-medium">The implied capitalisation cannot be reconciled yet</div>
  <p className="mt-1">{impliedCap.reason}</p>
- <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{impliedCap.code}</code></p>
+ <p className="mt-1 text-[10px] text-muted-foreground">Nothing has been changed and no capitalisation has been guessed. Correct the field named above and this clears itself.</p>
  </div>
  )}
  {/* SCOPE 3 — THE POOL SHUFFLE, DISCLOSED WITH ITS DERIVATION. */}
@@ -3080,8 +3156,8 @@ export default function RoundNew() {
  <p className="text-[11px] leading-relaxed">{poolDerivation.whoPays}</p>
  <p className="text-[10px] text-muted-foreground">{poolDerivation.fdDefinition}</p>
  <p className="text-[10px] text-muted-foreground">
- Convention: pre-money placement is the market default (Cooley GO, “Negotiating the option pool”), recorded
- in spec/strategy/CAPTABLE_MATH_INDUSTRY_STANDARD.md §4.1 and §4.3. Post-money placement is a negotiated
+ Convention: pre-money placement is the market default (Cooley GO, “Negotiating the option pool”).
+ Post-money placement is a negotiated
  departure from the NVCA/Cooley model form; Capavate models it, and says here that no model form prescribes it.
  </p>
  </div>
@@ -3114,7 +3190,7 @@ export default function RoundNew() {
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  {step < 5 ? (
- <Button onClick={() => setStep(s => s + 1)} disabled={(step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
+ <Button onClick={() => setStep(s => s + 1)} disabled={(step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
  <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || scheduleInvalid || !step2Valid} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}

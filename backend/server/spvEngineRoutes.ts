@@ -36,7 +36,7 @@ import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 import { authorizeGatewaySettlement, authorizePlatformAdminSettlement } from "./lib/feeSettlementAuthority";
 import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
-import { normaliseSpvTermsHurdle } from "./lib/percentPolicy";
+import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNKNOWN } from "./lib/percentPolicy";
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
@@ -182,6 +182,8 @@ function err(res: Response, e: unknown): Response {
     INVESTOR_NOT_IN_PARTNER_TENANT: 403, INVESTOR_TENANT_CHECK_FAILED: 500,
     INVALID_LP_VISIBILITY: 400, NOT_AN_LP: 403,
     INVALID_MANDATE_MODE: 400, MANDATE_DESCRIPTION_REQUIRED: 400, MANDATE_DESCRIPTION_TOO_LONG: 400,
+    /* WAVE 82 · ITEM 2 — a negative GP commitment is a client error. */
+    INVALID_GP_COMMIT: 400,
     // WAVE 25 / FE-1 — mandate check-size bounds. An inverted or malformed
     // range used to persist silently; it is now a loud 400 at the sink.
     INVALID_CHECK_MIN: 400, INVALID_CHECK_MAX: 400, INVALID_CHECK_RANGE: 400,
@@ -222,7 +224,63 @@ function err(res: Response, e: unknown): Response {
     // WAVE 6 / FE-3 — the rolling-close window is DB-driven and fails closed.
     SPV_CLOSE_WINDOW_POLICY_MISSING: 503, INVALID_CLOSE_WINDOW: 400,
   };
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 82 · ITEM 2 — THE HURDLE WAS ALREADY FENCED. IT WAS REPORTED AS A 500.
+     ═══════════════════════════════════════════════════════════════════════
+     THIS CORRECTS THE PRE-FLIGHT. §2.2 of PREFLIGHT_TIER1_2026_08_20.md states
+     the hurdle has "**none at create**" server-side and is "[e]nforced **later**,
+     at the distribution/waterfall sink". Measured
+     (build_log/wave82/W82_ITEM2_LAUNCH_BEFORE.txt, configuration C): a create
+     with `terms.hurdleRatePct: 500` is REFUSED and **nothing is created** —
+     `normaliseSpvTermsHurdle` has been wired at this file's create AND patch
+     boundaries since Wave 5 / P-4 (see :~269 and :~352). The defect that remains
+     is the STATUS and the MESSAGE: the thrown string is
+     `PERCENT_FIELD_OUT_OF_DOMAIN:spv.hurdleRatePct:500:[0,100] — <rationale>`, so
+     the exact-key lookup above can never match it and the partner receives an
+     HTTP 500 carrying an internal rationale paragraph. A rejected user input is a
+     400, not a server failure.
+
+     Prefix-matched, not added to `map`, precisely because the message carries the
+     field, the value and the declared domain after the code — and those three
+     facts are the useful part of the refusal, so they are kept in the response.
+     `fieldError` names the offending field separately so a client can point at
+     the control without parsing the string. Nothing is clamped and no value is
+     rescaled: the domain lives in `PERCENT_FIELD_DOMAIN` and this only decides
+     how its refusal is reported.
+     ═══════════════════════════════════════════════════════════════════════ */
+  if (msg.startsWith(`${PERCENT_FIELD_OUT_OF_DOMAIN}:`) || msg.startsWith(`${PERCENT_FIELD_UNKNOWN}:`)) {
+    const parts = msg.split(":");
+    return res.status(400).json({ error: msg, fieldError: parts[1] ?? null });
+  }
   return res.status(map[msg] ?? 500).json({ error: msg });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 82 · ITEM 2 — THE GP COMMITMENT HAD NO BOUND AT ANY WRITER.
+   ═══════════════════════════════════════════════════════════════════════════
+   `terms.gpCommitMinor` is minor units written straight into the terms blob by
+   the SPV wizard (`toMinor(parseFloat(w.gpCommitMajor) …)`). Nothing on either
+   the create or the patch path checked its sign, so a NEGATIVE GP commitment
+   was storable on a 200 and would then be read by the waterfall as capital the
+   GP had contributed. Refused by name at the route boundary, alongside the
+   hurdle normalisation, so the two terms-blob money fields are fenced in one
+   place. An ABSENT or null key is left untouched — this is not a migration and
+   it must not make an optional field required.
+
+   NOT A CLAMP. A negative commitment is a data-entry error, and R16/P-4 is
+   explicit that the platform refuses rather than rescales.
+   ═══════════════════════════════════════════════════════════════════════════ */
+export const INVALID_GP_COMMIT = "INVALID_GP_COMMIT";
+function assertGpCommitInDomain(terms: unknown): void {
+  if (!terms || typeof terms !== "object" || Array.isArray(terms)) return;
+  const t = terms as Record<string, unknown>;
+  if (!("gpCommitMinor" in t)) return;
+  const raw = t.gpCommitMinor;
+  if (raw === null || raw === undefined || raw === "") return;
+  const n = typeof raw === "string" ? Number(raw) : (raw as number);
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
+    throw new Error(INVALID_GP_COMMIT);
+  }
 }
 
 export function registerSpvEngineRoutes(app: Express): void {
@@ -267,10 +325,43 @@ export function registerSpvEngineRoutes(app: Express): void {
       // a client-supplied terms blob reaches the store.
       const createBody = { ...((req.body ?? {}) as Record<string, unknown>) };
       if ("terms" in createBody) createBody.terms = normaliseSpvTermsHurdle(createBody.terms);
+      /* WAVE 82 · ITEM 2 — bound the GP commitment at the same boundary. */
+      if ("terms" in createBody) assertGpCommitInDomain(createBody.terms);
       // 1c — a full launch sign-off is REQUIRED before an SPV can be created.
       // The signer must type their full legal name AND explicitly accept the
       // versioned attestation. Identity of record is the SESSION user, never a
       // client-supplied id. Missing/invalid sign-off => 400 (no SPV created).
+      /* ══ WAVE 86B · ITEM 2 — VALIDATE THE WHOLE LAUNCH BEFORE CREATING ANYTHING ══
+         An attested vehicle is a signed ESIGN/UETA legal artefact. It must never
+         exist beside an incomplete set of economic terms. This endpoint used to
+         record the sign-off and create the vehicle knowing NOTHING about fee
+         terms, because the fee payload arrived on a later call — so a caller
+         driving the three-call sequence directly could be refused at the fee
+         write and leave an attested vehicle with no fee terms behind. Wave 82
+         closed that in the WIZARD; the API is a first-class surface and stayed
+         open (reviewer 2, executed).
+
+         ROLLING BACK IS NOT AVAILABLE AND IS FENCED — the store has no delete,
+         the sign-off store has no void, `lint:destructive-store-fence` exists to
+         keep destructive store paths unreachable, and the in-memory caches beside
+         SQLite would not roll back with a DB transaction. So the payload is
+         validated IN FULL, FIRST, on the pure validators in `spvEngineStore`
+         (the same rules the sinks run, lifted verbatim), and a refusal writes
+         NOTHING: no sign-off, no vehicle, no mandate, no fee.
+
+         ADDITIVE AND OPTIONAL. `fees` is NOT required: absent keys behave exactly
+         as before, so every existing caller is unaffected. Owner decision, on the
+         record: expressing "a vehicle needs fee terms" in the type system would
+         break 47 call sites, which risks more than it protects. The legacy
+         three-call sequence therefore stays open and is reported as open —
+         `server/__tests__/w82_spv_launch_atomicity.test.ts` asserts it. */
+      const feeDrafts = Array.isArray(body.fees)
+        ? (body.fees as Array<Record<string, unknown>>)
+        : null;
+      const mandateDraft = (body.mandate && typeof body.mandate === "object" && !Array.isArray(body.mandate))
+        ? (body.mandate as Record<string, unknown>)
+        : null;
+
       const signoffLegalName = typeof body.signoffLegalName === "string" ? body.signoffLegalName.trim() : "";
       const signoffAccepted = body.signoffAccepted === true;
       if (!signoffLegalName) {
@@ -284,6 +375,22 @@ export function registerSpvEngineRoutes(app: Express): void {
       // if the sign-off cannot be recorded we return 500 and NO SPV is ever
       // created — an SPV can never exist without its authorization record. The
       // signer sub-role comes from the session context field `partnerSubRole`.
+      /* WAVE 86B · ITEM 2 — THE PRE-FLIGHT. Everything above this line is a read
+         or a validation; `recordSignoff` below is the FIRST WRITE. A throw here
+         reaches `err()` and becomes the SAME status code the later call would
+         have returned (400 for every fee/mandate refusal, 403 for
+         PLATFORM_FEE_ADMIN_ONLY), with nothing written. */
+      if (feeDrafts) {
+        spvEngineStore.validateLaunchFeeDrafts(
+          ctx.partnerId,
+          feeDrafts as unknown as Parameters<typeof spvEngineStore.validateLaunchFeeDrafts>[1],
+          typeof createBody.targetRaiseMinor === "number" ? createBody.targetRaiseMinor : null,
+        );
+      }
+      if (mandateDraft) {
+        spvEngineStore.validateMandateDraft(mandateDraft as Parameters<typeof spvEngineStore.validateMandateDraft>[0]);
+      }
+
       let signoff;
       try {
         signoff = recordSignoff({
@@ -305,7 +412,33 @@ export function registerSpvEngineRoutes(app: Express): void {
       // runtime payload and the store's own validation are unchanged.
       const spv = spvEngineStore.createSpv(ctx.partnerId, createBody as Parameters<typeof spvEngineStore.createSpv>[1], ctx.userId);
       linkSignoffToSpv(signoff.id, spv.id);
-      res.status(201).json({ spv, signoff: { id: signoff.id, signedAt: signoff.signedAt, attestationVersion: signoff.attestationVersion } });
+      /* WAVE 86B · ITEM 2 — the mandate and the fees, already proved valid above.
+         They can still be refused by the sinks (the SPV-scoped combined-carry cap
+         and the fee-exceeds-raise guard read the vehicle that now exists), but
+         every refusal a caller can provoke from the PAYLOAD has already fired,
+         above the first write. */
+      if (mandateDraft) {
+        spvEngineStore.setMandate(
+          ctx.partnerId, spv.id,
+          mandateDraft as Parameters<typeof spvEngineStore.setMandate>[2],
+          ctx.userId,
+        );
+      }
+      const fees = feeDrafts
+        ? feeDrafts.map((d) => spvEngineStore.addFee(
+            ctx.partnerId, spv.id,
+            d as Parameters<typeof spvEngineStore.addFee>[2],
+            ctx.userId,
+          ))
+        : [];
+      /* ADDITIVE. Nothing above was removed, renamed or reordered — `spv` and
+         `signoff` keep their names, their shapes and their position. */
+      res.status(201).json({
+        spv,
+        signoff: { id: signoff.id, signedAt: signoff.signedAt, attestationVersion: signoff.attestationVersion },
+        fees,
+        launchComplete: feeDrafts !== null && feeDrafts.length > 0,
+      });
     } catch (e) { err(res, e); }
   });
 
@@ -350,6 +483,8 @@ export function registerSpvEngineRoutes(app: Express): void {
       // through this PATCH. Both are normalised, or the defect simply moves.
       const patchBody = { ...((req.body ?? {}) as Record<string, unknown>) };
       if ("terms" in patchBody) patchBody.terms = normaliseSpvTermsHurdle(patchBody.terms);
+      /* WAVE 82 · ITEM 2 — bound the GP commitment at the same boundary. */
+      if ("terms" in patchBody) assertGpCommitInDomain(patchBody.terms);
       const spv = spvEngineStore.updateSpv(req.partnerContext!.partnerId, String(req.params.spvId), patchBody, req.partnerContext!.userId);
       res.json({ spv });
     } catch (e) { err(res, e); }

@@ -310,20 +310,52 @@ describe("WAVE 81 · ITEM 2 (D4) — the seniority write", () => {
     const h = terms.indexOf('app.patch("/api/rounds/:id/terms"');
     const end = terms.indexOf("const updResult = roundsStoreUpdate(", h);
     expect(terms.slice(h, end)).toContain("validateSeniorityRankStored");
-    /* AND IT REMAINS API-ONLY. No seniority control exists in the client; this
-       assertion is what makes that claim falsifiable rather than a sentence in a
-       report. If a UI is built, this test must be updated deliberately. */
+    /* ════════════════════════════════════════════════════════════
+       REWRITTEN BY WAVE 92, DELIBERATELY, WITH THE REASON RECORDED.
+       ════════════════════════════════════════════════════════════
+       OLD EXPECTATION: no `.tsx` or `.jsx` file anywhere under `client/src` may
+       contain the word "seniority" — "it remains API-only".
+
+       NEW EXPECTATION: exactly one `.tsx` file may contain it, by name, and it must
+       be a READER. This wave's own assertion, one file over.
+
+       WHY: Wave 92 built `client/src/pages/founder/ExitWaterfall.tsx`, the first
+       client caller of `GET /api/founder/captable/waterfall`, and that response
+       publishes the recorded payment order so a founder can see which ordering
+       produced the money figures beside it. Suppressing it on the screen would mean
+       publishing the figures and hiding the term that ordered them.
+
+       WHAT THIS ASSERTION STILL PROTECTS — and it is the sentence this test was
+       written for: the refusal a founder is shown must not name a control that does
+       not exist. No client control WRITES a rank, so the refusal's wording (narrowed
+       by Wave 91 for exactly this reason) is still the only honest one. */
+    const ALLOWED_READER = "client/src/pages/founder/ExitWaterfall.tsx";
     const clientHits: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) { walk(full); continue; }
         if (!/\.(tsx|jsx)$/.test(e.name)) continue;
-        if (/seniority/i.test(fs.readFileSync(full, "utf8"))) clientHits.push(path.relative(ROOT, full));
+        /* TEST FILES ARE EXCLUDED, as `W80-I5-A` in
+           `w80_seniority_has_no_user_interface.test.ts` already excludes them and
+           as `scripts/lint/internalLanguageFence.ts` excludes them entirely. This
+           assertion is about SURFACES a founder can reach. A test that renders the
+           waterfall screen must name the field it is asserting about, and counting
+           that as "a second client surface" would make the screen untestable —
+           which is the opposite of what this pin is for. Added by WAVE 92, when the
+           first such test was written. */
+        if (/__tests__/.test(full) || /\.(test|spec)\./.test(e.name)) continue;
+        const rel = path.relative(ROOT, full).split(path.sep).join("/");
+        if (rel === ALLOWED_READER) continue;
+        if (/seniority/i.test(fs.readFileSync(full, "utf8"))) clientHits.push(rel);
       }
     };
     walk(path.join(ROOT, "client/src"));
-    expect(clientHits).toEqual([]);
+    expect(clientHits, `a second client surface now names the payment order: ${clientHits.join(", ")}`).toEqual([]);
+    /* The allowed file exists, reads it, and writes nothing. */
+    const reader = fs.readFileSync(path.join(ROOT, ALLOWED_READER), "utf8");
+    expect(reader).toMatch(/seniority/);
+    expect(reader).not.toMatch(/apiRequest\(\s*"(POST|PATCH|PUT|DELETE)"/);
   });
 
   it("W81-D4-G — the validator's domain IS the reader's domain, in one place", () => {
@@ -344,24 +376,36 @@ describe("WAVE 81 · ITEM 2 (D4) — the seniority write", () => {
    ITEM 4 · D6 — THE INPUT NARROWING, DOCUMENTED AND PINNED (NOT FIXED)
    ════════════════════════════════════════════════════════════════════════════ */
 describe("WAVE 81 · ITEM 4 (D6) — the 2^53 input boundary", () => {
-  it("W81-D6-A — `Number()` on the exit valuation narrows above 2^53, and the boundary is where it is claimed to be", () => {
-    /* NOT FIXED. `server/track1Routes.ts` parses `exitValuationMinor` with
-       `Number()`, so a value above Number.MAX_SAFE_INTEGER is silently rounded to
-       the nearest representable double before any Decimal ever sees it. This
-       assertion documents the arithmetic fact and the exact threshold so the
-       boundary cannot drift, and so a later wave that restructures the input path
-       has a pinned statement of what it must beat. Restructuring an input path is
-       deliberately out of scope this close to a freeze.
+  it("W81-D6-A — the 2^53 input boundary is REAL arithmetic, and the exit-valuation path NO LONGER CROSSES IT", () => {
+    /* ── RE-TITLED AND INVERTED BY WAVE 86B. READ THIS BEFORE CHANGING IT. ─────
+       WAVE 81 found this narrowing and PINNED IT AS ACCEPTED, with the reasoning
+       "$90 trillion is above global GDP, so nothing reachable is affected" and
+       "restructuring an input path is deliberately out of scope this close to a
+       freeze". Its own comment invited the correction: "a later wave that
+       restructures the input path has a pinned statement of what it must beat."
+       THIS IS THAT WAVE, and it beat it.
 
-       9,007,199,254,740,993 minor units is ~$90,071,992,547,409.93 — about
-       $90 trillion, above global GDP, so nothing reachable is affected. */
+       TWO THINGS THAT REASONING MISSED, both measured:
+         · in a ZERO-DECIMAL currency (JPY, KRW) the same ceiling arrives at
+           1/100th of the value — JPY 9,007,199,254,740,993 is about $60bn, which
+           a large-cap fixture DOES reach, and the platform stores JPY rounds;
+         · a 38-digit input did not merely round, it came back as `1e+38`, which
+           is not a decimal figure at all: any consumer doing arithmetic on it or
+           rendering it produces garbage or `NaN`.
+       Both reproduced over real HTTP with `curl`:
+       build_log/wave86b/transcripts/03_item1_http_before.txt.
+
+       THE ARITHMETIC ASSERTIONS BELOW ARE UNCHANGED AND STILL TRUE. They are the
+       REASON the fix exists, so they stay. What inverts is the SOURCE PIN. */
     expect(Number.MAX_SAFE_INTEGER).toBe(9007199254740991);
     expect(Number("9007199254740993")).toBe(9007199254740992);
     expect(String(Number("9007199254740993"))).not.toBe("9007199254740993");
-    /* One minor unit below the boundary is still exact, which is why nothing
-       realistic is affected. */
+    /* One minor unit below the boundary is still exact. */
     expect(String(Number("9007199254740991"))).toBe("9007199254740991");
     const src = fs.readFileSync(path.join(ROOT, "server/track1Routes.ts"), "utf8");
-    expect(src).toContain("const exitMinor = Number(exitValuationMinor);");
+    /* THE DEFECT IS GONE — the pin that documented it now forbids it. */
+    expect(src).not.toContain("Number(exitValuationMinor)");
+    expect(src).toContain("const exitMinorDec = parseExactMoney(exitValuationMinor);");
+    expect(src).toContain("const exitMinor = exitMinorDec.toFixed();");
   });
 });

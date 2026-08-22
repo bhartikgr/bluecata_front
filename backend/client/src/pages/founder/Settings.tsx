@@ -926,11 +926,11 @@ export default function Settings() {
                       : fmtUSD(legacyUsd as number);
                 const isActive = t.id === activeTier;
                 return (
-                  <Card key={t.id} className={isActive ? "border-[hsl(0_100%_40%)] border-2" : ""} data-testid={`card-tier-${t.id}`}>
+                  <Card key={t.id} className={isActive ? "border-emerald-700 border-2" : ""} data-testid={`card-tier-${t.id}`}>
                     <CardHeader>
                       <CardTitle className="text-base flex items-center justify-between">
                         {t.name}
-                        {isActive && <Badge className="bg-[hsl(0_100%_40%)] text-white">Active</Badge>}
+                        {isActive && <Badge className="bg-emerald-700 text-white">Active</Badge>}
                       </CardTitle>
                       <p className="text-xs text-muted-foreground">{t.blurb}</p>
                     </CardHeader>
@@ -952,7 +952,9 @@ export default function Settings() {
                         {t.features.map(f => (
                           <li key={f.key} className="flex items-start gap-2">
                             {f.included
-                              ? <Check className="h-3.5 w-3.5 text-[hsl(0_100%_40%)] shrink-0 mt-0.5" />
+                              /* WAVE 101 - an INCLUDED plan feature was ticked in the negative anchor while
+   an excluded one was muted grey: the good outcome looked like the bad one. */
+                              ? <Check className="h-3.5 w-3.5 text-emerald-700 shrink-0 mt-0.5" />
                               : <X className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />}
                             <span className={f.included ? "" : "text-muted-foreground line-through"}>
                               {f.label}{f.limit && f.included ? ` — ${f.limit}` : ""}
@@ -1020,7 +1022,14 @@ export default function Settings() {
                         : "No active subscription")}
                   </div>
                   {subscription?.status && (
-                    <Badge variant={subscription.status === "active" ? "default" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>
+                    /* WAVE 101 - an ACTIVE subscription was painted the brand-red negative
+                       anchor.  This is the Settings page, NOT the R80-protected founder
+                       Billing page, which was never opened.  Colour only.
+                       NOTE: a JSX-comment brace form is INVALID in this position, because
+                       it sits inside a `&& (` EXPRESSION, not a children list, where the
+                       brace opens an object literal.  A plain block comment is correct
+                       here; tsc caught the first attempt and it is recorded, not hidden. */
+                    <Badge variant={subscription.status === "active" ? "positive" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>
                   )}
                   {typeof subscription?.amountMinor === "number" && (
                     <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{formatMinor(subscription.amountMinor, subscription.currency || "USD")}/mo</div>
@@ -1086,7 +1095,8 @@ export default function Settings() {
                           <div className="flex items-center gap-3 shrink-0">
                             <span className="tabular-nums">{formatMinor(inv.totalMinor ?? inv.amountMinor ?? 0, inv.currency || "USD")}</span>
                             <Badge
-                              variant={inv.status === "paid" ? "default" : inv.status === "void" || inv.status === "refunded" ? "destructive" : "secondary"}
+                              /* WAVE 101 - a PAID invoice was the same red as void/refunded. Colour only. */
+                              variant={inv.status === "paid" ? "positive" : inv.status === "void" || inv.status === "refunded" ? "destructive" : "secondary"}
                               data-testid={`invoice-status-${inv.id}`}
                             >
                               {inv.status}

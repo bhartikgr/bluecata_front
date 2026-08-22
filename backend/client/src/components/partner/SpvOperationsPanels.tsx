@@ -370,7 +370,7 @@ export function SpvCloseSummaryPanel({ spvId, currency }: { spvId: string; curre
     <PanelFrame
       title="Authoritative close statement"
       testid="spv-close-summary-panel"
-      hint="Read live from GET /close-summary — the server's own close statement, not a figure re-derived in the browser."
+      hint="Read live from Capavate's own closing statement, not a figure re-derived in the browser."
     >
       <StateLine loading={q.isLoading} error={q.error} empty={entries.length === 0} emptyText="No close statement" testid="spv-close-summary-authoritative" />
       <div className="text-xs">

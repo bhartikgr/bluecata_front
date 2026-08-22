@@ -45,6 +45,36 @@ import { resolveCoMemberLabel } from "@/lib/privacy/visibility";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
 import { isPhantomHolderRow } from "@/lib/captable/phantomHolder"; /* W-CAP LW-1 — phantom holder suppression */
+import { describeRawActor, looksLikeRawKey } from "@/lib/actorLabel"; /* WAVE 93 · ITEM 1 — never a key where a holder NAME belongs */
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 93 · ITEM 1 — THE HOLDER COLUMN, WHICH IS THE WORST INSTANCE.
+   ════════════════════════════════════════════════════════════════════════════
+   A founder opened their cap table and read `u_redeemed_1782888492403` in the
+   Holder column (register PART 11). Wave 83 closed that on the SNAPSHOTS panel
+   and in `server/captableSnapshotsStore.ts`; this is the MAIN holder table, the
+   SAFEs/notes card and the warrants card, which render `holderName` straight off
+   the securities feed. The server-side ledger bridges already resolve a name
+   (`server/lib/captableDisplayResolver.ts::resolveHolderDisplay`), but the BASE
+   `securities` rows pass their stored `holderName` through untouched, so any
+   writer that ever stores an id there reaches the screen. This is the guard.
+
+   It DESCRIBES rather than blanks: `u_redeemed_...` reads "Redeemed holder", the
+   exact words the owner ratified in Wave 83, and everything else says what the
+   row is. `investorId` is consulted only to choose the better description, and
+   is never printed. R77: the id stays available as a machine-readable value.
+   ════════════════════════════════════════════════════════════════════════════ */
+function safeHolderName(holderName: unknown, investorId?: unknown): string {
+  const name = String(holderName ?? "").trim();
+  if (name && !looksLikeRawKey(name)) return name;
+  const id = String(investorId ?? name ?? "").trim();
+  if (/^u_redeemed_/.test(id)) return "Redeemed holder";
+  if (id) {
+    const described = describeRawActor(id);
+    if (described && !looksLikeRawKey(described)) return described;
+  }
+  return "Holder (name not recorded)";
+}
 /* WAVE 72 · DEFECT 2 — the ONE null-aware ownership formatter. `ownershipPercent`
    is `string | null` on the engine contract and `null` means UNDEFINED (0 ÷ 0,
    R47), not zero. Before this wave three consumers on this page did arithmetic on
@@ -189,7 +219,7 @@ function WarrantExercisePanel({ companyId, warrant, sym, onDone }: { companyId: 
       {mode !== "expire" && (
        <Button variant="outline" size="sm" disabled={disabledConfirm || previewM.isPending} onClick={() => previewM.mutate()} data-testid="warrant-exercise-preview-btn">Preview</Button>
       )}
-      <Button size="sm" className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" disabled={disabledConfirm || confirmM.isPending} onClick={() => confirmM.mutate()} data-testid="warrant-exercise-confirm-btn">
+      <Button size="sm" className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" disabled={disabledConfirm || confirmM.isPending} onClick={() => confirmM.mutate()} data-testid="warrant-exercise-confirm-btn">
        {mode === "expire" ? "Record expiry" : "Confirm exercise"}
       </Button>
      </DialogFooter>
@@ -440,7 +470,7 @@ export default function CapTable() {
  {/* v25.48.3 Q-F1 — the cap table is VIEW-ONLY: equity originates through the
      round/ledger flow (cleaner audit trail), not ad-hoc on the cap table. This
      button now routes to Rounds instead of opening an inline add-security dialog. */}
- <Button onClick={() => setLocation("/founder/rounds")} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
+ <Button onClick={() => setLocation("/founder/rounds")} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
  <Plus className="h-4 w-4 mr-2" /> Add security in Rounds
  </Button>
  </>
@@ -611,7 +641,7 @@ export default function CapTable() {
  <span className="text-muted-foreground">None outstanding.</span>
  ) : notesAndSafes.map((s) => (
  <div key={s.id} className="border-b border-border/60 pb-1.5 last:border-0">
- <div className="flex justify-between"><span className="font-medium">{s.holderName}</span><Badge variant="outline" className="text-[10px] capitalize">{s.instrument}</Badge></div>
+ <div className="flex justify-between"><span className="font-medium">{safeHolderName(s.holderName, (s as { investorId?: string | null }).investorId)}</span><Badge variant="outline" className="text-[10px] capitalize">{s.instrument}</Badge></div>
  <div className="flex justify-between text-muted-foreground">
  <span>Principal</span>
  {/* WAVE 55 · R6 — the principal coalesced its own input to zero,
@@ -653,7 +683,7 @@ export default function CapTable() {
  const intrinsic = w.fmv != null && w.strike != null ? Math.max(0, (w.fmv - w.strike) * (w.shares ?? 0)) : null;
  return (
  <div key={w.id} className="border-b border-border/60 pb-1.5 last:border-0">
- <div className="flex justify-between items-center gap-2"><span className="font-medium">{w.holderName}</span><div className="flex items-center gap-1.5"><Badge variant="outline" className="text-[10px]">{fmtNum(w.shares)} sh</Badge>{companyId && <WarrantExercisePanel companyId={companyId} warrant={w} sym={sym} onDone={() => { queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "securities"] }); queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "cap-table"] }); }} />}</div></div>
+ <div className="flex justify-between items-center gap-2"><span className="font-medium">{safeHolderName(w.holderName, w.investorId)}</span><div className="flex items-center gap-1.5"><Badge variant="outline" className="text-[10px]">{fmtNum(w.shares)} sh</Badge>{companyId && <WarrantExercisePanel companyId={companyId} warrant={w} sym={sym} onDone={() => { queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "securities"] }); queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "cap-table"] }); }} />}</div></div>
  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-muted-foreground">
  <span>Strike</span><span className="font-mono text-right">{sym}{w.strike?.toFixed(2) ?? "—"}</span>
  <span>FMV</span><span className="font-mono text-right">{sym}{w.fmv?.toFixed(2) ?? "—"}</span>
@@ -680,7 +710,7 @@ export default function CapTable() {
  <p className="text-sm font-medium text-muted-foreground">No securities recorded yet.</p>
  <p className="text-xs text-muted-foreground mt-1">Securities are created through your funding rounds. Start a round to build your cap table.</p>
  {/* v25.48.3 Q-F1 — view-only cap table; route to Rounds to originate equity. */}
- <Button className="mt-4 bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" onClick={() => setLocation("/founder/rounds")}>
+ <Button className="mt-4 bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" onClick={() => setLocation("/founder/rounds")}>
  <Plus className="h-4 w-4 mr-2" /> Go to Rounds
  </Button>
  </CardContent>
@@ -1283,11 +1313,13 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  { id: viewerId },
  )
  : r.holderName;
+ /* WAVE 93 · ITEM 1 — guard the value actually rendered, whichever branch produced it. */
+ const safeDisplayName = safeHolderName(displayName, orig?.investorId);
  return (
  <tr className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-security-${idx}`}>
  <td className="px-4 py-2.5 font-mono text-[10px] text-muted-foreground">{orig?.certificateNumber ?? "—"}</td>
  <td className="px-2 py-2.5">
- <div className="font-medium">{displayName}</div>
+ <div className="font-medium" data-holder-id={orig?.investorId ?? ""}>{safeDisplayName}</div>
  <div className="text-[10px] text-muted-foreground capitalize">{r.holderType}{orig?.leadInvestorOfRound ? <span className="ml-1 text-[hsl(0_100%_40%)] font-medium">· LEAD</span> : ""}</div>
  </td>
  <td className="px-2 py-2.5">
@@ -1317,7 +1349,10 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  <span className="inline-flex items-center gap-1 cursor-help" data-testid={`vest-${idx}`}>
  <span className="text-[10px] font-mono">{orig.vesting.percentVested}%</span>
  <span className="h-1 w-8 bg-secondary rounded-full overflow-hidden inline-block">
- <span className="h-full bg-[hsl(0_100%_40%)] block" style={{ width: `${orig.vesting.percentVested}%` }} />
+ {/* WAVE 101 - the vesting bar was the brand red, so 100% VESTED read as a
+   failure.  Vested equity is a positive achievement; repainted to the
+   positive anchor.  Width, tooltip and the percentage are unchanged. */}
+                          <span className="h-full bg-emerald-700 block" style={{ width: `${orig.vesting.percentVested}%` }} />
  </span>
  </span>
  </TooltipTrigger>
@@ -1450,7 +1485,7 @@ function AddSecurityDialog({ companyId, onClose, onSuccess }: {
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => addMut.mutate()} disabled={addMut.isPending || !principal} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security-confirm">
+          <Button onClick={() => addMut.mutate()} disabled={addMut.isPending || !principal} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-add-security-confirm">
             {addMut.isPending ? "Adding…" : "Add security"}
           </Button>
         </DialogFooter>

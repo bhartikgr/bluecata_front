@@ -14,7 +14,7 @@
  * jurisdictionCountry, jurisdictionOther, termsDocRef) — the store already
  * round-trips `terms_json`, so no schema churn is required.
  */
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useCollectiveStream } from "@/lib/sseClient"; /* WAVE 18 / XT-7 */
 import { formatMinor as formatMinorLib, toMinor } from "@/lib/currency";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -196,9 +196,16 @@ const EMPTY_WIZARD: WizardState = {
      (PartnerDetail.tsx:190). Editable; validated as a 4-digit year. */
   vintage: String(new Date().getFullYear()),
   spvType: "spv", carryBasis: "", distributionScope: "network", lpVisibility: "own_only",
-  targetRaiseMinor: "0", minCheckMinor: "0", capMinor: "0", currency: "USD",
+  /* WAVE 83 · ITEM 5.2 — THE STRAY LEADING ZERO, FIXED WHERE IT WAS BORN.
+     These three are CONTROLLED numeric inputs. Initialising them to the string
+     "0" meant a GP who typed without clearing the box first produced "02000000",
+     "025000" and "02500000" — the zero was ours, not theirs. An EMPTY string is
+     the correct initial value for an empty control; every reader below already
+     parses with `|| "0"`, so a blank field still means zero on the wire and no
+     stored value changes. */
+  targetRaiseMinor: "", minCheckMinor: "", capMinor: "", currency: "USD",
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
-  mgmtFeeType: "carry", mgmtFixedMinor: "0", mgmtCarryPct: "20", feeCurrency: "USD",
+  mgmtFeeType: "carry", mgmtFixedMinor: "", mgmtCarryPct: "20", feeCurrency: "USD",
   geography: "", stage: "", checkMinMajor: "", checkMaxMajor: "", targetCompanyId: "",
   hurdleRatePct: "", gpCommitMajor: "",
   termsDocRef: "", closeDate: "",
@@ -319,6 +326,22 @@ export default function PartnerSpvEngine() {
 
   const create = useMutation({
     mutationFn: async () => {
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 82 · ITEM 2 — REFUSE BEFORE ANYTHING IS CREATED.
+         ═══════════════════════════════════════════════════════════════════════
+         THIS THROW MUST STAY THE FIRST STATEMENT IN THIS FUNCTION. Everything
+         below it creates durable, attested state: `POST /api/partner/me/spv`
+         records the ESIGN/UETA sign-off (`recordSignoff`) before the vehicle row
+         exists, and the fee row is only written by the THIRD request. Until this
+         wave, an out-of-domain carry produced a signed vehicle and mandate with
+         no fee terms and a red toast — measured in
+         build_log/wave82/W82_ITEM2_LAUNCH_BEFORE.txt. The same predicate also
+         drives the step-2 Next gate, so a payload that reaches here has already
+         been shown to the partner as acceptable; this is the belt to that
+         braces, and it is what makes a failed fee write impossible to reach with
+         an attested vehicle behind it. */
+      const refusal = feeStepRefusal();
+      if (refusal) throw new Error(refusal);
       // Descriptive fields ride on the SPV's `terms` JSON blob (round-tripped by
       // the store as terms_json) — no schema churn required.
       const jurisdictionCountry = w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : w.jurisdictionCountry;
@@ -421,6 +444,39 @@ export default function PartnerSpvEngine() {
   const entityStructureIsFreeText = w.jurisdictionCountry === OTHER || w.legalEntityStructure === "Other (specify)";
   // 2a — on country change, RESET the entity structure to the new list's first
   // option (or clear for the free-text "Other" jurisdiction).
+  /* ══════════════════════════════════════════════════════════════════════
+     WAVE 83 · ITEM 2.5 — MANDATE MODE FOLLOWS SPV TYPE.
+     Choosing "Fund" on step 1 left the mandate on "Deal-Specific (Single Asset)"
+     on step 2: a blind-pool fund described as a single-asset deal. The two are
+     logically linked, so the default now follows the type — and ONLY the default:
+     the mandate dropdown keeps every option and the GP can still override it,
+     which is why this fires only while the mandate is still untouched.
+     ══════════════════════════════════════════════════════════════════════ */
+  const DEFAULT_MANDATE_FOR_TYPE: Record<string, string> = {
+    spv: "deal_specific",
+    multi_asset: "open",
+    fund: "open",
+    syndicate: "deal_specific",
+    rolling_fund: "open",
+  };
+  const [mandateModeTouched, setMandateModeTouched] = useState(false);
+  const onSpvTypeChange = (spvType: string) =>
+    setW((prev) => ({
+      ...prev,
+      spvType,
+      mandateMode: mandateModeTouched ? prev.mandateMode : (DEFAULT_MANDATE_FOR_TYPE[spvType] ?? prev.mandateMode),
+    }));
+
+  /* WAVE 83 · ITEM 5.1 — the field the wizard must focus first. */
+  const spvNameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    /* Radix places focus itself when the dialog opens; this runs after that and
+       puts it on the first required field, which is where a GP starts typing. */
+    if (!wizardOpen || step !== 0) return;
+    const t = setTimeout(() => spvNameRef.current?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [wizardOpen, step]);
+
   const onJurisdictionCountryChange = (country: string) =>
     setW((prev) => ({
       ...prev,
@@ -431,6 +487,86 @@ export default function PartnerSpvEngine() {
       // "Engine legal-entity type" field was removed as redundant).
       jurisdiction: deriveEngineJurisdiction(country),
     }));
+  /* ════════════════════════════════════════════════════════════════════════
+     WAVE 82 · ITEM 2 — THE LAUNCH IS NOT ATOMIC, SO REFUSE BEFORE ANYTHING IS
+     CREATED.
+     ════════════════════════════════════════════════════════════════════════
+     MEASURED, not assumed (build_log/wave82/W82_ITEM2_LAUNCH_BEFORE.txt).
+     `create.mutationFn` issues THREE sequential requests: POST /spv (which
+     records the ESIGN/UETA sign-off), PUT /mandate, POST /fees. Entering 250 in
+     Carry % does NOT store a 250% carry — the wizard divides by 100, and
+     `spvEngineStore.addFee` (the SOLE writer of `spv_fee`) refuses
+     `carryPct > 1` by name. What it produces is worse: requests 1 and 2 succeed,
+     request 3 returns 400 `CARRY_PCT_REQUIRED`, and the partner is left with an
+     ATTESTED, SIGNED VEHICLE THAT HAS NO FEE TERMS AT ALL, plus a red "Launch
+     failed" toast. Executed: `ATTESTED VEHICLE EXISTS: true · FEE ROWS: 0`.
+
+     Full atomicity would need a single composite server endpoint — the fee
+     payload is not part of the POST /spv body, so the server cannot validate it
+     there, and deleting a vehicle whose ESIGN attestation is already recorded is
+     worse than leaving it. That is a platform change, not a defect fix, and it is
+     raised as an OWNER QUESTION. The smallest correct fix, and the one the
+     pre-flight prescribes, is the second option: VALIDATE THE WHOLE PAYLOAD UP
+     FRONT and refuse before the first request, so no attested vehicle can be
+     created without its economics.
+
+     UNITS. Carry on this path is a FRACTION on the wire
+     (`PERCENT_FIELD_DOMAIN["spv.carryPct"] = [0,1]`, deliberately not widened);
+     the control collects it PERCENT-AS-WRITTEN and divides by 100. The hurdle is
+     PERCENT-AS-WRITTEN end to end (`PERCENT_FIELD_DOMAIN["spv.hurdleRatePct"] =
+     [0,100]`). The two conventions coexist by ruling, so the bounds below are
+     stated in the AS-WRITTEN form the control actually holds, and each label now
+     names its unit. NOTHING IS CLAMPED — R16/P-4: refuse, never rescale. The
+     banned `n > 1 ? n/100 : n` heuristic appears nowhere here.
+
+     `server/lib/percentPolicy.ts` is not client-importable (it imports the DB
+     connection), so these two constants are the single client-side statement of
+     the same declared domains. A change must be made in both places.
+     ════════════════════════════════════════════════════════════════════════ */
+  const CARRY_PCT_AS_WRITTEN_MAX = 100; // wire fraction max 1, × 100 as written
+  const HURDLE_PCT_AS_WRITTEN_MAX = 100; // PERCENT_FIELD_DOMAIN["spv.hurdleRatePct"].max
+
+  /**
+   * The ONE refusal reason for everything the fee / waterfall step collects, in
+   * the order a partner reads the form. `null` means the whole launch payload is
+   * acceptable. Consumed by BOTH the step-2 Next gate and `create.mutationFn`,
+   * so the gate and the launch can never disagree.
+   */
+  const feeStepRefusal = (): string | null => {
+    if (!w.mgmtFeeType) return "Choose a management fee type to continue.";
+    if (w.mgmtFeeType !== "fixed") {
+      const raw = w.mgmtCarryPct.trim();
+      if (raw === "") return "Enter a carry percentage (20 = 20%), or choose “Fixed only”.";
+      const c = Number(raw);
+      if (!Number.isFinite(c)) return "Carry % must be a number (20 = 20%).";
+      if (c < 0) return "Carry % cannot be negative.";
+      if (c > CARRY_PCT_AS_WRITTEN_MAX) {
+        return `Carry % must be between 0 and ${CARRY_PCT_AS_WRITTEN_MAX} (20 = 20%). You entered ${raw}.`;
+      }
+    }
+    if (w.mgmtFeeType !== "carry") {
+      const raw = w.mgmtFixedMinor.trim();
+      const f = Number(raw === "" ? "0" : raw);
+      if (!Number.isFinite(f)) return "Fixed fee amount must be a number.";
+      if (f < 0) return "Fixed fee amount cannot be negative.";
+    }
+    if (w.hurdleRatePct.trim() !== "") {
+      const h = Number(w.hurdleRatePct.trim());
+      if (!Number.isFinite(h)) return "Hurdle % must be a number (8 = 8%).";
+      if (h < 0) return "Hurdle % cannot be negative.";
+      if (h > HURDLE_PCT_AS_WRITTEN_MAX) {
+        return `Hurdle % must be between 0 and ${HURDLE_PCT_AS_WRITTEN_MAX} (8 = 8%). You entered ${w.hurdleRatePct.trim()}.`;
+      }
+    }
+    if (w.gpCommitMajor.trim() !== "") {
+      const g = Number(w.gpCommitMajor.trim());
+      if (!Number.isFinite(g)) return "GP commitment must be a number.";
+      if (g < 0) return "GP commitment cannot be negative.";
+    }
+    if (!w.carryBasis) return "Choose a carry basis to continue.";
+    return null;
+  };
+
   const canAdvance = (): boolean => {
     /* V-1 — vintage is OPTIONAL but must be a plausible 4-digit year when
        given, so a typo cannot silently persist as null. */
@@ -439,7 +575,9 @@ export default function PartnerSpvEngine() {
         !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid && vintageValid
       );
     if (step === 1) return !!w.mandateMode && !!w.mandateDescription.trim(); // 3e mandatory
-    if (step === 2) return !!w.mgmtFeeType && !!w.carryBasis; // S1 — carry basis co-located on Fees
+    /* WAVE 82 · ITEM 2 — was `!!w.mgmtFeeType && !!w.carryBasis`, with no numeric
+       bound anywhere, so Next stayed enabled for any number at all. */
+    if (step === 2) return feeStepRefusal() === null; // S1 — carry basis co-located on Fees
     if (step === 3) return !!w.distributionScope;
     return true;
   };
@@ -491,7 +629,7 @@ export default function PartnerSpvEngine() {
       )}
 
       {canWrite && !wizardOpen && (
-        <Button data-testid="spv-engine-new" onClick={() => { setWizardOpen(true); setStep(0); }} style={{ background: NAVY }}>
+        <Button data-testid="spv-engine-new" onClick={() => { setWizardOpen(true); setStep(0); }} style={{ background: NAVY, borderColor: NAVY }}>
           Create SPV
         </Button>
       )}
@@ -549,7 +687,14 @@ export default function PartnerSpvEngine() {
                   </div>
                 ) : null}
               </div>
-              <div><Label>SPV name *</Label><Input data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              {/* WAVE 83 · ITEM 5.1 — THE FIRST FOUR KEYSTROKES. The wizard opened without
+                  placing focus on its first required field, so a GP who started typing
+                  straight away typed into whatever the dialog had focused — and the
+                  Vintage year box, which is `maxLength={4}` and already holds a 4-digit
+                  year, swallowed exactly four characters and then silently refused the
+                  rest. Focus is now placed on the SPV name field explicitly. Nothing
+                  moved, nothing was renamed, and Vintage keeps its own validation. */}
+              <div><Label>SPV name *</Label><Input autoFocus ref={spvNameRef} data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
               {/* WAVE 7B V-1 (DEF-085) — vintage year. The admin create form has
                   always had this field; the PARTNER-facing wizard never did, so
                   every partner-created SPV carried no vintage and the admin
@@ -582,7 +727,7 @@ export default function PartnerSpvEngine() {
                 <div>
                   {/* 3c — SPV type: 5 choices w/ help */}
                   <Label>SPV type</Label>
-                  <select data-testid="spv-w-type" className="w-full border rounded h-9 px-2" value={w.spvType} onChange={(e) => setW({ ...w, spvType: e.target.value })}>
+                  <select data-testid="spv-w-type" className="w-full border rounded h-9 px-2" value={w.spvType} onChange={(e) => onSpvTypeChange(e.target.value)}>
                     {SPV_TYPES.map((t) => <option key={t} value={t}>{SPV_TYPE_LABELS[t]}</option>)}
                   </select>
                   <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">{SPV_TYPE_HELP[w.spvType as keyof typeof SPV_TYPE_HELP]}</div>
@@ -639,7 +784,7 @@ export default function PartnerSpvEngine() {
               <div>
                 {/* 3d — mandate mode: 4 choices w/ help */}
                 <Label>Mandate mode</Label>
-                <select data-testid="spv-w-mode" className="w-full border rounded h-9 px-2" value={w.mandateMode} onChange={(e) => setW({ ...w, mandateMode: e.target.value })}>
+                <select data-testid="spv-w-mode" className="w-full border rounded h-9 px-2" value={w.mandateMode} onChange={(e) => { setMandateModeTouched(true); setW({ ...w, mandateMode: e.target.value }); }}>
                   {SPV_MANDATE_MODES.map((m) => <option key={m} value={m}>{SPV_MANDATE_MODE_LABELS[m]}</option>)}
                 </select>
                 <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">{SPV_MANDATE_MODE_HELP[w.mandateMode as keyof typeof SPV_MANDATE_MODE_HELP]}</div>
@@ -715,7 +860,7 @@ export default function PartnerSpvEngine() {
               {w.mgmtFeeType !== "carry" && (
                 <div className="grid grid-cols-2 gap-3">
                   {/* 3h/3i — clear currency-unit label instead of raw "minor" */}
-                  <div><Label>{amountLabel("Fixed fee amount")}</Label><Input data-testid="spv-w-fixed" type="number" value={w.mgmtFixedMinor} onChange={(e) => setW({ ...w, mgmtFixedMinor: e.target.value })} /></div>
+                  <div><Label>{amountLabel("Fixed fee amount")}</Label><Input data-testid="spv-w-fixed" type="number" min={0} value={w.mgmtFixedMinor} onChange={(e) => setW({ ...w, mgmtFixedMinor: e.target.value })} /></div>
                   {/* 3g — fee currency selector for fixed/hybrid */}
                   <div>
                     <Label>Fee currency</Label>
@@ -725,7 +870,24 @@ export default function PartnerSpvEngine() {
                   </div>
                 </div>
               )}
-              {w.mgmtFeeType !== "fixed" && <div><Label>Carry %</Label><Input data-testid="spv-w-carrypct" type="number" value={w.mgmtCarryPct} onChange={(e) => setW({ ...w, mgmtCarryPct: e.target.value })} /></div>}
+              {/* WAVE 82 · ITEM 2 — bounds + the unit ON THE LABEL. The control
+                  collects PERCENT-AS-WRITTEN; the payload divides by 100 because
+                  `spv.carryPct` is a FRACTION on the wire. */}
+              {w.mgmtFeeType !== "fixed" && (
+                <div>
+                  {/* WAVE 82 · ITEM 2 — THE LABEL COPY IS UNCHANGED ON PURPOSE.
+                      The unit was first written into the label itself as
+                      "Carry % (20 = 20%)", and `npm run guard` correctly reported
+                      the original string "Carry %" as a REMOVED copy item. The
+                      allowlist is 80 by owner ruling and this wave does not add to
+                      it, so the unit is stated ADDITIVELY beneath the label
+                      instead: the existing copy survives byte-for-byte and the
+                      guard's copy count moves only upward. */}
+                  <Label>Carry %</Label>
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-w-carrypct-unit">Enter it as written: 20 = 20%. Range 0–{CARRY_PCT_AS_WRITTEN_MAX}.</div>
+                  <Input data-testid="spv-w-carrypct" type="number" min={0} max={CARRY_PCT_AS_WRITTEN_MAX} step={0.1} value={w.mgmtCarryPct} onChange={(e) => setW({ ...w, mgmtCarryPct: e.target.value })} />
+                </div>
+              )}
 
               {/* S1 — carry BASIS co-located beside carry % (moved off the Terms
                   step). Still required; the Next gate keys off it here now. */}
@@ -751,13 +913,21 @@ export default function PartnerSpvEngine() {
                   optional tiered distribution waterfall shown in the detail. */}
               <div className="grid grid-cols-2 gap-3" data-testid="spv-w-waterfall">
                 <div>
+                  {/* WAVE 82 · ITEM 2 — the hurdle is PERCENT-AS-WRITTEN end to
+                      end (PERCENT_FIELD_DOMAIN["spv.hurdleRatePct"] = [0,100]).
+                      Bounded here so the refusal happens at entry, not months
+                      later at a distribution. */}
                   <Label>Hurdle % (optional)</Label>
-                  <Input data-testid="spv-w-hurdle" type="number" value={w.hurdleRatePct} onChange={(e) => setW({ ...w, hurdleRatePct: e.target.value })} placeholder="e.g. 8" />
+                  {/* WAVE 82 · ITEM 2 — unit stated ADDITIVELY, for the same reason
+                      as the carry field above: rewriting the label removed an
+                      existing copy string and the guard refused it. */}
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-w-hurdle-unit">Enter it as written: 8 = 8%. Range 0–{HURDLE_PCT_AS_WRITTEN_MAX}.</div>
+                  <Input data-testid="spv-w-hurdle" type="number" min={0} max={HURDLE_PCT_AS_WRITTEN_MAX} step={0.1} value={w.hurdleRatePct} onChange={(e) => setW({ ...w, hurdleRatePct: e.target.value })} placeholder="e.g. 8" />
                   <div className="text-[10px] text-[var(--cv-color-text-faint)]">Preferred return LPs receive before GP carry. Leave blank for a simple return-of-capital-then-carry waterfall.</div>
                 </div>
                 <div>
                   <Label>{amountLabel("GP commitment")} (optional)</Label>
-                  <Input data-testid="spv-w-gpcommit" type="number" value={w.gpCommitMajor} onChange={(e) => setW({ ...w, gpCommitMajor: e.target.value })} placeholder="e.g. 50000" />
+                  <Input data-testid="spv-w-gpcommit" type="number" min={0} value={w.gpCommitMajor} onChange={(e) => setW({ ...w, gpCommitMajor: e.target.value })} placeholder="e.g. 50000" />
                   <div className="text-[10px] text-[var(--cv-color-text-faint)]">How much the GP invests alongside LPs (skin in the game). Optional.</div>
                 </div>
               </div>
@@ -766,6 +936,20 @@ export default function PartnerSpvEngine() {
                   The exact % appears on the SPV's Fees tab once Capavate applies it
                   (pulled live from config, never hardcoded here). */}
               <p className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-w-platform-fee-note">The platform fee layer is set by Capavate and is read-only to you. Its exact percentage is shown on this SPV's Fees tab once applied.</p>
+
+              {/* WAVE 82 · ITEM 2 — the blocking inline reason, in this wizard's
+                  own idiom (see `spv-w-carrybasis-error`). APPENDED at the end of
+                  this container, never inserted mid-list: the silent-drop guard
+                  fingerprints panel children by subsequence and a head insertion
+                  reads as a mass removal (the ordinal trap). It renders only when
+                  Next is disabled, and it names the field, the bound and the unit
+                  — so a fat finger is told immediately instead of after an ESIGN
+                  attestation. */}
+              {feeStepRefusal() && (
+                <div className="text-xs text-rose-600" data-testid="spv-w-fee-error">
+                  {feeStepRefusal()}
+                </div>
+              )}
             </div>
           )}
 
@@ -856,6 +1040,72 @@ export default function PartnerSpvEngine() {
                 />
               )}
               {w.termsDocRef && <ReviewRow label="Terms doc" value={w.termsDocRef} onEdit={() => setStep(3)} />}
+
+              {/* ═══════════════════════════════════════════════════════════════
+                  WAVE 82 · ITEM 3 — THE SEVEN ENTERED FIELDS THIS SCREEN OMITTED.
+                  ═══════════════════════════════════════════════════════════════
+                  Review & Launch exists for exactly one purpose: to let a partner
+                  verify what they are about to attest to under ESIGN/UETA. Seven
+                  inputs the wizard collects and persists were never shown here —
+                  Geography, Stage, mandate min check, mandate max check, minimum
+                  investment, Cap and Currency (the register counts the min/max
+                  pair as one row, hence "six"). The values DO persist; this is a
+                  review-completeness defect, not a persistence one.
+
+                  APPENDED at the end of the ReviewRow list. No existing row is
+                  re-ordered, re-labelled, re-styled or re-valued, and no payload
+                  changes: the guard fingerprints panel children by subsequence, so
+                  every existing row keeps its relative position and the guard's
+                  panel/copy/button counts can only move UP.
+
+                  Money is formatted with the SAME `fmt(toMinor(…), w.currency)` the
+                  existing rows use — no second conversion, no second unit. A blank
+                  optional renders an explicit "—" and stays optional; nothing here
+                  makes a field look required. Each row's Edit returns to the step
+                  that OWNS the field: 1 for the mandate refinements, 3 for the
+                  terms amounts and the currency.
+                  ═══════════════════════════════════════════════════════════════ */}
+              <ReviewRow label="Geography" value={w.geography.trim() || "—"} onEdit={() => setStep(1)} />
+              <ReviewRow label="Stage" value={w.stage.trim() || "—"} onEdit={() => setStep(1)} />
+              <ReviewRow
+                label="Mandate min check"
+                value={w.checkMinMajor.trim() ? fmt(toMinor(parseFloat(w.checkMinMajor) || 0, w.currency), w.currency) : "—"}
+                onEdit={() => setStep(1)}
+              />
+              <ReviewRow
+                label="Mandate max check"
+                value={w.checkMaxMajor.trim() ? fmt(toMinor(parseFloat(w.checkMaxMajor) || 0, w.currency), w.currency) : "—"}
+                onEdit={() => setStep(1)}
+              />
+              <ReviewRow
+                label="Minimum investment"
+                value={fmt(toMinor(parseFloat(w.minCheckMinor || "0") || 0, w.currency), w.currency)}
+                onEdit={() => setStep(3)}
+              />
+              <ReviewRow
+                label="Cap"
+                value={fmt(toMinor(parseFloat(w.capMinor || "0") || 0, w.currency), w.currency)}
+                onEdit={() => setStep(3)}
+              />
+              {/* Named in its own row so no amount on this screen is unit-ambiguous.
+                  Until now the currency was only INFERABLE from how Target raise
+                  happened to be formatted. */}
+              <ReviewRow label="Currency" value={w.currency} onEdit={() => setStep(3)} />
+              {/* The fee currency is a SEPARATE selection from the SPV currency and
+                  applies only to a fixed or hybrid management fee. Shown when it can
+                  differ, so the fixed amount above is never read in the wrong unit.
+                  The existing "Management fee" row is untouched. */}
+              {w.mgmtFeeType !== "carry" && (
+                <ReviewRow label="Fee currency" value={w.feeCurrency} onEdit={() => setStep(2)} />
+              )}
+              {/* The one wizard key that is NOT user-entered: the strict engine
+                  jurisdiction enum is DERIVED from the country chosen in step 0
+                  (`deriveEngineJurisdiction`). Disclosed rather than given a row, so
+                  the screen does not imply it was typed. This is the only collected
+                  key not represented above. */}
+              <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-review-derived-note">
+                Engine jurisdiction ({w.jurisdiction}) is derived automatically from the country above and is not separately entered.
+              </div>
               {/* B2 — per-SPV-type helper note (Syndicate, Rolling Fund) */}
               {SPV_TYPE_REVIEW_NOTE[w.spvType] && (
                 <div className="text-xs text-[var(--cv-color-text-muted)] rounded p-2" style={{ background: "rgba(4,30,65,0.05)" }} data-testid="spv-review-type-note">
@@ -904,9 +1154,9 @@ export default function PartnerSpvEngine() {
               {step === 0 ? "Cancel" : "Back"}
             </Button>
             {step < STEPS.length - 1 ? (
-              <Button data-testid="spv-wizard-next" disabled={!canAdvance()} onClick={() => setStep(step + 1)} style={{ background: NAVY }}>Next</Button>
+              <Button data-testid="spv-wizard-next" disabled={!canAdvance()} onClick={() => setStep(step + 1)} style={{ background: NAVY, borderColor: NAVY }}>Next</Button>
             ) : (
-              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY }}>
+              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY, borderColor: NAVY }}>
                 {create.isPending ? "Launching…" : "Launch SPV"}
               </Button>
             )}

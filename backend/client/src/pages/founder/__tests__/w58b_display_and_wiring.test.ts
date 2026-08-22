@@ -188,7 +188,10 @@ describe("W58B-D4 — live-audit findings folded in", () => {
        the edit happens — is supplied. */
     const src = readFileSync(join(HERE, "RoundDetail.tsx"), "utf8");
     expect(src).toContain('data-testid="terms-edit-where"');
-    expect(src).toContain("closed_round_readonly");
+    /* WAVE 83 · ITEM 1 — the sentence must still state the RULE; the internal
+       error constant `closed_round_readonly` must NOT be shown to a founder. */
+    expect(src).toContain("refuses every term edit once the round is closed or funded");
+    expect(src).not.toContain("closed_round_readonly");
   });
 
   it("W58B-D4c — ONE validation rule now serves BOTH pool-percentage fields", () => {

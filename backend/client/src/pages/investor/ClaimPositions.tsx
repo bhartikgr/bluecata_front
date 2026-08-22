@@ -35,6 +35,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { AppCard } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { aliasBasisLabel, referenceLabel } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 */
 
 type Alias = {
   id: string;
@@ -128,12 +129,53 @@ export default function ClaimPositions() {
         <AppCard className="p-4" data-testid="claim-positions-identity">
           <div className="text-xs uppercase tracking-wide text-slate-500">Signed in as</div>
           <div className="mt-1 font-medium" data-testid="claim-positions-email">{identity.email}</div>
+          {/* ═════════════════════════════════════════════════════════════════
+              WAVE 90 · ITEM 3 (M-3) — A JUDGEMENT CALL, MADE EXPLICITLY.
+
+              The live audit flagged `ext_182fd266…6cd3` here as a raw internal
+              value shown to an investor. It IS an internal identifier, and R77
+              bans those from rendered text.
+
+              I AM KEEPING IT, and here is the reasoning, because the brief asks
+              for the judgement rather than a silent choice.
+
+              This value is the ONLY handle that exists for a position recorded
+              before the person had an account. It is derived on the server from
+              their own verified email, it is what the append-only cap-table
+              ledger filed the position under, and the ledger may never be
+              rewritten to a friendlier key (that is the whole design of this
+              screen). If an LP's claim does not find their position, the thing
+              a fund administrator needs from them — to look in the right place
+              at all — is this reference. Hiding it would leave the user with
+              nothing to quote and the administrator with nothing to search, on
+              precisely the screen that exists because a position went missing.
+
+              That is the exemption R77 contemplates: an identifier the USER must
+              be able to quote. So what changes is not the value but the framing —
+              it is now labelled as a support reference and the copy says WHY it
+              is on screen, rather than sitting in a `<code>` block that reads
+              like a leaked internal key. `referenceLabel` marks the site so
+              these deliberate exceptions stay countable instead of becoming
+              indistinguishable from the next real leak.
+
+              THE COUNTER-ARGUMENT, recorded rather than dismissed: a shortened
+              form (`ext_182fd266…6cd3`) is not quotable in full, so it is worse
+              than either extreme — too internal to be pretty and too truncated
+              to be useful. It is left shortened here because widening it is a
+              layout change and this wave may not restyle the investor area
+              (R78/OQ-1 sequences that separately). Raised as OWNER QUESTION
+              W90-OQ-2.
+              ═════════════════════════════════════════════════════════════════ */}
           <div className="mt-3 text-xs text-slate-500">
             Earlier positions taken by email are filed under a derived reference. Yours is{" "}
-            <code className="rounded bg-slate-100 px-1" data-testid="claim-positions-derived-id">
-              {identity.derivedExternalId ? shortId(identity.derivedExternalId) : "—"}
+            <code className="rounded bg-slate-100 px-1" data-testid="claim-positions-derived-id" data-full-reference={identity.derivedExternalId ?? ""}>
+              {identity.derivedExternalId ? referenceLabel(shortId(identity.derivedExternalId)) : "—"}
             </code>
             . It is derived from your address; it is not a second account.
+          </div>
+          <div className="mt-1 text-xs text-slate-500" data-testid="claim-positions-reference-why">
+            Quote this reference if you ask your fund administrator to look for an earlier
+            investment. It is shown to you for that reason and for no other.
           </div>
 
           {!alreadyLinked && (
@@ -184,11 +226,15 @@ export default function ClaimPositions() {
             {activeAliases.map((a) => (
               <li key={a.id} className="flex items-center justify-between" data-testid={`claim-alias-${a.id}`}>
                 <span>
-                  <code className="rounded bg-slate-100 px-1">{shortId(a.aliasInvestorId)}</code>
+                  <code className="rounded bg-slate-100 px-1" data-full-reference={a.aliasInvestorId}>{referenceLabel(shortId(a.aliasInvestorId))}</code>
                   {a.matchEmail && <span className="ml-2 text-slate-600">{a.matchEmail}</span>}
                 </span>
                 <span className="text-xs text-slate-500">
-                  linked {a.verifiedAt ? new Date(a.verifiedAt).toLocaleDateString() : "—"} · {a.basis.replace(/_/g, " ")}
+                  {/* WAVE 90 · ITEM 3 — `basis.replace(/_/g," ")` turned the enum
+                      `email_hash_match` into "email hash match": de-underscored, still
+                      internal. The label comes from INVESTOR_ALIAS_BASIS_LABELS in
+                      shared/schema.ts. */}
+                  linked {a.verifiedAt ? new Date(a.verifiedAt).toLocaleDateString() : "—"} · {aliasBasisLabel(a.basis)}
                 </span>
               </li>
             ))}
@@ -208,7 +254,7 @@ export default function ClaimPositions() {
           <ul className="mt-2 space-y-1 text-sm text-slate-600">
             {revokedAliases.map((a) => (
               <li key={a.id}>
-                <code className="rounded bg-slate-100 px-1">{shortId(a.aliasInvestorId)}</code> — removed
+                <code className="rounded bg-slate-100 px-1" data-full-reference={a.aliasInvestorId}>{referenceLabel(shortId(a.aliasInvestorId))}</code> — removed
                 {a.revokedAt ? ` ${new Date(a.revokedAt).toLocaleDateString()}` : ""}
                 {a.revokeReason ? ` (${a.revokeReason})` : ""}
               </li>

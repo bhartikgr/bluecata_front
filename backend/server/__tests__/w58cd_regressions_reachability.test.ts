@@ -28,6 +28,10 @@ import http from "node:http";
 import request from "supertest";
 import fs from "node:fs";
 import path from "node:path";
+/* WAVE 86B · ITEM 3 (R77) — the Wave 84 fence's OWN classifier, so `W58CD-A1e`'s
+   "not rendered" pole and the fence cannot drift apart: there is one definition of
+   rendered copy in the tree, not two. */
+import { fenceInternals } from "../../scripts/lint/internalLanguageFence";
 
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
@@ -223,8 +227,34 @@ describe("W58CD-A1 — a saved price and a derived price can never disagree sile
     /* The derived value can also flow into the field, on an explicit action. */
     expect(s).toContain('data-testid="edit-price-apply-derived"');
     expect(s).toContain("setPricePerShare(Number(editPriceAgreement.applyValue))");
-    /* And the rule is enforced in the mutation itself, not only in the UI. */
-    expect(s).toContain("price_contradicts_pool");
+    /* And the rule is enforced in the mutation itself, not only in the UI.
+       WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 rewrote the message this belt-and
+       -braces guard throws, because that message is rendered verbatim in the founder's
+       failure toast. Both strings, verbatim (`Rounds.tsx` ~:678):
+         OLD: `price_contradicts_pool: the round would store $${...savedExact} while this pool `
+         NEW: `The price per share contradicts this option pool: the round would store $${...savedExact} while this pool `
+       WHAT THIS ASSERTION IS FOR IS UNCHANGED AND STILL PROVED: the guard is still
+       inside `saveMut`, so a programmatic click, a re-render race or a future caller
+       still cannot post a price the platform has proved wrong.
+
+       ── RESOLVED BY WAVE 86B UNDER R77 · BOTH POLES, ON ONE RULE ───────────────
+       Wave 85 recorded this as blocked on the owner: the identifier had to exist so
+       a caller could tell WHICH rule refused, but restoring it appeared to collide
+       with Wave 83's ban. It no longer does. R77 rules that an internal identifier
+       is a defect only WHERE A USER CAN READ IT, and Waves 84/85 narrowed the Wave
+       83 pin to `renderedCopy()` — the Wave 84 fence's own classifier — so the two
+       poles are compatible and are BOTH asserted here. */
+    // POLE A — the prose a founder reads is identifier-free, and is the Wave 83 sentence.
+    expect(s).toContain("The price per share contradicts this option pool");
+    expect(fenceInternals.collect(path.join(ROOT, "client/src/pages/founder/Rounds.tsx"))
+      .filter((n: { text: string }) => fenceInternals.isCopy(n))
+      .map((n: { text: string }) => n.text)
+      .join("\n")).not.toContain("price_contradicts_pool");
+    // POLE B — and a caller can still tell WHICH rule fired, off-screen.
+    expect(s).toContain('refusal.code = "price_contradicts_pool"');
+    expect(s).toContain('refusal.refusalName = "price_contradicts_pool"');
+    // The guard is still the `throw` inside the mutation, not a rendered string.
+    expect(s).toMatch(/if \(editPriceContradicted && editPriceAgreement\) \{[\s\S]{0,1600}?throw refusal;/);
   });
 
   it("W58CD-A1f — the SACRED consumer of that stored price is unchanged and still derives shares from it", () => {

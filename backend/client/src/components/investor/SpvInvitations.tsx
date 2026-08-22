@@ -25,6 +25,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
+import { statusLabel } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 (M-3) */
 
 interface InvitedSpv {
   spvId: string;
@@ -96,8 +97,12 @@ export function SpvInvitations() {
                   Invitation
                 </span>
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                {s.spvType} · {s.jurisdiction} · {s.status}
+              {/* WAVE 90 · ITEM 3 (M-3) — `spvType` and `status` are machine enums
+                  (`deal_specific`, `signing_open`); the jurisdiction code is an
+                  ISO/registry code an LP legitimately reads, so it passes through
+                  verbatim. R77: machine values retained as `data-` attributes. */}
+              <div className="text-xs text-muted-foreground mt-1" data-spv-type={s.spvType} data-status={s.status}>
+                {statusLabel(s.spvType)} · {s.jurisdiction} · {statusLabel(s.status)}
               </div>
               <div className="text-xs mt-2">
                 Minimum check:{" "}

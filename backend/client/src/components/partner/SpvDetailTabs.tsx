@@ -41,6 +41,7 @@ import { SpvSideLetterPanel } from "@/components/partner/SpvSideLetterPanel";
 import SpvReachPanel from "@/components/partner/SpvReachPanel";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
 import {
   SPV_EDU,
   WIND_DOWN_CHECKLIST,
@@ -1610,12 +1611,38 @@ function VintageField({ value }: { value: string }) {
  * Rule 7: a missing hash renders as an explicit "not recorded" refusal, never
  * as a blank, a dash pretending to be data, or the string "undefined". */
 function AuditReceiptField({ revisionHash, updatedAt }: { revisionHash: string | null; updatedAt: string | null }) {
-  const shortHash = revisionHash && revisionHash.length > 16 ? `${revisionHash.slice(0, 16)}…` : revisionHash;
+  /* WAVE 95 · ITEM 2 — TWO INTERNAL ARTEFACTS REMOVED FROM A PARTNER'S VIEW.
+
+     (a) THE TOOLTIP CARRIED THE WHOLE DIGEST. This field already shortened the
+         value on screen to 16 characters, but it also set `title={revisionHash}`,
+         and R77 names `title` explicitly as RENDERED TEXT — it reaches the eye on
+         hover and reaches a screen reader unconditionally. So the full 64
+         characters were exposed after all, to the one class of user least able to
+         avoid them. The attribute is gone; the value is not. It moves to
+         `data-revision-hash`, which R77 allows, so support and any integration
+         still read the exact digest.
+     (b) WHAT A HUMAN READS is now a short quotable reference rather than a
+         16-character fragment of a hash, which was no more readable than 64.
+
+     R44: nothing here is deleted for style. The label "Audit receipt" and the
+     absence note below are Wave 83's owner-approved wording and are kept. */
+  const receiptRef = auditReceiptReference(revisionHash);
   return (
     <div data-testid="spv-detail-audit-receipt">
       <div className="font-medium">Audit receipt</div>
-      {revisionHash ? (
-        <div className="text-xs font-mono break-all" title={revisionHash} data-testid="spv-detail-audit-receipt-hash">{shortHash}</div>
+      {receiptRef ? (
+        <div
+          className="text-xs font-mono break-all"
+          /* R77 — an `aria-label` IS rendered text, so it says in WORDS what this
+             field is. The `title` it replaces contained the 64-character digest,
+             which a screen reader read out character by character; a sighted user
+             could at least ignore it. This is the honest replacement for that
+             tooltip: the same position, the same purpose, words instead of a
+             machine value. */
+          aria-label={`Audit receipt reference ${receiptRef}`}
+          data-revision-hash={revisionHash}
+          data-testid="spv-detail-audit-receipt-hash"
+        >{receiptRef}</div>
       ) : (
         <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-missing">
           No revision hash recorded for this SPV.
@@ -1624,9 +1651,27 @@ function AuditReceiptField({ revisionHash, updatedAt }: { revisionHash: string |
       <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-updated">
         {updatedAt ? `Last revised ${updatedAt}` : "Revision time not recorded"}
       </div>
-      {/* OQ-35 — named openly rather than left as a silent gap. */}
+      {/* OQ-35 — named openly rather than left as a silent gap.
+
+          WAVE 95 · ITEM 2 — ONE WORD REMOVED, AND WHAT *IS* AVAILABLE STATED.
+          Reviewer 3 flagged the original of this line — "Revision number and
+          previous hash are not exposed by the engine yet" — as an engineering
+          statement about an unfinished engine shown to a customer. Wave 83
+          removed the engine and the column names. What survived was the word
+          "YET", which is a promise about a future engine and is exactly what this
+          wave was told not to ship. It is gone.
+
+          R44 governs the rest: the remaining sentence is TRUE and is the owner-
+          approved Wave 83 wording, so it is kept verbatim rather than rewritten,
+          and the positive half — what this receipt DOES record — is ADDED beside
+          it rather than replacing anything. "I'd rather add than delete." */}
       <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-version-note">
-        Revision number and previous hash are not exposed by the engine yet.
+        A revision number and a link to the previous audit entry are not recorded for this vehicle.
+      </div>
+      <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-available-note">
+        This receipt records the fingerprint above and the time of the last revision. Nothing else
+        is recorded for this vehicle. Quote the fingerprint to Capavate support if you need this
+        receipt checked.
       </div>
     </div>
   );
@@ -1795,7 +1840,7 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
               style={eligibility.eligible ? { background: "rgba(16,185,129,0.1)" } : { background: "rgba(245,158,11,0.1)" }}
               data-testid="spv-deploy-eligibility"
             >
-              {eligibility.eligible ? "✓ Eligible per your SPV mandate." : `Not eligible: ${eligibility.reasons.join("; ") || "no reason given"}. The deploy call will fail closed unless you update the mandate.`}
+              {eligibility.eligible ? "✓ Eligible per your SPV mandate." : `Not eligible: ${eligibility.reasons.join("; ") || "no reason given"}. Deployment will be refused unless you update the mandate.`}
             </div>
           )}
         </div>
@@ -1829,7 +1874,7 @@ function MandateEmptyState({ mandate, canWrite }: { mandate: unknown; canWrite: 
       data-testid="spv-mandate-empty"
     >
       <div className="font-medium">No mandate has been set for this SPV.</div>
-      <div>This is not an open mandate. Deployment and eligibility both fail closed with NO_MANDATE until one is recorded.</div>
+      <div>This is not an open mandate. Deployment and eligibility are both refused until a mandate is recorded.</div>
       {canWrite ? (
         <div data-testid="spv-mandate-empty-cta">Use “Edit mandate” below to set one.</div>
       ) : (
@@ -1921,7 +1966,7 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
           </div>
           <div>
             <Label htmlFor={`${id}-companyIds`} className="text-[10px]">Allowlisted companies (comma-separated IDs, optional)</Label>
-            <Input id={`${id}-companyIds`} value={companyIds} onChange={(e) => setCompanyIds(e.target.value)} data-testid="spv-mandate-company-ids" placeholder="cmp_abc, cmp_xyz" />
+            <Input id={`${id}-companyIds`} value={companyIds} onChange={(e) => setCompanyIds(e.target.value)} data-testid="spv-mandate-company-ids" placeholder="one company id per line" />
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">Only companies listed here are eligible when mode is Deal-Specific or Sector-Restricted.</div>
           </div>
           <div className="grid grid-cols-2 gap-2">

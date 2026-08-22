@@ -88,6 +88,44 @@ import {
 import { verifyWebhookSignature as verifyAirwallexSig } from "./lib/airwallexGateway";
 import { log } from "./lib/logger";
 
+/* ============================================================
+ * WAVE 97 · ITEM 2 — THE ACTOR TOKEN THIS MODULE STAMPS ON THE AUDIT LEDGER.
+ *
+ * Every purchase / portal / webhook flow in this file has routed through
+ * Airwallex since v25.4 (Ozan's directive, 11-Jun-2026, recorded above): the
+ * webhook endpoint is `POST /api/airwallex/webhook/collective`, its signature
+ * is verified by `verifyAirwallexSig` (server/lib/airwallexGateway.ts), and its
+ * not-configured errors are `airwallex_not_configured` /
+ * `airwallex_webhook_not_configured`. There is no Stripe on this path.
+ *
+ * The four audit / deactivation-source writes in the webhook handler below
+ * nevertheless stamped the literal token `system:stripe_webhook`, so
+ * `describeActor()` (server/lib/actorIdentityDescriber.ts) rendered LIVE
+ * AIRWALLEX EVENTS as **"Automatic · Stripe webhook"** on the admin audit
+ * ledger. That names a payment provider this platform does not use, on an
+ * integrity record — the same class of defect Wave 93 was created to fix, and
+ * Wave 93's own census recorded the wrong label as correct output.
+ *
+ * Owner instruction, 2026-08-21, verbatim: "We do not use Stripe." /
+ * "remove stripe. I can add this at a later date. We are using Airwallex today."
+ *
+ * FORWARD-ONLY — NO HISTORY IS REWRITTEN. Measured before changing anything:
+ * the live database holds ZERO rows in any actor/source/gateway position whose
+ * value names Stripe, and both Stripe-named tables
+ * (`collective_memberships_billing`, `collective_billing_events`) are empty at
+ * 0 rows. So there is no stored history to preserve or to falsify here; only
+ * NEW writes change. Any pre-existing `system:stripe_webhook` row in another
+ * environment is left byte-untouched and is still described honestly by
+ * actorIdentityDescriber.ts, which keeps the raw id verbatim in `.id`.
+ *
+ * NOT RENAMED, deliberately: the `stripe_customer_id` / `stripe_subscription_id`
+ * / `stripe_price_id` / `stripe_event_id` COLUMNS and their camelCase field
+ * mirrors. Renaming persisted columns requires a migration, and this wave is
+ * under a NO-NEW-MIGRATION constraint. They are legacy column NAMES on an
+ * Airwallex-backed table, not Stripe usage. Recorded in W97_STRIPE_REMOVAL.md.
+ * ============================================================ */
+const COLLECTIVE_BILLING_AUDIT_ACTOR = "system:airwallex_webhook";
+
 /* --------------------------------------------------------------- */
 /* Types                                                            */
 /* --------------------------------------------------------------- */
@@ -969,7 +1007,7 @@ async function dispatchStripeEvent(event: {
   // On flip to active, auto-join the user.
   if (newStatus === "active" && billing.status !== "active") {
     const fresh = result.billing ?? findBillingByIdAnyTenant(billing.id);
-    if (fresh) autoJoinCollectiveMembership(fresh, "system:stripe_webhook");
+    if (fresh) autoJoinCollectiveMembership(fresh, COLLECTIVE_BILLING_AUDIT_ACTOR);
   }
 
   /* v25.21 Lane D NC-002 fix — on flip to cancelled or past_due, deactivate
@@ -991,18 +1029,18 @@ async function dispatchStripeEvent(event: {
       userId: billing.userId,
       billingId: billing.id,
       targetStatus: newStatus,
-      source: "system:stripe_webhook",
+      source: COLLECTIVE_BILLING_AUDIT_ACTOR,
       reason: `billing_status_${newStatus}`,
     });
   } else if (newStatus === "active" && billing.userId) {
     // Billing recovered → clear any open fail-closed deactivation markers.
-    resolvePendingMembershipDeactivationsForUser(billing.userId, "system:stripe_webhook");
+    resolvePendingMembershipDeactivationsForUser(billing.userId, COLLECTIVE_BILLING_AUDIT_ACTOR);
   }
 
   // Audit append (outside the data tx; appendAdminAudit opens its own).
   try {
     appendAdminAudit(
-      "system:stripe_webhook",
+      COLLECTIVE_BILLING_AUDIT_ACTOR,
       `collective_billing:${billing.id}`,
       `collective.billing.${event.type}`,
       {

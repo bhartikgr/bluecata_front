@@ -468,15 +468,55 @@ describe("W79 · ITEM 2 — both poles, through the live HTTP route", () => {
     expect(res.body.seniorityAssumed).toBeNull();
   }, 60_000);
 
-  it("W79-B6 — POLE 3: DUPLICATE ranks refuse rather than pretend to model pari passu", async () => {
+  it("W79-B6 — POLE 3: DUPLICATE ranks now COMPUTE, and the answer is the distinct-rank answer", async () => {
+    /* ══ REWRITTEN BY WAVE 91 · ITEM 1 — DELIBERATELY, AND HERE IS WHY. ═══════════
+       OLD EXPECTATION: HTTP 422 `SENIORITY_RANKING_AMBIGUOUS`, with the message
+       containing "PARI PASSU". The test's name said it: *"DUPLICATE ranks refuse
+       rather than pretend to model pari passu."*
+       NEW EXPECTATION: HTTP 200, and every figure BYTE-IDENTICAL to `W79-B5`
+       immediately above — the same cap table with DISTINCT ranks 0 and 1.
+
+       WHY THE NEW ONE IS RIGHT, AND WHY THE OLD ONE WAS NOT WRONG WHEN IT WAS
+       WRITTEN. Wave 79 refused because the engine pays preferences one class at a
+       time in sorted order and clamps each at the money still left, so on a SHORT
+       exit it pays the first-listed class in full and the second nothing — two
+       different answers on identical negotiated terms, from list order alone. That
+       reasoning is intact and is still tested: `W91-PP-01` / `W91-PP-01R` pin the
+       $6,000,000 / $3,000,000 pro-rata split and pin that reversing the list does
+       not move it.
+
+       WHAT THE REFUSAL GOT WRONG WAS ITS SCOPE. It fired on EVERY equal-ranking cap
+       table, including this one — where the $50,000,000 sale covers the whole
+       preference stack, so the ranking cannot change any figure at all. Measured
+       over 207 randomised ample-exit fixtures run in four orderings each: 206
+       byte-identical, the single exception one unit in the 38th significant digit
+       (`spec/preflight_waterfall_evidence/21_claims_P1_P2_P3.txt`,
+       `22_P1_counterexample.txt`). So the refusal was discarding an answer that was
+       already correct, and this fixture proves it the strongest way available — the
+       equal-rank answer and the stacked answer are the same string.
+
+       THE REFUSAL IS NARROWED, NOT DELETED (R67 condition 1). `W79-B2` above still
+       asserts the identifier is in the route, and it remains reachable from two
+       defence-in-depth branches; `W91-REF-01` pins both. The figures below were
+       produced by an EXECUTED run of this route, not by arithmetic in anyone's head:
+       `build_log/wave91/transcripts/`. */
     const res = await build("dupe", [
       { lp: "1x participating", seniority: 0, pps: 2.5, amount: "10000000" },
       { lp: "1x non-participating", seniority: 0, pps: 1, amount: "4000000" },
     ]);
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("SENIORITY_RANKING_AMBIGUOUS");
-    expect(res.body.duplicateRanks).toEqual([0]);
-    expect(String(res.body.message)).toContain("PARI PASSU");
+    expect(res.status, JSON.stringify(res.body).slice(0, 400)).toBe(200);
+    /* IDENTICAL TO `W79-B5`, the distinct-rank control, to the last digit. */
+    expect(res.body.founderProceeds).toBe("2000000000");
+    expect(res.body.lpProceeds).toBe("3000000000");
+    expect(new D120(res.body.founderProceeds).plus(new D120(res.body.lpProceeds)).toFixed())
+      .toBe("5000000000");
+    /* The equal ranking is DISCLOSED rather than silently flattened into a stack. */
+    expect(res.body.seniority.map((s: { seniority: number; onRecord: boolean }) => [s.seniority, s.onRecord]))
+      .toEqual([[0, true], [0, true]]);
+    expect(res.body.pariPassu.equalRankingDetected).toBe(true);
+    expect(res.body.pariPassu.duplicateRanks).toEqual([0]);
+    /* AND NOTHING WAS ABATED, because nothing needed to be. */
+    expect(res.body.pariPassu.abatementEngaged).toBe(false);
   }, 60_000);
 
   it("W79-B7 — POLE 4: a company with ONE preference class is UNAFFECTED, and says so", async () => {

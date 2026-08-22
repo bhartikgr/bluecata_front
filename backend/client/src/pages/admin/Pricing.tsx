@@ -41,6 +41,7 @@ import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { HelpTip } from "@/components/HelpTip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 /* ---------- Shared types ---------- */
 type Status = "draft" | "preview" | "live" | "deprecated";
@@ -109,9 +110,16 @@ function fmtMoney(minor: number, currency = "USD"): string {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
   return formatMinor(minor, currency);
 }
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string): string {
   if (!iso || iso === "—") return "—";
-  try { return new Date(iso).toLocaleDateString(); } catch { return iso; }
+  try { return fmtLocaleDate(iso, undefined, undefined, iso); } catch { return iso; }
 }
 
 /* ---------- Status chips ---------- */

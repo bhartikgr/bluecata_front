@@ -180,9 +180,11 @@ describe("W58 · R27 scope 6 — validation refuses honestly", () => {
   it("W58-W12 — the percentage field renders a NAMED error, never a silent coercion", () => {
     expect(src).toContain('data-testid="err-addon-pool-percent"');
     expect(src).toContain("poolPercentCheck && !poolPercentCheck.ok");
-    /* The refusal CODE is shown too, so a founder reporting a problem can quote
-       something a engineer can search for. */
-    expect(src).toContain("Refusal code:");
+    /* WAVE 83 · ITEM 1 (owner ruling Q25) — the refusal CODE is NO LONGER shown
+       to a founder. The paragraph is still there and now says what the platform
+       did and did not do, which is what the founder can act on. */
+    expect(src).not.toContain("Refusal code:");
+    expect(src).toContain("Nothing has been changed and no share count has been guessed");
   });
 });
 

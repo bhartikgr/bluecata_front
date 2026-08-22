@@ -40,6 +40,12 @@ import { PartnerLifecyclePanel } from "@/components/admin/PartnerLifecyclePanel"
 import { MfcrmCapabilityPanel } from "@/components/admin/MfcrmCapabilityPanel";
 import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive, Sliders, Tags } from "lucide-react";
 import { Link } from "wouter";
+/* WAVE 87 · ITEM 1 — a DATE-ONLY value must not be parsed by `new Date()`:
+   `new Date("2026-06-15")` is UTC midnight, which prints ONE DAY EARLY in every
+   zone west of UTC (the owner is in New York). `fmtLocaleDate` keeps the exact
+   rendered format of the call it replaces and removes only the shift.
+   Shape evidence for each field is in build_log/wave87/W87_DATE_CENSUS.md §2. */
+import { fmtLocaleDate } from "@/lib/format";
 /* WAVE 4B (PT-3/PT-4) — partner classification. Before this wave the summary
    header rendered TWO unlabelled badges: `partner.tier` ("catalyst") and
    `partner.partnerType` ("syndicate"). The second came from
@@ -417,7 +423,9 @@ export default function AdminPartnerDetail() {
 
   const statusColor = (s?: string) => {
     if (!s) return "secondary";
-    if (s === "active") return "default" as const;
+    /* WAVE 99 · ITEM 2.2 — `"default"` is the LOGO RED in admin, the ratified
+     * NEGATIVE anchor.  `active` is a healthy state.  Colour only. */
+    if (s === "active") return "positive" as const;
     if (s === "archived") return "secondary" as const;
     if (s === "suspended") return "destructive" as const;
     return "secondary" as const;
@@ -927,7 +935,7 @@ export default function AdminPartnerDetail() {
                           <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{m.user_id ?? m.id}</td>
                           <td className="py-2 pr-4">{m.sub_role ?? "—"}</td>
                           <td className="py-2 pr-4">
-                            <Badge variant={m.status === "active" ? "default" : "secondary"} className="text-xs">
+                            <Badge variant={m.status === "active" ? "positive" : "secondary"} className="text-xs">
                               {m.status ?? "unknown"}
                             </Badge>
                           </td>
@@ -1016,7 +1024,7 @@ export default function AdminPartnerDetail() {
                             <Badge variant="outline" className="text-xs">{t.status ?? "—"}</Badge>
                           </td>
                           <td className="py-2 text-muted-foreground text-xs">
-                            {(t.dueDate || t.due_date) ? new Date(t.dueDate ?? t.due_date ?? "").toLocaleDateString() : "—"}
+                            {(t.dueDate || t.due_date) ? fmtLocaleDate(t.dueDate ?? t.due_date) : "—"}
                           </td>
                         </tr>
                       ))}

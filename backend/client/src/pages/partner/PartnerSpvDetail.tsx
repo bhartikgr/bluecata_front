@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay } from "@shared/spvEngine";
+import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -169,6 +170,11 @@ export default function PartnerSpvDetail() {
   const [commitEmail, setCommitEmail] = useState("");
   const [commitAmount, setCommitAmount] = useState("");
   const [commitUnits, setCommitUnits] = useState("");
+  /* WAVE 83 · ITEM 2.4 — a validation message is an answer to something the user
+     did. Until they touch the field there is nothing to answer, so it is not
+     shown. Nothing about what is REQUIRED changed; both buttons stay disabled. */
+  const [lpLastNameTouched, setLpLastNameTouched] = useState(false);
+  const [commitLastTouched, setCommitLastTouched] = useState(false);
 
   /* W2-H — GP LP roster (subscribers + pending invites). */
   const roster = useQuery<{
@@ -193,8 +199,12 @@ export default function PartnerSpvDetail() {
     },
     onSuccess: () => {
       setLpEmail(""); setLpFirstName(""); setLpLastName("");
+      /* WAVE 83 · ITEM 2.3 — BOTH roster surfaces, and a forced refetch. */
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
-      toast({ title: "LP invited" });
+      qc.invalidateQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
+      qc.refetchQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
+      qc.refetchQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
+      toast({ title: "LP invited", description: "The roster below has been refreshed — the invite is on it. Do not send it again." });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Invite failed", description: e.message }),
   });
@@ -212,7 +222,11 @@ export default function PartnerSpvDetail() {
     },
     onSuccess: () => {
       setCommitFirst(""); setCommitLast(""); setCommitEmail(""); setCommitAmount(""); setCommitUnits("");
+      /* WAVE 83 · ITEM 2.3 — same two keys, same forced refetch, same reason. */
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
+      qc.invalidateQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
+      qc.refetchQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
+      qc.refetchQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
       toast({ title: "LP committed to the cap table" });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "LP commit failed", description: e.message }),
@@ -588,7 +602,8 @@ export default function PartnerSpvDetail() {
               <Input
                 placeholder="Last name *"
                 value={lpLastName}
-                onChange={(e) => setLpLastName(e.target.value)}
+                onChange={(e) => { setLpLastName(e.target.value); setLpLastNameTouched(true); }}
+                onBlur={() => setLpLastNameTouched(true)}
                 data-testid="partner-spv-lp-invite-lastname"
               />
               <Input
@@ -599,7 +614,7 @@ export default function PartnerSpvDetail() {
                 data-testid="partner-spv-lp-invite-email"
               />
             </div>
-            {!lpLastName.trim() && (
+            {lpLastNameTouched && !lpLastName.trim() && (
               <div className="text-xs text-rose-600" data-testid="partner-spv-lp-invite-lastname-error">
                 Last name is required to invite an LP.
               </div>
@@ -629,7 +644,8 @@ export default function PartnerSpvDetail() {
               <Input
                 placeholder="Last name *"
                 value={commitLast}
-                onChange={(e) => setCommitLast(e.target.value)}
+                onChange={(e) => { setCommitLast(e.target.value); setCommitLastTouched(true); }}
+                onBlur={() => setCommitLastTouched(true)}
                 data-testid="partner-spv-lp-commit-lastname"
               />
               <Input
@@ -658,7 +674,7 @@ export default function PartnerSpvDetail() {
                 data-testid="partner-spv-lp-commit-units"
               />
             </div>
-            {!commitLast.trim() && (
+            {commitLastTouched && !commitLast.trim() && (
               <div className="text-xs text-rose-600" data-testid="partner-spv-lp-commit-lastname-error">
                 Last name is required to commit an LP.
               </div>
@@ -685,9 +701,28 @@ export default function PartnerSpvDetail() {
             blank in production. Only verified fields are shown. What a complete
             audit receipt SHOULD carry, if these are added later, is written up in
             build_log/WAVE2_REPORT.md. */}
+        {/* WAVE 95 · ITEM 2 (register M-8) — THE FULL 64-CHARACTER HASH IS NO
+            LONGER RENDERED TO A PARTNER. It was: this line printed
+            `s.revisionHash` verbatim, so the live page read
+            "Revision fingerprint: 00e0892930df04916d2885750882fa4ea211b9561e67b4287c7c2a234d25e6d8".
+            A sha256 digest is a machine value — unquotable, unreadable, and it
+            tells a partner nothing (R77: banned in rendered text, allowed as a
+            machine-readable value; owner Q25: no exposure of internal process).
+            R44: the LABEL is accurate and owner-approved (Wave 83) so it is kept
+            verbatim; only the value a human reads is shortened.
+            NOTHING IS DELETED — the full digest stays on this row as
+            `data-revision-hash`, so support, an integration and a test reader
+            all still have the exact value; and the short reference is a
+            deterministic prefix of it, so a partner quoting it identifies
+            exactly one receipt. */}
         <div className="text-xs font-mono space-y-1">
-          <div>revision_hash: {s.revisionHash}</div>
-          <div>created_at: {s.createdAt}</div>
+          <div data-revision-hash={s.revisionHash} data-testid="partner-spv-audit-receipt-ref">
+            Revision fingerprint: {auditReceiptReference(s.revisionHash) ?? "not recorded"}
+          </div>
+          <div>Created: {s.createdAt}</div>
+        </div>
+        <div className="text-xs" data-testid="partner-spv-audit-receipt-help">
+          Quote this fingerprint to Capavate support if you need this receipt checked.
         </div>
       </Card>
     </PartnerShell>

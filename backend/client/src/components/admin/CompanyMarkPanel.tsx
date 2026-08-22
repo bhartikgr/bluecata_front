@@ -211,7 +211,10 @@ export function CompanyMarkPanel({ companyId }: { companyId: string }) {
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={d?.overrideApprovalMode === "required" ? "default" : "destructive"} data-testid="badge-company-mark-approval-mode">
+              {/* WAVE 101 - both branches were red: the GOVERNED setting ("approval
+   required") was indistinguishable from the ungoverned one.  Only the
+   governed branch moves; the ungoverned branch stays destructive. */}
+              <Badge variant={d?.overrideApprovalMode === "required" ? "positive" : "destructive"} data-testid="badge-company-mark-approval-mode">
                 {`Override approval: ${d?.overrideApprovalMode ?? "unknown"}`}
               </Badge>
               {overrideInPlay && (

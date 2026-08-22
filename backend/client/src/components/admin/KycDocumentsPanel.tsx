@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ShieldCheck, ShieldX, Download, FileText } from "lucide-react";
+import { fmtLocaleDateTime } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 interface KycDoc {
   id: string;
@@ -53,10 +54,16 @@ function fmtBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return fmtLocaleDateTime(iso, undefined, undefined, iso);
 }
 
 export default function KycDocumentsPanel({ investorId }: { investorId: string }) {

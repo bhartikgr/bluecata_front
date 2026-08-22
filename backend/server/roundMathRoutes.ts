@@ -537,7 +537,7 @@ export function registerRoundMathRoutes(app: Express, readSecurities: Securities
         ok: false,
         error: pool.error,
         message:
-          "optionPoolPostPercent is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 25 means 25%. " +
+          "The option pool percentage is percent-as-written: 25 means 25%. " +
           "It is never rescaled by magnitude and must be a number in [0, 100).",
       });
     }

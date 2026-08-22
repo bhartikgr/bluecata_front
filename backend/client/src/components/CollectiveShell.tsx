@@ -3,6 +3,12 @@
  *
  * Standalone shell with its own sidebar + topbar for the Collective experience.
  * Visual identity: v25.43 R3-2 re-skin — brand red #cc0001 accent, cream #F7F6F2 background, navy text.
+ *   WAVE 96 · ITEM 2 SUPERSEDES THE CREAM: the rail, its rules and the top-bar
+ *   title ink no longer carry literals at all. They read `--cv-color-surface-cream`,
+ *   `--cv-color-divider`, `--cv-color-surface` and `--cv-color-navy`, which each
+ *   product scope re-points — so this one shared component renders the Collective
+ *   rail and the Consortium Partner rail from each area's own tokens. Full note at
+ *   the `CollectiveSidebar` return below.
  * Light-mode only. No web storage.
  */
 
@@ -357,14 +363,51 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
       : baseGroups;
 
   return (
+    /* WAVE 96 · ITEM 2 — THE COLOUR MOVES OUT OF THIS COMPONENT AND INTO THE
+       SCOPED CSS LAYER. NOTHING ELSE ON THIS ELEMENT CHANGES.
+
+       WHAT WAS WRONG. The rail's colour was a LITERAL here — #F7F6F2 cream with
+       #E8E4E0 warm rules. An inline `style=` attribute beats every author
+       stylesheet that is not `!important`, so the whole logged-in product moved
+       to the ratified cool off-white in Waves 1D and 2D+3D while this rail stayed
+       warm. Wave 2D+3D reported it (its OWNER QUESTION Q1) and deliberately did
+       NOT patch it, because this ONE component draws BOTH the Collective rail and
+       the Consortium Partner rail: hard-coding a cool value here would have moved
+       the partner area it had to prove byte-identical, and overriding it for
+       Collective alone would have made the two rails differ, which R74 forbids.
+
+       THE RESOLUTION, AND IT IS WAVE 0's OWN MECHANISM. `CollectiveShell` already
+       sets `data-product="collective" | "partner"` on its root (line 609), and
+       BOTH scopes already shadow these exact `--cv-*` tokens with the ratified
+       cool values — `ledger-collective.css` §1 and `ledger-partner.css` §1. So
+       reading the TOKEN instead of a literal makes this one component render the
+       right rail in each area WITHOUT naming either of them here. A shared
+       component serving two areas with two per-area values is not an R74
+       violation; it is the attribute R74 is enforced with.
+
+       WHY NO NEW TOKEN NAME. `--cv-color-surface-cream` and `--cv-color-divider`
+       already exist in the SACRED `capavate-tokens.css` (:root, entry 41/48,
+       NOT opened), are already consumed for exactly this kind of surface by
+       `collective-theme.css` and `partner-theme.css`, and each product scope
+       already re-points them. A literal here would be the dead hardcoded value
+       the owner's standing rule forbids; a NEW token would be a second one.
+       Resolved values, measured in the browser, in build_log/wave96:
+         collective / partner  surface-cream #F8FAFC · divider #E5EAF0
+         :root fallback        #f9f6f1 / #e8e6e1 — i.e. essentially today's warm
+                               values, so any future caller without a
+                               `data-product` ancestor keeps today's look.
+
+       COLOUR ONLY. No control, handler, label, layout, class, prop or condition
+       on this element or any other in this file was touched. */
     <div
       className="flex flex-col h-full"
-      style={{ backgroundColor: "#F7F6F2", borderRight: "1px solid #E8E4E0" }}
+      style={{ backgroundColor: "var(--cv-color-surface-cream)", borderRight: "1px solid var(--cv-color-divider)" }}
     >
       {/* Brand header */}
       <div
         className="flex items-center justify-between px-4 py-4"
-        style={{ borderBottom: "1px solid #E8E4E0" }}
+        /* WAVE 96 · ITEM 2 — token, not a literal. See the note on the rail above. */
+        style={{ borderBottom: "1px solid var(--cv-color-divider)" }}
       >
         {/* W-LOGO (Ozan) — use the REAL Capavate logo with the product name
             written UNDERNEATH it, replacing the old "C" tile + inline
@@ -418,7 +461,8 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
       </ScrollArea>
 
       {/* Bottom: Legal & Privacy */}
-      <div className="px-4 py-3" style={{ borderTop: "1px solid #E8E4E0" }}>
+      {/* WAVE 96 · ITEM 2 — token, not a literal. See the note on the rail above. */}
+      <div className="px-4 py-3" style={{ borderTop: "1px solid var(--cv-color-divider)" }}>
         <button
           onClick={() => openDrawer()}
           data-testid="button-legal-privacy"
@@ -478,9 +522,12 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
   return (
     <header
       className="h-14 flex items-center justify-between px-4 gap-3"
+      /* WAVE 96 · ITEM 2 — tokens, not literals. `--cv-color-surface` is #FFFFFF
+         in :root AND in both product scopes, so the top bar's fill is unchanged
+         to the byte; only the warm rule beneath it moves with the rail. */
       style={{
-        backgroundColor: "#fff",
-        borderBottom: "1px solid #E8E4E0",
+        backgroundColor: "var(--cv-color-surface)",
+        borderBottom: "1px solid var(--cv-color-divider)",
       }}
     >
       <div className="flex items-center gap-3">
@@ -496,7 +543,11 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
 
         <div
           className="text-sm font-medium hidden md:block"
-          style={{ color: "#1A1A2E" }}
+          /* WAVE 96 · ITEM 2 — #1A1A2E was a FOURTH navy, hardcoded here only.
+             `--cv-color-navy` is the ratified #041E41, LOCKED by Tier-9 rule 74
+             in the sacred token file and never shadowed by any product scope, so
+             this reads one navy platform-wide. 15.9:1 on white, AAA. */
+          style={{ color: "var(--cv-color-navy)" }}
           data-testid="topbar-title"
         >
           {/* v25.41 Bug-1 — partner-only sessions show the Consortium title. */}

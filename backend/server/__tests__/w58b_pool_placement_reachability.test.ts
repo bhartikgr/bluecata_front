@@ -444,7 +444,17 @@ describe("W58B-3 — PATCH /api/rounds/:id/terms can set, change and remove the 
       const res = await patch(editableRoundId, { optionPoolPostPercent: bad });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe("invalid_optionPoolPostPercent");
-      expect(String(res.body.message)).toContain("PERCENT-AS-WRITTEN");
+      /* WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 rewrote this message under the
+         owner's "no internal process on screen" ruling. Both strings, verbatim:
+           OLD: "optionPoolPostPercent is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 25 means 25%. "
+           NEW: "The option pool percentage is percent-as-written: 25 means 25%. "
+         THE REFUSAL IS STILL IDENTIFIABLE BY NAME, and that is asserted one line
+         above, not here: `res.body.error === "invalid_optionPoolPostPercent"`. A
+         caller can still tell WHICH rule fired without reading the prose. What this
+         line guards is the CONVENTION being stated to the human — that 25 means 25%
+         and is never rescaled — which the new sentence states just as plainly. */
+      expect(String(res.body.message)).toContain("percent-as-written");
+      expect(String(res.body.message)).toContain("never rescaled by magnitude");
     }
     const badMode = await patch(editableRoundId, { optionPoolMode: "whenever" });
     expect(badMode.status).toBe(400);

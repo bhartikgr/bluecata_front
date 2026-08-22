@@ -17,7 +17,15 @@ import TrustSignals from "../../components/home3compo/TrustSignals";
 
 export default function Home() {
   return (
-    <>
+    /* WAVE 0 · H-1 — the scope for the marketing button reset.
+       `home3style.css` used to reset `border` on EVERY button on the platform
+       because it is emitted into the one global stylesheet. The reset is now
+       `.home3-root button { border: none }`, and this wrapper is its only
+       anchor. Presentation only: a plain <div> with no styling of its own, no
+       route change, no handler, no reordering — the marketing tree keeps its
+       exact order and every component keeps its exact position. Removing this
+       class silently restores the platform-wide bug, so do not remove it. */
+    <div className="home3-root">
       <Header3 />
       {/* Wave E Fix E5/E6 — explicit <main id="main-content"> landmark.
           Pairs with the skip-to-content link in Header3 and gives SRs a primary region. */}
@@ -36,6 +44,6 @@ export default function Home() {
         <FinalCTA />
       </main>
       <Footer3 />
-    </>
+    </div>
   )
 }

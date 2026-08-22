@@ -221,11 +221,24 @@ export default function AdminUsers() {
                       </div>
                     </td>
                     <td className="px-3 py-3 capitalize">
-                      <Badge className={u.role === "admin" ? "bg-[hsl(0_100%_40%)] text-white border-0" : "bg-secondary"}>{u.role}</Badge>
+                      {/* WAVE 99 · ITEM 2.1 — `text-secondary-foreground` added.  A variant-less
+                          <Badge> carries `text-primary-foreground` = WHITE from the default
+                          variant; the className overrode only the BACKGROUND to `bg-secondary`
+                          (#F1F4F8), leaving white text on near-white at **1.10:1** — effectively
+                          invisible, against the 4.5:1 minimum this programme enforces.  The
+                          matching foreground token is #16233B, i.e. **14.23:1**.  Background
+                          unchanged, so nothing moves by a pixel. */}
+                      <Badge className={u.role === "admin" ? "bg-[hsl(0_100%_40%)] text-white border-0" : "bg-secondary text-secondary-foreground"}>{u.role}</Badge>
                     </td>
                     <td className="px-3 py-3 text-muted-foreground">{u.tenant}</td>
                     <td className="px-3 py-3">
-                      <Badge variant={u.status === "active" ? "default" : u.status === "suspended" ? "destructive" : "outline"}>{u.status}</Badge>
+                      {/* WAVE 99 · ITEM 2.2 — `"default"` -> `"positive"`.  In admin `--primary`
+                          is the LOGO RED #CC0001, which this programme has ratified as the
+                          NEGATIVE anchor, so a HEALTHY account was painted as a failure while
+                          `suspended` beside it was painted in the same family.  Now the ratified
+                          positive #2C7346.  The predicate, the branches and the rendered text
+                          are byte-identical. */}
+                      <Badge variant={u.status === "active" ? "positive" : u.status === "suspended" ? "destructive" : "outline"}>{u.status}</Badge>
                     </td>
                     <td className="px-3 py-3">
                       {u.mfa ? <span className="inline-flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" /> MFA on</span>

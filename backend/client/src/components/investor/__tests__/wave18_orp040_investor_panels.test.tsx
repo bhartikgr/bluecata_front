@@ -417,7 +417,22 @@ describe("ORP-040 — InvestorDscSubmitPanel", () => {
     });
     renderWith(<InvestorDscSubmitPanel companyId="co_1" />);
     await waitFor(() => expect(screen.getByTestId("investor-dsc-row-dsc_9")).toBeTruthy());
-    expect(screen.getByTestId("investor-dsc-status-dsc_9").textContent).toContain("pending");
+    /* WAVE 90 · ITEM 3 (M-3) — WAS `toContain("pending")`, i.e. the RAW enum.
+       An investor must not read a database value (register PART 11 · M-3), so the
+       badge now renders a human label. THE TEST'S INTENT IS UNCHANGED — it still
+       proves the persisted status is read back after a reload — and it is now
+       STRONGER in two ways: it pins the human label, and it asserts the machine
+       value is STILL available on the element, which is what R77 requires
+       ("banned in rendered text, allowed as a machine-readable value").
+
+       This test also CAUGHT A REAL MISTAKE IN WAVE 90's first cut, which routed
+       this badge through the Your-Decision labels and rendered "Awaiting your
+       decision" — false, because `pending` here means awaiting REVIEW and the
+       investor has no decision to make. Hence GENERIC_STATUS_LABELS. */
+    const statusEl = screen.getByTestId("investor-dsc-status-dsc_9");
+    expect(statusEl.textContent).toContain("Pending review");
+    expect(statusEl.textContent).not.toContain("pending");
+    expect(statusEl.getAttribute("data-status")).toBe("pending");
     expect(screen.queryByTestId("investor-dsc-empty")).toBeNull();
   });
 

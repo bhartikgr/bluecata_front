@@ -2165,13 +2165,28 @@ export function registerConsortiumApplyRoutes(app: Express): void {
             detail: detailParts.join(":") || null,
             applicationUnchanged: true,
             invoiceRaised: false,
+            /* WAVE 87 · ITEM 2 · R44/R77 — THIS SENTENCE WAS RENDERED TO AN ADMIN
+             * WITH THE RULING NUMBERS IN IT. Reviewer 3 reproduced it end to end
+             * on 2026-08-21 (409 captured in full) and it is rendered verbatim by
+             * client/src/pages/admin/ConsortiumApplicationsPage.tsx:118 → :331.
+             * R44 is the fix: REMOVE THE IDENTIFIER, KEEP THE SENTENCE — state the
+             * RULE, not its number. "not an option under ruling R20" becomes the
+             * rule itself ("an approval is never recorded without an invoice");
+             * "grandfathered under R17" becomes what it means to the reader
+             * ("exempt"). The raw `${msg}` code is dropped from the prose for the
+             * same reason.
+             *
+             * NOTHING MACHINE-READABLE IS LOST, which is R77's whole point: the
+             * code stays in `error`, `reason`, `code` and `detail` above, where an
+             * integration reads it and no human does. No status, no rollback
+             * behaviour and no money path is changed by this edit — it is copy. */
             message:
-              `The approval was REFUSED and rolled back because the $/year partner ` +
-              `subscription invoice could not be raised (${msg}). The application is ` +
-              `unchanged, no partner was provisioned and no invoice exists. Approving ` +
-              `without an invoice is not an option under ruling R20; resolve the ` +
-              `partner's price (or record an explicit $0 override if this partner is ` +
-              `grandfathered under R17) and retry the approval.`,
+              `The approval was refused and rolled back because the annual partner ` +
+              `subscription invoice could not be raised. The application is ` +
+              `unchanged, no partner was provisioned and no invoice exists. An ` +
+              `approval is never recorded without an invoice: resolve the ` +
+              `partner's price (or record an explicit $0 override if this partner ` +
+              `is exempt) and retry the approval.`,
           });
           return;
         }

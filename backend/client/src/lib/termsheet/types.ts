@@ -26,9 +26,32 @@ export interface TermSheetData {
      not an invented number. It was a hardcoded 12,500,000 at
      `client/src/pages/founder/TermSheet.tsx:83`. */
   fdSharesPreMoney: number | null;
-  liqPrefMultiple: number;
-  participating: boolean;
+  /* ═════════════════════════════════════════════════════════════════════════
+     WAVE 92 · ITEM 3 (open item N-3 / OQ-W94-2) — NULLABLE, FOR THE SAME REASON
+     `fdSharesPreMoney` ABOVE IS NULLABLE.
+     ═════════════════════════════════════════════════════════════════════════
+     These three were HARDCODED at `client/src/pages/founder/TermSheet.tsx` to
+     `1`, `false` and the word "non-participating", in the object that generates a
+     document a founder SENDS TO AN INVESTOR. A company with 2x participating
+     capped at 3x on record generated a term sheet asserting 1x non-participating,
+     and the third literal was a WORD in a slot the template renders as a MULTIPLE
+     ("a participation cap of non-participating x the Original Issue Price").
+
+     They now READ THE ROUND through `./roundNegotiatedTerms`, and `null` means the
+     round does not record the term. The templates state that in words. ABSENT
+     MEANS ABSENT: a term sheet that asserts a liquidation preference nobody
+     negotiated is worse than one that leaves it blank, and this is also the term
+     the exit waterfall computes from — so a default here could print one
+     liquidation term while the platform models another. */
+  liqPrefMultiple: number | null;
+  participating: boolean | null;
+  /** The cap MULTIPLE as text, or `""` for "no cap on record". Never a word. */
   capParticipation: string;
+  /** WAVE 92 · ITEM 3 — the round's stored liquidation-preference WORDING,
+   *  verbatim, or `null`. Printed inside the "not on record" clause so a founder
+   *  reading a blank term is shown what IS stored and why it was not enough,
+   *  rather than being told only that something is missing. */
+  liquidationPreferenceRaw: string | null;
   antiDilutionVariant: string; // e.g. "Broad-Based Weighted-Average"
   valuationCap: number;
   discount: number;            // percent

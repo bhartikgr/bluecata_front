@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { apiRequest } from "@/lib/queryClient";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
+import { safeActorLabel, safeTargetLabel } from "@/lib/actorLabel";
 
 type FilterMode = "all" | "signoff" | "reconciliation" | "divergence";
 
@@ -42,6 +43,13 @@ type DbAuditRow = {
   priorHash: string;
   hash: string;
   tenantId?: string;
+  /* WAVE 93 · ITEM 1 — resolved identity labels, added at the SOURCE
+     (server/adminPlatformStore.ts, GET /api/admin/audit-log). `actor` and
+     `entity` are unchanged and remain the machine-readable values (R77). */
+  actorLabel?: string | null;
+  actorKind?: string | null;
+  actorBound?: boolean;
+  entityLabel?: string | null;
 };
 
 type AuditLogResponse = {
@@ -79,6 +87,9 @@ type Row = {
   source: "admin" | "telemetry";
   category: "signoff" | "reconciliation" | "divergence" | "other";
   payload?: unknown;
+  /* WAVE 93 · ITEM 1 — see DbAuditRow. */
+  actorLabel?: string | null;
+  targetLabel?: string | null;
 };
 
 export default function AdminAuditLog() {
@@ -162,6 +173,9 @@ export default function AdminAuditLog() {
       prevHash: e.priorHash, hash: e.hash, source: "admin",
       category: "other",
       payload: e.payload,
+      /* WAVE 93 · ITEM 1 — carry the server's resolved labels through. */
+      actorLabel: e.actorLabel ?? null,
+      targetLabel: e.entityLabel ?? null,
     }));
     for (const e of telemetryEvents) {
       const cat: Row["category"] =
@@ -294,9 +308,12 @@ export default function AdminAuditLog() {
                   <div key={c.roundId} className="border-l-2 border-[hsl(0_100%_40%)] pl-3 py-1" data-testid={`signoff-chain-${c.roundId}`}>
                     <div>Round <span className="font-mono">{c.roundId}</span> at <span className="font-mono">{c.companyId}</span> closed on <span className="font-mono">{new Date(c.closedAt).toLocaleString()}</span>.</div>
                     <div className="text-muted-foreground mt-0.5">
-                      Founder: {c.founder ? <>{c.founder.actorId} <span className="font-mono">({c.founder.identityHash})</span> at {new Date(c.founder.ts).toLocaleString()}</> : <span className="italic">missing</span>}
+                      {/* WAVE 93 · ITEM 1 — `{c.founder.actorId}` was printed straight into
+                          the page (reviewer 3, DP-10 `:297`). Described now; the id stays
+                          as a machine-readable attribute (R77). */}
+                      Founder: {c.founder ? <>{safeActorLabel(null, c.founder.actorId)} <span className="font-mono">({c.founder.identityHash})</span> at {new Date(c.founder.ts).toLocaleString()}</> : <span className="italic">missing</span>}
                       {" · "}
-                      Admin: {c.admin ? <>{c.admin.actorId} <span className="font-mono">({c.admin.identityHash})</span> at {new Date(c.admin.ts).toLocaleString()}</> : <span className="italic">missing</span>}
+                      Admin: {c.admin ? <>{safeActorLabel(null, c.admin.actorId)} <span className="font-mono">({c.admin.identityHash})</span> at {new Date(c.admin.ts).toLocaleString()}</> : <span className="italic">missing</span>}
                     </div>
                     <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">Primary: {c.primaryHash.slice(0, 20)}… · Reference: {c.referenceHash.slice(0, 20)}…</div>
                   </div>
@@ -412,6 +429,11 @@ export default function AdminAuditLog() {
                     </td>
                   </tr>
                 )}
+                {/* WAVE 93 · ITEM 1 — reviewer 3's DP-10, closed. The Actor and Target
+                    cells below printed `e.actor` / `e.target` verbatim, so every one of
+                    the 45 measured unbound actor shapes reached an operator as a raw
+                    key. Each id is kept as a machine-readable attribute (R77) so
+                    filtering and correlation still work. */}
                 {[...filtered].reverse().map((e) => (
                   <tr key={`${e.source}-${e.id}`} className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-audit-${e.id}`}>
                     <td className="px-6 py-3 text-xs text-muted-foreground">{new Date(e.ts).toLocaleString()}</td>
@@ -420,9 +442,9 @@ export default function AdminAuditLog() {
                         {e.source === "telemetry" ? <><GitCompareArrows className="h-2.5 w-2.5 mr-1" />telemetry</> : "admin"}
                       </Badge>
                     </td>
-                    <td className="px-3 py-3 text-xs">{e.actor}</td>
+                    <td className="px-3 py-3 text-xs" data-actor-id={e.actor}>{safeActorLabel(e.actorLabel, e.actor)}</td>
                     <td className="px-3 py-3 font-mono text-xs">{e.action}</td>
-                    <td className="px-3 py-3 text-muted-foreground text-xs">{e.target}</td>
+                    <td className="px-3 py-3 text-muted-foreground text-xs" data-target-id={e.target}>{safeTargetLabel(e.targetLabel, e.target)}</td>
                     <td className="px-3 py-3 font-mono text-[10px]">{e.hash.slice(0, 14)}…</td>
                   </tr>
                 ))}

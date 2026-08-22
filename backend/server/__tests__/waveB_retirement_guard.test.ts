@@ -217,8 +217,19 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       //
       // TO DECLINE: restore hash 813de790… as the live content, delete this entry
       // and the sacred_check.sh row. Nothing else depends on it.
+      //
+      // WAVE 89 (2026-08-21) — THE HASH BELOW MOVED, under a SECOND owner grant on
+      // the same file: ruling R79 waives the four DATE-ONLY render calls on this
+      // page, which printed the founder's own renewal / cancellation date ONE DAY
+      // EARLY for every customer west of UTC (the owner is in New York). They now
+      // call `fmtLocaleDate` from client/src/lib/format.ts. Nothing else in the
+      // file changed, and the two TIMESTAMP sites still localise, which is correct.
+      // R79 calls the grant "WAIVER-10"; it is recorded on the existing WAIVER-5
+      // row because a second row for one path, and a WAIVER-10 id, each abort
+      // sacred_check.sh with exit 3 (transcript: build_log/wave89/probe/).
+      // Wave 34 bytes, retained: ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f
       "client/src/pages/founder/Billing.tsx":
-        "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f",
+        "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7",
       /* WAIVER-7 — WAVE 58g, OWNER-APPROVED 2026-08-15 (ruling R34, "If approved
        * is the best practice. Then OK.").
        *
@@ -271,13 +282,30 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
        * `ok + |WAIVER_1_FROZEN| === 40` identity still holds.
        *
        * Lineage: 83757c54… (pre-waiver, and the base manifest hash) → 15679904…
-       * (Wave 75, current).
-       * TO DECLINE: restore 83757c54… as the live content and delete this entry,
-       * the RATIFIED_HERE entry, the sacred_check.sh row and the WAIVER-8 block in
-       * wave18_cpmsg05_rate_limit_identity.test.ts (and put the freeze count back
-       * to 8). */
+       * (Wave 75, R70 dynamic founder ownership) → 7b515904… (WAVE 97B, current).
+       *
+       * WAVE 97B RE-FREEZE (2026-08-21) — R86, on the owner's instruction "remove
+       * stripe. I can add this at a later date. We are using Airwallex today."
+       * The frozen hash moved because the sacred adapter's Stripe wiring was
+       * removed: the ./lib/stripeGateway import, the
+       * POST /api/webhooks/payment-gateway/stripe registration, Stripe's entry in
+       * what the admin config endpoint serves, and the one-armed verifyStripeSig
+       * ternary. WAIVER-8's ROW IS UNCHANGED — same path, same id, same RATIFIED
+       * state, field 3 advanced. This is the same re-freeze pattern WAVE 21/23
+       * used for WAIVER-2 and WAVE 89 used for WAIVER-5, and it is why the printed
+       * waiver count stays at NINE.
+       * Nothing was erased: 15679904… is retained above and in sacred_check.sh's
+       * HASH LINEAGE block.
+       * TO DECLINE THE WAVE 97B RE-FREEZE ONLY: put this pin, the (G-11) POLE-5
+       * literal below if present, sacred_check.sh's field 3 and the third copy in
+       * wave18_cpmsg05_rate_limit_identity.test.ts back to 15679904…, and restore
+       * the Stripe wiring in the live file. The WAIVER-8 row STAYS.
+       * TO DECLINE WAIVER-8 ENTIRELY: restore 83757c54… as the live content and
+       * delete this entry, the RATIFIED_HERE entry, the sacred_check.sh row and the
+       * WAIVER-8 block in wave18_cpmsg05_rate_limit_identity.test.ts (and put the
+       * freeze count back to 8). */
       "server/paymentGatewayAdapter.ts":
-        "15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27",
+        "7b5159047803610592ffb4fe32eee18c9261ae027f990073a1131a7a5f980372",
     };
 
   /* ---------- G-8: Sacred manifest still 40/40 ---------- */
@@ -579,8 +607,10 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
        force (not deleted, its bytes still frozen). */
     expect(ratifiedHere.join("\n")).toContain("WAIVER-5 client/src/pages/founder/Billing.tsx");
     expect(Object.keys(PENDING_RATIFICATION)).toEqual([]);
+    /* WAVE 89 — the enforced bytes are the R79 / WAIVER-10 bytes (the four
+       date-only renewal-date renders). Independently duplicated here, as always. */
     expect(WAIVER_1_FROZEN["client/src/pages/founder/Billing.tsx"]).toBe(
-      "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f",
+      "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7",
     );
   });
 

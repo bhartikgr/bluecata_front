@@ -695,7 +695,16 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  "border-border"
  }>
  <CardContent className="p-4 flex items-start gap-3">
- <ShieldCheck className="h-4 w-4 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
+ {/* WAVE 101 - the banner already computes `banner.tone`; the shield ignored it
+   and stayed brand red even on the positive (emerald) banner.  The icon now
+   reads the SAME tone the surrounding Card reads.  Colour only - no new
+   state, no new query, no label change. */}
+              <ShieldCheck className={`h-4 w-4 mt-0.5 shrink-0 ${
+                banner.tone === "positive" ? "text-emerald-700" :
+                banner.tone === "warn" ? "text-amber-700" :
+                banner.tone === "rejected" ? "text-[hsl(7_61%_43%)]" :
+                "text-muted-foreground"
+              }`} />
  <div className="flex-1">
  <div className="font-medium">{banner.title}</div>
  <div className="text-xs text-muted-foreground mt-0.5 capitalize">Current state — <span className="font-mono">{state.replace("_", " ")}</span></div>

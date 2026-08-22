@@ -12,6 +12,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { wireSafeMinorUnits } from "@/lib/wireSafeMinorUnits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -79,13 +80,23 @@ export default function PartnerFunds() {
 
   const create = useMutation({
     mutationFn: async () => {
+      /* WAVE 100 · ITEM 3 (R72) — checked BEFORE the request is built, by the same
+         shared helper the SPV screen uses. One rule, one implementation (R21). */
+      const fundTarget = wireSafeMinorUnits(form.targetSizeMinor);
+      if (!fundTarget.ok) {
+        throw new Error(`TARGET_SIZE_NOT_EXACTLY_REPRESENTABLE — ${fundTarget.reason}.`);
+      }
       /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
          guard was unreachable dead code. The thrown ApiError reaches onError
          unchanged, preserving the "Create fund failed" toast. */
       const res = await apiRequest("POST", "/api/partner/me/funds", {
         fundName: form.fundName,
         vintageYear: parseInt(form.vintageYear, 10),
-        targetSizeMinor: parseInt(form.targetSizeMinor, 10),
+        /* WAVE 100 · ITEM 3 (R72) — `parseInt(form.targetSizeMinor, 10)` was here.
+           The SAME defect as `PartnerSpvs.tsx` and, unlike that screen, this payload
+           does persist: `POST /api/partner/me/funds` writes `targetRaiseMinor`
+           (`server/partnerRoutes.ts:1987`). Checked, not narrowed. */
+        targetSizeMinor: fundTarget.value,
         currency: form.currency,
       });
       return res.json();

@@ -421,9 +421,21 @@ describe("W71 · D20 — the adapter can express the non-issuance transactions",
     expect(() => adaptSecuritiesToEngine(mixed, [
       { kind: "exercise_option", securityId: "ESOP Pool", sharesExercised: 100, date: "" },
     ])).toThrow(/cannot be placed in the ledger/);
-    expect(() => adaptSecuritiesToEngine(mixed, [
-      { kind: "esop_topup", targetPercent: "abc", date: "2026-03-01" },
-    ])).toThrow(/PERCENT-AS-WRITTEN/);
+    /* WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 rewrote the adapter's refusal
+       prose. Both strings, verbatim (`shared/roundMathEngineAdapter.ts:1898`):
+         OLD: 'It is PERCENT-AS-WRITTEN (owner ruling R16): "12" means '
+         NEW: 'It is percent-as-written: "12" means '
+       IT STILL THROWS, and the throw is still distinguishable: the message names the
+       offending field and value ('The pool target "abc" is not a number.') and then
+       restates the convention. The two sibling throws in this same test
+       (/is not an exercise/, /cannot be placed in the ledger/) were never touched and
+       still pass, so a caller can still tell these three refusals apart. */
+    const badTopUp = () =>
+      adaptSecuritiesToEngine(mixed, [
+        { kind: "esop_topup", targetPercent: "abc", date: "2026-03-01" },
+      ]);
+    expect(badTopUp).toThrow(/The pool target "abc" is not a number/);
+    expect(badTopUp).toThrow(/percent-as-written/);
   });
 
   it("W71-D20d — `transfer` is NOT emitted, because NEITHER engine implements it", () => {

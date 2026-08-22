@@ -192,7 +192,23 @@ describe("W75 · ITEM 2 — the terms endpoint no longer discards a money term",
     expect(warnings.length).toBeGreaterThan(0);
     const joined = warnings.map(String).join(" ");
     expect(joined).toContain("standard preference");
-    expect(joined).toContain("liquidation_term_not_on_record");
+    /* WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 rewrote the tail of this warning,
+       which is rendered to the founder in a toast (Wave 69 wired it to
+       `client/src/pages/founder/Rounds.tsx`). Both strings, verbatim
+       (`server/routes.ts:3222-3223`):
+         OLD: `Until both are present, GET /api/founder/captable/waterfall will keep refusing with `
+              `liquidation_term_not_on_record.`
+         NEW: `Until both are present, the exit waterfall will keep refusing to produce a figure for this `
+              `round rather than guessing one.`
+       THE REFUSAL IS STILL IDENTIFIABLE BY NAME TO A CALLER — and this test still
+       proves it, four lines below: `still.body.refusal === "liquidation_term_not_on_record"`
+       on the waterfall's own 422. The code lives where a caller reads it, in the API
+       payload; only the human-facing toast stopped reciting an endpoint path and an
+       error constant at a founder. That is precisely the owner's ruling working as
+       intended: professional to a human, precise to a caller. What is asserted here
+       instead is that the warning still tells the founder the CONSEQUENCE. */
+    expect(joined).toContain("the exit waterfall will keep refusing to produce a figure");
+    expect(joined).toContain("rather than guessing one");
     /* And the warning is TRUE: the waterfall does still refuse. A warning that
        overstated the platform's ability would be the same dead promise again. */
     const still = await waterfall(companyId);

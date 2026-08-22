@@ -39,6 +39,12 @@ import FounderCompany from "@/pages/founder/Company";
 // v25.45 F8 — Company Management parent landing page (new left-nav item).
 import FounderCompanyManagement from "@/pages/founder/CompanyManagement";
 import FounderCapTable from "@/pages/founder/CapTable";
+/* WAVE 92 — the exit waterfall screen. `GET /api/founder/captable/waterfall` had
+   ZERO client callers, so three waves of corrected exit maths (88, 91, 94) were
+   invisible to every customer and untestable by QA. Founder-scoped exactly as the
+   endpoint is (`ownsCompany`); NOT widened to investors in this wave (pre-flight
+   `OQ-W-6`). */
+import FounderExitWaterfall from "@/pages/founder/ExitWaterfall";
 import FounderRounds from "@/pages/founder/Rounds";
 import FounderRoundNew from "@/pages/founder/RoundNew";
 import FounderRoundDetail from "@/pages/founder/RoundDetail";
@@ -696,6 +702,14 @@ function AppRouter() {
         </Route>
         <Route path="/founder/captable">
           {() => <RequireAuth><RequireActiveSubscription><FounderCapTable /></RequireActiveSubscription></RequireAuth>}
+        </Route>
+        {/* WAVE 92 — ADDED AFTER the cap table route, never inserted before it: an
+            ordinal insertion at the head of a container is how this project has
+            previously shifted every following entry and tripped the drop detector
+            (R82). Same guards as its neighbour, so it inherits exactly the same
+            authentication and subscription posture. */}
+        <Route path="/founder/captable/waterfall">
+          {() => <RequireAuth><RequireActiveSubscription><FounderExitWaterfall /></RequireActiveSubscription></RequireAuth>}
         </Route>
         <Route path="/founder/rounds/new">
           {() => <RequireAuth><RequireActiveSubscription><FounderRoundNew /></RequireActiveSubscription></RequireAuth>}

@@ -58,6 +58,7 @@ import InvestmentHistoryPanel from "@/components/investor/InvestmentHistoryPanel
 import CoSoftCircleBox from "@/components/investor/CoSoftCircleBox";
 import FounderQABox from "@/components/investor/FounderQABox";
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — read-only interim (pro-forma) view for investors */
+import { instrumentLabel, holderTypeLabel, decisionStateLabel, displayName } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 (M-3) */
 import { useRealtimeSync } from "@/lib/realtimeSync";
 
 type RoundTerms = {
@@ -815,7 +816,9 @@ export default function InvitationDetail() {
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Round target</div>
         <div className="text-2xl font-semibold mt-1">{fmtUSD(i.targetAmount, { compact: true })}</div>
         <div className="text-xs text-muted-foreground mt-1">{fmtUSD(i.raisedAmount, { compact: true })} soft-circled · {fmtPct(pct, 0)}</div>
-        <div className="h-2 mt-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        {/* WAVE 101 - the same progress-to-target bar as the invitations LIST; only
+   the list copy was reported, so the detail page is an added find. */}
+        <div className="h-2 mt-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} /></div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Pre / post-money</div>
@@ -958,10 +961,20 @@ export default function InvitationDetail() {
           {captableRows.map(r => (
            <tr key={r.id} className="border-b border-border/60">
             <td className="py-2.5">
-             <div className="font-medium">{r.holderName}</div>
-             <div className="text-xs text-muted-foreground capitalize">{r.holderType}</div>
+             {/* WAVE 90 · ITEM 3 (M-3) — `displayName` describes the row rather
+                 than printing an id when the name field carries one (the
+                 `u_redeemed_...` / "New contact data" class, M-11). */}
+             <div className="font-medium">{displayName(r.holderName, "holder", r.id)}</div>
+             <div className="text-xs text-muted-foreground" data-holder-type={r.holderType}>{holderTypeLabel(r.holderType)}</div>
             </td>
-            <td className="py-2.5 capitalize">{r.instrument}</td>
+            {/* WAVE 90 · ITEM 3 — THE M-3 DEFECT ITSELF. This cell rendered the raw
+                enum `safe_post` under a CSS `capitalize`, so an investor read
+                `Safe_post` in a column headed "Instrument". The label now comes
+                from `INSTRUMENTS` in shared/schema.ts — the same domain table the
+                round wizard renders its options from, so there is one source and
+                no per-component switch to go stale. R77: the machine value is
+                retained as a `data-` attribute for tests and tooling. */}
+            <td className="py-2.5" data-instrument={r.instrument}>{instrumentLabel(r.instrument)}</td>
             <td className="py-2.5 text-right font-mono tabular-nums">{fmtNum(r.shares)}</td>
             <td className="py-2.5 text-right font-mono tabular-nums">{fmtPct(r.ownership, 2)}</td>
            </tr>
@@ -972,9 +985,9 @@ export default function InvitationDetail() {
            <tr key="__my_pending__" data-testid="row-my-pending-position" className="border-b border-dashed border-primary/40 bg-primary/5">
             <td className="py-2.5">
              <div className="font-medium">You</div>
-             <div className="text-xs text-primary capitalize" data-testid="text-my-pending-state">{myCapState === "soft_circled" ? "Soft-circled (pending)" : `${myCapState} — not yet committed`}</div>
+             <div className="text-xs text-primary" data-testid="text-my-pending-state" data-state={myCapState}>{myCapState === "soft_circled" ? "Soft-circled (pending)" : `${decisionStateLabel(myCapState)} — not yet committed`}</div>
             </td>
-            <td className="py-2.5 capitalize">{i.instrument ?? "preferred"}</td>
+            <td className="py-2.5" data-instrument={i.instrument ?? "preferred"}>{instrumentLabel(i.instrument ?? "preferred")}</td>
             <td className="py-2.5 text-right font-mono tabular-nums">{myPendingPos.shares ? fmtNum(myPendingPos.shares) : NOT_PROVIDED}</td>
             <td className="py-2.5 text-right font-mono tabular-nums">{myPendingPos.ownershipPct != null ? fmtPct(myPendingPos.ownershipPct, 2) : NOT_PROVIDED}</td>
            </tr>

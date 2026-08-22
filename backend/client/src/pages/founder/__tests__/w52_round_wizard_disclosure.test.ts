@@ -155,7 +155,26 @@ describe("W52 · §0 — the Review-step cap-table preview exists", () => {
   });
 
   it("W52 AC-17 an undetermined conversion trigger fails closed on the SAFE preview", () => {
-    expect(src).toContain("UNDETERMINED, which fails closed");
+    /* WAVE 85 — STALE COPY PIN, RE-POINTED. Wave 83 removed the internal state word
+       "UNDETERMINED" and the phrase "not a stored field in this build" from this
+       founder-facing disclosure, under the owner's ruling. Both strings, verbatim:
+         OLD: "Conversion trigger is not a stored field in this build. Whether this instrument converts in "
+              "a given financing is therefore UNDETERMINED, which fails closed: it is excluded from any "
+              "pricing denominator and any price computed alongside it is provisional."
+         NEW: "Whether this instrument converts in a given financing is not recorded on the round, so "
+              "Capavate will not assume it: the instrument is left out of every pricing denominator, and "
+              "any price computed alongside it is provisional."
+       THE FAIL-CLOSED BEHAVIOUR IS UNCHANGED, and the new sentence states it MORE
+       plainly, not less: the instrument is left out of every pricing denominator and the
+       price is provisional. "Fails closed" was the engineering name for exactly that
+       consequence. The second assertion below is byte-identical to before and still
+       passes, so the load-bearing half of this pin never moved.
+       NOTE: "UNDETERMINED" is BANNED from this screen by Wave 83's own
+       `w83_copy_and_controls.test.ts`, so restoring the old wording is not available —
+       the two pins would contradict each other. See build_log/wave85/OWNER_QUESTIONS.md #1. */
+    expect(src).toContain("is not recorded on the round, so ");
+    expect(src).toContain("Capavate will not assume it");
+    expect(src).toContain("left out of every pricing denominator");
     expect(src).toContain("any price computed alongside it is provisional");
   });
 

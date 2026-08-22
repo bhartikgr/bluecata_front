@@ -280,7 +280,15 @@ describe("WAVE 48 · ITEM 2 — WAIVER-5 ratification is recorded everywhere it 
     "wave18_cpmsg05_rate_limit_identity.test.ts",
   );
   const BILLING = "client/src/pages/founder/Billing.tsx";
-  const FROZEN_SHA = "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f";
+  /* WAVE 89 (2026-08-21) — this constant MOVED, and moving it is the point.
+     WAVE 48's assertion below was written when ratification was the only thing
+     happening to this file, and it said so ("the hash must not move"). Ruling R79
+     then granted a SECOND waiver — the four DATE-ONLY render calls that printed the
+     founder's own renewal / cancellation date one day early west of UTC — so the
+     legal bytes are now the WAVE 89 bytes. The assertion is still an EXACT pin, at
+     the new value, which is what makes an unwaived edit fail here.
+     Wave 34 bytes, retained: ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f */
+  const FROZEN_SHA = "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7";
 
   it("point 1 — scripts/sacred_check.sh marks the row RATIFIED without touching the hash", () => {
     const sh = fs.readFileSync(SH, "utf8");
@@ -290,8 +298,10 @@ describe("WAVE 48 · ITEM 2 — WAIVER-5 ratification is recorded everywhere it 
     expect(f.length + 1).toBe(5);
     expect(f[2]).toBe("WAIVER-5");
     expect(f[3]).toBe("RATIFIED");
-    /* THE HASH MUST NOT MOVE. Ratifying a waiver records a decision; it does
-       not re-open the sacred file. */
+    /* RATIFYING a waiver never moves the hash — that was WAVE 48's finding and it
+       still holds. A NEW OWNER GRANT does move it, and WAVE 89's R79 grant did:
+       FROZEN_SHA above is now the WAVE 89 bytes. What is asserted is unchanged —
+       the row's field 3 and the file on disk must agree with an EXACT pin. */
     expect(f[1]).toBe(FROZEN_SHA);
     const live = crypto
       .createHash("sha256")

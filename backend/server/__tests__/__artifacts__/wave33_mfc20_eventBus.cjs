@@ -9940,17 +9940,22 @@ __export(schema_exports, {
   COLLECTIVE_STAGES: () => COLLECTIVE_STAGES,
   DATAROOM_CATEGORIES: () => DATAROOM_CATEGORIES,
   ESOP_TIMING: () => ESOP_TIMING,
+  GENERIC_STATUS_LABELS: () => GENERIC_STATUS_LABELS,
+  HOLDER_TYPE_LABELS: () => HOLDER_TYPE_LABELS,
   INSTRUMENTS: () => INSTRUMENTS,
+  INVESTOR_ALIAS_BASIS_LABELS: () => INVESTOR_ALIAS_BASIS_LABELS,
   INVITATION_STATES: () => INVITATION_STATES,
   MA_PRIVACY_DEFAULT: () => MA_PRIVACY_DEFAULT,
   PCRM_CONTACT_KINDS: () => PCRM_CONTACT_KINDS,
   PCRM_LANES: () => PCRM_LANES,
   PCRM_PIPELINE_STAGES: () => PCRM_PIPELINE_STAGES,
   ROUND_STATES: () => ROUND_STATES,
+  ROUND_STATE_LABELS: () => ROUND_STATE_LABELS,
   ROUND_TYPES: () => ROUND_TYPES,
   SOFT_CIRCLE_TYPES: () => SOFT_CIRCLE_TYPES,
   SUPPORTED_CURRENCIES: () => SUPPORTED_CURRENCIES,
   YOUR_DECISION_STATES: () => YOUR_DECISION_STATES,
+  YOUR_DECISION_STATE_LABELS: () => YOUR_DECISION_STATE_LABELS,
   YOUR_DECISION_TRANSITIONS: () => YOUR_DECISION_TRANSITIONS,
   announcementReads: () => announcementReads,
   auditChainVerifications: () => auditChainVerifications,
@@ -10084,7 +10089,7 @@ function isActiveLiveRoundState(state) {
     String(state ?? "").toLowerCase()
   );
 }
-var import_drizzle_zod, tenants, users, userPrefs, companies, companyMembers, securities, rounds, reports, networkPosts, companyFollowers, commsChannels, networkPostLikes, networkPostComments, networkPostShares, migrationBackfillMarkers, networkPostScopeBackfill, roundInvitations, softCircles, dataroomFiles, auditLog, sessions, subscriptions, subscriptionsHistory, invoices, pricingModels, regionExtensions, contacts, notificationCampaigns, emailCampaigns, outboxEmails, bridgeOutbox, syncInbox, syncInboxState, platformConfig, formulas, insertCompanySchema, insertSecuritySchema, insertRoundSchema, insertRoundInvitationSchema, insertSoftCircleSchema, insertDataroomFileSchema, insertUserSchema, ROUND_TYPES, INSTRUMENTS, ANTI_DILUTION_VARIANTS, ESOP_TIMING, ROUND_STATES, INVITATION_STATES, ACTIVE_LIVE_ROUND_STATES_LIST, DATAROOM_CATEGORIES, YOUR_DECISION_STATES, YOUR_DECISION_TRANSITIONS, yourDecisionRecords, SUPPORTED_CURRENCIES, SOFT_CIRCLE_TYPES, yourDecisionPatchSchema, maIntelligenceSchema, maPrivacySchema, MA_PRIVACY_DEFAULT, maInitiativeSchema, PCRM_PIPELINE_STAGES, PCRM_CONTACT_KINDS, PCRM_LANES, pcrmContactSchema, pcrmNoteSchema, pcrmTaskSchema, COLLECTIVE_APP_STATUSES, COLLECTIVE_SECTORS_45, COLLECTIVE_REGIONS_9, COLLECTIVE_STAGES, ACCREDITATION_JURISDICTIONS, collectiveApplicationSchema, userCredentials, companyProfileExtended, reconRuns, founderTiers, legalConsents, dataroomFolders, dataroomPermissions, dataroomEvents, captableCommits, fundedQueue, termSheetRevisions, invoiceYearCounter, contactRevisions, founderCrmContacts, investorCrmContacts, pcrmContacts, pcrmNotes, pcrmTasks, collectiveWaitlist, dscFeedback, dscVotes, chapters, chapterMemberships, collectiveApps, collectiveMemberships, founderCollectiveNominations, founderCollectiveApplications, investorNominations, dscRoles, dscPipeline, collectiveSettingsTable, collectiveChannelPosts, partnerDealPromotions, screeningEvents, screeningEventAttendees, collectiveMembershipsBilling, collectiveBillingEvents, expertQuestions, expertAnswers, expertVotes, expertReputation, chapterAnnouncements, announcementReads, chapterResources, chapterLeaderboardSnapshots, messages, messageThreads, messageReadReceipts, partnerPortfolioCompanies, partnerCrmContacts, partnerDealPipeline, auditChainVerifications, spvs, spvCommitments, spvCapitalCalls, spvDistributions, spvPositions, migrationsApplied, consortiumApplications, partnerOrganizations, dataExportLog, dataDeleteLog, mfcStages, mfcStageTransitions, authorityArtifacts, partnerCrmContactClientScope, partnerCompanyRelationship, pcrSurfacePresence, mfcClassificationRequests, c2BackfillSkipLog, c2PipelineBackfillLock, partnerSectors, partnerSubsectors, partnerClassifications;
+var import_drizzle_zod, tenants, users, userPrefs, companies, companyMembers, securities, rounds, reports, networkPosts, companyFollowers, commsChannels, networkPostLikes, networkPostComments, networkPostShares, migrationBackfillMarkers, networkPostScopeBackfill, roundInvitations, softCircles, dataroomFiles, auditLog, sessions, subscriptions, subscriptionsHistory, invoices, pricingModels, regionExtensions, contacts, notificationCampaigns, emailCampaigns, outboxEmails, bridgeOutbox, syncInbox, syncInboxState, platformConfig, formulas, insertCompanySchema, insertSecuritySchema, insertRoundSchema, insertRoundInvitationSchema, insertSoftCircleSchema, insertDataroomFileSchema, insertUserSchema, ROUND_TYPES, INSTRUMENTS, ANTI_DILUTION_VARIANTS, ESOP_TIMING, ROUND_STATES, ROUND_STATE_LABELS, HOLDER_TYPE_LABELS, GENERIC_STATUS_LABELS, INVESTOR_ALIAS_BASIS_LABELS, INVITATION_STATES, ACTIVE_LIVE_ROUND_STATES_LIST, DATAROOM_CATEGORIES, YOUR_DECISION_STATES, YOUR_DECISION_STATE_LABELS, YOUR_DECISION_TRANSITIONS, yourDecisionRecords, SUPPORTED_CURRENCIES, SOFT_CIRCLE_TYPES, yourDecisionPatchSchema, maIntelligenceSchema, maPrivacySchema, MA_PRIVACY_DEFAULT, maInitiativeSchema, PCRM_PIPELINE_STAGES, PCRM_CONTACT_KINDS, PCRM_LANES, pcrmContactSchema, pcrmNoteSchema, pcrmTaskSchema, COLLECTIVE_APP_STATUSES, COLLECTIVE_SECTORS_45, COLLECTIVE_REGIONS_9, COLLECTIVE_STAGES, ACCREDITATION_JURISDICTIONS, collectiveApplicationSchema, userCredentials, companyProfileExtended, reconRuns, founderTiers, legalConsents, dataroomFolders, dataroomPermissions, dataroomEvents, captableCommits, fundedQueue, termSheetRevisions, invoiceYearCounter, contactRevisions, founderCrmContacts, investorCrmContacts, pcrmContacts, pcrmNotes, pcrmTasks, collectiveWaitlist, dscFeedback, dscVotes, chapters, chapterMemberships, collectiveApps, collectiveMemberships, founderCollectiveNominations, founderCollectiveApplications, investorNominations, dscRoles, dscPipeline, collectiveSettingsTable, collectiveChannelPosts, partnerDealPromotions, screeningEvents, screeningEventAttendees, collectiveMembershipsBilling, collectiveBillingEvents, expertQuestions, expertAnswers, expertVotes, expertReputation, chapterAnnouncements, announcementReads, chapterResources, chapterLeaderboardSnapshots, messages, messageThreads, messageReadReceipts, partnerPortfolioCompanies, partnerCrmContacts, partnerDealPipeline, auditChainVerifications, spvs, spvCommitments, spvCapitalCalls, spvDistributions, spvPositions, migrationsApplied, consortiumApplications, partnerOrganizations, dataExportLog, dataDeleteLog, mfcStages, mfcStageTransitions, authorityArtifacts, partnerCrmContactClientScope, partnerCompanyRelationship, pcrSurfacePresence, mfcClassificationRequests, c2BackfillSkipLog, c2PipelineBackfillLock, partnerSectors, partnerSubsectors, partnerClassifications;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -10734,6 +10739,10 @@ var init_schema = __esm({
     INSTRUMENTS = [
       {
         value: "common",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "Common shares",
         label: "Common Shares",
         description: "Founder + employee equity. Typically used for Foundation rounds and ESOP issuance.",
         suggestedFor: ["foundation"],
@@ -10749,6 +10758,10 @@ var init_schema = __esm({
       },
       {
         value: "preferred",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "Preferred shares",
         label: "Preferred Shares (Priced Round)",
         description: "NVCA-style priced equity with liquidation preference. Standard for Series A+.",
         suggestedFor: ["series_a", "series_b", "series_c"],
@@ -10767,6 +10780,10 @@ var init_schema = __esm({
       },
       {
         value: "safe_post",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "SAFE (post-money)",
         label: "SAFE \u2014 Post-Money Valuation Cap (YC v1.2)",
         description: "Post-money cap is the YC default. Investor ownership is fixed at conversion.",
         suggestedFor: ["preseed", "seed"],
@@ -10774,6 +10791,10 @@ var init_schema = __esm({
       },
       {
         value: "safe_pre",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "SAFE (pre-money)",
         label: "SAFE \u2014 Pre-Money Valuation Cap (YC v1.0)",
         description: "Pre-money cap is older / less common. Founders bear post-money dilution.",
         suggestedFor: ["preseed", "seed"],
@@ -10781,6 +10802,10 @@ var init_schema = __esm({
       },
       {
         value: "convertible_note",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "Convertible note",
         label: "Convertible Note (Debt)",
         description: "Debt instrument that converts at the next priced round. Accrues interest. Has maturity.",
         suggestedFor: ["preseed", "seed"],
@@ -10788,6 +10813,10 @@ var init_schema = __esm({
       },
       {
         value: "warrant",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "Warrants",
         label: "Warrants",
         description: "Right to buy shares at a strike price within an expiry window. Cash or cashless exercise.",
         suggestedFor: ["seed", "series_a", "series_b", "series_c"],
@@ -10795,6 +10824,10 @@ var init_schema = __esm({
       },
       {
         value: "option_pool",
+        /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+           wizard's full legal description. Both live in THIS table so the
+           investor cap table and the round wizard read one source. */
+        shortLabel: "Option pool",
         label: "Option Pool Top-Up (ESOP / EMI / CSOP)",
         description: "Increase the option pool. Pre-money pool dilutes founders only; post-money dilutes everyone.",
         suggestedFor: ["seed", "series_a", "series_b", "series_c"],
@@ -10818,6 +10851,60 @@ var init_schema = __esm({
       "signing_open",
       "closed"
     ];
+    ROUND_STATE_LABELS = {
+      draft: "Draft",
+      terms_set: "Terms set",
+      soft_circle_open: "Open for soft circles",
+      signing_open: "Open for signing",
+      closed: "Closed",
+      /* Values the server also emits for a round's lifecycle, kept here so a badge
+         never falls through to `humaniseToken`. */
+      active: "Active",
+      live: "Live",
+      open: "Open",
+      funded: "Funded",
+      cancelled: "Cancelled"
+    };
+    HOLDER_TYPE_LABELS = {
+      founder: "Founder",
+      investor: "Investor",
+      employee: "Employee",
+      pool: "Option pool (reserved)",
+      other: "Other holder"
+    };
+    GENERIC_STATUS_LABELS = {
+      pending: "Pending review",
+      submitted: "Submitted",
+      under_review: "Under review",
+      approved: "Approved",
+      accepted: "Accepted",
+      promoted: "Promoted",
+      declined: "Declined",
+      rejected: "Declined",
+      withdrawn: "Withdrawn",
+      revoked: "Revoked",
+      expired: "Expired",
+      invited: "Invited",
+      active: "Active",
+      inactive: "Inactive",
+      closed: "Closed",
+      draft: "Draft",
+      open: "Open",
+      confirmed: "Confirmed",
+      funded: "Funded",
+      cancelled: "Cancelled",
+      /* SPV vehicle types, which share the same meta line as SPV status. */
+      deal_specific: "Deal-specific (single asset)",
+      fund: "Fund (multi-asset)",
+      blind_pool: "Blind pool",
+      continuation: "Continuation vehicle"
+    };
+    INVESTOR_ALIAS_BASIS_LABELS = {
+      email_hash_match: "Matched to your verified email address",
+      verified_email: "Matched to your verified email address",
+      admin_link: "Linked for you by an administrator",
+      manual: "Linked manually by an administrator"
+    };
     INVITATION_STATES = [
       "pending",
       "viewed",
@@ -10858,6 +10945,26 @@ var init_schema = __esm({
       "expired",
       "revoked"
     ];
+    YOUR_DECISION_STATE_LABELS = {
+      pending: "Awaiting your decision",
+      viewed: "Viewed",
+      accepted: "Accepted",
+      declined: "Declined",
+      soft_circled: "Soft-circled",
+      confirmed: "Confirmed",
+      signed: "Signed",
+      funded: "Funded",
+      expired: "Expired",
+      revoked: "Withdrawn by the company",
+      /* Statuses the SPV and disclosure surfaces emit for the same badge slot. */
+      promoted: "Promoted",
+      rejected: "Declined",
+      withdrawn: "Withdrawn",
+      invited: "Invited",
+      active: "Active",
+      closed: "Closed",
+      draft: "Draft"
+    };
     YOUR_DECISION_TRANSITIONS = {
       pending: ["viewed", "expired", "revoked"],
       viewed: ["accepted", "declined", "soft_circled", "expired", "revoked"],
@@ -21909,7 +22016,7 @@ var init_roundMathEngineAdapter = __esm({
     MATURITY_DATE_NOT_WRITABLE = {
       error: "maturity_date_not_writable",
       field: "maturityDate",
-      message: `Capavate records a round's maturity as Maturity (months) \u2014 the number of months from issue \u2014 and computes the maturity date from it every time it is read. The absolute date cannot be stored directly, because two spellings of one date can disagree and nothing could then say which one is true. Set it on Founder -> Rounds -> the round -> Edit terms -> Maturity (months), which accepts 0 to ${MATURITY_MONTHS_MAX} months (owner ruling R71; the bound is R50).`
+      message: `Capavate records a round's maturity as Maturity (months) \u2014 the number of months from issue \u2014 and computes the maturity date from it every time it is read. The absolute date cannot be stored directly, because two spellings of one date can disagree and nothing could then say which one is true. Set it on Founder -> Rounds -> the round -> Edit terms -> Maturity (months), which accepts 0 to ${MATURITY_MONTHS_MAX} months.`
     };
     EXPIRY_DATE_NOT_WRITABLE = {
       error: "expiry_date_not_writable",
@@ -21956,15 +22063,17 @@ var init_money = __esm({
 });
 
 // server/lib/roundStoredTerms.ts
-var SENIORITY_RANK_MAX, SENIORITY_NOT_WRITABLE_MESSAGE, OPTION_POOL_POST_PERCENT_MAX, OPTION_POOL_POST_PERCENT_CEILING_MESSAGE;
+var SENIORITY_RANK_MAX, PARTICIPATION_CAP_MAX, PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE, SENIORITY_NOT_WRITABLE_MESSAGE, OPTION_POOL_POST_PERCENT_MAX, OPTION_POOL_POST_PERCENT_CEILING_MESSAGE;
 var init_roundStoredTerms = __esm({
   "server/lib/roundStoredTerms.ts"() {
     "use strict";
     init_roundsStore();
     SENIORITY_RANK_MAX = 99;
+    PARTICIPATION_CAP_MAX = 10;
+    PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE = `capParticipation is the CEILING on what a participating preference class can take in total at an exit, expressed as a multiple of the money it invested \u2014 "1x participating, capped at 2x" means the class takes its preference and then shares in what is left until its total reaches 2x its investment, and nothing after that. It must be a number greater than 0 and no more than ${PARTICIPATION_CAP_MAX} (a trailing "x" is accepted, so both 2 and "2x" are fine). Fractions are allowed: 1.5x and 2.5x are ordinary terms. Send null or an empty value to remove it, which means the class is UNCAPPED and participates without limit. A cap of 0 is refused rather than read as "no cap": it would pay the class less than the preference it negotiated.`;
     SENIORITY_NOT_WRITABLE_MESSAGE = `seniority is a preference class's RANK in the exit payment order, recorded as a whole number: 0 is the most senior, then 1, 2, \u2026 up to ${SENIORITY_RANK_MAX}. It must be an integer in [0, ${SENIORITY_RANK_MAX}] \u2014 it is never rounded, and a fraction is a typing error rather than a ranking. Send null to remove it, which returns the class to having no recorded seniority; the exit waterfall then refuses with seniority_not_on_record rather than assuming an order.`;
     OPTION_POOL_POST_PERCENT_MAX = 50;
-    OPTION_POOL_POST_PERCENT_CEILING_MESSAGE = `An option pool of ${OPTION_POOL_POST_PERCENT_MAX}% of fully-diluted shares or more is not an employee option plan, and Capavate will not model one. It is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is solved as T = (P x (E + u + N) - 100 x u) / (100 - P), so the cost of each extra point of pool rises as P approaches 100: at 15% a pool is worth roughly its own size in dilution, and at 99% the arithmetic is legal but produces a 46-digit share count that is not a cap table. Typical Series A pools are 10-20% (Carta; Cooley GO). If you genuinely need a reserve at or above ${OPTION_POOL_POST_PERCENT_MAX}%, that is a capital-structure decision to record deliberately, not a percentage to type into this field.`;
+    OPTION_POOL_POST_PERCENT_CEILING_MESSAGE = `An option pool of ${OPTION_POOL_POST_PERCENT_MAX}% of fully-diluted shares or more is not an employee option plan, and Capavate will not model one. It is percent-as-written : 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is solved as T = (P x (E + u + N) - 100 x u) / (100 - P), so the cost of each extra point of pool rises as P approaches 100: at 15% a pool is worth roughly its own size in dilution, and at 99% the arithmetic is legal but produces a 46-digit share count that is not a cap table. Typical Series A pools are 10-20% (Carta; Cooley GO). If you genuinely need a reserve at or above ${OPTION_POOL_POST_PERCENT_MAX}%, that is a capital-structure decision to record deliberately, not a percentage to type into this field.`;
   }
 });
 
@@ -22558,7 +22667,31 @@ var init_roundsStore = __esm({
            given the SAME imported fence in the same wave (`validateSeniorityRankStored`,
            declared once in `server/lib/roundStoredTerms.ts`). Wave 76 was caught by
            exactly the opposite order of operations; it is not repeated here. */
-      "seniority"
+      "seniority",
+      /* WAVE 94 · ITEM 1 (R83.2) — `capParticipation`. ADDITIVE, NO MIGRATION.
+           The CEILING on what a participating preference class can take in total at an
+           exit, as a multiple of its investment: the "capped at 2x" half of "1x
+           participating, capped at 2x". `client/src/pages/founder/RoundNew.tsx` has
+           rendered a labelled control for it since before this wave and
+           `shared/schema.ts` lists it among a preferred round's fields, but NOTHING on
+           the server had ever read it and the exit waterfall therefore modelled every
+           capped class as UNCAPPED — which overpays that class and underpays the
+           founders. `server/lib/roundStoredTerms.ts` now reads it. It lives in
+           `extras_json`, which `POST /api/rounds` already stashes for any non-column
+           field and which `rowToRound` already re-spreads on hydrate, so this is the
+           same additive path `optionPoolPostPercent` (Wave 58b), `safeType` (Wave 70),
+           `liquidationPreference` (Wave 75), Wave 80's four and `seniority` (Wave 81)
+           all took. Migrations stay at **173 `.sql`, 177 entries, highest `0192`.**
+      
+           EVERY WRITER THAT CAN NOW REACH IT VALIDATES IT, in this same wave, with ONE
+           imported fence (`validateParticipationCapStored`). Adding a key here makes it
+           reachable through `updateRound` from `PATCH /api/founder/rounds/:id`, which
+           hands every patch key straight to this function, as well as from
+           `PATCH /api/rounds/:id/terms`; and `POST /api/rounds`, which could already
+           store it through the extras sweep with no validation at all, is fenced too.
+           Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught by
+           it; Wave 81 refused to repeat that, and neither does this. */
+      "capParticipation"
     ]);
     UPDATE_ROUND_EXTRAS_KEYS = Array.from(UPDATE_EXTRAS_WHITELIST);
   }
@@ -23929,7 +24062,7 @@ var init_percentPolicy = __esm({
         inputForm: "percent_as_written",
         min: 0,
         max: 99.999999999,
-        rationale: "SAFE/note discount, PERCENT-AS-WRITTEN under owner ruling R30: '20' means 20%. Fenced at the table by migration 0190's triggers, which CORRECT 0153's fraction-domain [0,1] fence (P-11) \u2014 that fence aborted the platform's own canonical value and would have failed the first SAFE commit carrying a discount."
+        rationale: "SAFE/note discount, percent-as-written under R30: '20' means 20%. Fenced at the table by migration 0190's triggers, which CORRECT 0153's fraction-domain [0,1] fence (P-11) \u2014 that fence aborted the platform's own canonical value and would have failed the first SAFE commit carrying a discount."
       }),
       /**
        * WAVE 10 / EN-5 — the hurdle AFTER `normaliseSpvTermsHurdle` has run.
@@ -25290,6 +25423,96 @@ var init_applyRepair1AuditActorBindingSchema = __esm({
   }
 });
 
+// server/userCredentialsStore.ts
+function rowToCred(row) {
+  return {
+    userId: row.userId,
+    email: row.email,
+    name: row.name ?? void 0,
+    passwordHash: row.passwordHash,
+    createdAt: row.createdAt ?? "",
+    updatedAt: row.updatedAt ?? ""
+  };
+}
+function lookupByUserId(userId) {
+  const email = _userIdIndex.get(userId);
+  if (email) {
+    const cred = _memStore.get(email);
+    if (cred) return { email: cred.email, name: cred.name };
+  }
+  try {
+    const db = getDb();
+    const rows = db.select().from(userCredentials).where(
+      sql`${userCredentials.userId} = ${userId} AND ${userCredentials.deletedAt} IS NULL`
+    ).all();
+    const row = rows[0];
+    if (row) {
+      const cred = rowToCred(row);
+      const e = cred.email.toLowerCase();
+      _memStore.set(e, cred);
+      _userIdIndex.set(cred.userId, e);
+      return { email: cred.email, name: cred.name };
+    }
+  } catch (err) {
+    log.warn({
+      route: "userCredentialsStore.lookupByUserId",
+      errorType: "db_read_failed",
+      message: err.message
+    });
+  }
+  return null;
+}
+var import_bcryptjs, _memStore, _userIdIndex;
+var init_userCredentialsStore = __esm({
+  "server/userCredentialsStore.ts"() {
+    "use strict";
+    import_bcryptjs = __toESM(require("bcryptjs"), 1);
+    init_drizzle_orm();
+    init_connection();
+    init_schema();
+    init_logger2();
+    _memStore = /* @__PURE__ */ new Map();
+    _userIdIndex = /* @__PURE__ */ new Map();
+  }
+});
+
+// server/lib/displayNameResolver.ts
+var init_displayNameResolver = __esm({
+  "server/lib/displayNameResolver.ts"() {
+    "use strict";
+    init_connection();
+    init_userContext();
+    init_userCredentialsStore();
+  }
+});
+
+// server/lib/applyCommsDelegatedContextSchema.ts
+var init_applyCommsDelegatedContextSchema = __esm({
+  "server/lib/applyCommsDelegatedContextSchema.ts"() {
+    "use strict";
+    init_logger2();
+  }
+});
+
+// server/lib/partnerDelegatedContext.ts
+var init_partnerDelegatedContext = __esm({
+  "server/lib/partnerDelegatedContext.ts"() {
+    "use strict";
+    init_connection();
+    init_applyCommsDelegatedContextSchema();
+  }
+});
+
+// server/lib/actorIdentityDescriber.ts
+var init_actorIdentityDescriber = __esm({
+  "server/lib/actorIdentityDescriber.ts"() {
+    "use strict";
+    init_displayNameResolver();
+    init_userContext();
+    init_partnerDelegatedContext();
+  }
+});
+
 // server/adminPlatformStore.ts
 function resolveTenantId(entity, explicit) {
   if (explicit && explicit.length > 0) return explicit;
@@ -25425,6 +25648,8 @@ var init_adminPlatformStore = __esm({
     init_rateLimit();
     init_errors3();
     init_applyRepair1AuditActorBindingSchema();
+    init_actorIdentityDescriber();
+    init_userContext();
     sha2563 = (s) => (0, import_node_crypto6.createHash)("sha256").update(s, "utf8").digest("hex");
     activityFeed = [
       { id: "act_1", ts: new Date(Date.now() - 2 * 6e4).toISOString(), actor: "u_maya", entity: "co_novapay", kind: "round.closed", text: "NovaPay Seed Extension closed \u2014 $4.0M" },
@@ -26136,59 +26361,6 @@ var init_membershipStore = __esm({
     } : {};
     _ledgerIndexLen = -1;
     _ledgerIndex = /* @__PURE__ */ new Map();
-  }
-});
-
-// server/userCredentialsStore.ts
-function rowToCred(row) {
-  return {
-    userId: row.userId,
-    email: row.email,
-    name: row.name ?? void 0,
-    passwordHash: row.passwordHash,
-    createdAt: row.createdAt ?? "",
-    updatedAt: row.updatedAt ?? ""
-  };
-}
-function lookupByUserId(userId) {
-  const email = _userIdIndex.get(userId);
-  if (email) {
-    const cred = _memStore.get(email);
-    if (cred) return { email: cred.email, name: cred.name };
-  }
-  try {
-    const db = getDb();
-    const rows = db.select().from(userCredentials).where(
-      sql`${userCredentials.userId} = ${userId} AND ${userCredentials.deletedAt} IS NULL`
-    ).all();
-    const row = rows[0];
-    if (row) {
-      const cred = rowToCred(row);
-      const e = cred.email.toLowerCase();
-      _memStore.set(e, cred);
-      _userIdIndex.set(cred.userId, e);
-      return { email: cred.email, name: cred.name };
-    }
-  } catch (err) {
-    log.warn({
-      route: "userCredentialsStore.lookupByUserId",
-      errorType: "db_read_failed",
-      message: err.message
-    });
-  }
-  return null;
-}
-var import_bcryptjs, _memStore, _userIdIndex;
-var init_userCredentialsStore = __esm({
-  "server/userCredentialsStore.ts"() {
-    "use strict";
-    import_bcryptjs = __toESM(require("bcryptjs"), 1);
-    init_drizzle_orm();
-    init_connection();
-    init_schema();
-    init_logger2();
-    _memStore = /* @__PURE__ */ new Map();
-    _userIdIndex = /* @__PURE__ */ new Map();
   }
 });
 

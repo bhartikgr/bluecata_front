@@ -16,6 +16,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor } from "@/lib/currency";
+/* WAVE 87 · ITEM 1 — a DATE-ONLY value must not be parsed by `new Date()`:
+   `new Date("2026-06-15")` is UTC midnight, which prints ONE DAY EARLY in every
+   zone west of UTC (the owner is in New York). `fmtLocaleDate` keeps the exact
+   rendered format of the call it replaces and removes only the shift.
+   Shape evidence for each field is in build_log/wave87/W87_DATE_CENSUS.md §2. */
+import { fmtLocaleDate } from "@/lib/format";
 import {
   PARTNER_CLIENT_STAGES,
   PARTNER_CLIENT_STAGE_LABELS,
@@ -286,7 +292,7 @@ export default function PartnerClientDetail() {
                 <div className="text-xs space-y-1" data-testid="client-captable-data">
                   <div>Valuation: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.valuationMinor != null ? formatMinor(snapshot.valuationMinor, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
                   <div>Last raise: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.lastRaiseAmount != null ? formatMinor(snapshot.lastRaiseAmount, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
-                  <div>Last raise date: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.lastRaiseDate ? new Date(snapshot.lastRaiseDate).toLocaleDateString() : "—"}</span></div>
+                  <div>Last raise date: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.lastRaiseDate ? fmtLocaleDate(snapshot.lastRaiseDate) : "—"}</span></div>
                   <div className="text-[var(--cv-color-text-faint)] pt-1">Detailed cap table is editable only by the founder in Capavate's frozen engine.</div>
                 </div>
               ) : (

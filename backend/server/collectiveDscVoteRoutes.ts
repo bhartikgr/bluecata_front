@@ -350,15 +350,35 @@ export function registerCollectiveDscVoteRoutes(app: Express): void {
        * v25.21 Lane C NH-7 fix — previously this gate checked only the
        * legacy `isDscMember(userId)` role, which meant a paid `standard`
        * tier member (who DOES carry the `dsc:vote` entitlement per
-       * `stripeCollective.ts` COLLECTIVE_TIER_CATALOG) received 403
-       * `not_dsc_member`. We now accept either the legacy role OR an active
-       * billing row whose tier grants `dsc:vote`. Either path is sufficient.
+       * COLLECTIVE_TIER_CATALOG) received 403 `not_dsc_member`. We now accept
+       * either the legacy role OR an active billing row whose tier grants
+       * `dsc:vote`. Either path is sufficient.
+       *
+       * WAVE 97B (2026-08-21) · R86 — THE ENTITLEMENT CATALOG NOW COMES FROM
+       * `./lib/airwallexCollective`, NOT `./lib/stripeCollective`.
+       *   Owner: "remove stripe. I can add this at a later date. We are using
+       *   Airwallex today." Wave 97 measured that this lazy `require()` was the
+       *   ONE live reader of `stripeCollective.ts` — a file whose own header
+       *   claimed it was "no longer imported by any production path", and which
+       *   no static import scan could see. Deleting it without changing this
+       *   line would have thrown into the `catch` below, which only `log.warn`s
+       *   and falls through to the legacy role gate, so A PAYING STANDARD-TIER
+       *   MEMBER WOULD HAVE SILENTLY GONE BACK TO 403 ON DSC VOTES — re-opening
+       *   the v25.21 NH-7 defect with no test failing.
+       *   `airwallexCollective.COLLECTIVE_TIER_CATALOG` is byte-identical to the
+       *   catalog this used to read (see that file's own comment at the catalog
+       *   declaration), so the entitlement decision is unchanged: `standard` and
+       *   `premium` grant `dsc:vote`, `basic` does not.
+       *   Proof that a paying member can still vote — and that a `basic`-tier
+       *   payer still cannot — is in
+       *   `server/__tests__/w97b_dsc_vote_paying_member.test.ts` and
+       *   `build_log/wave97b/W97B_PAYMENT_PROOF.md`.
        */
       let isAllowed = ctx?.isAdmin === true || isDscMember(userId);
       if (!isAllowed) {
         try {
           const { getBillingForUser } = require("./collectiveBillingStore");
-          const { COLLECTIVE_TIER_CATALOG } = require("./lib/stripeCollective");
+          const { COLLECTIVE_TIER_CATALOG } = require("./lib/airwallexCollective");
           const billing = getBillingForUser(userId, chapterId);
           if (billing && billing.status === "active" && billing.tier) {
             const tierEntry = COLLECTIVE_TIER_CATALOG.find(

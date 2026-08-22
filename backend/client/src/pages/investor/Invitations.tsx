@@ -358,7 +358,7 @@ function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; no
             {/* Company description (from API, not hardcoded map) */}
             <div className="grid md:grid-cols-2 gap-2 mt-3 text-sm">
               <div className="flex items-start gap-1.5">
-                <Check className="h-3.5 w-3.5 text-[hsl(0_100%_40%)] mt-1 shrink-0" />
+                <Check className="h-3.5 w-3.5 text-emerald-700 mt-1 shrink-0" />
                 <div data-testid={`text-bio-${i.id}`}>
                   <span className="text-muted-foreground">About — </span>{description}
                 </div>
@@ -381,7 +381,8 @@ function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; no
                 <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)}</div>
               </div>
               <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                <div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                {/* WAVE 101 - soft-circled-of-target progress off the negative anchor. */}
+                <div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground mt-1.5">
                 <span>Min ticket {fmtUSD(i.minTicket, { compact: true })} · pre-money {fmtUSD(i.preMoney, { compact: true })}</span>

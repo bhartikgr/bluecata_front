@@ -56,6 +56,9 @@ import { DbUnavailableError } from "./lib/errors";
    (audit_log.hash_version). server/db/connection.ts is SACRED and cannot be
    extended, so a handle built from its inline DDL needs this. */
 import { ensureRepair1AuditActorBindingSchema } from "./lib/applyRepair1AuditActorBindingSchema";
+/* WAVE 93 · ITEM 1 — the shared actor describer (additive, read-only). */
+import { describeActor } from "./lib/actorIdentityDescriber";
+import { resolveCompanyName } from "./lib/userContext";
 
 /**
  * Patch v10 — Live activity feed allowlist.
@@ -734,6 +737,43 @@ export interface AuditChainVerifyResult {
   preGenesisRowCount: number;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 93 · ITEM 1 — the audit "Target" column is an IDENTITY position too.
+   `user:u_founder_1782301936139_9tqnpg` was rendered verbatim in the founder and
+   admin activity feeds (register PART 11). An entity token that names a PERSON,
+   a COMPANY or a PARTNER is resolved here; an entity that is a genuine object
+   reference (a round, a document) is left as the id, because on an audit ledger
+   that id IS the reference an operator needs and R77 permits it. Returns null
+   when there is nothing to add, so the caller can render the id unchanged.
+   ════════════════════════════════════════════════════════════════════════════ */
+function resolveAuditEntityLabel(entity: string | null | undefined): string | null {
+  const raw = String(entity ?? "").trim();
+  if (!raw) return null;
+  const colon = raw.indexOf(":");
+  const type = colon > 0 ? raw.slice(0, colon).toLowerCase() : "";
+  const rest = colon > 0 ? raw.slice(colon + 1).trim() : raw;
+  const IDENTITY_TYPES = new Set([
+    "user", "investor", "founder", "accountant", "partner", "company",
+    "subscription", "system",
+  ]);
+  try {
+    if (type && IDENTITY_TYPES.has(type)) {
+      const d = describeActor(raw);
+      return d.label || null;
+    }
+    if (/^(u|usr)_/.test(raw)) {
+      const d = describeActor(raw);
+      return d.label || null;
+    }
+    if (/^(co|cmp)_/.test(raw)) {
+      const nm = (resolveCompanyName(rest) ?? "").toString().trim();
+      if (nm && !/^(co|cmp)_/.test(nm)) return nm;
+      return "A company (name not on record)";
+    }
+  } catch { /* fail-open: the caller renders the id unchanged */ }
+  return null;
+}
+
 export function verifyTenantAuditChain(
   db: import("better-sqlite3").Database,
   tenantId: string,
@@ -833,6 +873,448 @@ export function verifyTenantAuditChain(
     preGenesisRowCount: startIndex,
   };
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 95 · ITEM 1 — RE-ANCHORING THE AUDIT CHAIN, under owner ruling R84.
+
+   WHAT WAVE 93 PROVED (build_log/wave93/W93_AUDIT_CHAIN.md): `tenant_admin_capavate`
+   holds exactly ONE audit_log row and that row does not match its own hash,
+   because a retired deploy-script formula wrote it straight into the table
+   instead of through appendAdminAudit(). An EMPTY chain verifies clean and a
+   canonically-appended SINGLE row verifies clean, so "link 0 of 1" is neither an
+   empty chain nor an off-by-one. Wave 51 fixed the writers; nothing ever
+   repaired the record. So the red banner on every admin page is REAL and
+   PERMANENT, and "Resolve incident" correctly refuses it with 409.
+
+   R84 chose remediation A — the designed `audit_chain_genesis` mechanism — and
+   chose to do it NOW, while every record in the system is still test data.
+   Its conditions are implemented here, one function, each condition named:
+
+   (1) EXPLICIT / RECORDED / AUDITED, never automatic. This is a function
+       reached ONLY from POST /api/admin/audit-chain/re-anchor. There is no
+       caller at boot, in a migration, in hydrateStores or in any scheduler —
+       asserted by test. `intent` is MANDATORY and a blank one is refused, so
+       the action cannot be taken without a stated reason.
+   (2) RECORDS who / when / why / anchor row id / anchor hash, and CITES R84 —
+       in `audit_chain_genesis.reason` (durable, on the anchor itself) and in an
+       `audit_chain.re_anchored` audit_log row (durable, in the chain).
+   (3) The UI states plainly that the record BEFORE the anchor is NOT PROVABLE.
+       `preAnchorNotProvable` is returned for that purpose and the operator
+       screen renders it permanently; nothing here or there says the earlier
+       record was verified, because it was not and never will be.
+   (4) NOTHING IS DELETED. The only writes are one INSERT into
+       audit_chain_genesis and one append to audit_log. No DELETE, no UPDATE of
+       any audit_log row, ever. The unprovable record stays exactly where it is.
+   (5) ANCHORING CANNOT SILENCE. The genesis INSERT and the verification live in
+       ONE transaction: if the chain does not verify clean with the anchor in
+       place, the transaction is ROLLED BACK, so nothing is written at all, the
+       health row is untouched, and the alarm stays on. The health row is then
+       cleared ONLY by resolveAuditChainHealth(key, verified, ...) — the
+       pre-existing function that refuses unless a fresh verification passed —
+       and only after the audit record has been appended and the chain
+       re-verified WITH it. There is no code path from "re-anchor requested" to
+       "alarm off" that does not pass a clean verification.
+   (6) NO SECOND RE-ANCHOR. Refused with `already_anchored` when a genesis row
+       exists for the tenant. This is STRUCTURAL, not merely a guard: the table
+       declares `tenant_id TEXT PRIMARY KEY`, so a second row cannot exist, and
+       the only way to replace the first is to DELETE it — which condition (4)
+       forbids and which this module contains no code to do. A break after
+       anchoring is therefore a real incident with no papering-over available.
+
+   The two fail-closed modes the guarantee rests on are NOT touched and are
+   re-verified by this wave's tests: verifyTenantAuditChain returns
+   `brokenAt: -2` when the anchor row is missing and `brokenAt: -3` when its
+   stored hash disagrees with the pinned anchor hash.
+
+   NO MIGRATION IS ADDED OR NEEDED. `audit_chain_genesis` already exists in both
+   places a database can come from: migration 0124_wave_a1_audit_seed_repair.sql
+   and the inline DDL in server/db/connection.ts. 173 migration files, highest
+   0192, unchanged.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** The pinned anchor for one tenant, as recorded. */
+export interface AuditChainAnchorRecord {
+  tenantId: string;
+  anchorRowId: string;
+  anchorHash: string;
+  effectiveAt: string;
+  reason: string;
+  createdAt: string;
+  /**
+   * How many records sit BEFORE the anchor and are therefore NOT PROVABLE.
+   * Computed live from `audit_log`, never stored, so it cannot go stale and
+   * cannot understate the gap. R84 condition 3: the UI states this number.
+   */
+  preAnchorNotProvable: number;
+
+  /* ══ R85 · WHO MADE THIS ANCHOR — DECIDED AT READ TIME, NO MIGRATION ════════
+     R84 condition 1 makes an anchor "explicit, recorded and audited, never
+     automatic". Migration `0124_wave_a1_audit_seed_repair.sql` can also install
+     a genesis row — as a migration side effect, with NO operator, NO stated
+     intent and NO ledger record. Until Wave 102 the read path returned six
+     columns and the admin panel rendered ONE code path for both, so a row no
+     human ever created was presented with the words "This ledger was
+     re-anchored" and the same `[anchored]` badge as a deliberate, intent-
+     recorded action. R85 ruled that the two be distinguished HERE, at read time.
+
+     NOTHING IS WRITTEN TO MAKE THIS LEGIBLE. The difference is already in the
+     data on two independent signals, and this only reads them:
+
+       1. `citesR84` — an R84 anchor's `reason` cites the ruling by name,
+          because reAnchorTenantAuditChain BUILDS it that way (see the `reason`
+          template below). Migration 0124's `reason` is a fixed string about
+          re-basing after `scripts/create_admin.ts`, and cites nothing.
+       2. `hasReAnchorLedgerRow` — an R84 anchor is followed by an
+          `audit_chain.re_anchored` row appended AFTER the anchor commits, so
+          that row's `prev_hash` IS the anchor hash. A 0124 artefact has no such
+          row, because a migration appends nothing to the ledger.
+
+     CLASSIFICATION IS FAIL-CLOSED, deliberately and in one direction only: an
+     anchor is `operator_authorised` ONLY if BOTH signals are present. Anything
+     else reads as `migration_artefact`, i.e. the platform declines to claim a
+     human authorised it. That asymmetry is the point — the expensive error is
+     telling an operator an anchor was authorised when it was not.
+
+     Both booleans are returned alongside the verdict so the PARTIAL state is
+     legible rather than silently folded into "artefact": an anchor that cites
+     R84 but whose ledger row is missing (appendAdminAudit is deliberately
+     fail-OPEN — see `isAuditWriteFailure`) is a third thing, and the panel says
+     so instead of calling it a migration artefact.
+     ═════════════════════════════════════════════════════════════════════ */
+  /** R85 signal 1 — the `reason` cites owner ruling R84 by name. */
+  citesR84: boolean;
+  /**
+   * R85 signal 2 — an `audit_chain.re_anchored` ledger row exists for this
+   * tenant whose `prev_hash` IS this anchor's hash, i.e. the action was
+   * recorded IN the chain it anchors.
+   */
+  hasReAnchorLedgerRow: boolean;
+  /**
+   * R85 verdict, read-time only, never stored.
+   *   `operator_authorised` — both signals present. A human took this action,
+   *                           stated an intent, and it is in the ledger.
+   *   `migration_artefact`  — anything else. NO operator, NO recorded intent.
+   */
+  provenance: "operator_authorised" | "migration_artefact";
+}
+
+export type AuditChainReAnchorFailure =
+  | "intent_required"
+  | "actor_required"
+  | "already_anchored"
+  | "no_rows_to_anchor"
+  | "anchor_row_not_found"
+  | "chain_not_clean_after_anchor"
+  | "db_unavailable";
+
+export interface AuditChainReAnchorResult {
+  ok: boolean;
+  /** Machine-readable refusal name (R77: payload value, never rendered text). */
+  error?: AuditChainReAnchorFailure;
+  tenantId: string;
+  anchorRowId: string | null;
+  anchorHash: string | null;
+  /** How many records sit BEFORE the anchor and are therefore NOT provable. */
+  preAnchorNotProvable: number;
+  /** Records after the anchor, all of which verify against it. */
+  postAnchorVerified: number;
+  brokenAt: number | null;
+  /** True whenever the incident was left standing. */
+  alarmStaysOn: boolean;
+  /** True only when the health row was cleared by a passing verification. */
+  incidentCleared: boolean;
+  rows: AuditChainHealthRow[];
+  incident: boolean;
+}
+
+/* ══ R85 · THE CLASSIFIER, EXPORTED ON PURPOSE ══════════════════════════════
+   Exported so `server/__tests__/wave102_r85_anchor_provenance.test.ts` can
+   mutation-test BOTH directions against the SHIPPED function rather than a
+   re-implementation of it. R85's second condition requires exactly that:
+   "a row produced by 0124's shape can NEVER be presented as an R84 action, and
+   an R84 row is never mislabelled an artefact".
+
+   `citesR84` deliberately matches the RULING NAME as a word, not the substring:
+   `\bR84\b`. A `reason` mentioning `R840` or `PR84` must not qualify, and a
+   migration reason that happened to contain the letters is not a citation.
+
+   The second argument is the prepared statement so the classifier is pure with
+   respect to the database handle and can be driven by a test fixture. */
+export function classifyAnchorProvenance(
+  a: { tenantId: string; anchorHash: string; reason: string },
+  reAnchorRow: { get: (...args: unknown[]) => unknown },
+): Pick<AuditChainAnchorRecord, "citesR84" | "hasReAnchorLedgerRow" | "provenance"> {
+  const citesR84 = /\bR84\b/.test(a.reason ?? "");
+  let hasReAnchorLedgerRow = false;
+  try {
+    const c = (reAnchorRow.get(a.tenantId, a.anchorHash) as { c: number } | undefined)?.c ?? 0;
+    hasReAnchorLedgerRow = c > 0;
+  } catch {
+    /* A read failure must NOT be allowed to upgrade an anchor to "authorised".
+       Fail-closed: an unreadable ledger means we cannot show a human did this. */
+    hasReAnchorLedgerRow = false;
+  }
+  return {
+    citesR84,
+    hasReAnchorLedgerRow,
+    provenance: citesR84 && hasReAnchorLedgerRow ? "operator_authorised" : "migration_artefact",
+  };
+}
+
+/** Every anchor on file, for the operator screen's permanent provenance panel. */
+export function getAuditChainAnchors(): AuditChainAnchorRecord[] {
+  try {
+    const raw = rawDb()
+      .prepare(
+        `SELECT tenant_id AS "tenantId", anchor_row_id AS "anchorRowId", anchor_hash AS "anchorHash",
+                effective_at AS "effectiveAt", reason, created_at AS "createdAt"
+           FROM audit_chain_genesis ORDER BY tenant_id`,
+      )
+      .all() as Omit<AuditChainAnchorRecord, "preAnchorNotProvable" | "citesR84" | "hasReAnchorLedgerRow" | "provenance">[];
+    const countPre = rawDb().prepare(
+      `SELECT COUNT(*) AS c FROM audit_log WHERE tenant_id = ?
+         AND (created_at, id) <= (SELECT created_at, id FROM audit_log WHERE tenant_id = ? AND id = ?)`,
+    );
+    /* R85 signal 2. `prev_hash = <anchor hash>` is the load-bearing clause: the
+       re-anchor audit row is appended AFTER the anchor commits, so it chains
+       FROM the anchor. A migration writes no ledger row at all, so this returns
+       0 for a 0124 artefact. Scoped by tenant AND action so an unrelated row
+       that happens to chain from the anchor cannot be mistaken for the record
+       of the action. */
+    const reAnchorRow = rawDb().prepare(
+      `SELECT COUNT(*) AS c FROM audit_log
+         WHERE tenant_id = ? AND prev_hash = ? AND action = 'audit_chain.re_anchored'`,
+    );
+    return raw.map((a) => {
+      let pre = 0;
+      try {
+        pre = (countPre.get(a.tenantId, a.tenantId, a.anchorRowId) as { c: number } | undefined)?.c ?? 0;
+      } catch { pre = 0; }
+      return { ...a, preAnchorNotProvable: pre, ...classifyAnchorProvenance(a, reAnchorRow) };
+    });
+  } catch {
+    // Table not present on this handle — no anchors to report. Never throws
+    // into the health endpoint, which must keep serving the alarm.
+    return [];
+  }
+}
+
+/**
+ * R84 · the re-anchor action itself. See the block comment above; every numbered
+ * condition is implemented here and named in the code.
+ */
+export function reAnchorTenantAuditChain(args: {
+  tenantId: string;
+  /** WHO. No fallback to a placeholder: an unattributable integrity action is refused. */
+  actorId: string;
+  /** WHY, in the operator's own words. Mandatory (condition 1). */
+  intent: string;
+  /** Optional explicit anchor row; defaults to the current tip of the chain. */
+  anchorRowId?: string | null;
+  /** Injectable clock, for deterministic tests. */
+  nowIso?: string;
+}): AuditChainReAnchorResult {
+  const tenantId = String(args.tenantId ?? "").trim();
+  const actorId = String(args.actorId ?? "").trim();
+  const intent = String(args.intent ?? "").trim();
+  const now = args.nowIso ?? new Date().toISOString();
+
+  const fail = (error: AuditChainReAnchorFailure, extra?: Partial<AuditChainReAnchorResult>): AuditChainReAnchorResult => {
+    const snap = getAuditChainHealth();
+    return {
+      ok: false,
+      error,
+      tenantId,
+      anchorRowId: null,
+      anchorHash: null,
+      preAnchorNotProvable: 0,
+      postAnchorVerified: 0,
+      brokenAt: null,
+      alarmStaysOn: true,
+      incidentCleared: false,
+      rows: snap.rows,
+      incident: snap.incident,
+      ...extra,
+    };
+  };
+
+  // Condition 1 — a stated intent is not optional, and neither is an identified
+  // operator. R84 requires the record to say WHO and WHY; a placeholder actor
+  // would make the ledger assert something it does not know.
+  if (!intent) return fail("intent_required");
+  if (!actorId || /^system:/i.test(actorId) || actorId === "u_unknown_admin") return fail("actor_required");
+
+  let db: import("better-sqlite3").Database;
+  try {
+    db = rawDb();
+  } catch {
+    return fail("db_unavailable");
+  }
+
+  // Condition 6 — refuse a SECOND anchor, before anything else is considered.
+  try {
+    const existing = db
+      .prepare(`SELECT anchor_row_id AS "anchorRowId", anchor_hash AS "anchorHash" FROM audit_chain_genesis WHERE tenant_id = ?`)
+      .get(tenantId) as { anchorRowId: string; anchorHash: string } | undefined;
+    if (existing) {
+      return fail("already_anchored", { anchorRowId: existing.anchorRowId, anchorHash: existing.anchorHash });
+    }
+  } catch {
+    return fail("db_unavailable");
+  }
+
+  // Read the chain in canonical order to choose and validate the anchor.
+  let rows: Array<{ id: string; hash: string }>;
+  try {
+    rows = db
+      .prepare(`SELECT id, hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}`)
+      .all(tenantId) as Array<{ id: string; hash: string }>;
+  } catch {
+    return fail("db_unavailable");
+  }
+  if (rows.length === 0) {
+    // An empty chain is not a broken chain (Wave 93 §2.1) — there is nothing to
+    // anchor and anchoring it would be a claim about records that do not exist.
+    return fail("no_rows_to_anchor");
+  }
+
+  const requested = String(args.anchorRowId ?? "").trim();
+  const anchorIdx = requested ? rows.findIndex((r) => r.id === requested) : rows.length - 1;
+  if (anchorIdx < 0) return fail("anchor_row_not_found");
+  const anchorRowId = rows[anchorIdx].id;
+  const anchorHash = rows[anchorIdx].hash;
+  const preAnchorNotProvable = anchorIdx + 1;
+
+  // Conditions 2 + 5 — the record, then the verification, in ONE transaction.
+  // The `reason` column IS the durable record of who/when/why/what, and it
+  // cites the ruling. If the verification does not pass, this whole block is
+  // rolled back and NOTHING is written: anchoring cannot become a way to
+  // silence a chain that is still broken.
+  const reason =
+    `WAVE 95 re-anchor under owner ruling R84 (spec/OWNER_RULINGS_2026_08_13.md). ` +
+    `WHO: ${actorId}. WHEN: ${now}. WHY: ${intent} ` +
+    `ANCHOR ROW: ${anchorRowId}. ANCHOR HASH: ${anchorHash}. ` +
+    `The ${preAnchorNotProvable} record(s) written BEFORE this anchor are preserved and are NOT provable; ` +
+    `nothing was deleted. Records written after it verify against this anchor.`;
+
+  let verifyAfterInsert: AuditChainVerifyResult | null = null;
+  try {
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO audit_chain_genesis (tenant_id, anchor_row_id, anchor_hash, effective_at, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(tenantId, anchorRowId, anchorHash, now, reason, now);
+      const vr = verifyTenantAuditChain(db, tenantId);
+      verifyAfterInsert = vr;
+      if (!vr.ok) {
+        // Condition 5 — fail closed. Throwing rolls the INSERT back, so the
+        // anchor is never committed and the incident is untouched.
+        throw new Error("W95_ANCHOR_WOULD_NOT_VERIFY");
+      }
+    })();
+  } catch (err) {
+    const vr = verifyAfterInsert as AuditChainVerifyResult | null;
+    if ((err as Error).message === "W95_ANCHOR_WOULD_NOT_VERIFY") {
+      log.warn(
+        "[reAnchorTenantAuditChain] REFUSED — the chain would still not verify with this anchor in place. " +
+        `tenant=${tenantId} anchorRow=${anchorRowId} brokenAt=${vr?.brokenAt} totalLinks=${vr?.totalLinks}. ` +
+        "Nothing was written; the audit-chain incident STAYS OPEN (R84: anchoring must not become a way to silence).",
+      );
+      return fail("chain_not_clean_after_anchor", {
+        anchorRowId,
+        anchorHash,
+        preAnchorNotProvable,
+        brokenAt: vr?.brokenAt ?? null,
+      });
+    }
+    log.error("[reAnchorTenantAuditChain] insert failed:", (err as Error).message);
+    return fail("db_unavailable", { anchorRowId, anchorHash, preAnchorNotProvable });
+  }
+
+  // Condition 2 — the AUDITED half. Appended AFTER the anchor is committed, so
+  // this row chains from the anchor hash and is itself provable. It is the
+  // durable in-ledger record of the action, and it cites the ruling.
+  try {
+    appendAdminAudit(
+      actorId,
+      `audit_chain_genesis:${tenantId}`,
+      "audit_chain.re_anchored",
+      {
+        ruling: "R84",
+        rulingSource: "spec/OWNER_RULINGS_2026_08_13.md",
+        tenantId,
+        anchorRowId,
+        anchorHash,
+        intent,
+        effectiveAt: now,
+        preAnchorRecordsNotProvable: preAnchorNotProvable,
+      },
+      tenantId,
+    );
+  } catch (err) {
+    log.error("[reAnchorTenantAuditChain] audit append failed:", (err as Error).message);
+  }
+
+  // Condition 5, the second gate — re-verify WITH the audit record present, and
+  // clear the health row ONLY through the function that refuses unless the
+  // verification passed. If this fails the anchor stays (nothing is deleted),
+  // the alarm stays on, and the caller reports a failure.
+  const finalVr = verifyTenantAuditChain(db, tenantId);
+  const resolved = resolveAuditChainHealth(
+    tenantId,
+    finalVr.ok,
+    `re-anchored under owner ruling R84 by ${actorId} at ${now}. ` +
+    `The ${preAnchorNotProvable} record(s) written before the anchor are preserved and CANNOT be proved unaltered. ` +
+    `Records written after the anchor verify against it. Nothing was deleted.`,
+  );
+  if (!finalVr.ok) {
+    log.error(
+      "[reAnchorTenantAuditChain] ANCHOR COMMITTED BUT THE CHAIN STILL DOES NOT VERIFY. " +
+      `tenant=${tenantId} brokenAt=${finalVr.brokenAt}. The incident STAYS OPEN. This is a real incident: ` +
+      "R84 does not authorise a second re-anchor to paper over it.",
+    );
+  }
+  return {
+    ok: finalVr.ok,
+    error: finalVr.ok ? undefined : "chain_not_clean_after_anchor",
+    tenantId,
+    anchorRowId,
+    anchorHash,
+    preAnchorNotProvable,
+    postAnchorVerified: finalVr.totalLinks,
+    brokenAt: finalVr.ok ? null : finalVr.brokenAt,
+    alarmStaysOn: !resolved.cleared,
+    incidentCleared: resolved.cleared,
+    rows: resolved.rows,
+    incident: resolved.incident,
+  };
+}
+
+/**
+ * WAVE 95 · R77 — the refusal NAME stays in the payload (`error`), and a human
+ * reads a sentence. Neither is dropped for the other's benefit.
+ */
+export function reAnchorRefusalMessage(r: AuditChainReAnchorResult): string {
+  switch (r.error) {
+    case "intent_required":
+      return "State why this ledger is being re-anchored. The reason is recorded permanently and cannot be edited afterwards.";
+    case "actor_required":
+      return "This action is recorded against the person who takes it, and the platform could not identify you. Nothing was changed.";
+    case "already_anchored":
+      return "This ledger has already been anchored once, and it is anchored only once. If it is not verifying now, that is a new integrity incident and it needs investigating — re-anchoring again would hide it rather than fix it. Nothing was changed.";
+    case "no_rows_to_anchor":
+      return "There are no records in this ledger, so there is nothing to anchor. An empty ledger is not a broken one. Nothing was changed.";
+    case "anchor_row_not_found":
+      return "That record is not in this ledger, so it cannot be used as the anchor. Nothing was changed.";
+    case "chain_not_clean_after_anchor":
+      return `Refused: the ledger still would not verify with that anchor in place${r.brokenAt !== null ? ` (first record that fails: ${r.brokenAt})` : ""}. Nothing was written and the incident stays open. Anchoring is not a way to clear an alarm — it only records where a provable history begins.`;
+    case "db_unavailable":
+      return "The ledger is temporarily unavailable. Nothing was changed.";
+    default:
+      return "The ledger was not re-anchored. Nothing was changed.";
+  }
+}
+
 
 function appendAudit(
   actor: string,
@@ -1628,7 +2110,11 @@ export function registerAdminPlatformRoutes(app: Express): void {
    * admin P0 banner. Router-level requireAdmin (routes.ts) gates this. */
   app.get("/api/admin/audit-chain-health", (_req: Request, res: Response) => {
     try {
-      return res.json({ ok: true, ...getAuditChainHealth() });
+      /* WAVE 95 · ITEM 1 · R84 condition 3 — the anchors are served alongside
+       * the health rows so the operator screen can state PERMANENTLY, and not
+       * only while an incident is open, that the records before an anchor are
+       * NOT PROVABLE. Additive key; the existing shape is untouched. */
+      return res.json({ ok: true, ...getAuditChainHealth(), anchors: getAuditChainAnchors() });
     } catch (err) {
       log.error({ route: "admin.audit-chain-health", message: (err as Error).message });
       return res.status(503).json({ ok: false, error: "db_unavailable" });
@@ -1685,6 +2171,93 @@ export function registerAdminPlatformRoutes(app: Express): void {
       return res.json({ ok: true, cleared: true, totalLinks: vr.totalLinks, genesisApplied: vr.genesisApplied, rows: result.rows, incident: result.incident });
     } catch (err) {
       log.error("[admin.audit-chain-health/resolve] failed:", (err as Error).message);
+      return res.status(503).json({ ok: false, error: "db_unavailable" });
+    }
+  });
+
+  /* WAVE 95 · ITEM 1 · R84 — the re-anchor admin action.
+   *
+   * WHY THIS IS A SEPARATE ENDPOINT AND NOT THE "Resolve incident" BUTTON.
+   * Deliberate, and it is the load-bearing design choice of this item.
+   *   · "Resolve incident" means "I have looked, and the chain is clean." It
+   *     re-verifies and refuses with 409 `chain_not_clean` when it is not. That
+   *     refusal is the honest behaviour Wave 93 verified, and it is the reason
+   *     the banner could never be clicked away. Making it silently perform a
+   *     re-anchor would turn a REFUSAL into a WRITE that narrows what the
+   *     platform claims about its own history — the exact "migration side
+   *     effect / silent" failure R84 condition 1 forbids, on the one button an
+   *     operator presses without reading.
+   *   · Re-anchoring means something completely different: "declare this ledger
+   *     provable only from a named record onwards, and say so forever." It
+   *     needs a stated intent, an identified operator and its own record. So it
+   *     is its own endpoint, its own control, and its own confirmation.
+   * Consequence, stated rather than hidden: clearing the alarm still passes
+   * through a clean verification, because the re-anchor calls the SAME
+   * verified-gated resolveAuditChainHealth() that /resolve calls. Two different
+   * intents, one honesty mechanism.
+   *
+   * Router-level requireAdmin (routes.ts) gates this, like every route in this
+   * file. */
+  app.post("/api/admin/audit-chain/re-anchor", (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { key?: unknown; tenantId?: unknown; intent?: unknown; anchorRowId?: unknown };
+    const key = String(body.key ?? body.tenantId ?? "").trim();
+    const intent = String(body.intent ?? "").trim();
+    const anchorRowId = String(body.anchorRowId ?? "").trim() || null;
+    if (!key) return res.status(400).json({ ok: false, error: "key_required" });
+    if (!intent) {
+      return res.status(400).json({
+        ok: false,
+        error: "intent_required",
+        message: "State why this ledger is being re-anchored. The reason is recorded permanently and cannot be edited afterwards.",
+      });
+    }
+    // R84 condition 2 — WHO. There is no placeholder fallback here, unlike the
+    // /resolve route's `system:admin`: an integrity action that permanently
+    // narrows what the platform claims about its own history must not be
+    // recorded against an operator the platform could not identify.
+    const actorId = String(
+      (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "",
+    ).trim();
+    if (!actorId) {
+      return res.status(403).json({
+        ok: false,
+        error: "actor_required",
+        message: "This action is recorded against the person who takes it, and the platform could not identify you. Nothing was changed.",
+      });
+    }
+    try {
+      const result = reAnchorTenantAuditChain({ tenantId: key, actorId, intent, anchorRowId });
+      if (!result.ok) {
+        // 409 for every refusal that is about the chain's state — the same
+        // status /resolve uses for the same class of honest refusal.
+        const status = result.error === "db_unavailable" ? 503 : 409;
+        return res.status(status).json({
+          ok: false,
+          error: result.error,
+          message: reAnchorRefusalMessage(result),
+          tenantId: result.tenantId,
+          anchorRowId: result.anchorRowId,
+          brokenAt: result.brokenAt,
+          alarmStaysOn: result.alarmStaysOn,
+          rows: result.rows,
+          incident: result.incident,
+        });
+      }
+      return res.json({
+        ok: true,
+        anchored: true,
+        tenantId: result.tenantId,
+        anchorRowId: result.anchorRowId,
+        anchorHash: result.anchorHash,
+        preAnchorNotProvable: result.preAnchorNotProvable,
+        postAnchorVerified: result.postAnchorVerified,
+        incidentCleared: result.incidentCleared,
+        alarmStaysOn: result.alarmStaysOn,
+        rows: result.rows,
+        incident: result.incident,
+      });
+    } catch (err) {
+      log.error("[admin.audit-chain/re-anchor] failed:", (err as Error).message);
       return res.status(503).json({ ok: false, error: "db_unavailable" });
     }
   });
@@ -2354,9 +2927,21 @@ export function registerAdminPlatformRoutes(app: Express): void {
         if (r.payloadJson) {
           try { payload = JSON.parse(r.payloadJson) as Record<string, unknown>; } catch { payload = {}; }
         }
+        /* WAVE 93 · ITEM 1 — FIXED AT THE SOURCE, not only at the render site.
+           This endpoint emitted `actor` and `entity` as raw keys and the admin
+           Audit Log page printed them straight into the table (reviewer 3, DP-10:
+           `client/src/pages/admin/AuditLog.tsx:161`). Adding the resolved labels
+           HERE means the next screen that reads this endpoint cannot reintroduce
+           the leak. `actor` / `entity` are UNCHANGED — R77 keeps the id as the
+           machine-readable value for filtering, correlation and CSV export. */
+        const described = describeActor(r.actor);
         return {
           id: r.id, ts: r.ts, actor: r.actor, entity: r.entity, eventType: r.eventType,
           payload, priorHash: r.priorHash, hash: r.hash, tenantId: r.tenantId,
+          actorLabel: described.label,
+          actorKind: described.kind,
+          actorBound: described.bound,
+          entityLabel: resolveAuditEntityLabel(r.entity),
         };
       });
       return res.json({ count: items.length, total, limit: limit ?? total, offset, items });
@@ -2375,7 +2960,19 @@ export function registerAdminPlatformRoutes(app: Express): void {
         (q ? JSON.stringify(a).toLowerCase().includes(q) : true)
       );
       const total = filtered.length;
-      const items = limit !== null ? filtered.slice(offset, offset + limit) : filtered;
+      const page = limit !== null ? filtered.slice(offset, offset + limit) : filtered;
+      /* WAVE 93 · ITEM 1 — the mirror fallback must carry the SAME labels, or a
+         DB hiccup silently reintroduces raw ids on the admin screen. */
+      const items = page.map((a) => {
+        const described = describeActor((a as unknown as { actor?: string }).actor ?? "");
+        return {
+          ...a,
+          actorLabel: described.label,
+          actorKind: described.kind,
+          actorBound: described.bound,
+          entityLabel: resolveAuditEntityLabel((a as unknown as { entity?: string }).entity ?? ""),
+        };
+      });
       return res.json({ count: items.length, total, limit: limit ?? total, offset, items, fallback: true });
     }
   });

@@ -17,6 +17,12 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Search, Users } from "lucide-react";
 import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
+/* WAVE 87 · ITEM 1 — a DATE-ONLY value must not be parsed by `new Date()`:
+   `new Date("2026-06-15")` is UTC midnight, which prints ONE DAY EARLY in every
+   zone west of UTC (the owner is in New York). `fmtLocaleDate` keeps the exact
+   rendered format of the call it replaces and removes only the shift.
+   Shape evidence for each field is in build_log/wave87/W87_DATE_CENSUS.md §2. */
+import { fmtLocaleDate } from "@/lib/format";
 
 interface Member {
   id: string;
@@ -265,7 +271,7 @@ export default function CollectiveMembers() {
                   <div>
                     <span className="text-xs text-slate-500">Partner since</span>
                     <span className="ml-2 text-slate-700" data-testid="text-detail-partner-since">
-                      {new Date(selectedMember.partnerSince).toLocaleDateString()}
+                      {fmtLocaleDate(selectedMember.partnerSince)}
                     </span>
                   </div>
                 )}

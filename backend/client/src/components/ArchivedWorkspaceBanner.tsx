@@ -18,6 +18,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Archive } from "lucide-react";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 type ArchiveStatusResponse = {
   ok: boolean;
@@ -26,11 +27,16 @@ type ArchiveStatusResponse = {
   archiveRetentionUntil?: string | null;
 };
 
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return fmtLocaleDate(iso, undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 export function ArchivedWorkspaceBanner() {

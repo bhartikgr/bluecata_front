@@ -46,6 +46,7 @@ import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShe
 // shadcn Tabs. All widgets, data-testids, and data wiring preserved.
 import { AppCard } from "@/components/ui/app-card";
 import { FilterChip } from "@/components/ui/filter-chip";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 type BillingEntry = {
   id: string;
@@ -75,11 +76,17 @@ function formatMinor(minor: number, ccy?: string) {
   return formatMinorLib(minor, ccy || "USD", { locale: "en-US" });
 }
 
+/* WAVE 87 · ITEM 1 — THE NEW DATE FENCE FOUND THIS ONE; NO REVIEWER DID.
+   This local `formatDate` shadowed the safe helper in @/lib/format, and two of
+   its call sites (:1343 invoice period end, :1531 billing-run period end) carry
+   `periodEnd`, which server/paymentGatewayAdapter.ts:839 writes as
+   `.toISOString().slice(0, 10)` — a DATE-ONLY value. Parsed by `new Date()` that
+   is UTC midnight and printed ONE DAY EARLY for every partner west of UTC.
+   Only the BODY changes: every call site, and therefore every rendered format,
+   is untouched, and the 17 timestamp call sites render byte-identically. */
 function formatDate(value: string | null) {
   if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return fmtLocaleDate(value, undefined, { year: "numeric", month: "short", day: "numeric" }, value);
 }
 
 function formatPct(pct: number) {
@@ -1723,16 +1730,35 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
           {agg.tier ? (
             <div className="mt-1 font-mono text-lg" data-testid="partner-feeschedule-tier">{agg.tier}</div>
           ) : (
-            <div className="mt-1 text-sm text-rose-700" data-testid="partner-feeschedule-tier-error">
-              Not resolved — {agg.tierError ?? "PARTNER_TIER_UNRESOLVED"}
+            /* WAVE 87 · ITEM 2 · R44/R77 — reviewer 3 settled its previously
+               UNVERIFIED Billing sweep on 2026-08-21 and found this residue:
+               `PARTNER_TIER_UNRESOLVED` (and any server error CODE arriving in
+               `tierError`) was rendered to a PARTNER as the explanation itself.
+               R44: remove the identifier, keep the sentence — say what happened
+               and what to do. R77: the code is not lost, it moves to a
+               machine-readable `data-error-code` attribute, which is exactly the
+               allowance the ruling grants. */
+            <div
+              className="mt-1 text-sm text-rose-700"
+              data-testid="partner-feeschedule-tier-error"
+              data-error-code={agg.tierError ?? "PARTNER_TIER_UNRESOLVED"}
+            >
+              Not resolved — we could not determine your billing tier. Contact support and we will confirm it.
             </div>
           )}
         </AppCard>
         <AppCard className="p-4">
           <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Commission rate</div>
           {agg.commission.error ? (
-            <div className="mt-1 text-sm text-rose-700" data-testid="partner-feeschedule-commission-error">
-              Not resolved — {agg.commission.error}
+            /* WAVE 87 · ITEM 2 · R44/R77 — the sibling residue reviewer 3 found:
+               `{agg.commission.error}` rendered a raw server error code to a
+               partner. Same fix, same reason; the code stays machine-readable. */
+            <div
+              className="mt-1 text-sm text-rose-700"
+              data-testid="partner-feeschedule-commission-error"
+              data-error-code={agg.commission.error}
+            >
+              Not resolved — your commission rate could not be determined. Contact support and we will confirm it.
             </div>
           ) : (
             <div className="mt-1 font-mono text-lg" data-testid="partner-feeschedule-commission">

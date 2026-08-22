@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 type WaitlistKind =
   | "investor_membership"
@@ -51,8 +52,15 @@ const STATUS_BADGE: Record<WaitlistStatus, { label: string; cls: string }> = {
   declined: { label: "Declined", cls: "bg-rose-100 text-rose-800 border-rose-200" },
 };
 
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string) {
-  try { return new Date(iso).toLocaleDateString(); } catch { return iso; }
+  try { return fmtLocaleDate(iso, undefined, undefined, iso); } catch { return iso; }
 }
 
 export default function CollectiveWaitlist() {

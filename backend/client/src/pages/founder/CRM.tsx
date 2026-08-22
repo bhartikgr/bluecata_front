@@ -388,7 +388,7 @@ export default function FounderInvestorCRM() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            <Button className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-investor" asChild><Link href="/founder/crm/new"><Plus className="h-4 w-4 mr-2" /> Add investor</Link></Button>
+            <Button className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-add-investor" asChild><Link href="/founder/crm/new"><Plus className="h-4 w-4 mr-2" /> Add investor</Link></Button>
           </div>
         }
       />

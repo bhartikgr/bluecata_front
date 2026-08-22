@@ -790,7 +790,7 @@ export default function SpvPerformance({
           {overridesQ.data?.approvalMode && (
             <div className="mt-2 text-xs text-slate-600" data-testid="spv-marks-approval-mode">
               {overridesQ.data.approvalMode === "able_to"
-                ? "Approval mode: able_to — an override takes effect immediately and is recorded for review."
+                ? "Approval mode: an override takes effect immediately and is recorded for review afterwards."
                 : `Approval mode: ${overridesQ.data.approvalMode} — an override is recorded and does NOT take effect until an admin approves it.`}
             </div>
           )}

@@ -804,6 +804,10 @@ export const ROUND_TYPES = [
 export const INSTRUMENTS = [
   {
     value: "common",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "Common shares",
     label: "Common Shares",
     description: "Founder + employee equity. Typically used for Foundation rounds and ESOP issuance.",
     suggestedFor: ["foundation"],
@@ -819,6 +823,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "preferred",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "Preferred shares",
     label: "Preferred Shares (Priced Round)",
     description: "NVCA-style priced equity with liquidation preference. Standard for Series A+.",
     suggestedFor: ["series_a", "series_b", "series_c"],
@@ -837,6 +845,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "safe_post",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "SAFE (post-money)",
     label: "SAFE — Post-Money Valuation Cap (YC v1.2)",
     description: "Post-money cap is the YC default. Investor ownership is fixed at conversion.",
     suggestedFor: ["preseed", "seed"],
@@ -844,6 +856,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "safe_pre",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "SAFE (pre-money)",
     label: "SAFE — Pre-Money Valuation Cap (YC v1.0)",
     description: "Pre-money cap is older / less common. Founders bear post-money dilution.",
     suggestedFor: ["preseed", "seed"],
@@ -851,6 +867,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "convertible_note",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "Convertible note",
     label: "Convertible Note (Debt)",
     description: "Debt instrument that converts at the next priced round. Accrues interest. Has maturity.",
     suggestedFor: ["preseed", "seed"],
@@ -858,6 +878,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "warrant",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "Warrants",
     label: "Warrants",
     description: "Right to buy shares at a strike price within an expiry window. Cash or cashless exercise.",
     suggestedFor: ["seed", "series_a", "series_b", "series_c"],
@@ -865,6 +889,10 @@ export const INSTRUMENTS = [
   },
   {
     value: "option_pool",
+    /* WAVE 90 · M-3 — the column-width human label. `label` stays the
+       wizard's full legal description. Both live in THIS table so the
+       investor cap table and the round wizard read one source. */
+    shortLabel: "Option pool",
     label: "Option Pool Top-Up (ESOP / EMI / CSOP)",
     description: "Increase the option pool. Pre-money pool dilutes founders only; post-money dilutes everyone.",
     suggestedFor: ["seed", "series_a", "series_b", "series_c"],
@@ -893,6 +921,94 @@ export const ROUND_STATES = [
   "signing_open",
   "closed",
 ] as const;
+
+/* WAVE 90 · ITEM 3 — HUMAN LABELS FOR THE STATE DOMAINS.
+ *
+ * The 2026-08-21 live audit found an investor reading `Safe_post`. The same
+ * class reaches these state values: `soft_circle_open` and `terms_set` are
+ * rendered straight into investor badges (InvestorSiloPanel, SpvInvitations).
+ *
+ * They are declared HERE, immediately beside the value lists they label, and
+ * `shared/__tests__/w90_investor_labels.test.ts` walks each value list and
+ * FAILS when a member has no label. That is what keeps these tables data
+ * rather than a stale second copy of the data: adding a state without a label
+ * breaks the build instead of shipping snake_case to a customer.
+ *
+ * R77: these are DISPLAY labels only. Every wire format, prop and
+ * `data-testid` keeps carrying the machine value unchanged. */
+export const ROUND_STATE_LABELS: Readonly<Record<string, string>> = {
+  draft: "Draft",
+  terms_set: "Terms set",
+  soft_circle_open: "Open for soft circles",
+  signing_open: "Open for signing",
+  closed: "Closed",
+  /* Values the server also emits for a round's lifecycle, kept here so a badge
+     never falls through to `humaniseToken`. */
+  active: "Active",
+  live: "Live",
+  open: "Open",
+  funded: "Funded",
+  cancelled: "Cancelled",
+};
+
+/** Holder categories on the cap table. `pool` is the ESOP reserve, not a person. */
+export const HOLDER_TYPE_LABELS: Readonly<Record<string, string>> = {
+  founder: "Founder",
+  investor: "Investor",
+  employee: "Employee",
+  pool: "Option pool (reserved)",
+  other: "Other holder",
+};
+
+/* WAVE 90 · ITEM 3 — NEUTRAL status labels, for surfaces whose `status` field is
+ * NOT the Your-Decision machine: disclosure submissions, SPV invitations, SPV
+ * lifecycle.
+ *
+ * THIS TABLE EXISTS BECAUSE OF A MISTAKE I MADE AND A TEST THAT CAUGHT IT.
+ * The first cut routed every `status` through YOUR_DECISION_STATE_LABELS, which
+ * maps `pending` -> "Awaiting your decision". On a DISCLOSURE SUBMISSION that is
+ * simply false: `pending` there means the submission is awaiting REVIEW, and the
+ * investor has no decision to make. `wave18_orp040_investor_panels.test.ts`
+ * failed and was right to — a wrong label is worse than a raw enum, because a
+ * raw enum at least does not assert something untrue.
+ *
+ * So status labels are deliberately NEUTRAL here. Where a surface needs
+ * decision-specific wording it must call `decisionStateLabel` explicitly. */
+export const GENERIC_STATUS_LABELS: Readonly<Record<string, string>> = {
+  pending: "Pending review",
+  submitted: "Submitted",
+  under_review: "Under review",
+  approved: "Approved",
+  accepted: "Accepted",
+  promoted: "Promoted",
+  declined: "Declined",
+  rejected: "Declined",
+  withdrawn: "Withdrawn",
+  revoked: "Revoked",
+  expired: "Expired",
+  invited: "Invited",
+  active: "Active",
+  inactive: "Inactive",
+  closed: "Closed",
+  draft: "Draft",
+  open: "Open",
+  confirmed: "Confirmed",
+  funded: "Funded",
+  cancelled: "Cancelled",
+  /* SPV vehicle types, which share the same meta line as SPV status. */
+  deal_specific: "Deal-specific (single asset)",
+  fund: "Fund (multi-asset)",
+  blind_pool: "Blind pool",
+  continuation: "Continuation vehicle",
+};
+
+/** How an earlier-investment claim came to be linked (server/investorAliasStore). */
+export const INVESTOR_ALIAS_BASIS_LABELS: Readonly<Record<string, string>> = {
+  email_hash_match: "Matched to your verified email address",
+  verified_email: "Matched to your verified email address",
+  admin_link: "Linked for you by an administrator",
+  manual: "Linked manually by an administrator",
+};
 
 export const INVITATION_STATES = [
   "pending",
@@ -964,6 +1080,29 @@ export const YOUR_DECISION_STATES = [
   "revoked",
 ] as const;
 export type YourDecisionState = (typeof YOUR_DECISION_STATES)[number];
+
+/* WAVE 90 · ITEM 3 — see ROUND_STATE_LABELS above. Completeness over
+ * YOUR_DECISION_STATES is asserted by w90_investor_labels.test.ts. */
+export const YOUR_DECISION_STATE_LABELS: Readonly<Record<string, string>> = {
+  pending: "Awaiting your decision",
+  viewed: "Viewed",
+  accepted: "Accepted",
+  declined: "Declined",
+  soft_circled: "Soft-circled",
+  confirmed: "Confirmed",
+  signed: "Signed",
+  funded: "Funded",
+  expired: "Expired",
+  revoked: "Withdrawn by the company",
+  /* Statuses the SPV and disclosure surfaces emit for the same badge slot. */
+  promoted: "Promoted",
+  rejected: "Declined",
+  withdrawn: "Withdrawn",
+  invited: "Invited",
+  active: "Active",
+  closed: "Closed",
+  draft: "Draft",
+};
 
 /**
  * Valid transitions per the audit §2 Tab 7. Each key is the from-state;

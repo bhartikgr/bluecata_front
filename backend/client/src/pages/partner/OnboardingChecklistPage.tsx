@@ -285,7 +285,7 @@ export default function PartnerOnboardingChecklistPage() {
               />
             </div>
             <div className="text-xs text-muted-foreground mt-2">
-              State is persisted as JSON on partner_organizations.onboarding_state. Checkboxes are
+              Your progress is saved against your organisation. Checkboxes are
               optimistic; any failure rolls back and surfaces the error.
             </div>
           </CardContent>

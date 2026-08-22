@@ -137,6 +137,10 @@ import {
   SPV_DEFAULT_LP_VISIBILITY,
   type SpvLpVisibility,
   type SpvMandateMode,
+  /* WAVE 86B · ITEM 2 — `validateFeeDraft` returns these NARROWED, so the sink does
+     not re-run the two type guards nor cast past them. */
+  type SpvFeeLayer,
+  type SpvFeeType,
   type SpvDTO,
   type SpvMandateDTO,
   type SpvFeeDTO,
@@ -566,6 +570,140 @@ export const spvEngineStore = {
     return s;
   },
 
+  /* ══ WAVE 86B · ITEM 2 — VALIDATE BEFORE ANYTHING EXISTS ═══════════════════
+     An SPV launch was three HTTP calls: create (which records the ESIGN/UETA
+     sign-off and links it), set mandate, add fees. A caller driving those calls
+     directly could have the FEE call refused and be left with a SIGNED LEGAL
+     ARTEFACT attached to a vehicle with no economic terms. Wave 82 closed this
+     in the WIZARD only; the API is a first-class surface and stayed open.
+
+     ROLLING BACK IS NOT AVAILABLE AND IS FENCED: this store has `createSpv`,
+     `updateSpv`, `archiveSpv` and NO delete, `spvLaunchSignoffStore` has no
+     void, `npm run lint:destructive-store-fence` exists precisely to keep
+     destructive store paths unreachable from production code, and the in-memory
+     caches beside SQLite would not roll back with a DB transaction. So the route
+     is the other way round: VALIDATE THE WHOLE PAYLOAD FIRST, WRITE NOTHING ON
+     REFUSAL.
+
+     These two functions are the SPV-INDEPENDENT half of `addFee` / `setMandate`,
+     lifted VERBATIM so there is ONE definition of a valid fee row and of a valid
+     mandate and the pre-flight cannot drift from the sink. Both sinks below now
+     call them. No refusal name is added, removed, renamed or reordered. */
+
+  /** Every fee refusal that does NOT need the vehicle to exist. Throws the SAME
+   *  named errors `addFee` throws, each already mapped in `spvEngineRoutes.err`. */
+  validateFeeDraft(
+    data: { layer: string; feeType: string; fixedAmountMinor?: number | null; carryPct?: number | null },
+    opts: { adminPlatform?: boolean } = {},
+  ): { layer: SpvFeeLayer; feeType: SpvFeeType } {
+    if (!isSpvFeeLayer(data.layer)) throw new Error("INVALID_FEE_LAYER");
+    if (!isSpvFeeType(data.feeType)) throw new Error("INVALID_FEE_TYPE");
+    // Platform-layer fees are Capavate-admin-only, read-only to the GP.
+    if (data.layer === "platform" && !opts.adminPlatform) throw new Error("PLATFORM_FEE_ADMIN_ONLY");
+    if (data.feeType !== "carry" && (data.fixedAmountMinor == null || data.fixedAmountMinor < 0)) {
+      throw new Error("FIXED_AMOUNT_REQUIRED");
+    }
+    if (data.feeType !== "fixed" && (data.carryPct == null || data.carryPct < 0 || data.carryPct > 1)) {
+      throw new Error("CARRY_PCT_REQUIRED");
+    }
+    /* Returned NARROWED — like `validateMandateDraft` below — so the sink does not
+       have to re-run the two type guards (which would be a second definition of the
+       same refusal) and does not have to `as`-cast past them either. */
+    return { layer: data.layer, feeType: data.feeType };
+  },
+
+  /** The whole fee SET of a composite launch, validated before any write. Runs
+   *  every per-row rule, then the two SET-level rules a single row cannot see:
+   *  the cross-layer combined-carry cap (exact fixed-scale BigInt, DB-driven cap,
+   *  same helpers as the distribution sink — never a float sum) and the
+   *  fee-exceeds-raise guard against the raise being SUBMITTED, since the vehicle
+   *  does not exist yet. Throws; writes nothing. */
+  validateLaunchFeeDrafts(
+    partnerId: string,
+    drafts: ReadonlyArray<{ layer: string; feeType: string; fixedAmountMinor?: number | null; carryPct?: number | null }>,
+    targetRaiseMinor?: number | null,
+    opts: { adminPlatform?: boolean } = {},
+  ): void {
+    /* PER LAYER, THE HIGHEST CARRY SUBMITTED — then summed ACROSS layers, which is
+       what the cap means and what `addFee` compares (it reads the OTHER layer's
+       effective fee). Summing every row instead would falsely refuse a legitimate
+       effective-dated SUCCESSION of two management rows in one payload, so it does
+       not. Exact fixed-scale BigInt throughout, never a float sum: 0.5000000000000001
+       + 0.5 must reject here exactly as it rejects at the distribution sink. */
+    const carryDrafts: Array<{ layer: string; carryPct: number }> = [];
+    for (const d of drafts) {
+      this.validateFeeDraft(d, opts);
+      if (d.feeType !== "fixed" && (d.carryPct ?? 0) > 0) {
+        carryDrafts.push({ layer: d.layer, carryPct: d.carryPct ?? 0 });
+      }
+      if (
+        d.feeType !== "carry" &&
+        typeof targetRaiseMinor === "number" &&
+        targetRaiseMinor > 0 &&
+        (d.fixedAmountMinor ?? 0) > targetRaiseMinor
+      ) {
+        throw new Error("FEES_EXCEED_RAISE");
+      }
+    }
+    /* THE COMBINED-CARRY PRE-CHECK, IN THE SAME TOLERANT SHAPE `addFee` USES.
+       Everything that can be unavailable — the DB-driven cap policy, the fee store,
+       the exact fixed-scale conversion's own precision guard — is inside ONE try, and
+       an unavailability is LOGGED and skipped rather than turned into a refusal of a
+       launch the legacy path would have accepted. Only our own verdict is re-thrown.
+       The authoritative fail-closed rejection still happens at `addFee` and at the
+       distribution sink, which is where the money actually moves. */
+    if (carryDrafts.length > 0) {
+      let verdict: Error | null = null;
+      try {
+        const maxCarryScaledByLayer = new Map<string, bigint>();
+        for (const c of carryDrafts) {
+          const scaled = exactFractionToCarryScaled(c.carryPct, "carryPct");
+          const prev = maxCarryScaledByLayer.get(c.layer) ?? BigInt(0);
+          if (scaled > prev) maxCarryScaledByLayer.set(c.layer, scaled);
+        }
+        let carryScaledTotal = BigInt(0);
+        for (const v of Array.from(maxCarryScaledByLayer.values())) carryScaledTotal += v;
+        const capScaled = BigInt(resolveCombinedCarryCapScaled({ tenantId: partnerId }));
+        if (carryScaledTotal > capScaled) verdict = new Error("COMBINED_CARRY_EXCEEDS_CAP");
+      } catch (capErr) {
+        log.warn("[spvEngineStore] launch combined-carry pre-check unavailable:", (capErr as Error).message);
+      }
+      if (verdict) throw verdict;
+    }
+  },
+
+  /** The SPV-independent half of `setMandate`, returning the values it resolved
+   *  so the sink does not compute them twice. Throws; writes nothing. */
+  validateMandateDraft(
+    data: { mode?: string; ruleTree: MandateRuleTree; checkMinMinor?: number | null; checkMaxMinor?: number | null },
+  ): { mode: SpvMandateMode; checkMinMinor: number | null; checkMaxMinor: number | null } {
+    if (!data.ruleTree || typeof data.ruleTree !== "object") throw new Error("RULE_TREE_REQUIRED");
+    /* v25.50 REVISE R2 Blocker 1, lifted VERBATIM — the prior coercion
+       (`deal_specific` else `open`) silently dropped the two NEW spec modes.
+       Fail-closed: reject any provided-but-unrecognized mode; default to `open`
+       ONLY when the caller omits `mode` entirely. */
+    let mode: SpvMandateMode;
+    if (data.mode === undefined || data.mode === null || data.mode === "") {
+      mode = "open";
+    } else if (isSpvMandateMode(data.mode)) {
+      mode = data.mode;
+    } else {
+      throw new Error("INVALID_MANDATE_MODE");
+    }
+    /* WAVE 25 / FE-1 — the check-size range validation, lifted VERBATIM. */
+    const bound = (v: number | null | undefined, code: string): number | null => {
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new Error(code);
+      return v;
+    };
+    const checkMinMinor = bound(data.checkMinMinor, "INVALID_CHECK_MIN");
+    const checkMaxMinor = bound(data.checkMaxMinor, "INVALID_CHECK_MAX");
+    if (checkMinMinor !== null && checkMaxMinor !== null && checkMinMinor > checkMaxMinor) {
+      throw new Error("INVALID_CHECK_RANGE");
+    }
+    return { mode, checkMinMinor, checkMaxMinor };
+  },
+
   /* ---- Mandate + eligibility ---- */
   setMandate(
     partnerId: string,
@@ -578,19 +716,16 @@ export const spvEngineStore = {
   ): SpvMandateDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
-    if (!data.ruleTree || typeof data.ruleTree !== "object") throw new Error("RULE_TREE_REQUIRED");
+    /* WAVE 86B · ITEM 2 — ONE definition of a valid mandate. The rule-tree,
+       mode and check-range checks that used to sit inline here are now in
+       `validateMandateDraft` above, so the launch pre-flight and this sink
+       cannot drift. Same refusals, same order, same values. */
+    const mandateChecked = this.validateMandateDraft(data);
     /* v25.50 REVISE R2 Blocker 1 — the prior coercion (`deal_specific` else `open`)
        silently dropped the two NEW spec modes (thesis_lp_approval, sector_restricted).
        Fail-closed: reject any provided-but-unrecognized mode; default to `open`
        ONLY when the caller omits mode entirely. Persist the exact valid mode. */
-    let mode: SpvMandateMode;
-    if (data.mode === undefined || data.mode === null || data.mode === "") {
-      mode = "open";
-    } else if (isSpvMandateMode(data.mode)) {
-      mode = data.mode;
-    } else {
-      throw new Error("INVALID_MANDATE_MODE");
-    }
+    const mode: SpvMandateMode = mandateChecked.mode;
     /* ── WAVE 25 / FE-1 — CHECK-SIZE RANGE VALIDATION AT THE SINK ───────────
      *
      * THE GAP. `checkMinMinor` and `checkMaxMinor` were collected by the tab,
@@ -604,16 +739,8 @@ export const spvEngineStore = {
      * …)` call below. The client-side check added in SpvDetailTabs.tsx is a
      * courtesy that saves a round trip; it is NOT the gate, because the route
      * is a second door that any API client can walk through. */
-    const bound = (v: number | null | undefined, code: string): number | null => {
-      if (v === undefined || v === null) return null;
-      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new Error(code);
-      return v;
-    };
-    const checkMinMinor = bound(data.checkMinMinor, "INVALID_CHECK_MIN");
-    const checkMaxMinor = bound(data.checkMaxMinor, "INVALID_CHECK_MAX");
-    if (checkMinMinor !== null && checkMaxMinor !== null && checkMinMinor > checkMaxMinor) {
-      throw new Error("INVALID_CHECK_RANGE");
-    }
+    const checkMinMinor = mandateChecked.checkMinMinor;
+    const checkMaxMinor = mandateChecked.checkMaxMinor;
     const now = nowIso();
     const m: SpvMandateDTO = {
       id: newId("spvmnd"),
@@ -702,16 +829,12 @@ export const spvEngineStore = {
   ): SpvFeeDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
-    if (!isSpvFeeLayer(data.layer)) throw new Error("INVALID_FEE_LAYER");
-    if (!isSpvFeeType(data.feeType)) throw new Error("INVALID_FEE_TYPE");
-    // Platform-layer fees are Capavate-admin-only, read-only to the GP.
-    if (data.layer === "platform" && !opts.adminPlatform) throw new Error("PLATFORM_FEE_ADMIN_ONLY");
-    if (data.feeType !== "carry" && (data.fixedAmountMinor == null || data.fixedAmountMinor < 0)) {
-      throw new Error("FIXED_AMOUNT_REQUIRED");
-    }
-    if (data.feeType !== "fixed" && (data.carryPct == null || data.carryPct < 0 || data.carryPct > 1)) {
-      throw new Error("CARRY_PCT_REQUIRED");
-    }
+    /* WAVE 86B · ITEM 2 — ONE definition of a valid fee row. These five refusals
+       were lifted VERBATIM into `validateFeeDraft` above so the launch pre-flight
+       runs the IDENTICAL rules BEFORE anything is written. Same names, same order,
+       same conditions; the cross-layer cap block and the fee-exceeds-raise guard
+       below are untouched. */
+    const feeChecked = this.validateFeeDraft(data, opts);
     /* ── WAVE 5 / P-8 — CROSS-LAYER COMBINED-CARRY CAP AT THE SET-TIME SINK (DEF-069).
      *
      * THE GAP. The check immediately above validates ONE layer in isolation:
@@ -831,8 +954,8 @@ export const spvEngineStore = {
     const f: SpvFeeDTO = {
       id: newId("spvfee"),
       spvId,
-      layer: data.layer,
-      feeType: data.feeType,
+      layer: feeChecked.layer,
+      feeType: feeChecked.feeType,
       fixedAmountMinor: data.fixedAmountMinor ?? null,
       carryPct: data.carryPct ?? null,
       currency: data.currency ?? s.currency,

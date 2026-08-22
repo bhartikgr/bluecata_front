@@ -3,29 +3,56 @@
  *
  * Selects the active payment gateway based on `PAYMENT_GATEWAY_DEFAULT` env
  * var. Default is "airwallex" per founder directive (Ozan, 24-May-2026 — see
- * V19_BUILD_BRIEF Change 3). Stripe is supported alongside as a fallback /
- * dual-gateway option.
+ * V19_BUILD_BRIEF Change 3).
+ *
+ * WAVE 97B (2026-08-21) — R86 · STRIPE REMOVED, THE SEAM KEPT.
+ *   Owner, verbatim: "remove stripe. I can add this at a later date. We are
+ *   using Airwallex today." Both halves are binding. This file is the SEAM the
+ *   second half depends on, so nothing structural was collapsed: the resolver,
+ *   the readiness probe, the webhook-source mapper, the credentials record and
+ *   the public config list are all still parameterised BY GATEWAY ID. Only the
+ *   `"stripe"` id, its credential block, its readiness branch, its webhook
+ *   mapping and its public-config entry are gone — because Stripe is no longer
+ *   reachable anywhere in the tree (its three modules were deleted in the same
+ *   wave), and a union naming a gateway that does not exist is a dead variable,
+ *   which the owner's standing rule forbids.
+ *
+ *   ADDING A GATEWAY BACK IS A PLUG-IN, NOT A REWRITE. Every plug point in this
+ *   file is marked `EXTENSION POINT`. See build_log/wave97b/W97B_REMOVAL.md §5
+ *   for the file-and-line recipe. No gateway-agnostic call site changes.
  *
  * Design constraints (per brief):
- *   • DO NOT touch `server/collectiveBillingStore.ts` — that path stays Stripe
- *     until a follow-up release.
  *   • Math-sacred zones are untouched.
  *   • Existing `server/paymentGatewayAdapter.ts` flows continue to work — the
  *     resolver is an additive layer that future call sites can opt into.
+ *   • `server/collectiveBillingStore.ts` routes through Airwallex end to end
+ *     since v25.4 (11-Jun-2026, Ozan's directive).
  *
  * Env vars consumed:
- *   PAYMENT_GATEWAY_DEFAULT  default gateway id (airwallex | stripe). Default: "airwallex"
+ *   PAYMENT_GATEWAY_DEFAULT  default gateway id (airwallex). Default: "airwallex"
  *   AIRWALLEX_API_KEY        api key for AirWallex
  *   AIRWALLEX_CLIENT_ID      client id for AirWallex
  *   AIRWALLEX_WEBHOOK_SECRET HMAC secret for webhook signature verification
  *   AIRWALLEX_API_BASE       optional API base URL (default https://api.airwallex.com)
- *   STRIPE_SECRET_KEY        api key for Stripe (optional)
- *   STRIPE_WEBHOOK_SECRET    Stripe webhook signing secret (optional)
  */
 
 import { log } from "./logger";
 
-export type GatewayId = "airwallex" | "stripe";
+/**
+ * The set of payment gateways this platform can route money through.
+ *
+ * WAVE 97B · R86 — narrowed from `"airwallex" | "stripe"` to `"airwallex"`
+ * alone. Airwallex is the only gateway in use.
+ *
+ * EXTENSION POINT 1 of 6 — a second gateway plugs in HERE, and only here, as a
+ * union member:
+ *     export type GatewayId = "airwallex" | "newgateway";
+ * Widening this one line re-activates every per-gateway branch downstream
+ * (credentials, readiness, webhook mapping, public config) plus the already
+ * parameterised `handleGatewayWebhook(gateway)` in
+ * `server/paymentGatewayAdapter.ts`. Nothing gateway-agnostic changes.
+ */
+export type GatewayId = "airwallex";
 
 /**
  * v24.4 Bug A — Airwallex operating mode.
@@ -102,10 +129,9 @@ export interface GatewayCredentials {
     webhookSecret: string | null;
     apiBase: string;
   };
-  stripe: {
-    secretKey: string | null;
-    webhookSecret: string | null;
-  };
+  /* EXTENSION POINT 2 of 6 — a second gateway's credential block plugs in HERE,
+   * e.g.  newgateway: { secretKey: string | null; webhookSecret: string | null };
+   * WAVE 97B · R86 removed the `stripe: { secretKey, webhookSecret }` block. */
 }
 
 /**
@@ -114,7 +140,14 @@ export interface GatewayCredentials {
  */
 export function getDefaultGatewayId(): GatewayId {
   const raw = (process.env.PAYMENT_GATEWAY_DEFAULT ?? "").trim().toLowerCase();
-  if (raw === "stripe") return "stripe";
+  /* EXTENSION POINT 3 of 6 — a second gateway is selectable from HERE:
+   *     if (raw === "newgateway") return "newgateway";
+   * WAVE 97B · R86 removed `if (raw === "stripe") return "stripe";`. A stale
+   * PAYMENT_GATEWAY_DEFAULT=stripe therefore now resolves to airwallex rather
+   * than selecting a gateway that no longer exists — which is the fail-safe
+   * direction: the founder directive of 24-May-2026 already makes Airwallex the
+   * answer for unset and unrecognised values. */
+  void raw;
   // "airwallex", "" (unset), or anything else → airwallex.
   return "airwallex";
 }
@@ -128,10 +161,9 @@ export function getGatewayCredentials(): GatewayCredentials {
       webhookSecret: process.env.AIRWALLEX_WEBHOOK_SECRET ?? null,
       apiBase: getAirwallexApiBase(),
     },
-    stripe: {
-      secretKey: process.env.STRIPE_SECRET_KEY ?? null,
-      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? null,
-    },
+    /* EXTENSION POINT 2b — read a second gateway's env vars HERE, mirroring the
+     * airwallex block. WAVE 97B · R86 removed the `stripe:` reader
+     * (STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are no longer consumed). */
   };
 }
 
@@ -144,21 +176,30 @@ export function isGatewayReady(id: GatewayId): boolean {
   if (id === "airwallex") {
     return Boolean(creds.airwallex.apiKey && creds.airwallex.clientId);
   }
-  // stripe
-  return Boolean(creds.stripe.secretKey);
+  /* EXTENSION POINT 4 of 6 — a second gateway's readiness probe plugs in HERE:
+   *     if (id === "newgateway") return Boolean(creds.newgateway.secretKey);
+   * WAVE 97B · R86 removed the `// stripe` fallthrough. Unknown ids are NOT
+   * ready — fail closed, never fail open on a money path. */
+  return false;
 }
 
 /**
- * Returns the gateway that should serve the next charge. Falls back to the
- * other gateway if the default is unconfigured. If neither is configured we
- * still return the default — call sites that need a real charge will then
- * surface a "not_configured" error rather than silently dropping payments.
+ * Returns the gateway that should serve the next charge.
+ *
+ * If the default is unconfigured we still return it — call sites that need a
+ * real charge then surface a "not_configured" error rather than silently
+ * dropping payments. That behaviour is UNCHANGED.
+ *
+ * EXTENSION POINT 5 of 6 — when a second gateway exists, restore the
+ * fall-back-to-the-other-gateway search HERE:
+ *     for (const id of ALL_GATEWAY_IDS) if (isGatewayReady(id)) return id;
+ * WAVE 97B · R86 removed the two-gateway `other` fallback because there is no
+ * other gateway to fall back to; keeping it would have been a branch that can
+ * never be taken.
  */
 export function resolveActiveGateway(): GatewayId {
   const def = getDefaultGatewayId();
   if (isGatewayReady(def)) return def;
-  const other: GatewayId = def === "airwallex" ? "stripe" : "airwallex";
-  if (isGatewayReady(other)) return other;
   return def;
 }
 
@@ -168,7 +209,12 @@ export function resolveActiveGateway(): GatewayId {
 export function webhookSourceToGateway(source: string): GatewayId | null {
   const s = source.toLowerCase();
   if (s.includes("airwallex")) return "airwallex";
-  if (s.includes("stripe")) return "stripe";
+  /* EXTENSION POINT 6a — map a second gateway's inbound webhook path HERE:
+   *     if (s.includes("newgateway")) return "newgateway";
+   * WAVE 97B · R86 removed `if (s.includes("stripe")) return "stripe";`. An
+   * inbound path containing "stripe" now maps to `null`, i.e. "unknown
+   * gateway", which is the truthful answer now that no Stripe route is
+   * mounted. */
   return null;
 }
 
@@ -192,7 +238,7 @@ export function listPublicGatewayConfig(): PublicGatewayConfigEntry[] {
   // v24.4 Bug A — Airwallex surfaces its true operating mode (stub/test/live).
   const awMode = getAirwallexMode();
   const awPublicMode: "test" | "live" = awMode === "live" ? "live" : "test";
-  return [
+  const entries: PublicGatewayConfigEntry[] = [
     {
       id: "airwallex",
       label: "AirWallex",
@@ -202,14 +248,27 @@ export function listPublicGatewayConfig(): PublicGatewayConfigEntry[] {
       webhookPath: "/api/webhooks/payment-gateway/airwallex",
       supportedMethods: ["card", "wechat_pay", "alipay", "bank_transfer"],
     },
-    {
-      id: "stripe",
-      label: "Stripe",
-      isDefault: def === "stripe",
-      ready: isGatewayReady("stripe"),
-      mode,
-      webhookPath: "/api/webhooks/payment-gateway/stripe",
-      supportedMethods: ["card", "sepa", "ach"],
-    },
+    /* EXTENSION POINT 6 of 6 — a second gateway becomes visible to the admin
+     * Payment Gateway tab by adding ONE entry HERE:
+     *   {
+     *     id: "newgateway", label: "New Gateway",
+     *     isDefault: def === "newgateway",
+     *     ready: isGatewayReady("newgateway"),
+     *     mode,
+     *     webhookPath: "/api/webhooks/payment-gateway/newgateway",
+     *     supportedMethods: ["card"],
+     *   }
+     *
+     * WAVE 97B · R86 removed the Stripe entry from this list. This is the
+     * removal the owner's instruction names directly — it is what
+     * `GET /api/admin/payment-gateway/config` (via
+     * `server/paymentGatewayAdapter.ts` → `getPublicGatewayList()`) serves to
+     * an administrator, and it offered Stripe as a selectable gateway for a
+     * provider the platform does not use. Owner, 2026-08-21: "remove stripe.
+     * I can add this at a later date. We are using Airwallex today."
+     * It is allowlisted as a paired removal in
+     * scripts/silent-drop-guard/allowlist.json (WAVE 97B entries). */
   ];
+  void mode;
+  return entries;
 }

@@ -1,0 +1,659 @@
+/* ============================================================================
+ * ledger-founder.css — WAVE 3D · THE CAPAVATE FOUNDER "LEDGER + GRID" SKIN
+ * ============================================================================
+ *
+ * WHAT THIS FILE IS
+ * -----------------
+ * R73 (owner): "Let's go with your recommendation - Ledger. I like the color
+ * coding applications."  R74/R78 make it platform-wide.  Wave 1D shipped the
+ * Consortium Partner area, Wave 2D the Collective area, and this file applies
+ * THE SAME TEN DECISIONS to the Capavate founder area so the platform speaks one
+ * dialect and not five.
+ *
+ * WHAT THIS FILE IS NOT
+ * ---------------------
+ * NOT ONE ELEMENT OF FUNCTIONALITY OR USABILITY CHANGES.  No control moves, is
+ * renamed, removed, hidden, added or reordered.  There is no markup here, no
+ * `display`, no `visibility`, no `opacity`, no `pointer-events`, no `order`, no
+ * `position`, and no `content`.  Colour, type, border, radius, shadow and
+ * spacing only.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE BILLING GUARD — R80, AND WHY EVERY SELECTOR CARRIES IT
+ * ══════════════════════════════════════════════════════════════════════════
+ * R80, the owner verbatim: **"Founder Billing Page: OK. Keep it different."**
+ * `client/src/pages/founder/Billing.tsx` is SACRED and owner-EXCLUDED.  It is
+ * not opened by this wave and it must come out visually IDENTICAL.
+ *
+ * That is not free.  Billing renders inside `AppShell`, which sets
+ * `data-product="founder"` on the shell root — so a plain
+ * `[data-product="founder"]` selector is an ANCESTOR of Billing and would
+ * restyle it along with everything else.  Billing carries eleven status tones
+ * (`bg-emerald-100`, `bg-sky-100`, `bg-rose-100`, `bg-red-100`, `bg-slate-100`,
+ * `bg-amber-100`, `bg-orange-100`), a `BRAND_COLORS` map that paints
+ * visa/mastercard/amex in blue/orange/emerald, and an orange cancellation
+ * banner.  Every one of those would have moved.
+ *
+ * SO EVERY SELECTOR IN THIS FILE IS PREFIXED WITH
+ *
+ *   [data-product="founder"]:not(:has([data-testid="card-collective-application-fee"]))
+ *
+ * `card-collective-application-fee` is the Collective-Application-Fee card in
+ * Billing.tsx line 583.  It is UNCONDITIONAL — outside every `&&`, every
+ * ternary and every loading branch, so it is present on the first paint of the
+ * route — and it occurs EXACTLY ONCE in `client/src`, asserted by
+ * `w2d3d_ledger_scope.test.ts` so that a future rename cannot silently unguard
+ * Billing.  Specificity is (0,2,0) — `:not(:has(X))` takes the specificity of
+ * its most specific argument — which also clears `:root`'s (0,1,0).
+ *
+ * The `:has()` is evaluated on ONE element (the shell root), because selector
+ * matching runs right-to-left and every rule below terminates at that prefix.
+ * There is no per-element `:has()` cost.
+ *
+ * CONSEQUENCE, stated plainly: the founder status ramps live in THIS file under
+ * the guard, and NOT in `ledger-ramps.css`.  The `[data-product="founder"]`
+ * block of `ledger-ramps.css` is therefore BYTE-IDENTICAL after this wave —
+ * a strictly stronger census claim than Wave 1D was able to make for partner.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * SCOPE — EVERY SELECTOR IS SCOPED TO [data-product="founder"].
+ * ------------------------------------------------------------
+ * Collective, partner, admin, investor and the public marketing site read
+ * NOTHING from this file.  There is not one unscoped selector below, and the
+ * strings `"partner"`, `"collective"`, `"admin"` and `"investor"` appear nowhere
+ * in a selector; both are asserted by
+ * `client/src/styles/__tests__/w2d3d_ledger_scope.test.ts`.
+ *
+ * WHY NO OTHER FILE IS EDITED
+ * ---------------------------
+ *  · `capavate-tokens.css` is SACRED (manifest 41/48).  Not opened.
+ *  · `index.css`'s `:root` block is shared by admin and investor, which are
+ *    Waves 4 and 5 (and admin is sequenced AFTER Wave 93).  Not opened, except
+ *    for one appended `@import` line.  Every shadcn semantic token this area
+ *    needs is SHADOWED in the founder scope instead, so admin and investor keep
+ *    resolving the unchanged `:root` values.
+ *  · `AppShell.tsx` — a `.tsx` product file.  NOT OPENED.  A route-derived
+ *    `data-page` attribute would have been a tidier Billing guard than `:has()`,
+ *    and it was deliberately rejected: Wave 1D's bar is zero component edits,
+ *    and every component edit is a chance to drop a widget.
+ *  · `home3style.css` — the unscoped globals reach this area too
+ *    (`body{font-size:var(--text-base)}` is why the founder root MEASURED at
+ *    18px, and `p,li,figcaption{max-width:72ch}`).  Both are bare element
+ *    selectors that the prefix above outscores.  Inventory:
+ *    `build_log/wave2d3d_collective_founder/W2D3D_GLOBAL_CSS_IMPACT.md`.
+ *  · `founder/Billing.tsx` — SACRED, owner-excluded, R80.  Not opened.  Its four
+ *    date-only correctness fixes under WAIVER-10 are undisturbed.
+ *  · `computeConversionProjections` — R69.  Not opened.  It lives in a server
+ *    file and this wave opened no server file at all.
+ *  · `components/ui/**` — pre-flight §4.6 forbids it outside Wave 0.4.  Not
+ *    opened.  Every effect on a shadcn primitive is achieved from the scope.
+ *
+ * WHAT MEASUREMENT SAID BEFORE ANY OF THIS WAS WRITTEN
+ * ---------------------------------------------------
+ * Read off the live local founder tree with `tools/probe.mjs`, not from a
+ * document.  This is why the founder change list is SHORTER than Collective's,
+ * and saying so is more honest than inventing work:
+ *   root font-size            18px            -> 14px
+ *   font-variant-numeric      normal          -> tabular-nums lining-nums
+ *   h1                        20px Montserrat 600 #141F34  -> same, #041E41 navy
+ *                             (already sans and already 20px — NO CHANGE NEEDED,
+ *                              unlike Collective, whose h1 was Instrument Serif)
+ *   body background           #F8FAFC         -> unchanged (ALREADY the cool
+ *                              surface; the warm/cool seam Collective had does
+ *                              not exist here, and nothing was "fixed")
+ *   default border            #DADFE7 / #E0E5EB / #C2CAD6  -> #E5EAF0 / #D9DCE1
+ *   secondary / muted fill    #ECEFF4 / #EFF2F5             -> #F1F4F8
+ *   sidebar                   #1C2C4A (a second navy)       -> #041E41 ratified
+ *   button / card radius      already 6px / 9px from tailwind.config.ts
+ *                              -> NO CHANGE NEEDED.  The 999px-lozenge problem
+ *                              is a `--cv-radius-full` problem and is specific
+ *                              to the Collective/partner shell.
+ *   --muted-foreground        #5B667B, 5.53:1 on #F8FAFC    -> already AA, left
+ *                              alone.  There is no sub-AA TOKEN in this area to
+ *                              fix; the 26 sub-AA PAIRINGS that are fixed are
+ *                              fixed by the ramps below.
+ *
+ * ACCESSIBILITY
+ * -------------
+ * Computed by `tools/verify_contrast.py` over the 332 REAL class pairings in the
+ * founder source with Billing.tsx excluded: **0 NEW pairs below AA 4.5:1, and 26
+ * pairs that were BELOW AA on the live product are now above it.**  Full
+ * transcript: `W2D3D_STATUS_COLOURS.md`.
+ * ========================================================================== */
+
+/* ── 1 · SEMANTIC TOKEN SHADOW ────────────────────────────────────────────
+ * The founder area does NOT consume the `--cv-*` namespace (measured: zero warm
+ * `--cv-*` values are painted anywhere in it — the Collective/partner warm-beige
+ * problem simply does not exist here).  It resolves the shadcn semantic tokens
+ * from `:root`.  Redeclaring them inside the guarded founder scope re-paints
+ * every `border-border`, `bg-card`, `bg-secondary`, `bg-muted`, `border-input`
+ * and `bg-sidebar` site in the area without editing `:root` — which admin and
+ * investor share and which is Waves 4 and 5' to spend, not this one's.
+ *
+ * --primary / --accent / --ring / --destructive-foreground are NOT shadowed:
+ * --primary and --accent are already the logo red 0 100% 40%, and Tier-9 rule 74
+ * locks them. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) {
+  /* SURFACE — already cool.  Nudged the last two points onto the ratified
+   * #F8FAFC so all five product areas paint the SAME off-white and a screenshot
+   * of one can be compared with a screenshot of another. */
+  --background: 210 40% 98%;      /* #F8FAFC — was 210 33% 98% (#F8FAFB) */
+
+  /* BORDERS — Ledger hairline + Grid rule. */
+  --border: 213 27% 92%;          /* #E5EAF0 — was 215 20% 88% (#DADFE7) */
+  --card-border: 213 27% 92%;     /* #E5EAF0 — was 215 20% 90% (#E0E5EB) */
+  --popover-border: 213 27% 92%;  /* #E5EAF0 — matches the card hairline */
+  --input: 214 12% 87%;           /* #D9DCE1 — was 215 20% 80% (#C2CAD6).
+                                   * --ds-border-strong.  A form field's rim is
+                                   * the Grid rule, one step firmer than a
+                                   * hairline so an input still reads as a well. */
+
+  /* NEUTRAL FILLS — the ratified neutral tint, replacing two near-identical
+   * greys that differed by one point of lightness for no reason. */
+  --secondary: 214 33% 96%;       /* #F1F4F8 — was 215 25% 94% (#ECEFF4) */
+  --muted: 214 33% 96%;           /* #F1F4F8 — was 215 25% 95% (#EFF2F5) */
+
+  /* THE LEFT RAIL — DELIBERATELY NOT TOUCHED, AND THIS IS A CORRECTION.
+   *
+   * The first draft of this file re-pointed `--sidebar` from the legacy
+   * #1C2C4A (219 45% 20%) to the ratified navy #041E41, on the "one navy,
+   * platform-wide" argument.  MEASURING the result showed that to be WRONG,
+   * and it is recorded here rather than deleted:
+   *
+   *   · `AppShell.tsx:631` paints the top header `bg-[hsl(219_45%_20%)]` as a
+   *     hardcoded Tailwind arbitrary value, NOT `bg-sidebar`.  Re-pointing the
+   *     token alone therefore put #041E41 rail directly against a #1C2C4A
+   *     header and opened a visible navy seam where none existed.
+   *   · Thirty-five further founder call sites hardcode the same legacy navy as
+   *     the area's SECONDARY BUTTON colour ("Add investor", "Add security",
+   *     "Continue"), always as `bg-[hsl(219_45%_20%)]
+   *     hover:bg-[hsl(219_45%_15%)]`.  Reaching those from CSS means matching a
+   *     class SUBSTRING, which also matches the `hover:` variant and would paint
+   *     a hover colour at rest — a real functional defect, not a styling one.
+   *
+   * So the founder navy stays as it is: internally CONSISTENT at #1C2C4A across
+   * rail, header and buttons, rather than half-migrated.  Making it the ratified
+   * navy needs a token migration in `AppShell.tsx` and 35 call sites, which is a
+   * component wave, not a stylesheet.  It is the single biggest remaining gap
+   * between this area and the approved palette and it is written up as an OWNER
+   * QUESTION rather than half-done here.
+   *
+   * --sidebar / --sidebar-border / --sidebar-accent / --sidebar-primary:
+   * UNTOUCHED.
+   */
+
+  /* SHADOWS — navy-tinted on the RATIFIED navy hue (214 88% 14%) rather than
+   * the legacy 219 45% 14%.  Same weights; Ledger leans on hairlines. */
+  --shadow-2xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.04);
+  --shadow-xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.05);
+  --shadow-sm: 0px 1px 2px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow: 0px 2px 4px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow-md: 0px 4px 8px -2px hsl(214 88% 14% / 0.08), 0px 2px 4px -1px hsl(214 88% 14% / 0.05);
+  --shadow-lg: 0px 8px 16px -4px hsl(214 88% 14% / 0.10), 0px 4px 6px -1px hsl(214 88% 14% / 0.05);
+  --shadow-xl: 0px 16px 32px -8px hsl(214 88% 14% / 0.14);
+  --shadow-2xl: 0px 24px 48px -12px hsl(214 88% 14% / 0.20);
+}
+
+/* ── 2 · BASE TYPE ────────────────────────────────────────────────────────
+ * MEASURED before the change: the founder root resolved to 18px, because
+ * `home3style.css` sets `body { font-size: var(--text-base) }` and --text-base
+ * is a clamp topping out at 1.125rem.  18px -> 14px: Stripe's dashboard number.
+ * This is an INHERITED value only, so it reaches exactly the elements that carry
+ * no Tailwind `text-*` class.  Nothing that already declares its own size moves,
+ * and the founder area is heavily explicit — the cap table renders 117 nodes at
+ * 12px and 75 at 10px, all authored, all unmoved.
+ *
+ * The font FAMILY is deliberately NOT changed.  Montserrat is already the loaded
+ * brand body face and the founder titles are already sans. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) {
+  font-size: 14px;
+  line-height: 1.45;
+  /* R78/OQ-4 — tabular numerals BY CSS RULE.  Measured before the change:
+   * `font-variant-numeric: normal`.  This is the one rule the pre-flight asked
+   * for by name, and it matters most here: the cap table, the round projection
+   * tabs and the ownership columns are the densest money grids on the platform. */
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* The marketing stylesheet caps EVERY paragraph and list item at 72ch,
+ * unscoped, platform-wide.  At 14px that is ~630px, so an explanatory paragraph
+ * inside a wide card wraps at three-fifths width and leaves a ragged hole.
+ * Released for this area only. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) p,
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) li,
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) figcaption {
+  max-width: none;
+}
+
+/* ── 3 · TITLES — NAVY (R78/OQ-5 is ALREADY SATISFIED HERE) ───────────────
+ * MEASURED: the founder `h1` is ALREADY 20px Montserrat 600 — `AppShell`'s
+ * `PageHeader` renders `text-xl font-semibold tracking-tight`.  R78/OQ-5
+ * ("in-product titles become sans") therefore needs NOTHING done in this area,
+ * and no size is set below.  Only the INK changes: #141F34, a fourth near-navy,
+ * becomes the ratified #041E41 at 16.57:1 AAA.
+ *
+ * `h2`/`h3` sizes are deliberately NOT set.  Unlike Collective — where
+ * collective-theme.css imposed a display serif at a clamped size that had to be
+ * overridden — founder headings resolve from authored Tailwind classes, and
+ * overriding them from the area scope would silently outrank every authored
+ * `text-base`/`text-lg` a page chose.  Leaving them is both safer and correct. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) h1,
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [data-testid="text-page-title"] {
+  color: #041E41;                      /* navy — 16.57:1 AAA.  Was #141F34. */
+  letter-spacing: -0.005em;
+}
+
+/* ── 4 · TABLES — DIRECTION D's "GRID" TREATMENT ──────────────────────────
+ * The half of R73 the owner named: border-driven row structure.  Horizontal
+ * rules only (Ledger's no-vertical-rules), a 12px uppercase header in the
+ * secondary ink, and a hairline between rows.  This is the single most visible
+ * improvement in the founder area, because the cap table and the round rosters
+ * are the screens a founder actually lives in.
+ *
+ * DELIBERATELY NOT SET: `text-align` and `padding`.  A `[data-product]`-scoped
+ * selector outscores a Tailwind utility class, so setting either would silently
+ * override every authored `text-right` on an ownership-percentage column and
+ * every authored `px-*`/`py-*` on a cell — which is exactly how a restyle breaks
+ * a table's alignment and row rhythm.  Row height therefore comes from the
+ * existing padding plus the new 14px base, and no authored alignment moves. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) table thead {
+  background: #F8FAFC;
+}
+
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) table thead th {
+  /* `min(12px, 1em)` IS DELIBERATE AND IT IS A BUG FIX, NOT A FLOURISH.
+   *
+   * The first draft of this rule read `font-size: 12px`, which is what
+   * `ledger-partner.css` ships and what Direction A specifies.  MEASURING the
+   * result on the founder cap table showed it BREAKING THE SCREEN: that table's
+   * header cells carry no size of their own and inherit 10px from an ancestor,
+   * so forcing 12px widened the header row and pushed the whole table from 1141px
+   * to 1178px inside a 1134px container.  The `% ON VIEW OF fully-diluted`
+   * column and the three ownership subtotals were visibly cut off in the AFTER
+   * screenshot.  The `overflow-x: auto` on the wrapper meant nothing was
+   * unreachable, but the owner would have seen a chopped column, and the brief is
+   * explicit: "A restyle that ships broken text is worse than the bland design it
+   * replaced."
+   *
+   * `1em` in a `font-size` declaration resolves against the PARENT's font-size,
+   * so `min(12px, 1em)` means EXACTLY "12px, but never larger than what this cell
+   * already inherited".  A header that inherits the 14px base becomes 12px, which
+   * is the design.  A header that deliberately runs at 10px stays at 10px.  The
+   * rule can therefore only ever make a header row NARROWER, never wider, so it
+   * cannot clip a column on any table anywhere — including the wide tables the
+   * local fixture does not contain.
+   *
+   * `letter-spacing` IS DELIBERATELY NOT SET, for the same reason.  At 10px,
+   * `0.04em` adds 0.4px per character, and the cap-table header is ~85 characters
+   * wide — about 34px of the 37px of new overflow came from tracking alone.
+   * Uppercase + weight 600 + the grey-blue ink + the Grid rule read as a ledger
+   * header without it.
+   *
+   * NOTE FOR THE PARTNER AREA, which this wave must not touch:
+   * `ledger-partner.css` ships the unconditional `font-size: 12px` +
+   * `letter-spacing: 0.04em` form.  Wave 1D measured 0 clipped nodes, but its
+   * instrument — like this wave's first one — checked TEXT-NODE scrollWidth and
+   * not CONTAINER overflow, so a widened partner table would not have been seen.
+   * Handed back to the parent agent as a finding, NOT changed here. */
+  font-size: min(12px, 1em);
+  font-weight: 600;
+  text-transform: uppercase;
+  /* WAVE 99 · ITEM 1 — SMALL CAPITALS, AND IT IS A REACHABILITY FIX, NOT A
+   * FLOURISH.  APPLIED IDENTICALLY IN ALL FIVE AREAS.
+   *
+   * WHAT WAS WRONG.  `text-transform: uppercase` above is a SECOND, INDEPENDENT
+   * widening vector that `font-size: min(12px, 1em)` does not bound: capitals are
+   * wider glyphs than lower case at the same size, so `Commission override` ->
+   * `COMMISSION OVERRIDE` is ~15-20% wider while the 14px->12px shrink only
+   * removes ~14%.  Net: WIDER.  On `/admin/partner-fees` at 1280 — where the
+   * table is already laid out at its `min-content` width in a 590px container —
+   * that landed straight in the overflow, and the `ACTIONS` column with its
+   * `Edit` / `Expire` buttons was CUT AT THE CONTAINER EDGE.  Wave 4D+5D
+   * DECOMPOSED IT PROPERTY BY PROPERTY on the live page: uppercase is the ENTIRE
+   * cause; `font-weight: 600` contributes EXACTLY ZERO and the 14px->12px shrink
+   * contributes EXACTLY ZERO.
+   *
+   * HOW IT WAS FOUND, AND THE LESSON.  Two instrument fields DISAGREED —
+   * `lastThTextClipped: false` (the `<th>`'s own box is not narrower than its
+   * text) against `lastThFullyInsideHost: false` (the CONTAINER clips it) — and
+   * THE SCREENSHOT SETTLED IT.  That is the third time in this programme that
+   * looking at the picture beat reading the number.
+   *
+   * WHY THIS PROPERTY.  Small capitals are x-height glyphs, so they are NARROWER
+   * than full capitals while still reading as a ledger header.  MEASURED on the
+   * real tree: table 1 633px -> 590px, table 2 611px -> 590px, both in a 590px
+   * container, overflow 43 and 21 -> 0 and 0, last `<th>` back INSIDE the host on
+   * both.  It is better than what shipped AND better than the pre-wave state
+   * (613/590, over 23, last `<th>` NOT inside), because it also fixes the table
+   * that was ALREADY cut before the restyle began.  Dropping `uppercase` instead
+   * was also measured and is WORSE: 601/590, over 11, still cut.
+   *
+   * WHY `text-transform: uppercase` IS KEPT ABOVE.  `all-small-caps` enables both
+   * `smcp` and `c2sc`, so it renders identically with or without the transform.
+   * Keeping the transform keeps `innerText` reporting `ACTIONS`, so no text
+   * census and no drop-detector entry moves on any table header in the product.
+   *
+   * WHY ALL FIVE AREAS.  Applying it in admin alone would make two of five areas
+   * diverge, which is exactly what R74 exists to prevent — and is exactly why
+   * Wave 4D+5D refused to apply it unilaterally.  One product, one treatment.
+   *
+   * THE FONT.  Montserrat carries no `smcp`/`c2sc` table, so Blink SYNTHESISES
+   * the small capitals by scaling the capitals down.  That is a RENDERING, not a
+   * fallback to lower case, and it was verified three ways rather than assumed —
+   * width vs full capitals, width vs plain lower case, and a screenshot of all
+   * four cases side by side.  `W99_OVERFLOW_ALL_AREAS.md` section 2.
+   *
+   * `font-size: min(12px, 1em)` above is UNTOUCHED and stays in the never-grow
+   * form.  A bare `12px` is forbidden by test and mutation-proved. */
+  font-variant-caps: all-small-caps;
+  color: #5B6B7F;                      /* 5.21:1 AA on #F8FAFC */
+  border-bottom: 1px solid #D9DCE1;    /* --ds-border-strong, the Grid rule */
+}
+
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) table tbody tr {
+  border-color: #E5EAF0;
+}
+
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) table tbody tr + tr {
+  border-top: 1px solid #E5EAF0;
+}
+
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) table tbody tr:hover {
+  background: #F8FAFC;
+}
+
+/* ── 5 · STATUS PILLS — DIRECTION D GEOMETRY ──────────────────────────────
+ * The colours come from the ramp block in 7 below.  Nothing here assigns a
+ * colour; this only gives every pill the same weight so a roster of mixed states
+ * reads as one control family.
+ *
+ * The selector is deliberately narrow: an inline element that is BOTH a
+ * rounded-full and a border-carrying tint.  Cards, avatars and icon buttons do
+ * not match, and no radius is set, so an avatar stays round. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) span.rounded-full[class*="border-"],
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) span.rounded[class*="border-"][class*="text-xs"] {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ── 7 · THE FOUNDER STATUS RAMPS, UNDER THE BILLING GUARD ─────────────
+ * GENERATED by build_log/wave2d3d_collective_founder/tools/gen_ramps.py — do
+ * not hand-edit.  419 hand-typed palette classes in 24 founder files plus every
+ * shared component rendered inside the founder shell.
+ *
+ * WHY THESE LIVE HERE AND NOT IN ledger-ramps.css.  R80, the owner verbatim:
+ * "Founder Billing Page: OK. Keep it different."  A plain
+ * `[data-product="founder"]` block is an ANCESTOR of `pages/founder/Billing.tsx`
+ * and would re-colour its eleven status tones, its three card-brand inks and
+ * its cancellation banner.  Under the guard below, Billing resolves the STOCK
+ * Tailwind ramps `:root` still supplies, so it renders byte-identically — and
+ * the `[data-product="founder"]` block of ledger-ramps.css stays BYTE-IDENTICAL.
+ *
+ * EACH OF THE 17 FAMILIES IS RE-POINTED AT ONE OF THE FIVE RATIFIED STATUS
+ * ROLES of pre-flight §3.5 — positive / negative / warning / neutral / info,
+ * NO SIXTH.  The mapping is Wave 1D's, UNCHANGED, because the brief requires
+ * one platform dialect rather than five.  It was nevertheless re-read out of
+ * THIS area's own source before being reused; transcript in
+ * build_log/wave2d3d_collective_founder/W2D3D_STATUS_COLOURS.md §3.
+ *
+ * ANCHORS — each role's ratified colour is PINNED at the step that role uses
+ * most often as text, so a call site keeps its perceptual position:
+ *   positive  #2C7346  pinned at step 700
+ *   negative  #CC0001  pinned at step 600
+ *   warning   #8A5A00  pinned at step 700
+ *   neutral   #5B6B7F  pinned at step 500
+ *   info      #041E41  pinned at step 900
+ *
+ * ACCESSIBILITY — computed, not claimed.  Every REAL (background, text) class
+ * pairing in this area's source was resolved through both the stock values and
+ * these, with `/alpha` modifiers composited over the surface beneath.
+ */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) {
+  /* amber — 11 step(s), 652 occurrence(s) platform-wide → WARNING */
+  --ramp-amber-50: 252 243 227;   /* #FCF3E3 — warning */
+  --ramp-amber-100: 245 233 211;   /* #F5E9D3 — warning */
+  --ramp-amber-200: 242 220 178;   /* #F2DCB2 — warning */
+  --ramp-amber-300: 244 199 116;   /* #F4C774 — warning */
+  --ramp-amber-400: 157 102 0;   /* #9D6600 — warning */
+  --ramp-amber-500: 150 98 0;   /* #966200 — warning, 4.76:1 min on the three light surfaces */
+  --ramp-amber-600: 144 94 0;   /* #905E00 — warning, 5.08:1 min on the three light surfaces */
+  --ramp-amber-700: 138 90 0;   /* #8A5A00 — warning, 5.43:1 min on the three light surfaces */
+  --ramp-amber-800: 110 72 0;   /* #6E4800 — warning, 7.43:1 min on the three light surfaces */
+  --ramp-amber-900: 83 54 0;   /* #533600 — warning, 10.16:1 min on the three light surfaces */
+  --ramp-amber-950: 60 39 0;   /* #3C2700 — warning, 12.99:1 min on the three light surfaces */
+  /* blue — 10 step(s), 118 occurrence(s) platform-wide → INFO */
+  --ramp-blue-50: 234 238 244;   /* #EAEEF4 — info */
+  --ramp-blue-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-blue-200: 213 223 237;   /* #D5DFED — info */
+  --ramp-blue-300: 190 207 231;   /* #BECFE7 — info */
+  --ramp-blue-400: 56 114 192;   /* #3872C0 — info */
+  --ramp-blue-500: 53 107 181;   /* #356BB5 — info, 4.91:1 min on the three light surfaces */
+  --ramp-blue-600: 49 100 168;   /* #3164A8 — info, 5.47:1 min on the three light surfaces */
+  --ramp-blue-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  --ramp-blue-800: 34 70 118;   /* #224676 — info, 8.73:1 min on the three light surfaces */
+  --ramp-blue-900: 4 30 65;   /* #041E41 — info, 15.19:1 min on the three light surfaces */
+  /* cyan — 4 step(s), 13 occurrence(s) platform-wide → INFO */
+  --ramp-cyan-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-cyan-300: 190 207 231;   /* #BECFE7 — info */
+  --ramp-cyan-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  --ramp-cyan-900: 4 30 65;   /* #041E41 — info, 15.19:1 min on the three light surfaces */
+  /* emerald — 10 step(s), 499 occurrence(s) platform-wide → POSITIVE */
+  --ramp-emerald-50: 234 245 238;   /* #EAF5EE — positive */
+  --ramp-emerald-100: 224 238 229;   /* #E0EEE5 — positive */
+  --ramp-emerald-200: 204 229 213;   /* #CCE5D5 — positive */
+  --ramp-emerald-300: 169 217 187;   /* #A9D9BB — positive */
+  --ramp-emerald-400: 49 128 78;   /* #31804E — positive */
+  --ramp-emerald-500: 47 123 75;   /* #2F7B4B — positive, 4.75:1 min on the three light surfaces */
+  --ramp-emerald-600: 46 119 73;   /* #2E7749 — positive, 5.00:1 min on the three light surfaces */
+  --ramp-emerald-700: 44 115 70;   /* #2C7346 — positive, 5.28:1 min on the three light surfaces */
+  --ramp-emerald-800: 34 90 55;   /* #225A37 — positive, 7.45:1 min on the three light surfaces */
+  --ramp-emerald-900: 26 68 41;   /* #1A4429 — positive, 10.12:1 min on the three light surfaces */
+  /* gray — 5 step(s), 7 occurrence(s) platform-wide → NEUTRAL */
+  --ramp-gray-50: 248 250 252;   /* #F8FAFC — neutral */
+  --ramp-gray-200: 229 234 240;   /* #E5EAF0 — neutral */
+  --ramp-gray-300: 217 220 225;   /* #D9DCE1 — neutral */
+  --ramp-gray-500: 91 107 127;   /* #5B6B7F — neutral, 4.99:1 min on the three light surfaces */
+  --ramp-gray-800: 69 81 96;   /* #455160 — neutral, 7.41:1 min on the three light surfaces */
+  /* green — 9 step(s), 36 occurrence(s) platform-wide → POSITIVE */
+  --ramp-green-50: 234 245 238;   /* #EAF5EE — positive */
+  --ramp-green-100: 224 238 229;   /* #E0EEE5 — positive */
+  --ramp-green-200: 204 229 213;   /* #CCE5D5 — positive */
+  --ramp-green-300: 169 217 187;   /* #A9D9BB — positive */
+  --ramp-green-400: 49 128 78;   /* #31804E — positive */
+  --ramp-green-600: 46 119 73;   /* #2E7749 — positive, 5.00:1 min on the three light surfaces */
+  --ramp-green-700: 44 115 70;   /* #2C7346 — positive, 5.28:1 min on the three light surfaces */
+  --ramp-green-800: 34 90 55;   /* #225A37 — positive, 7.45:1 min on the three light surfaces */
+  --ramp-green-900: 26 68 41;   /* #1A4429 — positive, 10.12:1 min on the three light surfaces */
+  /* indigo — 4 step(s), 13 occurrence(s) platform-wide → INFO */
+  --ramp-indigo-50: 234 238 244;   /* #EAEEF4 — info */
+  --ramp-indigo-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-indigo-200: 213 223 237;   /* #D5DFED — info */
+  --ramp-indigo-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  /* orange — 7 step(s), 17 occurrence(s) platform-wide → WARNING */
+  --ramp-orange-50: 252 243 227;   /* #FCF3E3 — warning */
+  --ramp-orange-100: 245 233 211;   /* #F5E9D3 — warning */
+  --ramp-orange-200: 242 220 178;   /* #F2DCB2 — warning */
+  --ramp-orange-600: 144 94 0;   /* #905E00 — warning, 5.08:1 min on the three light surfaces */
+  --ramp-orange-700: 138 90 0;   /* #8A5A00 — warning, 5.43:1 min on the three light surfaces */
+  --ramp-orange-800: 110 72 0;   /* #6E4800 — warning, 7.43:1 min on the three light surfaces */
+  --ramp-orange-900: 83 54 0;   /* #533600 — warning, 10.16:1 min on the three light surfaces */
+  /* purple — 5 step(s), 13 occurrence(s) platform-wide → INFO */
+  --ramp-purple-50: 234 238 244;   /* #EAEEF4 — info */
+  --ramp-purple-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-purple-200: 213 223 237;   /* #D5DFED — info */
+  --ramp-purple-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  --ramp-purple-900: 4 30 65;   /* #041E41 — info, 15.19:1 min on the three light surfaces */
+  /* red — 10 step(s), 221 occurrence(s) platform-wide → NEGATIVE */
+  --ramp-red-50: 253 236 236;   /* #FDECEC — negative */
+  --ramp-red-100: 249 230 230;   /* #F9E6E6 — negative */
+  --ramp-red-200: 248 215 215;   /* #F8D7D7 — negative */
+  --ramp-red-300: 250 191 192;   /* #FABFC0 — negative */
+  --ramp-red-400: 229 0 1;   /* #E50001 — negative */
+  --ramp-red-500: 217 0 1;   /* #D90001 — negative, 4.87:1 min on the three light surfaces */
+  --ramp-red-600: 204 0 1;   /* #CC0001 — negative, 5.40:1 min on the three light surfaces */
+  --ramp-red-700: 182 0 1;   /* #B60001 — negative, 6.44:1 min on the three light surfaces */
+  --ramp-red-800: 163 0 1;   /* #A30001 — negative, 7.53:1 min on the three light surfaces */
+  --ramp-red-900: 126 0 1;   /* #7E0001 — negative, 10.20:1 min on the three light surfaces */
+  /* rose — 11 step(s), 503 occurrence(s) platform-wide → NEGATIVE */
+  --ramp-rose-50: 253 236 236;   /* #FDECEC — negative */
+  --ramp-rose-100: 249 230 230;   /* #F9E6E6 — negative */
+  --ramp-rose-200: 248 215 215;   /* #F8D7D7 — negative */
+  --ramp-rose-300: 250 191 192;   /* #FABFC0 — negative */
+  --ramp-rose-400: 229 0 1;   /* #E50001 — negative */
+  --ramp-rose-500: 217 0 1;   /* #D90001 — negative, 4.87:1 min on the three light surfaces */
+  --ramp-rose-600: 204 0 1;   /* #CC0001 — negative, 5.40:1 min on the three light surfaces */
+  --ramp-rose-700: 182 0 1;   /* #B60001 — negative, 6.44:1 min on the three light surfaces */
+  --ramp-rose-800: 163 0 1;   /* #A30001 — negative, 7.53:1 min on the three light surfaces */
+  --ramp-rose-900: 126 0 1;   /* #7E0001 — negative, 10.20:1 min on the three light surfaces */
+  --ramp-rose-950: 94 0 0;   /* #5E0000 — negative, 13.04:1 min on the three light surfaces */
+  /* sky — 8 step(s), 41 occurrence(s) platform-wide → INFO */
+  --ramp-sky-50: 234 238 244;   /* #EAEEF4 — info */
+  --ramp-sky-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-sky-200: 213 223 237;   /* #D5DFED — info */
+  --ramp-sky-300: 190 207 231;   /* #BECFE7 — info */
+  --ramp-sky-500: 53 107 181;   /* #356BB5 — info, 4.91:1 min on the three light surfaces */
+  --ramp-sky-600: 49 100 168;   /* #3164A8 — info, 5.47:1 min on the three light surfaces */
+  --ramp-sky-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  --ramp-sky-900: 4 30 65;   /* #041E41 — info, 15.19:1 min on the three light surfaces */
+  /* slate — 10 step(s), 653 occurrence(s) platform-wide → NEUTRAL */
+  --ramp-slate-50: 248 250 252;   /* #F8FAFC — neutral */
+  --ramp-slate-100: 241 244 248;   /* #F1F4F8 — neutral */
+  --ramp-slate-200: 229 234 240;   /* #E5EAF0 — neutral */
+  --ramp-slate-300: 217 220 225;   /* #D9DCE1 — neutral */
+  --ramp-slate-400: 98 115 137;   /* #627389 — neutral */
+  --ramp-slate-500: 91 107 127;   /* #5B6B7F — neutral, 4.99:1 min on the three light surfaces */
+  --ramp-slate-600: 85 99 118;   /* #556376 — neutral, 5.61:1 min on the three light surfaces */
+  --ramp-slate-700: 77 91 108;   /* #4D5B6C — neutral, 6.36:1 min on the three light surfaces */
+  --ramp-slate-800: 69 81 96;   /* #455160 — neutral, 7.41:1 min on the three light surfaces */
+  --ramp-slate-900: 51 60 72;   /* #333C48 — neutral, 10.24:1 min on the three light surfaces */
+  /* teal — 3 step(s), 5 occurrence(s) platform-wide → POSITIVE */
+  --ramp-teal-100: 224 238 229;   /* #E0EEE5 — positive */
+  --ramp-teal-300: 169 217 187;   /* #A9D9BB — positive */
+  --ramp-teal-900: 26 68 41;   /* #1A4429 — positive, 10.12:1 min on the three light surfaces */
+  /* violet — 6 step(s), 19 occurrence(s) platform-wide → INFO */
+  --ramp-violet-100: 229 235 242;   /* #E5EBF2 — info */
+  --ramp-violet-300: 190 207 231;   /* #BECFE7 — info */
+  --ramp-violet-500: 53 107 181;   /* #356BB5 — info, 4.91:1 min on the three light surfaces */
+  --ramp-violet-700: 43 88 148;   /* #2B5894 — info, 6.58:1 min on the three light surfaces */
+  --ramp-violet-800: 34 70 118;   /* #224676 — info, 8.73:1 min on the three light surfaces */
+  --ramp-violet-900: 4 30 65;   /* #041E41 — info, 15.19:1 min on the three light surfaces */
+  /* yellow — 2 step(s), 2 occurrence(s) platform-wide → WARNING */
+  --ramp-yellow-400: 157 102 0;   /* #9D6600 — warning */
+  --ramp-yellow-700: 138 90 0;   /* #8A5A00 — warning, 5.43:1 min on the three light surfaces */
+  /* zinc — 10 step(s), 72 occurrence(s) platform-wide → NEUTRAL */
+  --ramp-zinc-50: 248 250 252;   /* #F8FAFC — neutral */
+  --ramp-zinc-100: 241 244 248;   /* #F1F4F8 — neutral */
+  --ramp-zinc-200: 229 234 240;   /* #E5EAF0 — neutral */
+  --ramp-zinc-300: 217 220 225;   /* #D9DCE1 — neutral */
+  --ramp-zinc-400: 98 115 137;   /* #627389 — neutral */
+  --ramp-zinc-500: 91 107 127;   /* #5B6B7F — neutral, 4.99:1 min on the three light surfaces */
+  --ramp-zinc-600: 85 99 118;   /* #556376 — neutral, 5.61:1 min on the three light surfaces */
+  --ramp-zinc-700: 77 91 108;   /* #4D5B6C — neutral, 6.36:1 min on the three light surfaces */
+  --ramp-zinc-800: 69 81 96;   /* #455160 — neutral, 7.41:1 min on the three light surfaces */
+  --ramp-zinc-900: 51 60 72;   /* #333C48 — neutral, 10.24:1 min on the three light surfaces */
+}
+
+/* ── 6 · WHAT THIS FILE DELIBERATELY DOES NOT TOUCH ───────────────────────
+ *  · `--primary` / `--accent` / `--ring` / `--sidebar-primary` — all four are
+ *    already the logo red #CC0001.  Tier-9 rule 74, LOCKED.
+ *  · `--foreground` — #141F34 at 15.74:1 is the body ink and it is fine.  Only
+ *    the TITLE moves to navy; re-inking every word on the page is a bigger
+ *    change than the design calls for.
+ *  · `--radius` and every `border-radius`.  `tailwind.config.ts` already hard-
+ *    codes lg/md/sm at 9/6/3px, so the founder area ALREADY has Ledger corners.
+ *    Setting a radius here would be a change with no design gain and a real risk
+ *    of squaring off something round.
+ *  · The `--chart-*` data-visualisation ramp (six hues, measured live on the cap
+ *    table as #3C74DD and #239F71 among others).  Those are a CATEGORICAL axis —
+ *    one colour per cap-table segment — not a status axis.  Collapsing them onto
+ *    five status roles would make two wedges of the ownership chart the same
+ *    colour, which is an information loss.  LEFT ALONE DELIBERATELY.
+ *  · Any `display`, `visibility`, `opacity`, `pointer-events`, `order`,
+ *    `position`, `content`, `text-align`, `width`, `height`, `overflow` or cell
+ *    `padding`.
+ *  · `founder/Billing.tsx` — SACRED and owner-excluded under R80.  Guarded out
+ *    of every selector above and every ramp below.
+ *  · Every pre-existing defect in this area.  Nothing here hides one.
+ * ====================================================================== */
+
+/* ── 7 · WAVE 96 · ITEM 3 — ONE NAVY. THE 36 HARDCODED LEGACY-NAVY SITES ──
+ *
+ * WHAT WAS WRONG. Two navies coexisted in this area: the ratified #041E41 that
+ * Wave 2D+3D put on the page titles, and a legacy #1C2C4A — `hsl(219 45% 20%)`
+ * — hardcoded as a Tailwind arbitrary value in 36 places: the top header in
+ * `AppShell.tsx:631` and 35 secondary-button sites ("Confirm exercise",
+ * "Add investor", "Continue", the monthly/annual billing-period toggle, the
+ * report tiles, the "Led by <partner>" badge).
+ *
+ * WHY WAVE 2D+3D DID NOT DO IT, AND WHAT IT MEASURED. It tried, from the other
+ * end: it re-pointed `--sidebar` to #041E41 and RENDERED it. The header sits
+ * directly above the rail and is painted by a hardcoded CLASS, not the token, so
+ * the ratified navy rail met a legacy navy header and OPENED A SEAM WHERE NONE
+ * EXISTED. It reverted, and left the area internally consistent at #1C2C4A
+ * rather than half-migrated (its §4.1 and OWNER QUESTION Q2). That measurement
+ * is why the rule set below moves the RAIL AND THE HEADER IN THE SAME EDIT: the
+ * seam it found cannot open if neither side of it stays behind.
+ *
+ * IT ALSO RECORDED A REASON THAT DOES NOT HOLD, AND THAT IS WHY THIS IS NOW
+ * SAFE. It wrote that reaching the buttons "requires matching a class SUBSTRING,
+ * which also matches the `hover:` variant and would paint a hover colour at
+ * rest". That is true of `[class*=…]` and false of `[class~=…]`. `~=` matches a
+ * WHOLE whitespace-separated token, and `hover:bg-[hsl(219_45%_15%)]` is a
+ * DIFFERENT token from `bg-[hsl(219_45%_20%)]`, so the rest-state rule cannot
+ * see the hover class at all. The hover rule below carries a real `:hover`
+ * pseudo-class, so it cannot apply at rest either. Both forms are asserted and
+ * mutation-proved (`w96_navy_and_rail.test.ts` §3, M5/M6).
+ *
+ * WHY THESE TWO VALUES AND NO NEW ONES. `--cv-color-navy` (#041e41) and
+ * `--cv-color-navy-light` (#0c2d55) are both declared in the SACRED
+ * `capavate-tokens.css` (NOT opened), and that file already pairs them for
+ * exactly this control: `.cv-btn--secondary { background: var(--cv-color-navy) }`
+ * / `.cv-btn--secondary:hover { background: var(--cv-color-navy-light) }`. So
+ * the rest/hover relationship below is the platform's own ratified navy button,
+ * not a shade invented by this wave. Nothing here declares a hex.
+ *
+ * WHAT IS DELIBERATELY LEFT — full census, with reasons, in
+ * `build_log/wave96/W96_NAVY_CENSUS.md`. In short: the CATEGORICAL cap-table
+ * holder-group tones (`hsl(219 45% 30%)`, `hsl(219 70% 55%)` — one hue per
+ * holder class, collapsing them loses information), the two stops of the
+ * `/founder/collective` hero GRADIENT (adjacent stops must differ), the two
+ * text-hierarchy inks (`hsl(219 45% 12%)`, `hsl(219 45% 35%)`), and the
+ * `--sidebar-border` / `--sidebar-accent` dividers, which are deliberately
+ * LIGHTER than the rail they sit on and still are.
+ *
+ * R80. Every selector below carries the Billing guard, unchanged and
+ * uninspected, so `founder/Billing.tsx` keeps the legacy navy on its own chrome
+ * exactly as it keeps its 18px text. The consequence — Billing's rail and header
+ * now differ from every other founder screen's — is REPORTED as an owner
+ * question rather than resolved by weakening the guard.
+ *
+ * COLOUR ONLY. `background-color` and `border-color`; no geometry, no layout,
+ * no state. */
+
+/* the rail — moved with the header below, which is the seam Wave 2D+3D measured */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [class~="bg-sidebar"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* 14 sites: the top header (AppShell.tsx:631) + 13 secondary-button fills */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [class~="bg-[hsl(219_45%_20%)]"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* 7 sites: the same buttons' rims, so a rim never disagrees with its fill */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [class~="border-[hsl(219_45%_20%)]"] {
+  border-color: var(--cv-color-navy);
+}
+
+/* 8 sites: the hover fill. `:hover` is REQUIRED here — this is the rule that a
+ * `[class*=…]` form would have painted at rest, which is the functional defect
+ * Wave 2D+3D refused to ship. */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [class~="hover:bg-[hsl(219_45%_15%)]"]:hover {
+  background-color: var(--cv-color-navy-light);
+}
+
+/* 7 sites: the hover rim */
+[data-product="founder"]:not(:has([data-testid="card-collective-application-fee"])) [class~="hover:border-[hsl(219_45%_15%)]"]:hover {
+  border-color: var(--cv-color-navy-light);
+}

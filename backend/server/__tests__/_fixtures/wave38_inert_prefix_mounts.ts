@@ -266,7 +266,17 @@ export const WAVE38_INERT_PREFIX_MOUNTS: Readonly<Record<string, readonly string
     "PATCH /api/admin/regions/extensions/:id",
     "PATCH /api/admin/subscriptions/:companyId",
     "POST /api/admin/applications/:id/decline",
+    /* WAVE 95 · ITEM 1 (R84) — the re-anchor endpoint, added to this list for the
+       same reason Waves 29 and 30 added new partner routes: it is registered
+       ABOVE this BENIGN DUPLICATE mount, so it does not pass through the
+       duplicate. It is NOT ungated. The pin itself proves that: `requireAdmin#1`
+       (server/routes.ts:611) still misses ZERO routes and therefore did NOT gain
+       a key in this file, so the real authorisation gate does cover this route.
+       Recorded here rather than left to fail, per this file's own two-way rule
+       ("a route newly escaping any of these mounts fails it"), and disposed of in
+       build_log/wave95/W95_TESTS.md §4. */
     "POST /api/admin/audit-chain-health/resolve",
+    "POST /api/admin/audit-chain/re-anchor",
     "POST /api/admin/audit-log/append",
     "POST /api/admin/billing/disputes",
     "POST /api/admin/bridge/archive",

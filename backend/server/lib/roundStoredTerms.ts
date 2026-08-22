@@ -79,23 +79,180 @@ export type RoundStoredTerms = {
      default invented here would be the original defect with a longer call stack
      (R6), which is exactly what this file's header forbids.
 
-     NO MIGRATION, and NO CHANGE TO ANY WRITE FENCE. `POST /api/rounds` routes every
-     non-column key into `extras_json` (`server/routes.ts:7094-7097`, `KNOWN_COLS`)
-     and `rowToRound` spreads `extras_json` back onto the round on hydrate
-     (`server/roundsStore.ts:100-127`), so `seniority` is already storable and
-     already hydrated — this is a READ of a field the platform can already hold,
-     the same argument Wave 71 · D13 made for `mfn`. It is deliberately NOT added to
-     `UPDATE_EXTRAS_WHITELIST`: that would make `PATCH /api/rounds/:id/terms` a
-     writer with no domain fence and no closed vocabulary, and `W75-*` pins the set
-     of whitelisted-but-unhandled keys at SEVEN in the only direction it may move
-     (down). THE CONSEQUENCE, STATED RATHER THAN HIDDEN: seniority can be recorded
-     at round CREATION and not edited afterwards. That is an OWNER QUESTION
-     (`W79_UNVERIFIED_AND_OWNER_QUESTIONS.md`), not a solved problem. */
+     NO MIGRATION. `POST /api/rounds` routes every non-column key into `extras_json`
+     (`server/routes.ts`, `KNOWN_COLS`) and `rowToRound` spreads `extras_json` back
+     onto the round on hydrate (`server/roundsStore.ts`), so `seniority` is already
+     storable and already hydrated — this is a READ of a field the platform can
+     already hold, the same argument Wave 71 · D13 made for `mfn`. Migrations stay
+     at 173 `.sql`, highest `0192`.
+
+     ══ CORRECTED BY WAVE 91 · ITEM 4 — THIS COMMENT WAS STALE AND MISLEADING. ══
+     WHAT IT USED TO SAY, kept rather than erased so the record shows what was
+     believed and what corrected it. Wave 79 wrote here that `seniority` is
+     *"deliberately NOT added to `UPDATE_EXTRAS_WHITELIST`"* because that would make
+     `PATCH /api/rounds/:id/terms` an unfenced writer, and that the consequence was
+     that *"seniority can be recorded at round CREATION and not edited afterwards."*
+
+     WAVE 81 · ITEM 2 (D4) MADE BOTH SENTENCES FALSE and this file was not updated:
+     `seniority` IS on `roundsStore.UPDATE_EXTRAS_WHITELIST`, and BOTH
+     post-creation writers — `PATCH /api/rounds/:id/terms` and
+     `PATCH /api/founder/rounds/:id` — persist it through the one imported
+     `validateSeniorityRankStored` fence below. So it is editable after creation, and
+     the writer that was NOT fenced was the CREATION one, which is the opposite of
+     what this comment said. Wave 91 closed that writer with the same imported
+     validator, so all THREE writers now validate.
+
+     WHY THE CORRECTION IS WORTH A PARAGRAPH RATHER THAN A DELETION. A stale comment
+     on a money path is how four separate agents came to propose editing
+     `computeConversionProjections`, which is dead code. A comment that confidently
+     states the opposite of the code is more dangerous than no comment. */
   seniorityRank: number | null;
+  /* ── WAVE 94 · ITEM 1 — THE PARTICIPATION CAP, READ AT LAST ─────────────────
+     `GET /api/founder/captable/waterfall` never set `participationCapMultiple` on
+     the classes it handed the engine, so "1x participating, capped at 2x" — an
+     ordinary market term — was silently modelled as **UNCAPPED**, which OVERPAYS
+     that class and UNDERPAYS THE FOUNDERS. Measured by Wave 91, ruled by R83.2.
+
+     THE CENSUS THAT MADE THIS THE RIGHT PLACE TO READ IT (`W94_PARTICIPATION_CAPS.md`
+     §3). Before this wave the concept existed in FOUR places and not one of them
+     was a server-side read of stored data:
+       · `packages/cap-table-engine` IMPLEMENTS it (`participationCapMultiple`) —
+         SACRED, and not edited by this wave;
+       · `shared/schema.ts` lists `capParticipation` among a preferred round's
+         fields;
+       · `client/src/pages/founder/RoundNew.tsx` RENDERS a labelled control,
+         "Participation cap (x — optional)", and does NOT put it in the create
+         payload, so every value a founder types there is discarded on submit —
+         a fifth control of exactly the class Wave 80 - Item 2 fixed;
+       · `server/track1Routes.ts` mentioned the engine field twice, both times to
+         `delete` it.
+     WRITERS: exactly ONE reachable one, `POST /api/rounds`, and only through the
+     unvalidated `KNOWN_COLS` extras sweep. READERS OF THE STORED VALUE: **ZERO.**
+
+     TWO SOURCES ARE READ, AND A CONFLICT IS NOT RESOLVED — IT IS REPORTED.
+       · `capParticipation`, the numeric key the wizard, `shared/schema.ts` and the
+         term-sheet type all already use;
+       · the free-text `liquidationPreference`, which ALREADY carries the other two
+         halves of the same sentence (the multiple and the participating flag), so
+         a founder typing "1x participating, capped at 2x" records the whole term in
+         one place.
+     Where both are present and DISAGREE, `participationCapConflict` is set and the
+     caller REFUSES. Picking a winner would be inventing which of two negotiated
+     numbers the parties agreed to (R21 / R6).
+
+     AN UNREADABLE CAP IS NOT AN ABSENT CAP, AND THAT DISTINCTION IS THE WHOLE
+     POINT. If a cap IS recorded but cannot be read as a multiple inside the domain
+     — `"FULL_RATCHET"`, `50`, `0`, `-1` — `participationCapUnreadable` is set and
+     the caller refuses BY NAME. Letting it fall through to `null` would reproduce
+     the exact defect this wave exists to remove: a recorded cap silently modelled
+     as uncapped. This project has persisted `"FULL_RATCHET"` and `7` unvalidated
+     and then broken the cap table.
+
+     NO MIGRATION. `capParticipation` already round-trips through
+     `rounds.extras_json`: `POST /api/rounds` sweeps every non-column key into it
+     and `roundsStore.rowToRound` re-spreads it on hydrate, which is the same path
+     `optionPoolPostPercent`, `parentRoundId`, `seniority` and Wave 80's four keys
+     all travel. This wave adds it to `roundsStore.UPDATE_EXTRAS_WHITELIST` so the
+     two post-creation writers can persist it too. Migrations stay at **173 `.sql`,
+     177 entries, highest `0192`.** */
+  participationCapMultiple: number | null;
+  /** What was actually found, so a refusal can quote it rather than paraphrase. */
+  participationCapRaw: string | null;
+  /** Which of the two sources the cap was read from. */
+  participationCapSource: "capParticipation" | "liquidationPreference" | null;
+  /** A cap IS on record and cannot be read as a multiple in domain. REFUSE. */
+  participationCapUnreadable: boolean;
+  /** Both sources carry a cap and they are different numbers. REFUSE. */
+  participationCapConflict: boolean;
 };
 
 /** The domain of a seniority rank. `0` is the most senior. */
 export const SENIORITY_RANK_MAX = 99 as const;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 94 · ITEM 1 — THE PARTICIPATION CAP WRITE FENCE, DECLARED ONCE.
+   ═══════════════════════════════════════════════════════════════════════════
+   THE DOMAIN IS THE LIQUIDATION MULTIPLE'S OWN, not a second opinion: `(0, 10]`,
+   exactly what `roundStoredTerms` below already accepts for
+   `liquidationPreferenceMultiple` (Wave 71 - D11). A cap outside it is a typing
+   error and not a negotiated term. Fractions are ALLOWED and deliberately so —
+   `1.5x` and `2.5x` caps are real terms and the wizard's own control steps in
+   halves — which is why this fence does NOT reuse the seniority validator's
+   integer rule.
+
+   `0` IS REFUSED, NOT TREATED AS "NO CAP". A zero cap would clamp a participating
+   class's total to nothing at all, below even its own liquidation preference. A
+   founder who means "no cap" leaves the field blank, and blank is `{ ok: true,
+   value: "" }` — the `TermValueVerdict` contract every other term validator in the
+   tree uses, so the writers cannot drift apart.
+
+   A TRAILING `x` IS ACCEPTED because "2x" is how the term is written everywhere
+   else in the product, including the tooltip on the control that captures it and
+   the free-text field the sibling terms are read from. Accepting it here costs
+   nothing and refusing it would fail a founder for typing the term correctly.
+   ═══════════════════════════════════════════════════════════════════════════ */
+export const PARTICIPATION_CAP_MAX = 10 as const;
+
+export const PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE =
+  `capParticipation is the CEILING on what a participating preference class can take in total at an ` +
+  `exit, expressed as a multiple of the money it invested — "1x participating, capped at 2x" means the ` +
+  `class takes its preference and then shares in what is left until its total reaches 2x its ` +
+  `investment, and nothing after that. It must be a number greater than 0 and no more than ` +
+  `${PARTICIPATION_CAP_MAX} (a trailing "x" is accepted, so both 2 and "2x" are fine). Fractions are ` +
+  `allowed: 1.5x and 2.5x are ordinary terms. Send null or an empty value to remove it, which means the ` +
+  `class is UNCAPPED and participates without limit. A cap of 0 is refused rather than read as "no ` +
+  `cap": it would pay the class less than the preference it negotiated.`;
+
+export type ParticipationCapVerdict =
+  | { readonly ok: true; readonly value: string }
+  | { readonly ok: false; readonly error: string; readonly message: string };
+
+/** Parse a cap multiple out of one raw value. `null` = not a readable multiple. */
+function parseCapMultiple(raw: unknown): number | null {
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  const text = String(raw).trim();
+  if (text === "") return null;
+  /* One optional trailing `x`, and nothing else. `"2 x"` and `"2X"` read; `"2xx"`
+     and `"x2"` do not, because a value nobody can spell is not a term. */
+  const m = /^([0-9]+(?:\.[0-9]+)?)\s*[xX]?$/.exec(text);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0 || n > PARTICIPATION_CAP_MAX) return null;
+  return n;
+}
+
+export function validateParticipationCapStored(raw: unknown): ParticipationCapVerdict {
+  /* ABSENT — untouched. Tested on the LITERAL value, never on `String(raw).trim()`:
+     `String([])` is `""`, so an empty ARRAY would otherwise be read as "there is no
+     cap" and quietly accepted. That is the trap `W81-D4-B` caught on the seniority
+     fence on its first run. */
+  if (raw === null || raw === undefined || raw === "") {
+    return { ok: true, value: "" };
+  }
+  /* SHAPE, BEFORE ANY PARSE. A boolean, an object or an array is a client bug and
+     not a cap. `String([2])` is `"2"`, so a container reaching the numeric parse
+     would be read as a 2x cap nobody sent. Refused by name. */
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    return { ok: false, error: "invalid_capParticipation", message: PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE };
+  }
+  if (String(raw).trim() === "") return { ok: true, value: "" };
+  const n = parseCapMultiple(raw);
+  if (n === null) {
+    return { ok: false, error: "invalid_capParticipation", message: PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE };
+  }
+  /* Stored AS WRITTEN in the sense that matters: the number, not the `x`. The
+     reader parses with the same function, so writer and reader cannot disagree. */
+  return { ok: true, value: String(n) };
+}
+
+/** The cap phrases that count in the free-text `liquidationPreference` field.
+ *  STRICT and explicit: the word "cap" must be present, so "1x participating" is
+ *  never read as a cap and a bare second multiple never becomes one. */
+const CAP_TEXT_PATTERNS: readonly RegExp[] = [
+  /capp?e?d?\s*(?:at|to)\s*([0-9]+(?:\.[0-9]+)?)\s*x/i,
+  /cap(?:ped)?\s*(?:of|=|:)\s*([0-9]+(?:\.[0-9]+)?)\s*x/i,
+  /([0-9]+(?:\.[0-9]+)?)\s*x\s*(?:participation\s+)?cap\b/i,
+];
 
 /* ═══════════════════════════════════════════════════════════════════════════
    WAVE 81 · ITEM 2 (D4) — THE SENIORITY WRITE FENCE, DECLARED ONCE.
@@ -177,6 +334,9 @@ const EMPTY: RoundStoredTerms = {
   interestRate: null, maturityDate: null, maturityMonths: null,
   mfn: null, liquidationPreferenceMultiple: null, liquidationPreferenceRaw: null,
   seniorityRank: null,
+  participationCapMultiple: null, participationCapRaw: null,
+  participationCapSource: null, participationCapUnreadable: false,
+  participationCapConflict: false,
 };
 
 export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
@@ -241,6 +401,78 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
     if (Number.isInteger(n) && n >= 0 && n <= SENIORITY_RANK_MAX) seniorityRank = n;
   }
 
+  /* ── WAVE 94 · ITEM 1 — THE PARTICIPATION CAP, READ FROM BOTH ITS HOMES ─────
+     Neither source is preferred over the other: if both carry a cap and the two
+     numbers differ, the CONFLICT is reported and the caller refuses. An
+     unreadable cap is reported as unreadable and NEVER falls through to "no cap",
+     because "silently modelled as uncapped" is the defect. */
+  let capFromKey: number | null = null;
+  let capKeyPresent = false;
+  let capKeyRawText: string | null = null;
+  const capKeyRaw = rnd?.["capParticipation"];
+  if (capKeyRaw !== null && capKeyRaw !== undefined && String(capKeyRaw).trim() !== "") {
+    capKeyPresent = true;
+    capKeyRawText = String(capKeyRaw).trim();
+    capFromKey = parseCapMultiple(capKeyRaw);
+  }
+
+  let capFromText: number | null = null;
+  let capTextPresent = false;
+  let capTextRawText: string | null = null;
+  if (lp !== "") {
+    for (const re of CAP_TEXT_PATTERNS) {
+      const m = re.exec(lpRaw ?? "");
+      if (!m) continue;
+      capTextPresent = true;
+      capTextRawText = m[0];
+      const n = Number(m[1]);
+      capFromText = Number.isFinite(n) && n > 0 && n <= PARTICIPATION_CAP_MAX ? n : null;
+      break;
+    }
+    /* The word "cap" appears but no multiple can be read off it — "capped", "cap
+       TBD", "capped at market". A cap IS asserted and is not readable. */
+    if (
+      !capTextPresent &&
+      /\bcapp?e?d?\b/i.test(lp) &&
+      !/uncapped/i.test(lp) &&
+      /* `"valuation cap"` is a SAFE's conversion cap and a different instrument
+         entirely. If it appears in the liquidation-preference field it is a data
+         error, but it is not an assertion of a PARTICIPATION cap, so it must not
+         make the waterfall refuse. */
+      !/valuation\s*cap/i.test(lp)
+    ) {
+      capTextPresent = true;
+      capTextRawText = lpRaw;
+      capFromText = null;
+    }
+  }
+
+  let participationCapMultiple: number | null = null;
+  let participationCapSource: RoundStoredTerms["participationCapSource"] = null;
+  let participationCapRaw: string | null = null;
+  let participationCapUnreadable = false;
+  let participationCapConflict = false;
+
+  if (capKeyPresent && capTextPresent) {
+    participationCapRaw = `${capKeyRawText} / ${capTextRawText}`;
+    if (capFromKey === null || capFromText === null) {
+      participationCapUnreadable = true;
+    } else if (capFromKey !== capFromText) {
+      participationCapConflict = true;
+    } else {
+      participationCapMultiple = capFromKey;
+      participationCapSource = "capParticipation";
+    }
+  } else if (capKeyPresent) {
+    participationCapRaw = capKeyRawText;
+    if (capFromKey === null) participationCapUnreadable = true;
+    else { participationCapMultiple = capFromKey; participationCapSource = "capParticipation"; }
+  } else if (capTextPresent) {
+    participationCapRaw = capTextRawText;
+    if (capFromText === null) participationCapUnreadable = true;
+    else { participationCapMultiple = capFromText; participationCapSource = "liquidationPreference"; }
+  }
+
   return {
     safeCapType: str("safeType"),
     antiDilutionType: str("antiDilutionType"),
@@ -252,6 +484,11 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
     liquidationPreferenceMultiple: lpMultiple,
     liquidationPreferenceRaw: lpRaw,
     seniorityRank,
+    participationCapMultiple,
+    participationCapRaw,
+    participationCapSource,
+    participationCapUnreadable,
+    participationCapConflict,
   };
 }
 
@@ -302,8 +539,8 @@ export const OPTION_POOL_POST_PERCENT_MAX = 50 as const;
 /** The one refusal message, so the two writers cannot word it differently. */
 export const OPTION_POOL_POST_PERCENT_CEILING_MESSAGE =
   `An option pool of ${OPTION_POOL_POST_PERCENT_MAX}% of fully-diluted shares or more is not an ` +
-  `employee option plan, and Capavate will not model one. It is PERCENT-AS-WRITTEN (owner ruling ` +
-  `R16 / OR-1): 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is ` +
+  `employee option plan, and Capavate will not model one. It is percent-as-written ` +
+  `: 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is ` +
   `solved as T = (P x (E + u + N) - 100 x u) / (100 - P), so the cost of each extra point of pool ` +
   `rises as P approaches 100: at 15% a pool is worth roughly its own size in dilution, and at 99% ` +
   `the arithmetic is legal but produces a 46-digit share count that is not a cap table. Typical ` +

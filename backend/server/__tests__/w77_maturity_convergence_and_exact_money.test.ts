@@ -405,10 +405,188 @@ describe("W77 · R72 — the waterfall carries money as exact decimal text", () 
     }
     /* And the exact summer is still the ONE place the legs are added. */
     expect(s).toContain("const exactSum = (rows: Array<{ total: string }>): Decimal =>");
-    expect(s.match(/\.toFixed\(\)/g)?.length).toBe(4);
+    /* ── UPDATED BY WAVE 88: 4 -> 36 ──────────────────────────────────────
+       WHAT THIS ASSERTION IS FOR, and why the number moved rather than the rule.
+       `.toFixed()` with NO ARGUMENT emits a Decimal's full precision and rounds
+       NOTHING; `.toFixed(2)` would round a money figure at the API boundary, which
+       R72 condition 3 forbids. So the property being defended is "every money
+       figure leaving this route leaves through an unrounded `.toFixed()`", and the
+       COUNT is a proxy for it that necessarily grows when a leg is added.
+
+       Wave 88 added the convertible leg, the per-common-holder attribution and
+       three named refusals that quote the figures they cannot compute. Each of
+       those emits its money through the same unrounded call, which is exactly the
+       discipline this test exists to keep — so the count rises from 4 to 36 and the
+       ARGUMENT-LESS form is asserted separately and absolutely below. If a future
+       wave adds a leg, this number moves again and that wave has to say why.
+
+       THE REAL FENCE IS THE NEXT ASSERTION, not the count: NO `.toFixed(<digits>)`
+       anywhere in this file. That one cannot be satisfied by adding more calls. */
+    /* ── UPDATED BY WAVE 86B: 36 -> 39, and the RULE said out loud ──────────
+       Wave 86B made the exit-valuation input, the two per-round accumulators and
+       the common-row share parse EXACT, and each of those emits its figure through
+       the same ARGUMENT-LESS `.toFixed()`. So the count rises by exactly 3 for
+       exactly the reason this assertion exists. The three new calls are:
+         · `const exitMinor = exitMinorDec.toFixed();`      (the input parse)
+         · `data.amountStr = ...plus(toMinorExact(...)).toFixed();`  (accumulation)
+         · `shares: sd.toFixed()`                            (readCompanyCommonRows)
+       This is a PROXY and always was. The three assertions below it are the
+       property itself, and none of them can be satisfied by a lucky fixture. */
+    /* ══ UPDATED BY WAVE 91 · ITEM 2: 39 -> 49, DELIBERATELY, AND HERE IS WHY. ════
+       OLD EXPECTATION: exactly 39 argument-less `.toFixed()` calls in
+       `server/track1Routes.ts`.
+       NEW EXPECTATION: exactly 49.
+
+       WHY THE NEW ONE IS RIGHT. This assertion's own paragraph above states the
+       rule it stands for — *"every money figure leaving this route leaves through an
+       unrounded `.toFixed()`"* — and says in terms that *"if a future wave adds a
+       leg, this number moves again and that wave has to say why."* Wave 91 added the
+       pari passu tier walk, which is a new money computation in this file, and every
+       one of its TEN new emissions is the argument-less form:
+
+         pariPassuClaimMinor      · `inv.toFixed()`  · `claim.toFixed()`          (2)
+         buildPariPassuPlan       · `budget0.toFixed()` × 2                       (2)
+                                  · `paid.toFixed()` × 2 (the abated claim,
+                                    stored once and disclosed once)               (2)
+                                  · `claim.toFixed()`, `tierClaim.toFixed()`,
+                                    `available.toFixed()`,
+                                    `available.div(tierClaim).toFixed()`          (4)
+
+       So the count moved for exactly the reason the assertion exists, and it moved
+       UP: nothing was removed, no leg stopped emitting exactly, and the absolute
+       fence immediately below — no `.toFixed(<digits>)` anywhere in the file — is
+       unchanged and still the real test. The pari passu figures are also the reason
+       it matters here: an abatement ratio such as 10/17 does not terminate, so a
+       `.toFixed(2)` on that path would round an investor's cheque at the API
+       boundary, which is precisely what R72 condition 3 forbids. */
+    /* ══ UPDATED BY WAVE 94 (R83.2): 49 -> 68, DELIBERATELY, AND HERE IS WHY. ════
+       OLD EXPECTATION: exactly 49 argument-less `.toFixed()` calls in
+       `server/track1Routes.ts` (comments stripped, which is what `code()` does).
+       NEW EXPECTATION: exactly 68.
+
+       WHY THE NEW ONE IS RIGHT. This assertion's own paragraphs above state the rule
+       it stands for — *"every money figure leaving this route leaves through an
+       unrounded `.toFixed()`"* — and say in terms that *"if a future wave adds a leg,
+       this number moves again and that wave has to say why."* Wave 94 added the
+       participation-cap leg: R83.2's Item 1 threads a recorded cap to the sacred
+       engine, and Item 2 redistributes what a binding cap releases (open item J-3).
+       That is a new money computation in this file, and every one of its NINETEEN
+       new emissions is the argument-less form:
+
+         buildCapRedistributionPlan (14)
+           · `exit0.toFixed()`                                the exit parse
+           · `inv.toFixed()` x2                               claim and cap bases
+           · `(claimOf(c) as Decimal).toFixed()`, `E.toFixed()`  handed to the tier walk
+           · the pro-rata slice, twice (the probe and the award)
+           · `take.toFixed()`                                 a bound class's headroom
+           · `total.toFixed()`                                a class's expected total
+           · the common-equivalent share, twice (holders and converters)
+           · `residual`, `price`, `released`                  the disclosed figures
+         the redistribution pass in handleWaterfall (4)
+           · `inv.toFixed()` and the cap product              a bound class's cap
+           · `cappedTotal.toFixed()`                          the conservation check
+           · `conservationResidual.toFixed()`                 the measured residual
+         the response (1)
+           · `capAmountMinor`                                 the cap, in minor units
+
+       So the count moved for exactly the reason the assertion exists, and it moved
+       UP: nothing was removed, no leg stopped emitting exactly, and the absolute
+       fence immediately below — no `.toFixed(<digits>)` anywhere in the file — is
+       unchanged and still the real test. The cap figures are also why it matters
+       here: a redistributed residual price such as 3,050,000,000/9,000,000 does not
+       terminate, so a `.toFixed(2)` on that path would round a founder's cheque at
+       the API boundary, which is precisely what R72 condition 3 forbids.
+
+       THE THREE ABSOLUTE `Number(...)` ASSERTIONS BELOW ARE UNCHANGED AND STILL
+       GREEN. Wave 94 uses `Number()` only on a MULTIPLE and on a SHARE count — a
+       liquidation multiple, a cap multiple, a seniority rank and a ledger index —
+       and never on a money string. That distinction is the whole point of R72
+       condition 4 and it is not weakened here. */
+    /* ══ UPDATED BY WAVE 100: 68 -> 74, DELIBERATELY, AND HERE IS WHY. ═══════════
+       OLD EXPECTATION: exactly 68 argument-less `.toFixed()` calls in
+       `server/track1Routes.ts` (comments stripped, which is what `code()` does).
+       NEW EXPECTATION: exactly 74.
+
+       WHY THE NEW ONE IS RIGHT. The rule this assertion stands for is unchanged —
+       *"every money figure leaving this route leaves through an unrounded
+       `.toFixed()`"* — and it says in terms that a wave which adds a leg must move
+       this number and say why. Wave 100 added no leg and moved no money: it made the
+       route MEASURE two things it had previously asserted. All SIX new emissions are
+       the argument-less form:
+
+         the precision-ceiling refusal (2)
+           · `new EngineMatchDec(exitMinor).plus(0).toFixed()`   the round trip at the
+           · `new Decimal(exitMinor).plus(0).toFixed()`          engine's ceiling and at
+                                                                the shared instance's
+         the cap self-check, extended to the SUBMITTED input (1)
+           · `cappedVsSubmitted.toFixed()`      the residual against what was submitted
+         the universal conservation measurement (3)
+           · `measuredConservationResidualDec.toFixed()`   the residual now PUBLISHED in
+                                                           `conservationResidualMinor`
+           · `publishedTotalDec.toFixed()` x2   the total that did not conserve, on the
+                                                refusal body and in its prose
+
+       So the count moved for exactly the reason the assertion exists, and it moved
+       UP: nothing was removed, no leg stopped emitting exactly, and the absolute
+       fence immediately below — no `.toFixed(<digits>)` anywhere in the file — is
+       unchanged and still the real test. It matters here for the same reason as
+       before: a conservation residual such as 1e-29 has no terminating cent form, and
+       `.toFixed(2)` on it would report a real residual as zero — which is precisely
+       the false statement Wave 100 exists to remove. */
+    expect(s.match(/\.toFixed\(\)/g)?.length).toBe(74);
+    /* NOTHING IS ROUNDED ON THE WAY OUT (R72 condition 3), asserted as an absolute
+       rather than a count. `toFixed(0, ROUND_DOWN)` on a SHARE count is not a money
+       rounding and is not matched here; a digit count on its own would be. */
+    expect(s).not.toMatch(/\.toFixed\(\s*[1-9][0-9]*\s*\)/);
+    /* ── WAVE 86B · THE PROPERTY, NOT THE COUNT ────────────────────────────────
+       R72 was DISPROVED over HTTP while this file was green, because every
+       assertion above is either a count or a value on a fixture that happens to be
+       representable as a double. These three are source facts about the narrowing
+       that actually destroyed the money, and a fixture cannot satisfy them. */
+    expect(s, "the exit valuation is parsed with Number() again").not.toContain("Number(exitValuationMinor)");
+    expect(s, "the invested accumulator is narrowed again").not.toContain("Number(data.amountStr)");
+    expect(s, "the share accumulator is narrowed again").not.toContain("Number(data.sharesStr)");
+    /* And the summer runs on a MODULE-LOCAL CLONE, never on the bare global whose
+       precision depends on whether `math-fns` happened to be imported first, and
+       never via `Decimal.set`, which mutates the instance the SACRED engine reads. */
+    expect(s).toContain("const MoneyDec = Decimal.clone({");
+    expect(s).toContain("acc.plus(new MoneyDec(String(p.total)))");
+    expect(s).not.toContain("Decimal.set(");
   });
 
-  it("W77-M4 — NO consumer of these fields is user-visible (R72 condition 5)", () => {
+  /* ════════════════════════════════════════════════════════════════════
+     REWRITTEN BY WAVE 92. THIS PIN DID ITS JOB EXACTLY AS DESIGNED.
+     ════════════════════════════════════════════════════════════════════
+     THE OLD EXPECTATION: NO file under `client/src` may mention `founderProceeds`
+     or `lpProceeds`. It was written with its own instructions attached: *"If a
+     screen starts reading one of these fields, this fails and the display-rounding
+     convention has to be decided before it ships."* That is open item J-1, and R72
+     condition 5 authorised carrying money as exact decimal text partly BECAUSE no
+     screen rendered it yet.
+
+     A screen now does. `client/src/pages/founder/ExitWaterfall.tsx` (Wave 92) is
+     the first client caller of `GET /api/founder/captable/waterfall`.
+
+     SO THE CONVENTION WAS DECIDED, IN THE SAME STEP THAT FIRST RENDERS THE FIGURE
+     (R83.1), AND THIS PIN NOW ASSERTS IT INSTEAD OF ASSERTING ABSENCE. J-1 is
+     resolved as follows, and it is stated in full at the top of
+     `client/src/lib/exactMoney.ts`:
+
+       1. THE WIRE STAYS EXACT AND UNROUNDED. Nothing changed on the response.
+       2. A SINGLE FIGURE IS ROUNDED HALF-UP AT THE CURRENCY'S SMALLEST UNIT, once,
+          at the display layer, and the exact string is shown beside any figure
+          that was shortened — so no digit the engine produced is concealed.
+       3. A COLUMN THAT MUST ADD UP IS ROUNDED BY LARGEST REMAINDER, so displayed
+          rows sum to the displayed total exactly. `$3,333,333.33` three times under
+          a `$10,000,000.00` heading is how a founder concludes we cannot add up.
+       4. NO `Number()` ON MONEY, ANYWHERE (R72 condition 4). The display layer is
+          `bigint` and digit text only.
+
+     WHAT THIS TEST NOW PINS: that the money-consumer census stays true — exactly
+     ONE client file reads these fields, it goes through the exact-decimal display
+     layer, and it never narrows a money string to a `number`. The census itself is
+     re-run and recorded in `build_log/wave92/W92_SCREEN.md` §8. */
+  it("W77-M4 \u2014 exactly ONE client consumer, and it renders through the exact-decimal display layer", () => {
     /* Stated in the report and asserted here, because \"no screen renders it\" is the
        reason the owner authorised an interface change now. If a screen starts
        reading one of these fields, this fails and the display-rounding convention
@@ -420,11 +598,52 @@ describe("W77 · R72 — the waterfall carries money as exact decimal text", () 
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { walk(p); continue; }
         if (!/\.(ts|tsx)$/.test(e.name)) continue;
+        /* TEST FILES EXCLUDED (WAVE 92). This assertion is a CONSUMER CENSUS of
+           surfaces a founder can reach; the tests that PROVE the display convention
+           must name the fields, and counting them as consumers would make the
+           convention unprovable. Same exclusion as `W80-I5-A` and as the
+           internal-language fence. */
+        if (/__tests__/.test(p) || /\.(test|spec)\./.test(e.name)) continue;
         const t = fs.readFileSync(p, "utf8");
-        if (t.includes("founderProceeds") || t.includes("lpProceeds")) hits.push(p);
+        if (t.includes("founderProceeds") || t.includes("lpProceeds")) {
+          hits.push(path.relative(ROOT, p).split(path.sep).join("/"));
+        }
       }
     };
     walk(clientDir);
-    expect(hits).toEqual([]);
+    /* TWO FILES NAME THESE FIELDS, AND ONLY ONE OF THEM IS A CONSUMER. The screen
+       READS them; the display layer only names them in the block that documents
+       which fields R72 was issued about and why this module exists. Both are listed
+       explicitly rather than the list being loosened to "at most two", because a
+       THIRD file would mean two screens formatting the same money two ways, which is
+       exactly R72 condition 2's concern. Sorted, so the assertion does not depend on
+       directory-walk order. */
+    expect(hits.slice().sort()).toEqual([
+      "client/src/lib/exactMoney.ts",
+      "client/src/pages/founder/ExitWaterfall.tsx",
+    ]);
+    const screen = fs.readFileSync(path.join(ROOT, "client/src/pages/founder/ExitWaterfall.tsx"), "utf8");
+    /* IT GOES THROUGH THE DISPLAY LAYER, and not through the `number`-based helper
+       whose narrowing is what opened J-1 in the first place. */
+    expect(screen).toContain("@/lib/exactMoney");
+    expect(screen).not.toContain("@/lib/moneyDisplay");
+    /* AND IT NEVER NARROWS A MONEY STRING. Policed as source text on BOTH files,
+       because a `Number()` reintroduced in either would silently undo R72. */
+    const money = fs.readFileSync(path.join(ROOT, "client/src/lib/exactMoney.ts"), "utf8");
+    /* COMMENTS ARE STRIPPED FIRST. Both files EXPLAIN the rule in prose that
+       necessarily quotes the banned call, exactly as the internal-language fence's
+       own documentation observes about engineering comments \u2014 scanning them would
+       make it impossible to document the rule you are enforcing. This is a scan of
+       CODE. */
+    const stripComments = (src: string): string =>
+      src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+    for (const [label, src] of [
+      ["the screen", stripComments(screen)],
+      ["the display layer", stripComments(money)],
+    ] as const) {
+      for (const banned of ["Number(", "parseFloat(", "parseInt(", "Math.round(", ".toFixed("]) {
+        expect(src.includes(banned), `${label} uses ${banned} \u2014 R72 condition 4 forbids narrowing money`).toBe(false);
+      }
+    }
   });
 });

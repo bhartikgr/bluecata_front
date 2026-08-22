@@ -35,6 +35,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlement } from "@/lib/entitlement";
 import { formatMinor } from "@/lib/currency"; /* WAVE 34 — ISO 4217 exponent, never a hardcoded /100 */
+import { fmtLocaleDate } from "@/lib/format"; /* WAVE 89 · WAIVER-10 (R79) — renews_on is a DATE-ONLY text column; local midnight, never UTC midnight */
 
 /* ---------- Types ---------- */
 interface Subscription {
@@ -281,7 +282,7 @@ function CancelDialog({
           </DialogTitle>
           <DialogDescription>
             Your subscription will remain active until{" "}
-            {subscription?.renewsOn ? fmtDate(subscription.renewsOn) : "the end of your billing period"}, then cancel.
+            {subscription?.renewsOn ? fmtLocaleDate(subscription.renewsOn) : "the end of your billing period"}, then cancel.
             You can resume any time before that date.
           </DialogDescription>
         </DialogHeader>
@@ -408,7 +409,7 @@ export default function FounderBilling() {
     onSuccess: (data) => {
       if (data.ok) {
         queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription"] });
-        toast({ title: "Subscription set to cancel", description: `Active until ${fmtDate(sub?.renewsOn ?? "")}. Resume any time.` });
+        toast({ title: "Subscription set to cancel", description: `Active until ${fmtLocaleDate(sub?.renewsOn ?? "")}. Resume any time.` });
         setCancelOpen(false);
       } else {
         toast({ title: "Error", description: data.error ?? "Could not cancel.", variant: "destructive" });
@@ -451,7 +452,7 @@ export default function FounderBilling() {
             <div className="flex items-center gap-2 text-orange-800 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0" />
               <span>
-                Subscription cancels on <strong>{fmtDate(sub!.renewsOn)}</strong>.
+                Subscription cancels on <strong>{fmtLocaleDate(sub!.renewsOn)}</strong>.
                 You still have access until then. Resume any time.
               </span>
             </div>
@@ -497,7 +498,7 @@ export default function FounderBilling() {
 
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar className="h-3.5 w-3.5" />
-                    <span>{isCancelling ? "Cancels on" : "Renews on"}: {fmtDate(sub.renewsOn)}</span>
+                    <span>{isCancelling ? "Cancels on" : "Renews on"}: {fmtLocaleDate(sub.renewsOn)}</span>
                   </div>
 
                   {/* v25.32 final A1 — surface the most recent payment date

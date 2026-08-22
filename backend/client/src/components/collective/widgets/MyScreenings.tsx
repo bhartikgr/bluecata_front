@@ -59,7 +59,10 @@ export function MyScreenings() {
   );
 
   const buckets: Bucket[] = [
-    { key: "live", label: "Live", count: live.length, tone: "text-red-600" },
+    /* WAVE 101 - a screening that is LIVE is in flight, not failed.  It sat on
+       the negative anchor beside voted=emerald / upcoming=sky / awaiting=amber.
+       Moved to the info anchor.  Colour only; key, label and count untouched. */
+    { key: "live", label: "Live", count: live.length, tone: "text-sky-700" },
     { key: "voted", label: "Voted", count: voted.length, tone: "text-emerald-600" },
     { key: "upcoming", label: "Upcoming", count: upcoming.length, tone: "text-sky-600" },
     { key: "awaiting", label: "Awaiting your vote", count: awaiting.length, tone: "text-amber-600" },

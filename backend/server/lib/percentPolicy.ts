@@ -198,7 +198,7 @@ export const PERCENT_FIELD_DOMAIN: Readonly<Record<string, PercentFieldDomain>> 
       min: 0,
       max: 99.999999999,
       rationale:
-        "SAFE/note discount, PERCENT-AS-WRITTEN under owner ruling R30: '20' means 20%. " +
+        "SAFE/note discount, percent-as-written under R30: '20' means 20%. " +
         "Fenced at the table by migration 0190's triggers, which CORRECT 0153's " +
         "fraction-domain [0,1] fence (P-11) — that fence aborted the platform's own " +
         "canonical value and would have failed the first SAFE commit carrying a discount.",

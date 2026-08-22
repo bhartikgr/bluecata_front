@@ -673,6 +673,30 @@ const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
      declared once in `server/lib/roundStoredTerms.ts`). Wave 76 was caught by
      exactly the opposite order of operations; it is not repeated here. */
   "seniority",
+  /* WAVE 94 · ITEM 1 (R83.2) — `capParticipation`. ADDITIVE, NO MIGRATION.
+     The CEILING on what a participating preference class can take in total at an
+     exit, as a multiple of its investment: the "capped at 2x" half of "1x
+     participating, capped at 2x". `client/src/pages/founder/RoundNew.tsx` has
+     rendered a labelled control for it since before this wave and
+     `shared/schema.ts` lists it among a preferred round's fields, but NOTHING on
+     the server had ever read it and the exit waterfall therefore modelled every
+     capped class as UNCAPPED — which overpays that class and underpays the
+     founders. `server/lib/roundStoredTerms.ts` now reads it. It lives in
+     `extras_json`, which `POST /api/rounds` already stashes for any non-column
+     field and which `rowToRound` already re-spreads on hydrate, so this is the
+     same additive path `optionPoolPostPercent` (Wave 58b), `safeType` (Wave 70),
+     `liquidationPreference` (Wave 75), Wave 80's four and `seniority` (Wave 81)
+     all took. Migrations stay at **173 `.sql`, 177 entries, highest `0192`.**
+
+     EVERY WRITER THAT CAN NOW REACH IT VALIDATES IT, in this same wave, with ONE
+     imported fence (`validateParticipationCapStored`). Adding a key here makes it
+     reachable through `updateRound` from `PATCH /api/founder/rounds/:id`, which
+     hands every patch key straight to this function, as well as from
+     `PATCH /api/rounds/:id/terms`; and `POST /api/rounds`, which could already
+     store it through the extras sweep with no validation at all, is fenced too.
+     Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught by
+     it; Wave 81 refused to repeat that, and neither does this. */
+  "capParticipation",
 ]);
 
 /* Exported so the route layer can pre-filter a terms patch into core-column

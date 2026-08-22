@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast"; /* v25.14 NC3 — pledge error toast */
+import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
 
 /* SC-0 (WAVE 2) — RESPONSE-SHAPE CORRECTION.
  *
@@ -233,9 +234,20 @@ export default function PartnerFundDetail() {
             which carries only `revisionHash` and `createdAt`). Both lines rendered
             blank in production. They are removed rather than invented; see
             WAVE2_REPORT.md "What a complete audit receipt should show". */}
+        {/* WAVE 95 · ITEM 2 — the SAME 64-character machine value was rendered
+            here as on the SPV page (register M-8). Fixed identically rather than
+            left as the one place a partner can still read a raw digest: the label
+            is Wave 83's owner-approved wording and is kept verbatim, the full
+            digest stays on the row as `data-revision-hash`, and what a human
+            reads is a short quotable prefix of the same value. R77 + R44. */}
         <div className="text-xs font-mono space-y-1">
-          <div>revision_hash: {f.revisionHash}</div>
-          <div>created_at: {f.createdAt}</div>
+          <div data-revision-hash={f.revisionHash} data-testid="partner-fund-audit-receipt-ref">
+            Revision fingerprint: {auditReceiptReference(f.revisionHash) ?? "not recorded"}
+          </div>
+          <div>Created: {f.createdAt}</div>
+        </div>
+        <div className="text-xs" data-testid="partner-fund-audit-receipt-help">
+          Quote this fingerprint to Capavate support if you need this receipt checked.
         </div>
       </Card>
     </PartnerShell>

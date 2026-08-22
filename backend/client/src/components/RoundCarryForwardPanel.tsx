@@ -685,12 +685,12 @@ export default function RoundCarryForwardPanel({
           <div className="text-xs text-slate-400 flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-slate-300" />
             <span>
-              Audit digest:{" "}
-              <span className="font-mono text-slate-600">
-                {result.auditDigest.slice(0, 12)}…
+              Recorded for audit at{" "}
+              <span className="text-slate-600">
+                {result.computedAt}
               </span>
               <span className="ml-1 text-slate-400">
-                (SHA-256 of suggestion payload shown at {result.computedAt})
+                — this suggestion is fingerprinted so it can be proved unchanged later.
               </span>
             </span>
           </div>

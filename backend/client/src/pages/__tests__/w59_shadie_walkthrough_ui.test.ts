@@ -99,12 +99,36 @@ afterEach(() => cleanup());
  * S2 — THE INVISIBLE CHECKBOX
  * ═══════════════════════════════════════════════════════════════════════════ */
 describe("W59-S2 — the invisible checkbox: root cause, mechanism and fix", () => {
-  it("S2-A — home3style.css really contains an UNSCOPED button border reset, and Home.tsx imports it", () => {
+  it("S2-A — home3style.css's button border reset is SCOPED to the marketing root (WAVE 0 · H-1), and Home.tsx imports it", () => {
+    /* ═══════════════════════════════════════════════════════════════════════
+     * UPDATED BY WAVE 0 · H-1 (2026-08-21). READ THE REASON.
+     *
+     * W59 asserted that this reset was UNSCOPED, because at the time that was
+     * the root cause being documented and W59 deliberately did NOT fix it:
+     * scoping it restores a border on every `<button className="border …">` on
+     * the platform, which W59 correctly refused to do unreviewed while the owner
+     * was away.
+     *
+     * Wave 0 has now done it, with the owner's ratification (R78: "Wave 0 is
+     * MANDATORY … `button { border: none }` is unscoped and live"). The
+     * invariant this test protects therefore INVERTS: the reset must exist, must
+     * still be imported into the global stylesheet, and must now be CONFINED to
+     * the marketing tree.
+     *
+     * Everything else in this file — S2-B's jsdom mechanism proof, S2-C, S2-D —
+     * is unchanged and still passes: the shared `<Checkbox>` keeps its explicit
+     * `border-solid`, which is belt AND braces and must not be removed just
+     * because the leak is now scoped.
+     * ═══════════════════════════════════════════════════════════════════════ */
     const css = src(HOME3_CSS);
-    /* The rule, as an element selector at the top level of the file — no
-       ancestor class, no media query, nothing that would confine it to the
-       marketing page. */
-    expect(css).toMatch(/(^|\n)button\s*\{[^}]*border:\s*none;[^}]*\}/);
+    /* THE RESET STILL EXISTS — deleting it would change the marketing page. */
+    expect(css).toMatch(/\.home3-root\s+button\s*\{[^}]*border:\s*none;[^}]*\}/);
+    /* AND IT IS NO LONGER GLOBAL. No top-level `button { … border: none … }`
+       element rule may remain: that is the platform-wide leak. */
+    expect(css).not.toMatch(/(^|\n)button\s*\{[^}]*border:\s*none;[^}]*\}/);
+    /* The scope anchor really is on the marketing root, or the reset reaches
+       nothing and the marketing page silently changes. */
+    expect(src(HOME_TSX)).toMatch(/className="home3-root"/);
     /* And the import that puts it in the single global stylesheet. */
     expect(src(HOME_TSX)).toMatch(/import\s+['"]\.\/home3style\.css['"]/);
   });

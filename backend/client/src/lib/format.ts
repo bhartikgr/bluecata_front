@@ -64,9 +64,30 @@ export function fmtNum(value: unknown, digits: number = 0): string {
   });
 }
 
-/** Render an ISO date as "Jan 5, 2026". */
+/** Render an ISO date as "Jan 5, 2026".
+ *
+ * WAVE 83 · ITEM 2.2 — A DATE-ONLY VALUE IS NOT A MOMENT IN TIME.
+ * `new Date("2026-07-21")` is defined to parse as UTC midnight; rendering that
+ * through `toLocaleDateString` in any zone west of UTC printed **20 July** for
+ * a value the founder typed as **21 July**. That is the one-day shift reported
+ * on the round's target close date, and it was never a storage defect — the
+ * stored value was right the whole time. A `YYYY-MM-DD` string is now formatted
+ * from its OWN parts, so it cannot cross a timezone. A full datetime (anything
+ * carrying a time or an offset) still goes through `Date` exactly as before. */
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
+  const dateOnly = DATE_ONLY_RE.exec(String(iso).trim());
+  if (dateOnly) {
+    const y = Number(dateOnly[1]);
+    const m = Number(dateOnly[2]);
+    const d = Number(dateOnly[3]);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${MONTH_SHORT[m - 1]} ${d}, ${y}`;
+    }
+    return "—";
+  }
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-US", {
@@ -212,4 +233,110 @@ export function safeFormatPercent(
   if (n === null) return fallback;
   const pct = asPercent ? n : n * 100;
   return `${pct.toFixed(digits)}%`;
+}
+/* ============================================================== *
+ *  WAVE 87 · ITEM 1 — DATE-ONLY VALUES MUST NOT CROSS A TIMEZONE  *
+ * ============================================================== */
+
+/**
+ * WAVE 87 · ITEM 1 — THE SHIFT WAVE 83 FIXED IN ONE PLACE, FIXED EVERYWHERE.
+ *
+ * Wave 83 added `fmtDate` above and applied it to the round's target close date.
+ * Reviewer 1 then found the SAME defect still live on other date-only fields:
+ * `new Date("2026-06-15")` is DEFINED by the language to parse as UTC midnight,
+ * so `toLocaleDateString()` in New York (UTC-4/-5) prints **Jun 14** for a value
+ * the customer entered as **15 June**. A subscription renewal date, a fee
+ * effective date and a last-raise date are all dates a customer acts on.
+ *
+ * `fmtDate` could not be dropped into those sites without also changing their
+ * FORMAT ("6/15/2026" → "Jun 15, 2026"), and this wave is forbidden from
+ * restyling. `fmtLocaleDate` is therefore the drop-in replacement for
+ * `new Date(v).toLocaleDateString(locales, options)`:
+ *
+ *   • a DATE-ONLY string (`YYYY-MM-DD`) is rebuilt at LOCAL midnight, so the
+ *     calendar day it prints is the calendar day that was entered — in every
+ *     timezone, east or west of UTC;
+ *   • anything carrying a time or an offset is a genuine INSTANT and is handed
+ *     to `Date` unchanged, because localising an instant is correct and is not
+ *     this wave's business;
+ *   • the caller's `locales`/`options` are passed through untouched, so the
+ *     rendered format is byte-identical to what the site printed before.
+ *
+ * A UTC-only test suite cannot see the difference between the old and new code.
+ * That is why the bug survived, and why the tests for this run under
+ * TZ=America/New_York and TZ=Pacific/Auckland as well as TZ=UTC.
+ */
+const DATE_ONLY_PARSE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Parse a schema date value into a `Date` that is safe to render in local time.
+ * Returns `null` when the value is absent or unparseable. A `YYYY-MM-DD` string
+ * becomes LOCAL midnight of that calendar day; every other value is parsed by
+ * `Date` exactly as before.
+ */
+export function toCalendarDate(value: string | null | undefined): Date | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  if (s === "" || s === "—") return null;
+  const m = DATE_ONLY_PARSE_RE.exec(s);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    const local = new Date(y, mo - 1, d);
+    /* Reject impossible calendar dates (2026-02-31 would roll to 3 March). */
+    if (local.getFullYear() !== y || local.getMonth() !== mo - 1 || local.getDate() !== d) {
+      return null;
+    }
+    return local;
+  }
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Timezone-safe replacement for `new Date(v).toLocaleDateString(l, o)`.
+ * Format is the caller's; only the one-day shift is removed.
+ */
+export function fmtLocaleDate(
+  value: string | null | undefined,
+  locales?: string | string[] | undefined,
+  options?: Intl.DateTimeFormatOptions,
+  fallback: string = "—",
+): string {
+  const d = toCalendarDate(value);
+  if (d === null) return fallback;
+  try {
+    return d.toLocaleDateString(locales, options);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Timezone-safe replacement for `new Date(v).toLocaleString(l, o)`.
+ *
+ * For a genuine timestamp this is exactly `toLocaleString` and prints the time
+ * as before. For a DATE-ONLY value there is no time to print, so the date part
+ * is rendered from the calendar day and no spurious "00:00" is invented in the
+ * wrong day's column — the value never had a time, and pretending it did is how
+ * the shift happened.
+ */
+export function fmtLocaleDateTime(
+  value: string | null | undefined,
+  locales?: string | string[] | undefined,
+  options?: Intl.DateTimeFormatOptions,
+  fallback: string = "—",
+): string {
+  if (value === null || value === undefined) return fallback;
+  const s = String(value).trim();
+  const d = toCalendarDate(s);
+  if (d === null) return fallback;
+  try {
+    if (DATE_ONLY_PARSE_RE.test(s)) return d.toLocaleDateString(locales, options);
+    return d.toLocaleString(locales, options);
+  } catch {
+    return fallback;
+  }
 }

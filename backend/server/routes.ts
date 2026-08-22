@@ -253,7 +253,14 @@ import { registerRegionExtensionRoutes } from "./regionExtensionStore";
 import { registerLegalConsentRoutes } from "./legalConsentStore";
 // Sprint 29 — KL closures
 import { registerCompanyProfileRoutes } from "./companyProfileStore";
-import { registerStripeWebhookRoute } from "./stripeGatewayAdapter";
+/* WAVE 97B · R86 — `registerStripeWebhookRoute` (server/stripeGatewayAdapter.ts)
+ * was imported here and mounted POST /api/webhooks/stripe below. Both are gone:
+ * owner, 2026-08-21, "remove stripe. I can add this at a later date. We are
+ * using Airwallex today." A future gateway does NOT come back through this
+ * module — it plugs into the per-gateway webhook registrar in
+ * `server/paymentGatewayAdapter.ts` (registered via `registerPaymentGatewayRoutes`
+ * at :250) plus `server/lib/paymentGatewayResolver.ts`'s six EXTENSION POINTs.
+ * See build_log/wave97b/W97B_REMOVAL.md §5. */
 // Wave C-3 + C-4 — Collective Shell + M&A Intelligence
 import { registerCollectiveRoutes } from "./collectiveRoutes";
 import { registerCollectiveWaveARoutes } from "./collectiveWaveAStore"; /* v25.44 Wave A surfaces 1-12 */
@@ -385,6 +392,9 @@ import {
   /* WAVE 81 · ITEM 2 (D4) — the seniority write fence, imported rather than
      restated, so this route and the other two writers cannot disagree. */
   validateSeniorityRankStored,
+  /* WAVE 94 · ITEM 1 (R83.2) — the participation-cap write fence, imported rather
+     than restated, so all three writers of `capParticipation` say one sentence. */
+  validateParticipationCapStored,
   optionPoolPostPercentWithinCeiling,
 } from "./lib/roundStoredTerms";
 import { registerTrack4Routes, setSoftCircleSource } from "./track4Routes";
@@ -445,6 +455,9 @@ import {
   listForRound as listLateAcceptancesForRound,
 } from "./lib/roundLateAcceptanceStore";
 import { closedStatement as roundClosedStatement } from "../shared/roundClose";
+/* WAVE 83 · ITEM 2.2 — the ONE rule for a past target close date, shared with
+   the two client writers so no screen can enforce a different rule. */
+import { pastTargetCloseNotice } from "../shared/roundTargetCloseRule";
 import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
@@ -623,19 +636,72 @@ function allow(ip: string, limitPerMin = 10): boolean {
  *
  * Returns the union of the legacy in-memory `rounds` array (seeded by mockData
  * + appended-to by POST /api/rounds for the current boot) and rounds hydrated
- * from the SQL `rounds` table via roundsStore. Rounds present in both lists
- * (matched by `id`) are deduplicated, preferring the legacy in-memory entry
- * because it carries the legacy seed's extra columns the UI expects.
+ * from the SQL `rounds` table via roundsStore.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 82 · ITEM 1 — THE DB ROW IS THE SOURCE OF TRUTH. THE LEGACY ARRAY IS A
+ * FALLBACK, NOT AN OVERRIDE.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Until this wave the dedupe preferred the LEGACY entry for any id present in
+ * both lists. `POST /api/rounds` pushes a creation-time `legacyShape` snapshot
+ * into that array (see the push site below), so for every DB-created round the
+ * snapshot existed AND won — and `GET /api/rounds`, `GET /api/rounds/:id` and
+ * therefore the Edit-terms dialog's seed served the creation-time values for
+ * the lifetime of the process.
+ *
+ * Reproduced over HTTP before this change (`w82_scratch/w82_readpath_repro.mts`,
+ * transcript in `build_log/wave82/W82_ITEM1_REPRO_BEFORE.txt`):
+ * `PATCH /api/founder/rounds/:id` returned 200, echoed `name` =
+ * "RENAMED-BY-FOUNDER-ROUTE", wrote it durably — and both read endpoints kept
+ * serving the creation-time name for ever. `PATCH /api/rounds/:id/terms`
+ * escaped only by ALSO mutating the snapshot in place (`Object.assign(r,
+ * updates)`, the "hot-read mirror" at :3465). Any writer that does not perform
+ * that mirror is invisible on every read surface.
+ *
+ * The overlay direction is therefore reversed: for an id present in both, the
+ * STORE copy is layered OVER the legacy one. Three properties are preserved
+ * deliberately:
+ *
+ *  1. NO SILENT DROPS. Every legacy entry is still returned, in its original
+ *     order, and DB-only rounds are still appended. Census (executed, both
+ *     seed states, `build_log/wave82/W82_LEGACY_ONLY_CENSUS.txt`): 6 legacy-only
+ *     rounds with `ENABLE_DEMO_SEED=1` (rnd_novapay_foundation,
+ *     rnd_novapay_preseed, rnd_novapay_seed_closed, rnd_pre, rnd_novapay_seed,
+ *     rnd_a) and 0 in production, where `DEMO_SEED_ENABLED` is hard-false and
+ *     the array only ever holds rounds that DO have a DB row.
+ *  2. A legacy-only round is returned as the SAME OBJECT REFERENCE it always
+ *     was. `resolveArchivedAt`'s header records that several PATCH handlers
+ *     persist a legacy seed-only round by mutating the object this helper
+ *     returns (the `ROUND_NOT_FOUND` fallback branch of the terms route is the
+ *     live example). Copying those entries would have turned that fallback into
+ *     a silent no-op — a second silent drop in the act of fixing the first.
+ *  3. `undefined` values in the store copy do NOT clobber the legacy copy, so
+ *     legacy-seed-only display fields (`company`, and the seed's extra columns)
+ *     survive. An explicit `null` DOES win, because `null` is how the terms
+ *     routes record a deliberate removal.
  */
 function mergeLegacyAndDbRounds(): any[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const legacy = rounds as unknown as any[];
   const dbRounds = roundsStoreList();
   if (dbRounds.length === 0) return legacy;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dbById = new Map<string, any>(dbRounds.map((r) => [r.id, r]));
+  const merged = legacy.map((l) => {
+    const db = dbById.get(l.id);
+    // Legacy-only round: SAME REFERENCE (property 2 above). Never copied.
+    if (!db) return l;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const overlay: Record<string, any> = {};
+    for (const [k, v] of Object.entries(db)) {
+      if (v !== undefined) overlay[k] = v;
+    }
+    return { ...l, ...overlay };
+  });
   const legacyIds = new Set(legacy.map((r) => r.id));
   const extras = dbRounds.filter((r) => !legacyIds.has(r.id));
-  if (extras.length === 0) return legacy;
-  return [...legacy, ...extras];
+  if (extras.length === 0) return merged;
+  return [...merged, ...extras];
 }
 
 /**
@@ -1357,8 +1423,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   registerInvoiceRoutes(app);
   /* v25.6 — MUST register BEFORE registerPaymentGatewayRoutes() so the
-   * Stripe-webhook deprecation middleware pre-empts the legacy handler.
-   * Express dispatches in registration order. */
+   * legacy-webhook deprecation middleware pre-empts the legacy handler.
+   * Express dispatches in registration order.
+   * (WAVE 97B · R86: this comment said "Stripe-webhook deprecation middleware";
+   * the middleware itself is not Stripe-specific and is untouched.) */
   registerFounderBillingExtensions(app);
   registerPaymentGatewayRoutes(app);
 
@@ -1468,7 +1536,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 29: KL closures ------------ */
   registerCompanyProfileRoutes(app);
-  registerStripeWebhookRoute(app);
+  /* WAVE 97B · R86 — `registerStripeWebhookRoute(app)` stood here and mounted
+   * POST /api/webhooks/stripe. Removed with the Stripe gateway; allowlisted as
+   * a documented removal in scripts/silent-drop-guard/allowlist.json. */
   registerContactRosterImporterRoutes(app);
 
   /* ------------ Wave C-3 + C-4: Collective Shell + M&A Intelligence ------------ */
@@ -2874,6 +2944,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const updates: Record<string, unknown> = {};
     /* WAVE 58e · D2 — non-blocking market-norm disclosure, returned on success. */
     const termWarnings: string[] = [];
+    /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
+       and never silent: the founder gets the same sentence here that both client
+       writers show inline, on the channel that cannot block a save. */
+    {
+      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
+      if (pastClose) termWarnings.push(pastClose);
+    }
+    /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
+       and never silent: the founder gets the same sentence here that both client
+       writers show inline, on the channel that cannot block a save. */
+    {
+      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
+      if (pastClose) termWarnings.push(pastClose);
+    }
+    /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
+       and never silent: the founder gets the same sentence here that both client
+       writers show inline, on the channel that cannot block a save. */
+    {
+      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
+      if (pastClose) termWarnings.push(pastClose);
+    }
     // BUG 034 follow-up v23.7.1 — numeric terms (priced fields + instrument
     // extras) must be REJECTED with 400 when present-but-invalid (NaN or
     // negative), not silently dropped. A field absent from the body is left
@@ -3166,8 +3257,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               `it needs BOTH a multiple written as a leading “1x”, “1.5x” or “2x” (up to 10x) AND the ` +
               `word “participating” or “non-participating”. ` +
               `${multOk ? "" : "No usable multiple was found. "}${partOk ? "" : "Participation was not stated. "}` +
-              `Until both are present, GET /api/founder/captable/waterfall will keep refusing with ` +
-              `liquidation_term_not_on_record.`,
+              `Until both are present, the exit waterfall will keep refusing to produce a figure for this ` +
+              `round rather than guessing one.`,
           );
         }
       }
@@ -3218,7 +3309,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(400).json({
             error: "invalid_optionPoolPostPercent",
             message:
-              "optionPoolPostPercent is PERCENT-AS-WRITTEN (owner ruling R16 / OR-1): 25 means 25%. " +
+              "The option pool percentage is percent-as-written: 25 means 25%. " +
               "It must be a number in [0, 100) and is never rescaled by magnitude — 0.25 is a quarter " +
               "of one percent, not 25%.",
           });
@@ -3406,6 +3497,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
 
+    /* ══════════════════════════════════════════════════════════════════════════
+       WAVE 94 · ITEM 1 (R83.2) — WRITER 2 OF 3: THE PARTICIPATION CAP.
+       ══════════════════════════════════════════════════════════════════════════
+       `capParticipation` joined `roundsStore.UPDATE_EXTRAS_WHITELIST` in this same
+       wave, so this route can now round-trip it instead of rejecting it as an
+       unknown field. The fence ships WITH the whitelist entry, never a wave later:
+       Wave 76 shipped them apart and an unvalidated value sat on the row while the
+       waterfall refused to read it.
+
+       WHY THIS FIELD IS WORTH A FENCE AT ALL. Until this wave the cap had no
+       server reader, so an out-of-domain value was merely inert. Now it reaches the
+       sacred engine's `participationCapMultiple` and CLAMPS a class's total payout,
+       which means a bad value moves money. This project has persisted
+       `"FULL_RATCHET"` and `7` unvalidated and then broken the cap table.
+
+       REMOVAL IS TESTED ON THE LITERAL VALUE, for the same reason the seniority
+       block above gives: `String([])` is `""`, so the shared trim idiom would read
+       an empty ARRAY as "remove the cap". An explicit `null` or `""` removes it,
+       which means the class is UNCAPPED — which is a real term and not a gap. */
+    if (body.capParticipation !== undefined) {
+      if (
+        body.capParticipation === null ||
+        (typeof body.capParticipation === "string" && body.capParticipation.trim() === "")
+      ) {
+        updates.capParticipation = null; // explicit removal — the class is uncapped
+      } else {
+        const cv = validateParticipationCapStored(body.capParticipation);
+        if (!cv.ok) {
+          return res.status(400).json({ error: cv.error, field: "capParticipation", message: cv.message });
+        }
+        /* Stored as a NUMBER, which is the shape the creation writer stores and the
+           shape the reader parses, so the three writers cannot drift (R21). */
+        updates.capParticipation = Number(cv.value);
+      }
+    }
+
     /* USE OF PROCEEDS — the field with live founder AND investor readers, and the
        one whose silent drop mattered most. Wave 80 accepts BOTH shapes the product
        writes it in (the wizard's free-text narrative and the structured rows the
@@ -3462,6 +3589,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // existing read paths (mergeLegacyAndDbRounds().find / rounds.filter) reflect
     // the change without a wide refactor. The DB row written above is the durable
     // source of truth; this is only a hot-read mirror.
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 82 · ITEM 1 — THIS MIRROR IS DELIBERATELY **KEPT**, AND IT IS NOT
+       REDUNDANT. Stated with the proof rather than the assumption:
+
+       The WAVE 82 merge fix makes the store copy win for any round that HAS a
+       DB row, so for those rounds this line is now a no-op on the read path.
+       But the `ROUND_NOT_FOUND` branch forty lines above depends on it: for a
+       LEGACY SEED-ONLY round (no DB row — 6 of them with the demo seed on,
+       enumerated in build_log/wave82/W82_LEGACY_ONLY_CENSUS.txt)
+       `roundsStoreUpdate` refuses, the handler deliberately does NOT 500, and
+       `r` is the live legacy array object returned by reference from
+       `mergeLegacyAndDbRounds`. This assignment is then the ONLY store for that
+       edit. Removing it in this wave would convert every term edit on a
+       seed-only round into a silent no-op — a new silent drop introduced while
+       fixing one. It stays until seed-only rounds are given DB rows, which is
+       not this wave's scope.
+       ═══════════════════════════════════════════════════════════════════════ */
     Object.assign(r, updates);
     /* WAVE 8 / ORP-050 (DEF-050) — was a duck-typed `(BridgeOutbound as any)
        .roundTermsUpdated ? … : auditLogAppended(…)`. The helper did not exist on
@@ -4049,6 +4193,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const projected = rows.map((r: any) => ({
         id: r.id,
         roundId: r.roundId,
+        /* WAVE 90 · ITEM 3 (M-3) — ADDITIVE. `InvestorSiloPanel` rendered
+           `{s.roundId}` as this row's primary label, so an investor read
+           `rnd_…` where a round name belongs. The name has to come from data,
+           and `resolveRoundName` is the resolver the cap-table sinks already
+           use, so the two surfaces cannot disagree. `roundId` is left verbatim
+           for existing callers (R77: machine value in the payload, human label
+           in the render). */
+        roundName: resolveRoundName(r.roundId),
         companyId: r.companyId,
         amount: r.amount,
         currency: r.currency,
@@ -4095,6 +4247,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const rows = softCircleListForInvestor(ctx.userId) ?? [];
       const items = rows.map((r: any) => ({
         roundId: r.roundId,
+        /* WAVE 90 · ITEM 3 (M-3) — ADDITIVE; see the soft-circles projection. */
+        roundName: resolveRoundName(r.roundId),
         companyId: r.companyId ?? null,
         amount: r.amount ?? null,
         /* Exact integer minor units from the `amount_minor` column. */
@@ -4196,6 +4350,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const softs = (softCircleListForInvestor(ctx.userId) ?? []) as Array<any>;
       const events: Array<{
         ts: string; kind: string; roundId?: string; companyId?: string;
+        /* WAVE 90 · ITEM 3 (M-3) — ADDITIVE. The activity feed rendered
+           `{e.roundId}` beside each event, so an investor read `rnd_…`. */
+        roundName?: string;
         amount?: string | null; amountMinor?: number | null; currency?: string | null;
       }> = [];
       for (const c of commits) {
@@ -4226,6 +4383,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ts: c.ts ?? c.updatedAt ?? c.createdAt ?? new Date(0).toISOString(),
           kind: `captable.${c.state ?? "commit"}`,
           roundId: c.roundId,
+          roundName: resolveRoundName(c.roundId), // WAVE 90 · ITEM 3
+
           companyId: c.companyId,
           amount: c.amount ?? null,
           amountMinor: minor,
@@ -4237,6 +4396,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ts: s.createdAt ?? s.softCircledAt ?? new Date(0).toISOString(),
           kind: "softcircle.added",
           roundId: s.roundId,
+          roundName: resolveRoundName(s.roundId), // WAVE 90 · ITEM 3
+
           companyId: s.companyId,
           amount: s.amount ?? null,
           /* Exact integer minor units already on the row (`amount_minor`). */
@@ -6839,6 +7000,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const iv = validateInterestRatePercentAsWritten((body as Record<string, unknown>).interestRate);
       if (!iv.ok) return res.status(400).json({ ok: false, error: iv.error, message: iv.message });
       if (iv.warning) termWarnings.push(iv.warning);
+      /* WAVE 83 · ITEM 2.2 — writer 3 of 4 (round creation). Same rule, same
+         sentence, same non-blocking channel. */
+      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
+      if (pastClose) termWarnings.push(pastClose);
     }
     /* ── WAVE 58 · R27 — SERVER BACKSTOP FOR THE POOL PERCENTAGE ──────────────
        `optionPoolPostPercent` is PERCENT-AS-WRITTEN (R16 / OR-1): `"15"` is 15%.
@@ -7254,6 +7419,73 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!v.ok) return res.status(400).json({ ok: false, error: v.error, field: key, message: v.message });
         /* The value is NOT restated — an accepted token reaches `extras` byte for
            byte as it did before this block existed. */
+      }
+      /* ═══════════════════════════════════════════════════════════
+         WAVE 91 · ITEM 4 — THE THIRD WRITER OF `seniority`, WHICH VALIDATED NOTHING.
+         ═══════════════════════════════════════════════════════════
+         MEASURED, and admitted in this file's own comment at the terms writer: this
+         route accepted `{"seniority": 3.5}` and `{"seniority": 500}` with HTTP 200
+         and stored them, because `KNOWN_COLS` below sweeps every unrecognised body
+         key into `extras_json`. The reader then returns `null` for the bad value and
+         `GET /api/founder/captable/waterfall` refuses — with the unusable rank still
+         sitting on the row, invisible, and no screen anywhere to correct it.
+
+         THIS IS THE FOURTH INSTANCE OF THE SAME CLASS IN THIS PROJECT. `"FULL_RATCHET"`
+         and `7` were once persisted unvalidated and then broke the cap table (Wave
+         76 · D5, on this very route); Wave 81 closed the two post-creation seniority
+         writers and recorded this one as a known hole rather than closing it. A
+         round can no longer be BORN with a rank the platform cannot read.
+
+         SAME IMPORTED VALIDATOR, SAME CODE, SAME SENTENCE as both post-creation
+         writers (R21) — integer `[0, SENIORITY_RANK_MAX]`, `0` most senior. So the
+         three writers now agree on what a payment order may contain, which is the
+         whole point of closing it here rather than adding a fourth rule.
+
+         IT IS A DELIBERATE BEHAVIOUR CHANGE, AND IT IS STATED AS ONE. A request that
+         returned 200 today returns 400. It is the recommended default of
+         `OQ-W-3` in `spec/OWNER_QUESTIONS_WATERFALL.md`, and it moves no money
+         figure: an out-of-domain rank was never readable, so nothing that computes
+         today stops computing. What changes is that the founder is told at the
+         moment they typed it instead of at an exit.
+
+         ABSENT STAYS ABSENT (R6). `undefined` is untouched; `null` and `""` are
+         accepted as "no ranking recorded" and the key is removed rather than stored
+         as an unreadable blank, which is exactly what the reader already treats it
+         as. An accepted rank is normalised to a NUMBER, which is the form the
+         post-creation writer stores, so a round created here and a round patched
+         there hold the identical value. */
+      if ((body as Record<string, unknown>).seniority !== undefined) {
+        const sv = validateSeniorityRankStored((body as Record<string, unknown>).seniority);
+        if (!sv.ok) {
+          return res.status(400).json({ ok: false, error: sv.error, field: "seniority", message: sv.message });
+        }
+        if (sv.value === "") delete (body as Record<string, unknown>).seniority;
+        else (body as Record<string, unknown>).seniority = Number(sv.value);
+      }
+
+      /* ════════════════════════════════════════════════════════════════════════
+         WAVE 94 · ITEM 1 (R83.2) — WRITER 1 OF 3: THE CREATION WRITER.
+         ════════════════════════════════════════════════════════════════════════
+         THIS WAS THE UNVALIDATED ONE, and it was the ONLY reachable writer of a
+         participation cap in the whole platform. `KNOWN_COLS` below sweeps every
+         unrecognised body key into `extras_json`, so `{"capParticipation":
+         "FULL_RATCHET"}` and `{"capParticipation": 500}` were both accepted with an
+         HTTP 200 and stored. Nothing read them, so nothing broke — and then this
+         wave made the value reach the sacred engine and CLAMP a payout, which is
+         exactly the moment an unfenced writer becomes a wrong cheque.
+
+         ABSENT STAYS ABSENT (R6). `undefined` is untouched; `null` and `""` are
+         accepted as "no cap recorded" and the key is REMOVED rather than stored as
+         an unreadable blank. An accepted cap is normalised to a NUMBER, which is
+         the form both post-creation writers store, so a round created here and a
+         round patched there hold the identical value. */
+      if ((body as Record<string, unknown>).capParticipation !== undefined) {
+        const cv = validateParticipationCapStored((body as Record<string, unknown>).capParticipation);
+        if (!cv.ok) {
+          return res.status(400).json({ ok: false, error: cv.error, field: "capParticipation", message: cv.message });
+        }
+        if (cv.value === "") delete (body as Record<string, unknown>).capParticipation;
+        else (body as Record<string, unknown>).capParticipation = Number(cv.value);
       }
     }
 

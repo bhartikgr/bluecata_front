@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import { Receipt, RefreshCw } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { fmtLocaleDateTime } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
 
 interface AdminPaymentRow {
   id: string;
@@ -60,9 +61,16 @@ function fmtMoney(minor: number, currency = "USD"): string {
   // is byte-identical to the prior Intl.NumberFormat(.../100) call).
   return formatMinor(minor, currency, { locale: "en-US" });
 }
+/* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
+   Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
+   exact defect reviewer 1 reported: `new Date("2026-06-15")` parses as UTC
+   midnight, so any local-time reader prints ONE DAY EARLY west of UTC (the
+   owner is in New York). Only the BODY changes — every call site is untouched,
+   so a timestamp renders byte-identically and nothing is restyled, while a
+   date-only value now renders the day that was entered. */
 function fmtDate(iso: string): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  try { return fmtLocaleDateTime(iso, undefined, undefined, iso); } catch { return iso; }
 }
 
 const PAGE_SIZE = 100;

@@ -143,7 +143,7 @@ export default function PartnerResponders() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant={r.status === "active" ? "default" : "outline"}>{r.status}</Badge>
+                      <Badge variant={r.status === "active" ? "positive" : "outline"}>{r.status}</Badge>
                       {r.status === "active" ? (
                         <Button variant="ghost" size="sm" onClick={() => patchMut.mutate({ id: r.id, status: "paused" })} title="Pause" data-testid={`pause-${r.id}`}><Pause className="h-3.5 w-3.5" /></Button>
                       ) : (

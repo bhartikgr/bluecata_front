@@ -325,8 +325,18 @@ describe("CP-MSG-05 — the messaging limiter is keyed on the caller", () => {
       "WAIVER-8 was OWNER-RATIFIED 2026-08-18 (R70); field 5 must say so",
     ).toBe("RATIFIED");
     /* And the ENFORCED bytes are the ones actually on disk — an exact pin, not an
-       ignore, independently written here as the third copy. */
-    expect(w8Fields[1]).toBe("15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27");
+       ignore, independently written here as the third copy.
+
+       WAVE 97B RE-FREEZE (2026-08-21) — R86, owner's instruction "remove stripe.
+       I can add this at a later date. We are using Airwallex today." The pin moved
+       from 15679904…5a9c0d27 (Wave 75, R70) to 7b515904…a5f980372 because the
+       Stripe wiring was removed from the sacred adapter. WAIVER-8's row is
+       otherwise untouched — same path, same id, same RATIFIED state — so the two
+       "9 under KNOWN_DRIFT freeze" / "all 9 waivers OWNER-RATIFIED" assertions in
+       this same file are deliberately NOT changed and are still true. That is the
+       mechanical consequence of a re-freeze rather than a new row.
+       The prior hash is retained here and in sacred_check.sh's HASH LINEAGE. */
+    expect(w8Fields[1]).toBe("7b5159047803610592ffb4fe32eee18c9261ae027f990073a1131a7a5f980372");
     expect(
       crypto.createHash("sha256").update(fs.readFileSync("server/paymentGatewayAdapter.ts")).digest("hex"),
     ).toBe(w8Fields[1]);

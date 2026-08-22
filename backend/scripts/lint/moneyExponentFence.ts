@@ -202,8 +202,22 @@ export const BASELINE: BaselineEntry[] = [
        inside the <code> element is the same documentation of the same lossy
        legacy write. The fence is UNCHANGED: no pattern removed, no vocabulary
        token removed, no directory excluded, nothing newly allowlisted, and the
-       baseline is still exactly ONE entry that is still prose rather than code. */
-    line: 1550,
+       baseline is still exactly ONE entry that is still prose rather than code.
+
+       WAVE 83 re-pin: 1550 -> 1567. Same site, byte-identical text (again proved
+       by the fence's own `text` match, which is why it reported BASELINE-STALE
+       instead of a new violation). It moved DOWN by exactly SEVENTEEN lines
+       because WAVE 83 ITEM 1 added the `UNIT_IN_PLAIN_ENGLISH` mapping and its
+       comment ABOVE the SourceOfTruth component in this file, so that the Units
+       row reads "Whole cents (integer)" instead of the column type
+       `currency_minor (cents)` under owner ruling Q25. WAVE 83 did not touch the
+       prose this entry pins, the legacy mirror it describes, or any money
+       conversion anywhere in this file — the `/ 100` inside the <code> element is
+       the same documentation of the same lossy legacy write. The fence is
+       UNCHANGED: no pattern removed, no vocabulary token removed, no directory
+       excluded, nothing newly allowlisted, and the baseline is still exactly ONE
+       entry that is still prose rather than code. */
+    line: 1567,
     text: "<code>Math.round(amountMinor / 100)</code> because that legacy table stores",
     why: "Not code — JSX documentation prose inside a <code> element, describing the legacy mirror write that WAVE 34 fixed at adminPlatformFeesRoutes.ts.",
   },

@@ -246,7 +246,7 @@ export default function AdminDashboard() {
             variant={surface === "capavate" ? "default" : "ghost"}
             onClick={() => setSurface("capavate")}
             className={surface === "capavate"
-              ? "bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white"
+              ? "bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white"
               : "text-foreground"}
             data-testid="button-surface-capavate"
             aria-selected={surface === "capavate"}

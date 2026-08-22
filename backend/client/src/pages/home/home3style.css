@@ -198,6 +198,35 @@ figcaption {
 button {
   cursor: pointer;
   background: none;
+}
+
+/* WAVE 0 · H-1 RESOLVED — 2026-08-21.
+ *
+ * This declaration used to read `border: none;` INSIDE the unscoped `button`
+ * rule above. This file is imported by `client/src/pages/home/Home.tsx`, and
+ * Vite emits every import into the ONE global stylesheet that every page of the
+ * platform loads. An element selector (`button`, specificity 0,0,1) therefore
+ * beat Tailwind's `.border` utility — which sets only `border-width` — on every
+ * button in the logged-in product, in every product area.
+ *
+ * Measured consequence (proved in Chromium on live v26.19.0, evidence
+ * `spec/preflight_design_evidence/live/border_reset_probe.json`):
+ *   <span   class="border border-slate-300">  ->  solid / 1px   OK
+ *   <button class="border border-slate-300">  ->  none  / 0px   BROKEN
+ * Every `<Button>` variant in `client/src/components/ui/button.tsx` carries
+ * `border`, so every button on the platform was silently borderless.
+ *
+ * The reset was written for this marketing page and is kept for it, scoped to
+ * the `.home3-root` wrapper that `Home.tsx` puts around the marketing tree.
+ * Nothing outside that wrapper is reset any more. No other file imports this
+ * stylesheet and no marketing component is rendered outside `Home.tsx`, so the
+ * public marketing surface is byte-for-byte unchanged in its rendered result.
+ *
+ * DO NOT restore the global form. If a button looks wrong now that its intended
+ * border is drawn, fix that button. See
+ * `build_log/wave0_design/W0_BORDER_RESET_IMPACT.md`.
+ */
+.home3-root button {
   border: none;
 }
 

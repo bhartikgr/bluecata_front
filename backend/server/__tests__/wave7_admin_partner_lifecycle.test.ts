@@ -139,7 +139,26 @@ describe("AD-1 — the copy that promised this surface is now true", () => {
        the whole client: a claim with no surface behind it. It is left in place
        precisely because it is now accurate; if a later wave removes the panel
        this test fails and the stale promise is caught. */
-    expect(fees).toContain("promote-tier");
+    /* WAVE 85 — STALE COPY PIN, RE-POINTED AT THE SURFACE INSTEAD OF AT THE PROSE.
+       Wave 83 removed the endpoint path from this admin caption. Both strings, verbatim
+       (`build_log/wave83/w83_copy_edits_partner_admin.py`, AF:1211):
+         OLD: "A partner is 'promoted' onto one of these tiers via POST /api/admin/partners/:id/promote-tier from the partner detail page"
+         NEW: "A partner is 'promoted' onto one of these tiers from the partner detail page"
+       THIS TEST'S OWN STATED TRIGGER DID NOT OCCUR. It exists to catch a later wave
+       REMOVING THE PANEL and leaving a stale promise behind. The panel is fully intact:
+       `client/src/components/admin/PartnerLifecyclePanel.tsx:157` still POSTs
+       `/api/admin/partners/${partnerId}/promote-tier`, and `server/partnerRoutes.ts:434`
+       still serves it. So the promise is still TRUE — only the copy stopped quoting an
+       HTTP route at an admin on a screenshared page.
+       The assertion is therefore re-pointed at the thing that must not disappear (the
+       working surface) rather than at the sentence that describes it. The caption is
+       still checked for the words a human navigates by. */
     expect(fees).toContain("partner detail page");
+    const panel = readFileSync(
+      join(CLIENT, "components", "admin", "PartnerLifecyclePanel.tsx"),
+      "utf8",
+    );
+    expect(panel).toContain("/promote-tier");
+    expect(panel).toContain('data-testid="button-promote-tier"');
   });
 });

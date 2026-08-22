@@ -3,15 +3,22 @@
  *
  * Coverage:
  *   • Resolver picks AirWallex by default (PAYMENT_GATEWAY_DEFAULT unset)
- *   • Resolver respects explicit PAYMENT_GATEWAY_DEFAULT=stripe override
  *   • createPaymentIntent / refundPayment return well-formed stubs in test mode
  *   • Input validation (amount, currency, idempotency key) rejects bad input
  *   • Webhook signature verification accepts valid HMAC and rejects tampered payload
- *   • Per-gateway webhook routes (/api/webhooks/payment-gateway/airwallex|stripe)
- *     are wired and idempotent on (intentId, type)
+ *   • The per-gateway webhook route /api/webhooks/payment-gateway/airwallex is
+ *     wired and idempotent on (intentId, type)
  *   • getPublicConfig() preserves the legacy `webhookUrl` shape AND exposes the
  *     new `defaultGateway` + `defaultWebhookUrl` fields
- *   • listPublicGatewayConfig() returns both gateways with `isDefault` correctly set
+ *   • listPublicGatewayConfig() returns AirWallex with `isDefault` correctly set
+ *
+ * WAVE 97B (2026-08-21) · R86 — SIX ASSERTIONS IN THIS FILE ASSERTED THAT
+ * STRIPE WORKED. They are rewritten, not deleted, and each rewrite is recorded
+ * inline with OLD / NEW / WHY at the site. Owner, verbatim: "remove stripe. I
+ * can add this at a later date. We are using Airwallex today." The rewritten
+ * assertions now pin the REMOVAL — which is the point of the wave — and each
+ * gained a fence that fails if a Stripe surface comes back by any route.
+ * Full table: build_log/wave97b/W97B_TESTS.md §2.
  *
  * Math-sacred zones are untouched — this test does NOT exercise
  * captableCommitStore or cap-table-engine.
@@ -19,6 +26,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import express, { type Express } from "express";
 import request from "supertest";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { installV14TestIdentity } from "./_v14TestIdentity";
 
 import {
@@ -32,6 +41,7 @@ import {
   resolveActiveGateway,
   isGatewayReady,
   listPublicGatewayConfig,
+  webhookSourceToGateway,
 } from "../lib/paymentGatewayResolver";
 import {
   createPaymentIntent as awCreate,
@@ -74,9 +84,22 @@ describe("PaymentGatewayResolver — default selection", () => {
     expect(getDefaultGatewayId()).toBe("airwallex");
   });
 
-  it("returns 'stripe' when PAYMENT_GATEWAY_DEFAULT=stripe", () => {
+  /* WAVE 97B · R86 — REWRITTEN.
+   *   OLD: it("returns 'stripe' when PAYMENT_GATEWAY_DEFAULT=stripe")
+   *        expect(getDefaultGatewayId()).toBe("stripe");
+   *   NEW: the same env value must now resolve to airwallex.
+   *   WHY: this asserted that a removed gateway was selectable. After R86 there
+   *        is no "stripe" GatewayId, so a stale PAYMENT_GATEWAY_DEFAULT=stripe
+   *        left in someone's .env must NOT select a gateway that does not exist.
+   *        It has to land on Airwallex — the fail-safe direction, and already the
+   *        documented behaviour for unset/unrecognised values (founder directive,
+   *        24-May-2026). This is the single most important rewrite in the file:
+   *        it is the assertion that a real deployment carrying the old env var
+   *        still takes payments. */
+  it("returns 'airwallex' even when a stale PAYMENT_GATEWAY_DEFAULT=stripe is set (R86 — removed gateway is not selectable)", () => {
     process.env.PAYMENT_GATEWAY_DEFAULT = "stripe";
-    expect(getDefaultGatewayId()).toBe("stripe");
+    expect(getDefaultGatewayId()).toBe("airwallex");
+    expect(String(getDefaultGatewayId())).not.toMatch(/stripe/i);
     delete process.env.PAYMENT_GATEWAY_DEFAULT;
   });
 
@@ -100,13 +123,35 @@ describe("PaymentGatewayResolver — default selection", () => {
     delete process.env.AIRWALLEX_CLIENT_ID;
   });
 
-  it("resolveActiveGateway falls back to the configured gateway when default is unconfigured", () => {
+  /* WAVE 97B · R86 — REWRITTEN.
+   *   OLD: it("resolveActiveGateway falls back to the configured gateway when
+   *        default is unconfigured") — set STRIPE_SECRET_KEY and asserted
+   *        resolveActiveGateway() === "stripe".
+   *   NEW: with no other gateway to fall back to, an unconfigured Airwallex
+   *        still resolves to airwallex, and a stray STRIPE_SECRET_KEY in the
+   *        environment changes NOTHING.
+   *   WHY: the old assertion required Stripe to be a live fallback. R86 removed
+   *        it. The behaviour that MUST survive is that the resolver never
+   *        returns null or throws on an unconfigured gateway — the call site
+   *        raises "not_configured" instead of silently dropping a payment. That
+   *        contract is what the new assertion pins, plus the new fence that a
+   *        leftover Stripe credential cannot resurrect a routing decision. */
+  it("resolveActiveGateway returns airwallex when unconfigured, and a stray STRIPE_SECRET_KEY cannot change that", () => {
     delete process.env.PAYMENT_GATEWAY_DEFAULT;
     delete process.env.AIRWALLEX_API_KEY;
     delete process.env.AIRWALLEX_CLIENT_ID;
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
-    expect(resolveActiveGateway()).toBe("stripe");
+    expect(resolveActiveGateway()).toBe("airwallex");
+    expect(String(resolveActiveGateway())).not.toMatch(/stripe/i);
     delete process.env.STRIPE_SECRET_KEY;
+  });
+
+  /* WAVE 97B · R86 — ADDED (passing). The webhook-source mapper must no longer
+   * claim a Stripe path belongs to a gateway, because no Stripe route is
+   * mounted. Airwallex mapping is unchanged. */
+  it("webhookSourceToGateway maps airwallex, and maps a stripe path to null (R86)", () => {
+    expect(webhookSourceToGateway("/api/webhooks/payment-gateway/airwallex")).toBe("airwallex");
+    expect(webhookSourceToGateway("/api/webhooks/payment-gateway/stripe")).toBeNull();
   });
 });
 
@@ -231,28 +276,61 @@ describe("AirWallex public config", () => {
     expect(cfg.defaultWebhookUrl).toBe("/api/webhooks/payment-gateway/airwallex");
   });
 
-  it("getPublicConfig flips to stripe when PAYMENT_GATEWAY_DEFAULT=stripe", () => {
+  /* WAVE 97B · R86 — REWRITTEN.
+   *   OLD: it("getPublicConfig flips to stripe when PAYMENT_GATEWAY_DEFAULT=stripe")
+   *        expect(cfg.defaultGateway).toBe("stripe")
+   *        expect(cfg.defaultWebhookUrl).toBe("/api/webhooks/payment-gateway/stripe")
+   *   NEW: the admin config body must name AirWallex, and must never name Stripe,
+   *        whatever PAYMENT_GATEWAY_DEFAULT says.
+   *   WHY: this is the body of GET /api/admin/payment-gateway/config — the exact
+   *        screen the owner's instruction is about. It asserted an administrator
+   *        could be shown "Stripe" as the active gateway. The whole-object
+   *        /stripe/i fence means no field of this response can name Stripe
+   *        again, by any spelling. */
+  it("getPublicConfig names AirWallex and never Stripe, even with PAYMENT_GATEWAY_DEFAULT=stripe (R86)", () => {
     process.env.PAYMENT_GATEWAY_DEFAULT = "stripe";
     const cfg = getPublicConfig();
-    expect(cfg.defaultGateway).toBe("stripe");
-    expect(cfg.defaultWebhookUrl).toBe("/api/webhooks/payment-gateway/stripe");
+    expect(cfg.defaultGateway).toBe("airwallex");
+    expect(cfg.defaultWebhookUrl).toBe("/api/webhooks/payment-gateway/airwallex");
+    expect(cfg.name).toBe("AirWallex");
+    expect(JSON.stringify(cfg)).not.toMatch(/stripe/i);
     delete process.env.PAYMENT_GATEWAY_DEFAULT;
   });
 
-  it("listPublicGatewayConfig returns both gateways with isDefault flag", () => {
+  /* WAVE 97B · R86 — REWRITTEN.
+   *   OLD: it("listPublicGatewayConfig returns both gateways with isDefault flag")
+   *        expect(list.length).toBe(2)  +  a `stripe` entry with its webhookPath
+   *   NEW: exactly ONE entry, airwallex, still flagged default, and no entry
+   *        anywhere in the list names Stripe.
+   *   WHY: this list IS "the admin config endpoint's gateway list" that R86 names
+   *        for removal. The old assertion pinned the Stripe row as correct
+   *        output. `length toBe(1)` is deliberately exact rather than
+   *        `toBeGreaterThan(0)`: an exact count is what fails if a second
+   *        gateway is ever added without a decision. */
+  it("listPublicGatewayConfig returns exactly one gateway — airwallex, flagged default, no Stripe row (R86)", () => {
     delete process.env.PAYMENT_GATEWAY_DEFAULT;
     const list = listPublicGatewayConfig();
-    expect(list.length).toBe(2);
+    expect(list.length).toBe(1);
     const aw = list.find((g) => g.id === "airwallex")!;
-    const stripe = list.find((g) => g.id === "stripe")!;
+    expect(aw).toBeTruthy();
     expect(aw.isDefault).toBe(true);
-    expect(stripe.isDefault).toBe(false);
     expect(aw.webhookPath).toBe("/api/webhooks/payment-gateway/airwallex");
-    expect(stripe.webhookPath).toBe("/api/webhooks/payment-gateway/stripe");
+    expect(list.some((g) => /stripe/i.test(String(g.id)))).toBe(false);
+    expect(JSON.stringify(list)).not.toMatch(/stripe/i);
   });
 
-  it("getPublicGatewayList from the adapter mirrors listPublicGatewayConfig", () => {
-    expect(getPublicGatewayList().length).toBe(2);
+  /* WAVE 97B · R86 — REWRITTEN.
+   *   OLD: expect(getPublicGatewayList().length).toBe(2);
+   *   NEW: toBe(1), and the adapter's list is asserted to be a faithful mirror of
+   *        the resolver's by deep equality rather than by length alone.
+   *   WHY: the count changed because the Stripe row was removed. Comparing the
+   *        whole array (not just its length) is strictly stronger: it is what
+   *        proves the SEAM is intact — the sacred adapter still returns whatever
+   *        the non-sacred resolver lists, so widening the resolver is all a
+   *        future gateway needs. */
+  it("getPublicGatewayList from the adapter still mirrors listPublicGatewayConfig exactly (the seam)", () => {
+    expect(getPublicGatewayList().length).toBe(1);
+    expect(getPublicGatewayList()).toEqual(listPublicGatewayConfig());
   });
 });
 
@@ -291,8 +369,24 @@ describe("AirWallex webhook route — /api/webhooks/payment-gateway/airwallex", 
   });
 });
 
-describe("Stripe webhook route — /api/webhooks/payment-gateway/stripe", () => {
-  it("accepts a well-formed Stripe-shape payload", async () => {
+/* WAVE 97B · R86 — REWRITTEN DESCRIBE BLOCK.
+ *   OLD: describe("Stripe webhook route — /api/webhooks/payment-gateway/stripe")
+ *          it("accepts a well-formed Stripe-shape payload")
+ *            — expected 200, ok:true, gateway:"stripe"
+ *          it("is idempotent on (intentId, type)")
+ *            — expected the second post to report idempotent:true
+ *   NEW: the same two posts must now find NOTHING MOUNTED at that path.
+ *   WHY: these two were the strongest "Stripe works" assertions in the repo —
+ *        they exercised a live, signature-verifying webhook endpoint over HTTP.
+ *        R86 removes that endpoint, so the honest replacement asserts its
+ *        absence at the same HTTP surface, with the same payloads. This is the
+ *        assertion that fails if anyone re-registers the route.
+ *        The equivalent Airwallex behaviours (200 + ok + gateway id, and
+ *        idempotency on (intentId, type)) are unchanged and still asserted in
+ *        the AirWallex webhook-route describe block directly above — so no
+ *        coverage of the webhook machinery was lost, only its Stripe arm. */
+describe("WAVE 97B · R86 — the Stripe webhook route is GONE", () => {
+  it("POST /api/webhooks/payment-gateway/stripe is not mounted (was: accepted a well-formed Stripe-shape payload)", async () => {
     const payload = {
       type: "payment_intent.succeeded",
       data: { object: { id: "pi_wh_1", status: "succeeded", metadata: { companyId: "co_test" } } },
@@ -300,19 +394,49 @@ describe("Stripe webhook route — /api/webhooks/payment-gateway/stripe", () => 
     const res = await request(app)
       .post("/api/webhooks/payment-gateway/stripe")
       .send(payload);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.gateway).toBe("stripe");
+    expect(res.status).toBe(404);
+    expect(res.body?.gateway).toBeUndefined();
   });
 
-  it("is idempotent on (intentId, type)", async () => {
+  it("repeat posts to the removed path stay unmounted — no idempotency ledger entry is minted (was: idempotent on (intentId, type))", async () => {
     const payload = {
       type: "payment_intent.succeeded",
       data: { object: { id: "pi_wh_idem", status: "succeeded", metadata: { companyId: "co_test" } } },
     };
-    await request(app).post("/api/webhooks/payment-gateway/stripe").send(payload);
+    const first = await request(app).post("/api/webhooks/payment-gateway/stripe").send(payload);
     const second = await request(app).post("/api/webhooks/payment-gateway/stripe").send(payload);
-    expect(second.body.idempotent).toBe(true);
+    expect(first.status).toBe(404);
+    expect(second.status).toBe(404);
+    expect(second.body?.idempotent).toBeUndefined();
+  });
+
+  it("the source of the SACRED adapter contains no stripeGateway import and no stripe route registration (R86 fence)", () => {
+    const src = readFileSync(
+      path.resolve(__dirname, "..", "paymentGatewayAdapter.ts"),
+      "utf8",
+    );
+    /* Comments are stripped before the fences run. The R86 comment blocks in that
+     * file deliberately QUOTE the removed lines verbatim so the record shows
+     * exactly what went and where a future gateway plugs back in; a naive
+     * whole-file regex matches those quotes and reports a false positive. Asking
+     * the question of the CODE is the correct question. */
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // No live code may import the deleted module or register the removed route.
+    expect(code).not.toMatch(/^\s*import[^\n]*from\s+["']\.\/lib\/stripeGateway["']/m);
+    expect(code).not.toMatch(/app\.post\(\s*["']\/api\/webhooks\/payment-gateway\/stripe["']/);
+    expect(code).not.toMatch(/verifyStripeSig\s*\(/);
+    // ...and the Airwallex route it replaces is still registered.
+    expect(code).toMatch(/app\.post\(\s*["']\/api\/webhooks\/payment-gateway\/airwallex["']/);
+  });
+
+  it("the three Stripe gateway modules are gone from disk (R86)", () => {
+    for (const rel of [
+      "lib/stripeGateway.ts",
+      "lib/stripeCollective.ts",
+      "stripeGatewayAdapter.ts",
+    ]) {
+      expect(existsSync(path.resolve(__dirname, "..", rel))).toBe(false);
+    }
   });
 });
 

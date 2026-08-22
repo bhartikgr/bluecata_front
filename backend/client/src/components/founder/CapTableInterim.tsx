@@ -15,6 +15,8 @@
 import { useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
+import { W55B_CAP_TABLE_REFUSAL_STATUS } from "@shared/w55bCapTableRefusal"; /* WAVE 90 · ITEM 1 */
+import { displayName } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -112,6 +114,65 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
   });
 
   const data = interimQ.data;
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   * WAVE 90 · ITEM 1 — M-2: "THE INVESTOR CAP TABLE FAILS TO LOAD".
+   *
+   * THE REPRODUCTION (build_log/wave90/W90_CAPTABLE_FAILURE.md). Driving the
+   * real `registerRoutes` stack as the demo investor persona `u_aisha_patel`:
+   *
+   *   GET /api/companies/co_novapay/captable/interim  -> 200  (holds a position)
+   *   GET /api/companies/co_quanta/captable/interim   -> 404  {"ok":false,"error":"not_found"}
+   *   GET /api/companies/co_lattice/captable/interim  -> 404
+   *   GET /api/companies/co_kelvin/captable/interim   -> 404
+   *
+   * The three 404s are the invitations where the investor is INVITED and holds
+   * nothing. That is the exact live symptom on both closed-round invitations.
+   *
+   * THE CAUSE IS NOT A FAULT. The 404 is `decideCapTableSinkAccess` refusing
+   * (`server/lib/capTableSinkScope.ts`, reason `no_relationship`). WAVE 36 · ROW 1
+   * deliberately removed the `invitedRounds` disjunct from that predicate because
+   * a person merely invited to a round could otherwise read the whole cap-table
+   * ledger — every other holder's name, email and amount. The refusal is 404 and
+   * not 403 by policy (WAVE 42 · F-9: a 403 confirms the resource exists and so
+   * enumerates private SPV ids). The guard is correct and IS NOT TOUCHED HERE.
+   *
+   * I also checked the candidate the brief flagged: whether the pro-forma builder
+   * silently SKIPS instruments the way Wave 88's exit corpus did. It does not.
+   * The interim projection (`server/routes.ts` :2651) reads three sources whole
+   * and contains no `continue`-before-disclosure over rows; its only filters are
+   * `companyId === cid` and soft-circle `status === "confirmed"`, and the latter
+   * is the section's stated meaning ("Soft-circle (confirmed)"). No skip exists.
+   *
+   * SO THE DEFECT IS THIS COMPONENT'S COPY, exactly as the brief's second branch
+   * anticipated. `LoadFailedRefusal` was rendered for EVERY error status, so a
+   * permanent, deliberate authorisation decision was reported to the investor as
+   * a transient loading failure with a "Try again" button that can never work.
+   *
+   * AND IT IS A DEFECT THIS PAGE ALREADY KNEW HOW TO AVOID. The sibling
+   * pre-money cap table mounted DIRECTLY ABOVE this component, on the same tab,
+   * already distinguishes the two: `investor/InvitationDetail.tsx` reads the
+   * `/securities` 404 and renders "Shared cap table not available to you … This
+   * is deliberate under the cap-table redaction policy, not a fault" (WAVE 42 ·
+   * live-audit F-9). The interim sibling was left on the generic branch, so one
+   * tab told the investor two different stories about the same refusal. Wave 55b
+   * added the error branch here and — correctly for its own scope — did not
+   * distinguish the statuses.
+   *
+   * NOTHING IS REMOVED. The `LoadFailedRefusal` element is byte-identical and its
+   * copy still renders for every status that really is a fault; only its
+   * CONDITION is narrowed. The honest refusal is APPENDED as a sibling, which is
+   * the shape Wave 42 and Wave 55b both had to learn: moving wording into a
+   * ternary reads to the silent-drop guard as a removal plus an addition.
+   * ═══════════════════════════════════════════════════════════════════════════ */
+  const interimRefusalStatus = interimQ.isError
+    ? Number((interimQ.error as { status?: number } | null)?.status ?? 0)
+    : 0;
+  /** 404 is the pinned deliberate out-of-scope refusal (@shared/w55bCapTableRefusal). */
+  const interimOutOfScope = interimRefusalStatus === W55B_CAP_TABLE_REFUSAL_STATUS;
+  /** A real fault: any other error status, or an error with no status at all. */
+  const interimLoadFailed = interimQ.isError && !interimOutOfScope;
+
   const fundedRoundIds = useMemo(
     () => Array.from(new Set((data?.funded ?? []).map((r) => r.roundId).filter(Boolean))),
     [data?.funded],
@@ -137,13 +198,32 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
           column headers and every action button still mount, and each section's
           empty copy is re-gated on `isSuccess` so a genuinely empty interim view
           reads EXACTLY as before. */}
-      {interimQ.isError && (
+      {interimLoadFailed && (
         <LoadFailedRefusal
           what="the interim (pro-forma) cap table"
           testId="captable-interim-error"
           onRetry={() => void interimQ.refetch()}
           isRetrying={interimQ.isFetching}
         />
+      )}
+      {/* WAVE 90 · ITEM 1 — the honest half. Appended as a SIBLING; the refusal
+          above is byte-identical and only its condition changed. Wording mirrors
+          the pre-money sibling on this same tab so the two agree. */}
+      {interimOutOfScope && (
+        <div
+          className="rounded-md border border-slate-300/60 bg-slate-50 dark:bg-slate-900/40 px-4 py-3 text-sm text-slate-700 dark:text-slate-300"
+          role="note"
+          data-testid="captable-interim-out-of-scope"
+        >
+          <div className="font-medium">Pro-forma cap table not available to you.</div>
+          <div className="mt-0.5 text-xs">
+            You do not yet hold a position in this company, so the shared list of who else has
+            committed, funded or soft-circled is not opened to you. This is deliberate under the
+            company&rsquo;s cap-table redaction policy — it is not a fault, and refreshing will not
+            change it. It opens to you once you hold a position. Your own position, and the terms
+            you were sent, are shown elsewhere on this page.
+          </div>
+        </div>
       )}
 
       {/* Pro-forma banner */}
@@ -160,12 +240,14 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
         rows={data?.committed ?? []}
         subtotal={data?.subtotals.committed}
         loaded={interimQ.isSuccess}
+        refused={interimOutOfScope}
       />
       <InterimSection
         kind="funded"
         rows={data?.funded ?? []}
         subtotal={data?.subtotals.funded}
         loaded={interimQ.isSuccess}
+        refused={interimOutOfScope}
         action={
           !readOnly && (data?.funded?.length ?? 0) > 0 ? (
             <Button
@@ -201,6 +283,7 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
         rows={data?.soft_circle ?? []}
         subtotal={data?.subtotals.soft_circle}
         loaded={interimQ.isSuccess}
+        refused={interimOutOfScope}
         rowAction={
           !readOnly
             ? (r: InterimRow) => (
@@ -229,6 +312,7 @@ function InterimSection({
   action,
   rowAction,
   loaded = true,
+  refused = false,
 }: {
   kind: InterimKind;
   rows: InterimRow[];
@@ -239,6 +323,11 @@ function InterimSection({
    *  a fact worth stating only then; otherwise it is a guess. Defaults to `true`
    *  so no existing caller's behaviour changes. */
   loaded?: boolean;
+  /** WAVE 90 · ITEM 1 — the load did not FAIL, it was DELIBERATELY REFUSED (404).
+   *  "We could not read this section" is untrue of a policy decision: we read it
+   *  perfectly well and chose not to show it. Defaults to `false` so the founder
+   *  surface and every existing caller are unchanged. */
+  refused?: boolean;
 }) {
   const meta = KIND_META[kind];
   return (
@@ -283,13 +372,16 @@ function InterimSection({
                     <td className="px-4 py-2.5">
                       <div className="font-medium flex items-center gap-1.5">
                         <span className={`h-2 w-2 rounded-full ${meta.dot}`} aria-hidden />
-                        {r.holderName}
+                        {/* WAVE 90 · ITEM 3 — `displayName` describes the row when
+                            the name field is absent or is itself an identifier
+                            (the `u_redeemed_...` class, Wave 83's precedent). */}
+                        {displayName(r.holderName, "holder", r.investorId)}
                       </div>
                       {r.holderEmail ? (
                         <div className="text-[10px] text-muted-foreground ml-3.5" data-testid={`interim-email-${kind}-${i}`}>{r.holderEmail}</div>
                       ) : null}
                     </td>
-                    <td className="px-2 py-2.5 text-muted-foreground truncate max-w-[140px]" data-testid={`interim-round-${kind}-${i}`}>{r.roundName || "—"}</td>
+                    <td className="px-2 py-2.5 text-muted-foreground truncate max-w-[140px]" data-testid={`interim-round-${kind}-${i}`}>{displayName(r.roundName, "round", r.roundId)}</td>
                     <td className="px-2 py-2.5 text-right font-mono tabular-nums">{fmtMoney(r.amount, r.currency)}</td>
                     <td className="px-2 py-2.5 text-right font-mono tabular-nums">{r.shares ? fmtNum(r.shares) : "pending"}</td>
                     <td className="px-2 py-2.5 text-right font-mono tabular-nums" data-testid={`interim-own-${kind}-${i}`}>{r.ownershipPct != null ? `${r.ownershipPct.toFixed(2)}%` : "—"}</td>
@@ -308,9 +400,18 @@ function InterimSection({
                   <td colSpan={rowAction ? 3 : 2} />
                 </tr>
               )}
-              {!loaded && (
+              {!loaded && !refused && (
                 <tr data-testid={`interim-not-loaded-${kind}`}>
                   <td colSpan={rowAction ? 7 : 6} className="px-4 py-6 text-center text-muted-foreground">Not loaded — we could not read this section, so it is not a statement that there is nothing here.</td>
+                </tr>
+              )}
+              {/* WAVE 90 · ITEM 1 — APPENDED at the very end of this same <tbody>,
+                  after the not-loaded row, so no existing <tr> ordinal moves (the
+                  lesson Wave 55b recorded two rows above). The not-loaded row is
+                  byte-identical; only its condition is narrowed. */}
+              {refused && (
+                <tr data-testid={`interim-refused-${kind}`}>
+                  <td colSpan={rowAction ? 7 : 6} className="px-4 py-6 text-center text-muted-foreground">Not shown to you — this section is withheld by the company&rsquo;s cap-table redaction policy while you hold no position. It is a deliberate decision, not a failure, and it is not a statement that there is nothing here.</td>
                 </tr>
               )}
             </tbody>

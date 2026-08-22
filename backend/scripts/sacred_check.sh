@@ -84,6 +84,14 @@
 # mandatory on every row, an unknown value still aborts the run (exit 3), and
 # the pending set is still DERIVED, so the next waiver taken under delegated
 # authority is reported exactly as WAIVER-5 was.
+#
+# WAVE 89 (2026-08-21) — R79 GRANTS A SECOND EDIT TO THAT SAME FILE, and this
+# time the file's BYTES DO MOVE: four date-only render calls on the founder's own
+# billing page printed the renewal / cancellation day ONE DAY EARLY west of UTC.
+# The enforced hash in the Billing.tsx row is therefore the WAVE 89 hash, with the
+# Wave 34 hash retained beside it. The row stays tagged WAIVER-5 because a second
+# row for the same path, and a WAIVER-10 label, each abort this gate with exit 3 —
+# both proved by execution in the row's own comment block below.
 # Every row now carries field 5, one of:
 #     RATIFIED                      — an owner signed this waiver off
 #     PENDING-OWNER-RATIFICATION    — taken under delegated authority, unsigned
@@ -284,13 +292,99 @@ KNOWN_DRIFT=(
 # build_log/wave75/W75_TESTS.md.
 # HASH LINEAGE (nothing erased):
 #   pre-WAIVER-8  83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660  (also base manifest row 3)
-#   Wave 75       15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27  (ENFORCED)
-# TO DECLINE: restore 83757c54… as the live content and delete this row, the
+#   Wave 75       15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27  (superseded by the WAVE 97B re-freeze below)
+#
+# WAVE 97B RE-FREEZE (2026-08-21). WAIVER-8 covers server/paymentGatewayAdapter.ts
+# and REMAINS IN FORCE; Wave 97B made ONE further set of edits UNDER THE SAME
+# WAIVER, authorised by R86.
+#
+#   THE GRANT. spec/OWNER_RULINGS_2026_08_13.md · R86 — "Stripe removal IS
+#   possible — Wave 97's blocker is incorrect, and a waiver is granted", decided
+#   2026-08-21 under delegation, acting on the owner's explicit instruction:
+#       "remove stripe. I can add this at a later date. We are using Airwallex
+#        today."
+#   R86 rules that the removal proceeds "using the RE-FREEZE pattern Wave 89
+#   established — edit the file, then update field 3 (the frozen hash) of the
+#   EXISTING WAIVER-8 row, adding this ruling's citation and the hash lineage
+#   alongside the existing reasoning. Do NOT add a row. Do NOT retag. Expect
+#   sacred to read 48/48 with NINE ratified waivers afterwards — the count does
+#   not change, because no row is added."
+#
+#   WHY NO NEW WAIVER WAS NEEDED, VERIFIED BEFORE TOUCHING ANYTHING. Wave 97
+#   stopped here and reported that "a waiver is structurally unavailable". Its
+#   decision to stop was right; its conclusion was wrong, and both halves were
+#   re-verified by execution rather than accepted:
+#     · field 4's grammar at :725 is `^WAIVER-[1-9][0-9]*$`, which `WAIVER-10`
+#       satisfies. The "WAIVER-10 aborts with exit 3" statements Wave 97 cited
+#       are COMMENTS at :93 and :452-457 recording WAVE 89's probe of a DIFFERENT
+#       file (client/src/pages/founder/Billing.tsx) — that a SECOND row for an
+#       already-rowed path, or RETAGGING an existing row, aborts. Neither says a
+#       new waiver id is impossible.
+#     · and decisively: THIS FILE ALREADY HAS A ROW. WAIVER-8, RATIFIED, and the
+#       live file's sha256 matched field 3 exactly (15679904fd…5a9c0d27, measured).
+#       An already-waived file does not need a new waiver; it needs a re-freeze,
+#       which is what WAVE 21, WAVE 23 (WAIVER-2, above) and WAVE 89 (WAIVER-5)
+#       each did.
+#
+#   THE EDITS, AND THEIR SIZE. Strictly the four things R86 names, and nothing
+#   else. No arithmetic, no money path, no charge/refund/invoice code, no
+#   signature-verification policy and no fail-closed behaviour was touched:
+#     1. DELETED the static `import { verifyWebhookSignature as verifyStripeSig }
+#        from "./lib/stripeGateway"` (was :48). That module is deleted.
+#     2. DELETED the registration `app.post("/api/webhooks/payment-gateway/stripe",
+#        …)` (was :1199-1201). A signature-verifying webhook endpoint must not stay
+#        mounted for a provider the platform does not use.
+#     3. REMOVED Stripe from what the admin config endpoint serves (was :326):
+#        `name: def === "airwallex" ? "AirWallex" : "Stripe"` and its
+#        `["card","sepa","ach"]` method list became the unconditional AirWallex
+#        values. This is the surface that offered Stripe to an administrator.
+#     4. COLLAPSED the one-armed signature ternary in `handleGatewayWebhook`
+#        (was :1029-1031) to the Airwallex call, since `verifyStripeSig` no longer
+#        exists, and narrowed the handler's parameter from the inline
+#        `"airwallex" | "stripe"` to the resolver's `GatewayId` type.
+#   Plus the comment blocks that documented those four lines, which would
+#   otherwise have become false statements inside a sacred file.
+#
+#   WHAT WAS DELIBERATELY NOT CHANGED — THE SEAM. `handleGatewayWebhook` is still
+#   PARAMETERISED BY GATEWAY ID and every `gateway === "airwallex"` branch and its
+#   `else` arm survive intact; `getPublicGatewayList()` still returns whatever the
+#   NON-SACRED resolver lists. So adding a gateway later is: widen `GatewayId` in
+#   server/lib/paymentGatewayResolver.ts, fill its six numbered EXTENSION POINTs,
+#   and copy three lines beside the Airwallex `app.post`. The owner said "I can add
+#   this at a later date"; that half of the instruction is load-bearing and is
+#   fenced by tests that fail if the parameterisation is collapsed.
+#
+#   PROOF. 57/57 assertions across every payment path — gateway resolution,
+#   subscriptions (including NO DOUBLE CHARGE), invoices, partner billing,
+#   collective membership, SPV deployment fees, actor honesty, and the DSC vote
+#   path for a PAYING member with a basic-tier falsification pole:
+#   build_log/wave97b/EVIDENCE/w97b_payment_proof.mts and its transcript.
+#   Source fences + seam fences: server/__tests__/w97b_stripe_gone_and_seam.test.ts,
+#   server/__tests__/w97b_dsc_vote_paying_member.test.ts, and the six rewritten
+#   assertions in server/__tests__/airwallexGateway.test.ts. Mutation transcripts
+#   in build_log/wave97b/W97B_TESTS.md.
+#
+#   WHY THIS PRINTS NINE AND NOT TEN. No row was added, so the row count is
+#   unchanged and `npm run sacred` still reads "48/48 … (9 under KNOWN_DRIFT
+#   freeze … all 9 waivers OWNER-RATIFIED)". R86 predicted exactly that. The two
+#   `"9 under KNOWN_DRIFT freeze"` / `"all 9 waivers OWNER-RATIFIED"` assertions
+#   in server/__tests__/wave18_cpmsg05_rate_limit_identity.test.ts are therefore
+#   untouched and still true.
+# HASH LINEAGE (nothing erased):
+#   pre-WAIVER-8  83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660  (also base manifest row 3)
+#   Wave 75       15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27  (R70 dynamic founder ownership)
+#   Wave 97B      7b5159047803610592ffb4fe32eee18c9261ae027f990073a1131a7a5f980372  (ENFORCED — R86 Stripe removal)
+# TO DECLINE THE WAVE 97B RE-FREEZE ONLY: restore 15679904…5a9c0d27 as the live
+# content (re-adding the stripeGateway import, the stripe webhook route and the
+# Stripe entry in the admin config), put field 3 back to 15679904…5a9c0d27, and
+# revert the two hash pins named below to 15679904…5a9c0d27. The WAIVER-8 row
+# itself STAYS — Wave 75's grant is independent of this one.
+# TO DECLINE WAIVER-8 ENTIRELY: restore 83757c54… as the live content and delete this row, the
 # WAIVER_1_FROZEN entry and the RATIFIED_HERE entry in
 # server/__tests__/waveB_retirement_guard.test.ts, the WAIVER-8 block in
 # server/__tests__/wave18_cpmsg05_rate_limit_identity.test.ts, and put the two
 # "9 under KNOWN_DRIFT freeze" assertions back to 8.
-"server/paymentGatewayAdapter.ts|83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660|15679904fde76f5c0112dbc43264144c82e80bc92630f74b30e596915a9c0d27|WAIVER-8|RATIFIED"
+"server/paymentGatewayAdapter.ts|83757c546b41bce996cd55cdaf42c046bc8bc3cd3c0e457389ac0738b2911660|7b5159047803610592ffb4fe32eee18c9261ae027f990073a1131a7a5f980372|WAIVER-8|RATIFIED"
 # WAIVER-6 — owner-approved 2026-08-14 (explicit answer to the Repair Wave 1
 # blocker question). REPAIR WAVE 1 · ITEM 1: audit_log.hash_version, the column
 # that lets the actor-bound v2 hash ship WITHOUT invalidating any existing row.
@@ -412,7 +506,60 @@ KNOWN_DRIFT=(
 #   HASH LINEAGE (nothing erased):
 #     pre-WAVE-34  813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692
 #     Wave 34      ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f  (ENFORCED)
-"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f|WAIVER-5|RATIFIED"
+#   WAVE 89 RE-FREEZE (2026-08-21). A SECOND, SEPARATE GRANT ON THE SAME FILE:
+#   the owner's ruling R79 (spec/OWNER_RULINGS_2026_08_13.md §R79) grants an edit
+#   waiver for the FOUR DATE-ONLY render calls on this page and NOTHING else. The
+#   ruling calls it "WAIVER-10" and expects "TEN ratified waivers". It is recorded
+#   HERE, on this row, under WAIVER-5, because this gate's own rules make both of
+#   those literally unrepresentable — see WHY, below, which is measured rather
+#   than argued.
+#   REASON FOR THE EDIT: `renews_on` is a TEXT column
+#   (migrations/0000_numerous_roxanne_simpson.sql:281, shared/schema.ts:551)
+#   written as `.toISOString().slice(0, 10)` (server/subscriptionsStore.ts:274,
+#   :637) and seeded `"2026-06-15"` (:254) — a DATE-ONLY value. The page's local
+#   `fmtDate` (:90-93) rendered it as `new Date(iso).toLocaleDateString()`, and
+#   `new Date("2026-06-15")` is UTC midnight by definition, so the FOUR sentences
+#   a paying customer acts on printed ONE DAY EARLY for every customer west of
+#   UTC, the owner in New York included:
+#     :284 "…remain active until <DATE>, then cancel."   :411 toast "Active until <DATE>."
+#     :454 "Subscription cancels on <DATE>."             :500 "Renews on: <DATE>"
+#   FIX: those four calls now use `fmtLocaleDate` imported from
+#   client/src/lib/format.ts (Wave 87's safe formatter, which rebuilds a
+#   YYYY-MM-DD value at LOCAL midnight and passes a real instant through
+#   unchanged). One import line and four call sites. NOTHING ELSE IN THE FILE
+#   CHANGED — no copy, no layout, no control, no handler, no number, and the two
+#   TIMESTAMP sites (`sub.paymentDate` at :507, `inv.issuedAt` at :636) still use
+#   the local `fmtDate`, because localising an instant is correct.
+#   PROOF, three timezones (client/src/pages/founder/__tests__/w89_billing_date_only.test.tsx):
+#     TZ=America/New_York, TZ=UTC and TZ=Pacific/Auckland all green; the
+#     precondition assertion REQUIRES the old and new renderings to differ west of
+#     UTC and to agree elsewhere, so the file fails if the fix is reverted and
+#     fails if a timestamp is wrongly frozen.
+#   WHY IT IS NOT A TENTH ROW LABELLED WAIVER-10 — EXECUTED, NOT ARGUED
+#   (transcript: build_log/wave89/probe/waiver_numbering_probe.txt):
+#     · a SECOND row for this path, tagged WAIVER-10 or WAIVER-9, aborts this gate
+#       with exit 3: "KNOWN_DRIFT lists 'client/src/pages/founder/Billing.tsx'
+#       more than once; the later row would never be enforced."
+#     · retagging THIS row WAIVER-10 (or WAIVER-9) aborts with exit 3 on the
+#       closed-vocabulary check, because WAIVER-5 would then have no row:
+#       "distinct ids present : 1 2 3 4 6 7 8 10".
+#     The only ways to print "TEN" would be to fabricate a placeholder row over a
+#     file nobody waived, or to rewrite this gate's data model. WAVE 75 refused the
+#     first for R70's "WAIVER-9" and registered that grant as WAIVER-8 for the same
+#     reason (build_log/wave75/W75_WAIVER9_REGISTRATION.md §2); this wave follows
+#     that precedent and the WAIVER-2 RE-FREEZE precedent above, which is how this
+#     gate has always recorded a further owner-granted edit to an ALREADY-WAIVED
+#     file. The grant, the file, the four lines and the ratification are exactly as
+#     R79 ruled; only the label differs, and OWNER QUESTION W89-Q1 asks for one
+#     sentence confirming it.
+#   HASH LINEAGE (nothing erased):
+#     pre-WAVE-34  813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692
+#     Wave 34      ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f  (WAIVER-5 exponent fix; superseded by this re-freeze)
+#     Wave 89      bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7  (ENFORCED)
+#   TO DECLINE: restore the Wave 34 bytes, put ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f
+#   back in field 3, and revert the three test enforcement points. Nothing else
+#   depends on it.
+"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7|WAIVER-5|RATIFIED"
 )
 
 # ---------------------------------------------------------------------------

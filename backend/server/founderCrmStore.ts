@@ -98,7 +98,46 @@ function composeCrmName(body: Record<string, unknown> | undefined): string {
   const name = optCrmStr(body?.name);
   if (name) return name;
   const contact = optCrmStr(body?.primaryContact);
-  return contact ?? "New contact";
+  if (contact) return contact;
+  /* WAVE 93 · ITEM 1, sub-defect — "New contact" AS A PERSON'S NAME.
+     The live site rendered "New contact data" / "New contact" as investor/holder
+     IDENTITY in the cap table and in round invitations (register M-11). This
+     line is where that string was born, and the question the wave had to settle
+     was whether it is seed data or a live write path. IT IS A LIVE WRITE PATH:
+     `POST /api/founder/crm/contacts` reaches here with `req.body`, and a body
+     carrying no firstName, no lastName, no name and no primaryContact PERSISTED
+     the words "New contact" into `founder_crm_contacts.name` — a placeholder
+     promoted to identity, permanently, with no way for a reader to tell it apart
+     from a person actually called that. (Grep evidence: the string appears in NO
+     migration and NO seed script; only in this fallback, in the partner CRM
+     equivalent, and as three legitimate dialog TITLES in client code.)
+     The fallback is now an EMPTY string, and `registerFounderCrmRoutes`'s POST
+     handler REFUSES a contact with no identifying field at all rather than
+     inventing a name for it — see the `crm_contact_no_identity` refusal. An
+     empty return can therefore only be reached by a caller that the refusal has
+     already rejected; it is kept (rather than thrown) so no other caller of this
+     helper can crash on a body it used to tolerate. */
+  return "";
+}
+
+/**
+ * WAVE 93 · ITEM 1, sub-defect — is there ANY identifying information here?
+ *
+ * A contact needs at least one of: a first name, a last name, a composed name,
+ * a primary-contact name, an email address, or a firm/company name. With none of
+ * those there is no person and no organisation — only a row, and the old code
+ * gave that row the name "New contact".
+ */
+function crmBodyHasIdentity(body: Record<string, unknown> | undefined): boolean {
+  return Boolean(
+    optCrmStr(body?.firstName) ||
+    optCrmStr(body?.lastName) ||
+    optCrmStr(body?.name) ||
+    optCrmStr(body?.primaryContact) ||
+    optCrmStr(body?.email) ||
+    optCrmStr(body?.companyName) ||
+    optCrmStr(body?.firmName),
+  );
 }
 
 /** Convert a DB row into the in-memory FounderCrmContact shape. */
@@ -358,6 +397,19 @@ export function registerFounderCrmRoutes(app: Express): void {
   // surface a friendlier "already in the system" hint).
   app.post("/api/founder/investor-crm", requireAuth, async (req: Request, res: Response) => {
     const companyId = ensureCompanyId(req, res); if (!companyId) return;
+    /* WAVE 93 · ITEM 1, sub-defect — REFUSE A NAMELESS CONTACT RATHER THAN
+       INVENTING ONE. Before this, a body with no identifying field at all was
+       accepted and stored with `name: "New contact"`, which then rendered as
+       investor/holder IDENTITY in the founder cap table and in round invitations
+       (register M-11). A placeholder must never become a person. Nothing is
+       written; the caller is told exactly what is missing. */
+    if (!crmBodyHasIdentity(req.body as Record<string, unknown> | undefined)) {
+      return res.status(400).json({
+        ok: false,
+        error: "crm_contact_no_identity",
+        message: "A contact needs at least a name, an email address, or a firm name. Nothing was saved.",
+      });
+    }
     const incomingEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
     const sendInvite = !!req.body?.sendInvite;
 
@@ -1190,7 +1242,14 @@ export function upsertFromRound(args: {
 
   // 3) Create a new contact.
   const composed = [first, last].filter(Boolean).join(" ").trim();
-  const displayName = composed || company || (email ? email.split("@")[0] : "") || "New contact";
+  /* WAVE 93 · ITEM 1, sub-defect — the SECOND writer of the placeholder. This is
+     the round-invitation auto-create path; a contact minted here with no name, no
+     firm and no email used to be stored as "New contact" and then rendered as a
+     holder/investor identity. Prefer the email LOCAL PART over the placeholder
+     (already the case), and when there is genuinely nothing, DESCRIBE the record
+     instead of naming it: "Invited contact (name not recorded)" tells the founder
+     what the row is, which "New contact" did not. Wave 83's precedent. */
+  const displayName = composed || company || (email ? email.split("@")[0] : "") || "Invited contact (name not recorded)";
   const roundSuffix = args.roundId ? ` — round ${args.roundId}` : "";
   const newContact: FounderCrmContact = {
     id: `fcrm_rnd_${args.companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,

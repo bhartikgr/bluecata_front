@@ -498,7 +498,7 @@ export default function RoundDetail() {
  <div className="text-sm text-muted-foreground">{fmtPct(pct, 0)} of target</div>
  </div>
  <div className="h-2.5 bg-secondary rounded-full overflow-hidden">
- <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+ <div className="h-full bg-gradient-to-r from-emerald-700 to-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />{/* WAVE 101 - progress toward target repainted off the negative anchor */}
  </div>
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-4 border-t border-border text-sm">
  <div><div className="text-xs text-muted-foreground flex items-center gap-1">Pre-money <HelpTip>The agreed value of your company BEFORE this round closes. Pre-money + new money = post-money.</HelpTip></div><div className="font-medium">{fmtUSD(r.preMoney, { compact: true })}</div></div>
@@ -925,14 +925,14 @@ export default function RoundDetail() {
  ))}
  </div>
  <div className="text-xs text-muted-foreground pt-3">
- Editing terms is permitted in <span className="font-mono">draft</span> state; terms lock at <span className="font-mono">terms_set</span> with audit-log entry. Currently: <Badge variant="outline" className="text-[10px] capitalize">{r.state.replace(/_/g, " ")}</Badge>
+ Editing terms is permitted in <span className="font-mono">draft</span> state; terms lock once the terms are set, with an audit-log entry. Currently: <Badge variant="outline" className="text-[10px] capitalize">{r.state.replace(/_/g, " ")}</Badge>
  {/* WAVE 58b · DEFECT 2 — THE CAPTION ABOVE PROMISED AN EDITABILITY THIS PANEL
      NEVER PROVIDED. The 2026-08-15 live audit confirmed the panel is STATIC TEXT
      in Draft as well as Active, while its caption says editing "is permitted in
      draft state". The caption is left byte-identical (it is a true statement
      about the RULE) and the missing half is supplied: where the edit actually
      happens. That surface now carries the pool fields, which is Defect 2. */}
- <span data-testid="terms-edit-where"> The editable surface is <strong>Edit terms</strong> on the Rounds list, which can change the round name, the amounts, the valuations, the price, the close date, the fully-diluted pre-money share count, and the option-pool percentage and placement. This panel is read-only. The server refuses every term edit once the round is <span className="font-mono">closed</span> or <span className="font-mono">funded</span>, by name, with <span className="font-mono">closed_round_readonly</span>.</span>
+ <span data-testid="terms-edit-where"> The editable surface is <strong>Edit terms</strong> on the Rounds list, which can change the round name, the amounts, the valuations, the price, the close date, the fully-diluted pre-money share count, and the option-pool percentage and placement. This panel is read-only. Capavate refuses every term edit once the round is closed or funded, and says so on screen rather than saving nothing.</span>
  </div>
  </CardContent>
  </Card>
@@ -1394,7 +1394,7 @@ export function ProjectionPanel({ round }: { round: Round }) {
  <div className="rounded-lg border border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5 p-4 text-xs space-y-2" data-testid="projection-refused">
  <div className="text-sm font-semibold">The post-close projection was refused</div>
  <p className="text-muted-foreground leading-relaxed" data-testid="projection-refused-message">{postRefusal.message}</p>
- <p className="text-[10px] text-muted-foreground">Refusal code: <code className="font-mono" data-testid="projection-refused-code">{postRefusal.code}</code>{postRefusal.field ? <> · field: <code className="font-mono">{postRefusal.field}</code></> : null}. Capavate shows no post-close figures while this is unresolved: every share count and percentage in that column is derived from the price per share.</p>
+ <p className="text-[10px] text-muted-foreground" data-testid="projection-refused-code">Capavate shows no post-close figures while this is unresolved: every share count and percentage in that column is derived from the price per share.</p>
  </div>
  </div>
  </>
@@ -1468,7 +1468,7 @@ export function ProjectionPanel({ round }: { round: Round }) {
  <div className="font-medium">{projFdBase.ok ? "Fully-diluted pre-money base used by this projection" : "The fully-diluted pre-money base could not be settled"}</div>
  <p className="mt-1 text-[10px] text-muted-foreground">{projFdBase.ok ? projFdBase.label : projFdBase.reason}</p>
  {!projFdBase.ok && (
- <p className="mt-1 text-[10px] text-muted-foreground">Refusal code: <code className="font-mono">{projFdBase.code}</code>. No option pool is applied to the figures above while this is unresolved — sizing it against one of two disagreeing counts would show you a number the round wizard does not agree with.</p>
+ <p className="mt-1 text-[10px] text-muted-foreground">No option pool is applied to the figures above while this is unresolved — sizing it against one of two disagreeing counts would show you a number the round wizard does not agree with.</p>
  )}
  </div>
  {/* WAVE 52c · B3 — APPENDED AT THE END AS A SIBLING. Nothing above is moved,
@@ -1481,10 +1481,10 @@ export function ProjectionPanel({ round }: { round: Round }) {
  <div className="font-semibold mb-1">{roundMath.data.disclosure.headline}</div>
  <p className="text-muted-foreground">{roundMath.data.disclosure.body}</p>
  <p className="text-muted-foreground mt-1.5">
- Pricing order in force: <span className="font-mono">{roundMath.data.pricingOrder.mode}</span>
- {" "}(source: {roundMath.data.pricingOrder.source}
- {roundMath.data.pricingOrder.version != null ? `, revision ${roundMath.data.pricingOrder.version}` : ""}).
- Percentages in the tables above are the <strong>% of fully-diluted shares</strong>.
+ {roundMath.data.pricingOrder.mode === "w52_post_pool_post_conversion"
+ ? "This projection solves the price per share after the option pool and after any convertible conversions."
+ : "This projection solves the price per share before the option pool and before any convertible conversions."}
+ {" "}Percentages in the tables above are the <strong>% of fully-diluted shares</strong>.
  </p>
  </div>
  )}
@@ -1583,7 +1583,7 @@ function RoundLifecycleProgress({ state }: { state: string }) {
  <Card className="mb-6">
  <CardContent className="p-4">
  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wide">
- <Sparkles className="h-3.5 w-3.5" /> Round lifecycle <HelpTip>NVCA-flow round progression. Each stage emits an immutable telemetry event when entered. Click a future stage to preview the founder action required.</HelpTip>
+ <Sparkles className="h-3.5 w-3.5" /> Round lifecycle <HelpTip>NVCA-flow round progression. Each stage is recorded permanently when it is entered. Click a future stage to preview the founder action required.</HelpTip>
  </div>
  <div className="flex items-center gap-1 overflow-x-auto pb-2">
  {LIFECYCLE_STAGES.map((s, i) => {
@@ -1714,7 +1714,7 @@ export function UseOfProceeds({ round }: { round: Round }) {
  ) : data.length === 0 ? (
  <div className="text-sm text-muted-foreground italic py-6 text-center border border-dashed border-border rounded-md">
  No use-of-proceeds plan documented yet.
- <div className="mt-3"><Button size="sm" variant="outline" disabled data-testid="button-add-uop"><Plus className="h-3.5 w-3.5 mr-1" />Add use of proceeds</Button></div>
+ <div className="mt-3"><Button size="sm" variant="outline" disabled aria-disabled="true" title="Not available on this screen — record use of proceeds on the round wizard." data-testid="button-add-uop"><Plus className="h-3.5 w-3.5 mr-1" />Add use of proceeds</Button></div>
  <p className="mt-2 text-xs not-italic" data-testid="uop-editor-unavailable">Editing use of proceeds on this screen is not yet available. You can record it when you create a round, under &ldquo;Use of proceeds&rdquo; on the round wizard.</p>
  </div>
  ) : (
@@ -1813,7 +1813,7 @@ function ClosingChecklist({ round }: { round: Round }) {
  <Card>
  <CardHeader className="pb-3 flex flex-row items-start justify-between space-y-0 gap-3">
  <div className="flex-1 min-w-0">
- <CardTitle className="text-base flex items-center gap-2"><ListChecks className="h-4 w-4 text-emerald-600" />Closing checklist <HelpTip>NVCA-style closing-conditions checklist. All items must be confirmed before the immutable round_close transaction commits.</HelpTip></CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><ListChecks className="h-4 w-4 text-emerald-600" />Closing checklist <HelpTip>NVCA-style closing-conditions checklist. All items must be confirmed before the closing is recorded, and the record cannot be altered afterwards.</HelpTip></CardTitle>
  <div className="flex items-baseline justify-between text-sm mt-1.5">
  <span className="text-muted-foreground">{done} of {items.length} complete</span>
  <span className="font-mono text-xs">{pct.toFixed(0)}%</span>
@@ -2073,7 +2073,7 @@ function TranchesPanel({ round }: { round: Round }) {
  <Card>
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2"><Layers className="h-4 w-4 text-[hsl(38_92%_50%)]" />Tranche structure <HelpTip>Larger rounds often release capital in tranches tied to milestones. Each tranche is a separate funding event in the ledger.</HelpTip></CardTitle>
- <p className="text-sm text-muted-foreground mt-0.5">Total round size {sym}{totalCommitted.toLocaleString()} across {tranches.length} tranches. Each tranche commit emits an immutable telemetry event.</p>
+ <p className="text-sm text-muted-foreground mt-0.5">Total round size {sym}{totalCommitted.toLocaleString()} across {tranches.length} tranches. Each tranche commitment is recorded permanently.</p>
  </CardHeader>
  <CardContent>
  <table className="w-full text-sm" data-testid="table-tranches">
@@ -2202,7 +2202,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
           <GitBranch className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Commit pipeline
-          <HelpTip>Visualizes the path from invitation through funded → committed-to-cap-table. Commit fires the immutable cap-table mutation event and emits captable_committed telemetry.</HelpTip>
+          <HelpTip>Visualizes the path from invitation through funded → committed-to-cap-table. Committing writes the position onto the cap table permanently.</HelpTip>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -2247,7 +2247,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
           <Badge variant="outline" className="text-[10px]" data-testid="badge-reconciliation">
             <Hash className="h-3 w-3 mr-1" />
-            Reconciliation: <span className={`ml-1 font-mono ${ledger.data?.verified?.ok ? "text-[hsl(0_100%_40%)]" : "text-[hsl(7_61%_43%)]"}`}>{ledger.data?.verified?.ok ? "verified" : "drift"}</span>
+            Reconciliation: <span className={`ml-1 font-mono ${/* WAVE 101 - verified and drift were BOTH red */ ledger.data?.verified?.ok ? "text-emerald-700" : "text-[hsl(7_61%_43%)]"}`}>{ledger.data?.verified?.ok ? "verified" : "drift"}</span>
           </Badge>
           <Badge variant="outline" className="text-[10px]">
             <Layers className="h-3 w-3 mr-1" /> Ledger entries: {ledger.data?.entries?.length ?? 0}

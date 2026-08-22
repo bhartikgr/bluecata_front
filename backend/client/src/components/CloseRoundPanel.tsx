@@ -344,10 +344,14 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  {state.reconciliation?.status === "match" && state.founderSignoff && state.adminSignoff && !state.closed && (
  <Card className="border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5">
  <CardContent className="py-4 flex items-center gap-3">
- <CheckCircle2 className="h-5 w-5 text-[hsl(0_100%_40%)]" />
+ {/* WAVE 101 - this card renders ONLY when reconciliation matched and both
+   sign-offs are captured, i.e. an unambiguously good state, yet the check
+   glyph was the negative anchor.  The card border and the CTA stay brand
+   red (brand chrome, R80/Wave-99 Q4); only the glyph moves. */}
+            <CheckCircle2 className="h-5 w-5 text-emerald-700" />
  <div className="flex-1">
  <div className="font-semibold">All sign-offs captured</div>
- <p className="text-sm text-muted-foreground">Click <strong>Close round</strong> to write the immutable close transaction to the ledger and emit final telemetry events.</p>
+ <p className="text-sm text-muted-foreground">Click <strong>Close round</strong> to write the closing to the ledger permanently.</p>
  </div>
  <Button onClick={commitClose} disabled={pendingCount > 0 && !ackLapse} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-commit-close">
  Close round <ChevronRight className="h-4 w-4 ml-1" />

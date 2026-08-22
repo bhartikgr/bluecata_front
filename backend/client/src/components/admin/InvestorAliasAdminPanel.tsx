@@ -230,7 +230,8 @@ export function InvestorAliasAdminPanel() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={a.state === "active" ? "default" : "outline"} data-testid={`alias-state-${a.aliasInvestorId}`}>
+                    {/* WAVE 101 - active alias chip was brand red. Colour only. */}
+                    <Badge variant={a.state === "active" ? "positive" : "outline"} data-testid={`alias-state-${a.aliasInvestorId}`}>
                       {a.state}
                     </Badge>
                     {a.state === "active" && (

@@ -34,6 +34,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration"; /* W3-B C-5 */
+import { PortalVersionFooter } from "@/components/PortalVersionFooter"; /* WAVE 90 · ITEM 2 (M-1) */
 
 /* ------------------------------------------------------------------ */
 /* Common IANA timezones list                                           */
@@ -417,9 +418,32 @@ export default function InvestorSettings() {
 
           <div className="pt-2 border-t border-border">
             <div className="flex items-center justify-between">
+              {/* ═══════════════════════════════════════════════════════════════
+                  WAVE 90 · ITEM 2 (M-1) — THIS LINE WAS THE `v0.23.0`.
+
+                  It was a hardcoded JSX text node. Not a build, not a second
+                  package.json, not a stale constant read from anywhere — a
+                  literal, in this file, that no process could ever update. The
+                  repo's one package.json says 26.19.0.
+
+                  It is replaced by `PortalVersionFooter`, which reads the version
+                  the running server resolved from the shipped package.json and
+                  serves on /api/healthz — the SAME source the admin footer reads.
+
+                  THE REMOVED TEXT IS ACCOUNTED FOR, not allowlisted. The silent-
+                  drop guard will report the copy string
+                  `Capavate Investor Platform · v0.23.0` as removed. That is
+                  correct and it is the point: the string was false. The product
+                  name survives verbatim as the `productName` prop; only the false
+                  number is gone, and it is gone because it cannot be true.
+                  Itemised in build_log/wave90/W90_VERSION_TRUTH.md.
+                  ═══════════════════════════════════════════════════════════════ */}
               <div className="text-xs text-muted-foreground flex items-center gap-2">
                 <Settings className="h-3.5 w-3.5" />
-                Capavate Investor Platform · v0.23.0
+                <PortalVersionFooter
+                  productName="Capavate Investor Platform"
+                  testId="investor-portal-version"
+                />
               </div>
               <Button
                 variant="ghost"

@@ -22,6 +22,12 @@ import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block
    supplies the ISO-4217 exponent, so the rendered string is byte-identical for
    USD today and stays correct if the source field is ever re-denominated. */
 import { fromMinor } from "@/lib/currency";
+/* WAVE 87 · ITEM 1 — a DATE-ONLY value must not be parsed by `new Date()`:
+   `new Date("2026-06-15")` is UTC midnight, which prints ONE DAY EARLY in every
+   zone west of UTC (the owner is in New York). `fmtLocaleDate` keeps the exact
+   rendered format of the call it replaces and removes only the shift.
+   Shape evidence for each field is in build_log/wave87/W87_DATE_CENSUS.md §2. */
+import { fmtLocaleDate } from "@/lib/format";
 
 const TIER_COLORS: Record<string, string> = {
   A: "bg-emerald-100 text-emerald-700",
@@ -377,7 +383,7 @@ export default function CollectiveDealRoomDetail() {
               <Row label="ESOP Pool %" value={capTableSummary.esopPoolPct ? `${capTableSummary.esopPoolPct}%` : null} testId="captable-esop" />
               <Row label="Last Valuation" value={capTableSummary.lastValuationUsd ? `$${fromMinor(capTableSummary.lastValuationUsd, "USD").toLocaleString()}` : null} testId="captable-valuation" />
               <Row label="Stage" value={capTableSummary.stage} testId="captable-stage" />
-              <Row label="Last Raise Date" value={capTableSummary.lastRaiseDate ? new Date(capTableSummary.lastRaiseDate).toLocaleDateString() : null} testId="captable-raise-date" />
+              <Row label="Last Raise Date" value={capTableSummary.lastRaiseDate ? fmtLocaleDate(capTableSummary.lastRaiseDate) : null} testId="captable-raise-date" />
               <Row label="Last Raise Amount" value={capTableSummary.lastRaiseAmount ? `$${fromMinor(capTableSummary.lastRaiseAmount, "USD").toLocaleString()}` : null} testId="captable-raise-amount" />
               <p className="text-xs text-slate-400 mt-3">{capTableSummary.note}</p>
             </CardContent>

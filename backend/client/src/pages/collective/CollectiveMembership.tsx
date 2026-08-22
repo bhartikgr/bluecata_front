@@ -11,6 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UserCircle, Calendar, TrendingUp } from "lucide-react";
 import { formatMinor } from "@/lib/currency";
+/* WAVE 87 · ITEM 1 — `renewsOn` is a DATE-ONLY column (server/subscriptionsStore.ts:254
+   seeds "2026-06-15"; :274 and :637 write .toISOString().slice(0, 10)). Parsed by
+   `new Date()` it became UTC midnight and printed ONE DAY EARLY for every member
+   west of UTC — the owner is in New York. `fmtLocaleDate` keeps this site's exact
+   rendered format and removes only the shift. */
+import { fmtLocaleDate } from "@/lib/format";
 
 interface Subscription {
   companyId: string;
@@ -118,7 +124,7 @@ export default function CollectiveMembership() {
                   Renewal date
                 </span>
                 <span className="text-sm text-slate-800" data-testid="text-renewal-date">
-                  {new Date(subscription.renewsOn).toLocaleDateString()}
+                  {fmtLocaleDate(subscription.renewsOn)}
                 </span>
               </div>
               <div className="flex items-center justify-between">

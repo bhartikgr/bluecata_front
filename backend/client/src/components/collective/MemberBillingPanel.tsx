@@ -124,8 +124,11 @@ const QUOTE_ERROR_COPY: Record<string, string> = {
   tier_unavailable: "Your membership tier could not be determined right now. Please retry shortly.",
 };
 
-function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "paid") return "default";
+function statusVariant(status: string): "positive" | "secondary" | "destructive" | "outline" {
+  /* WAVE 101 - `paid` returned "default", which is the brand red: a settled
+     charge was painted the same colour as `overdue`/`void` below.  Colour
+     only; the returned STATE and every label are unchanged. */
+  if (status === "paid") return "positive";
   if (status === "invoiced") return "secondary";
   if (status === "overdue" || status === "void") return "destructive";
   return "outline";

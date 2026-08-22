@@ -24,6 +24,27 @@
  *
  * MUTATION TRANSCRIPT: build_log/wave55b/W55B_TESTS.md.
  */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WAVE 90 · ITEM 1 AMENDMENT — WHY TWO CASES BELOW CHANGED STATUS.
+ *
+ * Wave 55b's subject is "a failed load is not an empty list", and its own header
+ * names the statuses it cared about: "on a 404 / 403 / 500". It used 404 for the
+ * failure pole because 404 was simply the status the route happened to answer.
+ *
+ * Wave 90 then established, by driving the real route, that the 404 on this
+ * endpoint is not a failure at all: it is `decideCapTableSinkAccess` DELIBERATELY
+ * refusing an investor who holds no position (server/lib/capTableSinkScope.ts,
+ * reason `no_relationship`; 404 rather than 403 by the F-9 enumeration policy).
+ * Reporting that to an investor as "we couldn't load the cap table, try again"
+ * was the S0 live defect M-2.
+ *
+ * So the two cases that used `W55B_CAP_TABLE_REFUSAL_STATUS` for the LOAD-FAILURE
+ * pole now use 500 — a status that really is a fault. NOTHING about Wave 55b's
+ * contract is weakened: the same assertions run, on the same component, against
+ * a genuine failure. The 404 branch is asserted, positively, in
+ * `w90_captable_interim_refusal_copy.test.tsx`, which fails if the deliberate
+ * refusal is ever again dressed up as a fault.
+ * ───────────────────────────────────────────────────────────────────────────── */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -66,9 +87,17 @@ afterEach(() => {
 });
 
 describe("W55b · OQ-3 — interim (pro-forma) cap table: failed is not empty", () => {
+  it("FIXTURE — the pinned refusal status is 404, which is why 500 is used for the fault pole", () => {
+    /* WAVE 90 · ITEM 1 — keeps the pinned constant in this file's dependency
+       graph. If the route's deliberate-refusal status ever changes, this fails
+       here and the amendment note above has to be re-read. */
+    expect(W55B_CAP_TABLE_REFUSAL_STATUS).toBe(404);
+  });
+
   it("LOWER POLE — the refusal renders and NOT the three empty-position strings", async () => {
     apiRequestMock.mockImplementation(async () => {
-      throw new ApiError(W55B_CAP_TABLE_REFUSAL_STATUS, "refused", null, { ok: false });
+      /* WAVE 90 · ITEM 1 — a GENUINE fault status. See the amendment note above. */
+      throw new ApiError(500, "boom", null, { ok: false });
     });
     renderInterim();
 
@@ -166,7 +195,8 @@ describe("W55b · OQ-3 — interim (pro-forma) cap table: failed is not empty", 
     /* readOnly drops the action columns, so the not-loaded row's colSpan differs;
        the honesty contract must not. */
     apiRequestMock.mockImplementation(async () => {
-      throw new ApiError(W55B_CAP_TABLE_REFUSAL_STATUS, "refused", null, { ok: false });
+      /* WAVE 90 · ITEM 1 — a GENUINE fault status. See the amendment note above. */
+      throw new ApiError(500, "boom", null, { ok: false });
     });
     renderInterim(true);
     await screen.findByTestId("captable-interim-error");

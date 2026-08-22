@@ -398,8 +398,8 @@ function CommissionSplitCard() {
   return (
     <AppCard title="Commission split" data-testid="card-admin-commission-split">
       <span className="mb-3 block text-xs text-muted-foreground" data-testid="text-split-writes-nothing">
-        This is a calculator. It books nothing, allocates nothing and writes no row — it asks the server&rsquo;s
-        largest-remainder allocator what a total would split into, so the answer here and the answer a close
+        This is a calculator. It books nothing, allocates nothing and writes no row — it asks Capavate&rsquo;s
+        own allocator what a total would split into, using the same rounding rules, so the answer here and the answer a close
         writes are the same answer.
       </span>
       <div className="grid gap-3 md:grid-cols-3">

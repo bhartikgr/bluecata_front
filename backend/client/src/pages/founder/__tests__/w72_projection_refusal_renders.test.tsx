@@ -118,7 +118,12 @@ describe("W72-R58 — the projection refusal is on the screen, not in the consol
     /* The surface it names must EXIST and be the one that works (R58): equity
        originates through /founder/rounds; /founder/captable is view-only. */
     expect(msg).toContain("/founder/rounds");
-    expect(screen.getByTestId("projection-refused-code").textContent).toBe("zero_pricing_denominator");
+    /* WAVE 83 · ITEM 1 (owner ruling Q25) — the internal refusal CODE
+       (`zero_pricing_denominator`) is no longer printed to a founder. The node
+       and its data-testid stay, and now carry the consequence in plain words. */
+    const codeNode = screen.getByTestId("projection-refused-code").textContent ?? "";
+    expect(codeNode).not.toContain("zero_pricing_denominator");
+    expect(codeNode).toContain("Capavate shows no post-close figures");
     /* NO SILENT DROP: the pre-close column is still rendered beside the refusal. */
     expect(screen.getByTestId("table-pre")).toBeTruthy();
     /* AND THE FALSE ALTERNATIVE IS ABSENT: both terms ARE set, so the

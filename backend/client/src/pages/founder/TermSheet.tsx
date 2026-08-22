@@ -44,6 +44,7 @@ import {
  type ReconciliationDiff,
 } from "@/lib/termsheet/templates";
 import type { TermSheetData, Region, InstrumentValue, ClauseDescription } from "@/lib/termsheet/types";
+import { readNegotiatedTerms } from "@/lib/termsheet/roundNegotiatedTerms"; /* WAVE 92 · ITEM 3 */
 import { useTermSheetStore, type SectionDraft, type TermSheetRecord } from "@/lib/termsheet/store";
 import { CONSORTIUM_PARTNERS, partnersByRegion, type Region as PartnerRegion } from "@/lib/partners";
 import { CAPAVATE_LOGO_URL } from "@/components/CapavateLogo";
@@ -106,9 +107,41 @@ function inferData(r: Round): TermSheetData {
   const n = Number(raw);
   return raw === null || raw === undefined || raw === "" || !Number.isFinite(n) || n <= 0 ? null : n;
  })(),
- liqPrefMultiple: 1,
- participating: false,
- capParticipation: "non-participating",
+ /* ═════════════════════════════════════════════════════════════════
+    WAVE 92 · ITEM 3 (open item N-3 / OQ-W94-2) — THESE THREE NOW READ THE ROUND.
+    ═════════════════════════════════════════════════════════════════
+    BEFORE, verbatim: `liqPrefMultiple` was the number one, `participating` was
+    boolean false, and `capParticipation` was the STRING "non-participating" —
+    three literals asserting terms that are negotiated per deal, in a document a
+    founder SENDS TO AN INVESTOR, sitting directly beneath a Wave 58b comment
+    saying "ALL THREE NOW READ THE ROUND" about three different fields.
+
+    A company with "2x participating, capped at 3x" recorded on the round
+    generated a term sheet stating "1x non-participating". And the third literal
+    was a WORD in a slot `client/src/lib/termsheet/templates.ts:136` renders as a
+    MULTIPLE, so it would have printed "a participation cap of
+    non-participating x the Original Issue Price" — invisible only because the
+    clause was gated on the hardcoded `false`.
+
+    ABSENT MEANS ABSENT, exactly as it does for `fdSharesPreMoney` above: a round
+    with no liquidation preference on record produces a clause that SAYS the term
+    is not recorded and names where to record it, never a default. This is also
+    the one term the exit waterfall computes from, so a default here could print
+    one liquidation term while the platform modelled another.
+
+    ONE READER, NOT TWO (R21). `readNegotiatedTerms` reproduces the parsing rules
+    of `server/lib/roundStoredTerms.ts` — the tree's single stored-terms reader,
+    which the exit waterfall, the round-math route and the cap table all use — and
+    a test asserts the two agree on every input including the refused ones. */
+ ...(() => {
+  const t = readNegotiatedTerms(r as unknown as Record<string, unknown>);
+  return {
+   liqPrefMultiple: t.liqPrefMultiple,
+   participating: t.participating,
+   capParticipation: t.capParticipation,
+   liquidationPreferenceRaw: t.liquidationPreferenceRaw,
+  };
+ })(),
  antiDilutionVariant: "broad_based_wa",
  valuationCap: r.preMoney,
  discount: 20,

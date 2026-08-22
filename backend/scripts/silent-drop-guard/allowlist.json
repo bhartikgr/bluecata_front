@@ -1,506 +1,734 @@
 {
-  "removedRoutes": [
-    {
-      "id": "GET /api/admin/pricing/billing-metrics",
-      "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "GET /api/admin/pricing/collective-tiers",
-      "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "GET /api/admin/pricing/regional",
-      "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    }
-  ],
-  "removedClientRoutes": [
-    {
-      "id": "/admin/application-fee",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'application-fee' in AdminFeesConsolidated.tsx → 8 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/collective-payment-pl",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'collective-payments/pl' in AdminFeesConsolidated.tsx → 6 hits (v8 spec line 46 confirms Collective P&L SURVIVED). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/commission-rates",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'commission-rates' in AdminFeesConsolidated.tsx → 3 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/partner-pl",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'partner-pl' in AdminFeesConsolidated.tsx → 9 hits, including both mark-paid mutations at :1502 and :1516 (v8 spec line 46 confirms Partner P&L SURVIVED). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/payments",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'payments' in AdminFeesConsolidated.tsx → 12 hits; the ledger lives in the /admin/fees \"Ledger & Invoices\" tab on the same endpoint (App.tsx:905). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/platform-fees",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'platform-fees' in AdminFeesConsolidated.tsx → 5 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    }
-  ],
-  "removedNav": [
-    {
-      "id": "/collective/partner/contacts\tContacts",
-      "reason": "1f (v26.1.x Consortium Partner QA) — nav label renamed 'Contacts' -> 'Contacts (CRM)'. The route/page (/collective/partner/contacts) is UNCHANGED and still reachable; only the display label changed, which the guard tracks as href+label. No functionality removed.",
-      "approvedBy": "Ozan",
-      "date": "2026-07-09"
-    },
-    {
-      "id": "/admin/application-fee\tApplication Fee",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'application-fee' in AdminFeesConsolidated.tsx → 8 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/collective-payment-pl\tCollective P&L",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'collective-payments/pl' in AdminFeesConsolidated.tsx → 6 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/commission-rates\tCommission Rates",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'commission-rates' in AdminFeesConsolidated.tsx → 3 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/partner-pl\tPartner P&L",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'partner-pl' in AdminFeesConsolidated.tsx → 9 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/payments\tPayments",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'payments' in AdminFeesConsolidated.tsx → 12 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/platform-fees\tPlatform Fees",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'platform-fees' in AdminFeesConsolidated.tsx → 5 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "/admin/pricing\tPricing & Billing",
-      "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'pricing' in AdminFeesConsolidated.tsx → 50 hits; the Config tab carries pricing & billing. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
-      "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
-      "date": "2026-08-09"
-    }
-  ],
-  "note": "each entry must include reason + approvedBy + date. Entry shape: { \"id\": \"<exact baseline id>\", \"reason\": \"...\", \"approvedBy\": \"...\", \"date\": \"YYYY-MM-DD\" }. A plain string id is also accepted but the object form (with reason/approvedBy/date) is required for a legitimate, logged removal. WAVE 2B / BLOCKER 3: entries dated 2026-08-09 resolve the 20 disappearances under Ozan's ruling. FOUR ids are DELIBERATELY NOT allowlisted — they are real losses, registered instead in scripts/silent-drop-guard/deferrals.json (v8 items RS-1 and RS-2).",
-  "removedCopy": [
-    {
-      "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tCollection outcome",
-      "reason": "WAVE 1A / S-2 (fee self-mark security hole) — the GP-facing \"Collection outcome\" selector let a Consortium Partner name the carry settlement outcome, which reached state=\"paid\" at server/spvEngineStore.ts:752 with no gateway. The control is removed deliberately; the settlement outcome is now derived server-side only (gateway mint, or the Capavate platform-admin settle route). Replaced in-place by an explanatory note (data-testid=spv-distribution-settlement-note); no other distribution functionality removed.",
-      "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tCollected",
-      "reason": "WAVE 1A / S-2 — option label of the removed \"Collection outcome\" selector (see the entry for that control). Partner-supplied settlement outcomes are no longer accepted.",
-      "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tFailed / uncollected",
-      "reason": "WAVE 1A / S-2 — option label of the removed \"Collection outcome\" selector (see the entry for that control). Partner-supplied settlement outcomes are no longer accepted.",
-      "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\tversion:",
-      "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\tprev_revision_hash:",
-      "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\tversion:",
-      "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\tprev_revision_hash:",
-      "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/admin/PricingModelDetail.tsx\ttext\tPercent (0.10 = 10%)",
-      "reason": "WAVE 3A / P-1 (DEF-007) — CORRECTED IN PLACE, not removed. This was the Select option label on the discount-code kind picker. It instructed the admin to TYPE a fraction (\"0.10 = 10%\"), which is exactly the convention the owner's 2026-08-09 ruling reversed for the input side: storage stays FRACTIONAL, but ADMIN INPUT is percent-as-written (type 100, store 1.0). The amount field beside this label now takes percent-as-written and converts to the stored fraction (client/src/lib/percentDisplay.ts parsePercentInputToFraction), so leaving the old label in place would have told the admin to type 0.10 into a field that reads it as 0.1% — a 100x under-charge. Replaced by \"Percent (type 10 for 10%)\" plus an explicit on-screen convention note (data-testid=discount-percent-convention). No control, option or capability was removed: all three discount kinds are still selectable.",
-      "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md, spec/00_SHARED_STANDARDS.md §1.1; WAVE 3A build directive)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tShares authorized",
-      "reason": "WAVE 52 / Shadie item 2a — A MISLABELLING CORRECTED, NOT A CONTROL REMOVED. The input, its data-testid (input-shares), its validation and its wire key (sharesAuthorized) are all UNCHANGED and still on screen; only the visible label changed to ‘New shares issued in this round’. The field never meant authorized capital — Capavate has no authorized-capital field anywhere in the schema — and it is not a sum of holdings. RoundNew.tsx's own comment records the meaning: ‘Distinct from sharesAuthorized which is NEW shares issued in this round.’ Keeping the old label would keep a false sentence in front of a founder, and the label was the cause of the reviewer's confusion. Panel/button/event/tab identity counts for this file ROSE (392→473 panels) and nothing DISAPPEARED in those classes. Strategy Review 1 STRUCK the DGCL §161 / NVCA §2.2 authorized-ceiling rationale, so no authority claim replaces it.",
-      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
-      "date": "2026-08-15"
-    },
-    {
-      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tImplied post-money",
-      "reason": "WAVE 52 / Shadie item 1a — A FALSE LABEL ON A BOX THAT COULD NOT COMPUTE. The readout rendered Number(form.preMoney) + Number(form.targetAmount); on a Common round targetAmount is not a field the instrument collects, so the addend was always NaN→0 and the box displayed the PRE-money under a post-money label, beneath a tooltip promising ‘pre-money + target raise’. The rendered field was the defect, not the missing input. The readout is NOT removed: the same div and the same data-testid (input-post) remain, now labelled ‘Post-money valuation’, showing T·p when it can be computed and a named refusal when it cannot, plus a new on-screen derivation line (data-testid=w52-post-money-derivation). Strictly MORE disclosure, and a true label.",
-      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
-      "date": "2026-08-15"
-    },
-    {
-      "id": "client/src/pages/founder/RoundNew.tsx\tplaceholder\tEnter pre-money and shares authorized",
-      "reason": "WAVE 52 / Shadie items 2a+5a — THE PLACEHOLDER NAMED THE WRONG DENOMINATOR. Price per share is pre-money ÷ fully-diluted PRE-MONEY shares, never ÷ the new shares this round issues. The placeholder told the founder the opposite and was the third recorded mislabelling of the same quantity (RoundNew.tsx:158, :1176 and this line). The input, its data-testid (input-pps), its auto/override toggle and its formula caption are all unchanged; only the placeholder text now names the quantity actually divided by. Corrected to ‘Enter pre-money and fully-diluted pre-money shares’.",
-      "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
-      "date": "2026-08-15"
-    },
-    {
-      "id": "client/src/pages/founder/RoundNew.tsx\ttext\tDiscount (%)",
-      "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — “Relabel to ‘Discount (% off the round price)’ — never a bare ‘Discount’.” “Discount” and “Discount Rate” are INVERSES and the YC SAFE legal form uses the latter (a 20% discount is a Discount Rate of 80% — Wyrick); DLA Piper calls conflating them ‘quadrupling the intended discount’. A label reading only ‘Discount (%)’ does not say which of the two it is. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
-      "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Authority cited is owner ruling R30.1 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15), which mandates this exact label, and the WAVE 58e spec §D3.1 which repeats it. Recorded here per the R28 standard: the control is still reachable, the destination identity is named, and no recoverable identity was excused instead of restored — the old string cannot be restored as a sibling because R30 forbids the screen carrying a bare ‘Discount’ label at all. Ratify or refuse.",
-      "date": "2026-08-16"
-    },
-    {
-      "id": "client/src/pages/founder/Rounds.tsx\ttext\tDiscount (%)",
-      "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — the SAME relabel on the Edit-terms modal, which on live v26.17.0 is the ONLY post-creation surface where the discount is visible or editable, and the only place the corrupt live value 20260707 (R31-a) was ever shown. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
-      "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Same authority as the RoundNew entry above (owner ruling R30.1 + WAVE 58e spec §D3.1). Appended at the END of this class array as a sibling, never inserted mid-list — one mid-list insertion previously invalidated 46 child identities and produced 62 phantom drops.",
-      "date": "2026-08-16"
-    },
-    {
-      "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tThis is a preview only — no money moves.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This is a projection only — no money moves.\" Same node, same warning, same position. \"preview\" named this project's BUILD STATE; \"projection\" names what the number actually is.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/Landing.tsx\ttext\tSprint 15 · login + entitlement",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Sign in and entitlement\". Same chip (data-testid=\"chip-sprint\"), same position on the landing page. Only this project's sprint number is gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t's",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph (a JSX text run between two <code> elements). The paragraph still explains the same behaviour; it no longer names server/subscriptionsStore.ts or startSubscription(), so the fragments around those <code> elements no longer exist as separate text runs.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) is not wired to this field yet.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The FACT is retained verbatim in the new single-run sentence: \"Managed founders are on a separate 90-day default, which this field does not yet control.\"",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) — there is no separate hardcoded map anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Every behavioural claim is retained: \"pricing_models.discountCodes is read directly on every charge — there is no separate hardcoded list anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.\" Only the source-file name and two internal function names are gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Changing the charged amount at the gateway boundary is Slice 3 / M14 — not this page. Zero Airwallex code touched here.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Changing what the provider actually charges is done there, not on this page. This screen never writes to the payment provider.\" Same warning, same position; the slice/milestone code and the internal note about which code was touched are gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Unknown slugs fail closed. Source:",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Unknown slugs are refused rather than guessed.\" The fail-closed BEHAVIOUR is retained in plainer words; the \"Source: server/lib/partnerTiers.ts\" pointer is gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 14",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. The fallback is now stated in words a non-engineer reads: \"a 14-day trial is used only when no live pricing model or no trial length is configured.\"",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 90",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. Retained in words: \"Managed founders are on a separate 90-day default.\"",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tEditing the trial length affects new founder signups immediately —",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The sentence still opens with exactly this fact: \"Editing the trial length affects new founder signups immediately: this field is read first…\".",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tKnown unit quirk (unchanged by this slice):",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Known unit quirk:\". The quirk, its lossiness and its consequence are all still stated; only \"(unchanged by this slice)\" — a claim about this project's own delivery increments — is gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tPublishing is deploy-gated: the package amount must equal the gateway tier amount resolved from",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This package cannot be published until the amount matches the payment provider's own tier amount, which is set from\" — followed by the same <code> environment-variable name, which is a real operator instruction and is deliberately KEPT. Only the internal term \"deploy-gated\" is gone.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tcalcCouponDiscountCents",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. The behaviour it described is retained; the function name is not something an admin can act on.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tfindDiscountCodeByCode",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. Same reason.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tif no live model or no trial is configured. The separate managed-founder path (",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. Both facts are retained in the new single-run sentence.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tin",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT — a two-letter JSX text run between two <code> elements in the rewritten discount-code paragraph. It carried no information on its own.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tis read directly by",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Now \"is read directly on every charge\", which says the same thing without naming the function that does it.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tmirror-writes this value into",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten unit-quirk paragraph. Now \"this value is also mirror-written into\" — same fact, passive voice, no source-file subject.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\ton every charge (via",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. \"on every charge\" is retained verbatim in the new run.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\treads this field first and only falls back to",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. \"this field is read first\" is retained.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/adminPlatformFeesRoutes.ts",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The lossy legacy mirror write it named is still described, and the destination table and the rounding are still shown.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/lib/partnerTiers.ts",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The fail-closed behaviour it was cited for is retained in words.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/managedFounderStore.ts",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The managed-founder 90-day default it named is retained in words.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/paymentStore.ts",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin (twice — this text run, and inside the discount-code SectionTitle hint). Removed under Q25. The percent-as-a-fraction STORAGE RULE, which is the part an admin can get wrong, is retained verbatim.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/subscriptionsStore.ts",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The trial-length read order it named is retained in words.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tstartSubscription()",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — INTERNAL FUNCTION NAME rendered to an admin. Removed under Q25. What it does — read this field first for new founder signups — is retained in words.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/Activity.tsx\tdescription\tAppend-only audit ledger. Hash-chained per R165 §12 in production.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Append-only audit ledger. Every entry is hash-chained, so the record cannot be altered after the fact.\" Same node, same panel description. The owner-ruling identifier is gone and the GUARANTEE it referred to is now stated plainly — which is more useful to a founder, not less.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/CapTable.tsx\ttext\tCap table engine per R200 §10. Source-of-truth ledger; SAFEs use post-money cap conversion. As-converted view applies cap/discount per R165 §2. New to a term?",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Computed by the cap-table engine. Source-of-truth ledger; SAFEs use post-money cap conversion. The as-converted view applies each instrument's own cap and discount. New to a term?\" Two owner-ruling identifiers gone; every stated FACT and the glossary link that follows are unchanged.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/Messages.tsx\ttext\tThreads are role-aware. You can DM cap-table members and active-round investors. Uninvited investors are gated per Sprint 15 entitlement rules.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: the first two sentences are byte-identical; the third becomes \"Investors you have not invited cannot be messaged.\" The RULE is now stated instead of the sprint that shipped it.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/Settings.tsx\ttext\tThe 2FA enforcement, SSO domain, and export controls below are preview placeholders. Programmatic exports and SSO domain enforcement are scheduled for an upcoming release.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE (same banner, same data-testid=\"banner-data-preview\"): \"Workspace 2FA enforcement, SSO domain enforcement and programmatic exports are not yet available. The controls below are shown so you can see what is coming; they are disabled until each one works, and none of them will report a change that has not been saved.\" STRONGER, not weaker: it drops the internal word \"preview\", drops a release promise nobody can hold anyone to, and states the new guarantee that the controls no longer claim false saves.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/investor/InvitationDetail.tsx\ttext\tFully-diluted view, shared with you under R165 §4 redaction policy.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE, on an INVESTOR screen: \"Fully-diluted view, shared with you under the company's cap-table redaction policy.\" Same node, same position. An investor was being shown this project's internal ruling number.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/investor/Signup.tsx\ttext\tKYC document (preview stub)",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"KYC document (not yet collected)\". Same form label, same position. \"(preview stub)\" told a prospective investor about this project's build state; \"(not yet collected)\" tells them the truth about their own document.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerDashboard.tsx\ttext\tComing with Sprint 32 consent ledger.",
-      "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE on a PAYING CONSORTIUM PARTNER's dashboard, in the same card (data-testid=\"card-cross-portfolio\"), which is NOT deleted: \"Not yet available. Showing you that an investor in your portfolio also appears in another partner's portfolio requires that investor's recorded consent, and Capavate will not surface an overlap without it.\" The sprint number and the implied delivery date are gone; the reason the feature does not exist is now stated.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    }
-  ],
-  "removedEvents": [
-    {
-      "id": "client/src/components/partner/SpvDetailTabs.tsx\tselect\tonChange\texpr:32763a19dccb",
-      "reason": "WAVE 1A / S-2 — onChange of the removed \"Collection outcome\" <select data-testid=spv-distribution-outcome>. That control was the client half of the fee self-mark hole (partner-named settlement outcome reaching state=\"paid\" at server/spvEngineStore.ts:752 with no gateway). Removed deliberately with the selector itself; the outcome is now derived server-side only.",
-      "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tButton\tonClick\texpr:3373339876a8",
-      "reason": "SC-2 — panel rendered INERT (code retained, nothing deleted). This form posts to the PLURAL ledger POST /api/partner/me/spvs/:id/distributions (spvFundStore -> spv_distributions) while the canonical engine writes the SINGULAR spv_distribution. One letter apart; the singular query cannot read the plural write. SC-2 adds an inbound link to this page, which would have made that split ledger reachable. Owner ruled the singular table canonical. Re-enable once SC-3 lands distribution_type on the canonical table and the form is repointed. This is that panel's submit handler.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09"
-    },
-    {
-      "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tButton\tonClick\texpr:70f4884aeeb9",
-      "approvedBy": "Ozan Isinak (delegated authority, 2026-08-11)",
-      "reason": "MODIFICATION, NOT A REMOVAL. The refund Button, its data-testid (button-refund-invoice-<id>), its disabled logic, its label and its refund.mutate call are all still present and unchanged. ONE LINE INSIDE the onClick changed: the confirmation dialog rendered the amount by dividing minor units by 100, which UNDERSTATES A JPY REFUND BY 100x (JPY is ISO-4217 exponent 0). It now calls formatMinor(inv.amountMinor, inv.currency). This is the confirm dialog on a screen whose own copy reads 'This moves real money and cannot be undone' - the admin was shown the wrong figure before authorising a refund. PROOF OF NON-REMOVAL: reverting that single line restores 'no silent drops' with nothing else changed (Wave 21 ran this revert-and-restore). ROOT CAUSE: the guard fingerprints handlers by EXPRESSION HASH, so any edit to a handler body is indistinguishable from deleting it - the same fingerprinting weakness Wave 11 fixed for CHILD MEMBERSHIP (adding a tab read as removing the tab list) and that blocked Wave 4B from adding a roster column. The expression case is still unfixed and is logged as a guard follow-up. Allowlisting this one entry beats shipping a known 100x money-display defect on a refund dialog."
-    },
-    {
-      "id": "client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:4cb80683e419",
-      "reason": "WAVE 58 / owner ruling R27 — A RELOCATION ENTRY, WITH ITS DESTINATION NAMED. DESTINATION ID: client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:<the handler on data-testid=\"addon-pool-percent\">, in the same file, in the same section (data-testid=\"addon-pool-section\"), reachable in the browser. WHAT THIS IDENTITY WAS: the inline onChange on the \"Pool size (shares)\" input — `e => setAddonPoolDraft(d => ({ ...d, poolSize: e.target.value }))`. R27 rules that the option pool is entered as a PERCENTAGE of fully diluted and that \"the share count becomes the derived output, shown to the founder, NEVER the input\". The share count input therefore has no writer any more: it is `readOnly` and displays the derived value. Its onChange is not suppressed or stubbed out — a dead handler would be a dead promise — it is genuinely gone, and the write it performed now happens on the percentage field. WHAT IS *NOT* REMOVED, all verified by the guard census in the same run: the control itself (data-testid=\"addon-pool-size\") is STILL ON SCREEN; its label text \"Pool size (shares)\" is UNCHANGED and still in the copy inventory; its container (data-testid=\"addon-pool-fields\") and the toggle (data-testid=\"addon-pool-toggle\") are unchanged; the wire key `poolSize` is unchanged, still sent on the `option_pool` child-round payload and still a SHARE COUNT there; and the four CardContent panel-membership records that a first attempt at this change did drop (inner=Input#24, Label#46, input#5, label#5) were RESTORED by keeping the relocated JSX lexically inside the card rather than hoisting it into a variable. This is the ONLY identity in any class that this wave could not carry across, and the file gains many more than it loses. NOTE FOR RATIFICATION: R27 authorises the percentage input and the derived share count explicitly, and its binding constraints require that a guard-identity change be \"a relocation entry naming its destination, submitted for ratification — never a quiet allowlist growth\". This entry is that submission. It grows scripts/silent-drop-guard/allowlist.json from 40 to 41 and is APPENDED AT THE END of its class array as a sibling, never inserted mid-list (a mid-list insertion once invalidated 46 child identities). It is NOT ratified until the owner says so.",
-      "approvedBy": "SUBMITTED FOR RATIFICATION — owner ruling R27 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15): \"make it a percentage\"; \"the share count becomes the derived output, shown to the founder, never the input\". R27 authorises the change that causes this identity to move but does not itself name this identity, so this entry is flagged rather than treated as pre-approved.",
-      "date": "2026-08-15"
-    },
-    {
-      "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:422d190899b7",
-      "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:df9859db5a44",
-      "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:af61dc179bce",
-      "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    },
-    {
-      "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:cc5284aa419d",
-      "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
-      "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
-      "date": "2026-08-19"
-    }
-  ],
-  "removedPanels": [
-    {
-      "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tCard\tdata-testid=partner-spv-distribution-form\tchildren=3:d2216a8f8440",
-      "reason": "SC-2 — panel rendered INERT (code retained, nothing deleted). This form posts to the PLURAL ledger POST /api/partner/me/spvs/:id/distributions (spvFundStore -> spv_distributions) while the canonical engine writes the SINGULAR spv_distribution. One letter apart; the singular query cannot read the plural write. SC-2 adds an inbound link to this page, which would have made that split ledger reachable. Owner ruled the singular table canonical. Re-enable once SC-3 lands distribution_type on the canonical table and the form is repointed.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    },
-    {
-      "id": "client/src/pages/partner/PartnerFundDetail.tsx\tCard\tdata-testid=partner-fund-commitments\tchildren=3:26ef38722479",
-      "reason": "SC-0 — pledge form rendered INERT (code retained). It posts {lpName, amountMinor} to a route requiring {lpContactId, commitmentMinor, currency} — a guaranteed 400 on every submission. It is unreachable today only because the page crashes; fixing the crash would have exposed a form that fails every time. Re-enable once the payload contract is corrected.",
-      "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
-      "date": "2026-08-09",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    },
-    {
-      "id": "client/src/pages/admin/PricingModelDetail.tsx\tCard\ttext=Discount codes Add code\tchildren=1:f8c93dd9ec08",
-      "reason": "WAVE 3A / P-1 — CONTENT HASH CHURN, not a dropped panel. The Discount Codes card is still rendered, still routed and still editable; its child hash changed because the wave (a) added the required on-screen unit statement (data-testid=discount-percent-convention, per spec/00_SHARED_STANDARDS.md §1.1, which mandates that a percentage surface name its convention) and (b) swapped the raw numeric amount field for the percent-as-written PercentAmountInput on kind=percent rows. Verify: grep -c 'button-addDiscount' PricingModelDetail.tsx → 1, and the replacement panel is reported in the same guard run's 'new item(s) added' list. Nothing was deleted.",
-      "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md; WAVE 3A build directive)",
-      "date": "2026-08-09",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    },
-    {
-      "id": "client/src/pages/admin/PricingModelDetail.tsx\tCardContent\ttext=Discount codes Add code\tchildren=2:85ab60d3a9ae",
-      "reason": "WAVE 3A / P-1 — CONTENT HASH CHURN, not a dropped panel. Same panel as the Card entry above, one nesting level down: the CardContent gained a third child (the unit-convention paragraph) alongside the unchanged header row and code list, so its children count and hash both moved. Every pre-existing control — add code, active switch, code text, kind select, amount, expiry, max redemptions, delete — is still present and still wired to the same `update()` path.",
-      "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md; WAVE 3A build directive)",
-      "date": "2026-08-09",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    },
-    {
-      "id": "client/src/pages/collective/CollectiveMembers.tsx\tSheetContent\tdata-testid=sheet-member-detail\tchildren=1:bb5da2bc49e8",
-      "reason": "WAVE 8 / ORP-048 — PURELY ADDITIVE; nothing was removed from this Sheet. The member-detail Sheet gains a link to /collective/profile/:id (data-testid=link-member-public-profile), the public collective-profile route (client/src/App.tsx:1077; the audit cited :1038) which had ZERO inbound links tree-wide and was therefore unreachable. The guard fingerprints a panel by its DIRECT-CHILD tag sequence (extract-inventory.ts childSequenceDigest ~:974); this SheetContent had exactly one direct child, so the digest cannot be preserved while adding a sibling. Restructure was attempted and rejected: nesting the link inside the single existing child changes that child's own digest instead, moving the report rather than removing it. Every pre-existing element and copy string in this Sheet is intact — verified by the absence of any CollectiveMembers.tsx entry in the removedCopy / removedButtons / removedTabs classes of the same guard run.",
-      "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
-      "date": "2026-08-10",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    },
-    {
-      "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tCard\tdata-testid=spv-wizard\tchildren=7:79619b99e80e",
-      "reason": "WAVE 8 / ORP-030 + ORP-063 — PURELY ADDITIVE; no wizard card, step, field, button or copy string was removed. Two orphans are restored inside this wizard: (a) ORP-030, GET /api/partner/me/spv-wizard/defaults (server/spvEngineRoutes.ts:140) had no client caller at all — it is now a clone-from-prior-SPV selector (data-testid=spv-w-clone-select) plus a GP-context line; (b) ORP-063, the SPV_EDU.terms and SPV_EDU.reviewLaunch keys were defined but rendered nowhere — they are now rendered in wizard steps 3 and 4 (data-testid=spv-edu-terms, spv-edu-review-launch) rather than deleted. The wizard Card's direct-child count goes 7 -> 8, which the guard digests as a change; there is no way to add a visible wizard control without adding a node under this Card. Confirmed additive-only: the same guard run reports no removedCopy, removedButtons or removedTabs entries for PartnerSpvEngine.tsx.",
-      "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
-      "date": "2026-08-10",
-      "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
-    }
-  ],
-  "removedRouteTargets": [
-    {
-      "id": "/founder/billing\ttarget=-\tmodule=unresolved\trender=redirect\tbody=unknown",
-      "reason": "WAVE 8 / ORP-027 — this is the guard reporting the REMOVAL OF THE DEFECT, not a loss of function. The baseline holds TWO entries for /founder/billing: this `render=redirect body=unknown` stub AND `target=FounderBilling module=client/src/pages/founder/Billing.tsx render=jsx` (baseline.route-targets.json:142-143). v25.45 F10c had left the redirect stub as the LIVE route, so the real page was unreachable and four capabilities were orphaned: PATCH /api/founder/subscription/payment-method (Billing.tsx:157), POST /api/founder/invoices/:invoiceId/email (:315), PATCH /api/founder/subscription cancel_at_period_end (:399) and POST /api/founder/subscription/resume (:414) — verified absent from founder/Settings.tsx. WAVE 8 replaces the redirect with <RequireAuth><FounderBilling /></RequireAuth> (client/src/App.tsx ~:626) and restores the Billing left-nav item (client/src/components/AppShell.tsx:131). The surviving baseline sibling entry for the same path is therefore now SATISFIED by real JSX; only the redirect stub signature disappears. Restructuring is impossible here: a path cannot simultaneously redirect away and render the page.",
-      "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
-      "date": "2026-08-10"
-    }
-  ],
-  "removedRoutedSurfaces": [
-    {
-      "id": "/founder/billing\ttarget=-\tmodule=unresolved\tsurface=unknown",
-      "reason": "WAVE 8 / ORP-027 — companion of the routeTargets entry above and the same fact: the `surface=unknown` signature belongs to the redirect stub. The baseline's other /founder/billing surface entry, `target=FounderBilling module=client/src/pages/founder/Billing.tsx surface=s4` (baseline.route-targets.json:355-356), is now the one that is live. Net effect is MORE reachable surface, not less.",
-      "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
-      "date": "2026-08-10"
-    }
-  ],
-  "removedButtons": [
-    {
-      "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tCard\tdata-testid=<expr:`spv-row-${s.id}`>",
-      "reason": "WAVE 40 / F-1 — RELOCATION OF A CONTROL, NOT A SUBTRACTION OF ONE. This id exists only because the extractor records any element with role=\"button\" as a button (extract-inventory.ts: BUTTON_TAGS.has(tag) || role === \"button\"), and the SPV card carried role=\"button\" tabIndex={0}. That nesting was the proven cause of the live F-1 defect: the card's own onKeyDown fires on Enter/Space BUBBLED FROM ANY DESCENDANT, so pressing Enter on one of the 16 SPV tab triggers toggled selectedId and unmounted the entire tab panel mid-activation (reproduced in Chromium, both poles — build_log/WAVE40_REPORT.md), and role=\"button\" additionally makes the whole subtree presentational in the accessibility tree, hiding all 16 role=\"tab\" triggers, the publish Button and both Links from assistive tech. NOTHING WAS REMOVED: the Card keeps its data-testid, its onClick and its onKeyDown byte-identical (both event fingerprints are unchanged in this run), so click-anywhere-to-expand still works; and the disclosure gained a REAL native control appended at the end of the header column, <button data-testid=`spv-row-toggle-${s.id}`> with aria-expanded/aria-controls, which the browser activates on Enter and Space. The guard has no relocation/rename mechanism, so a role move can only be expressed as one removed id — enumeration of the four fingerprint classes shows 1 is the minimum possible loss for any fix that removes the interactive-role nesting. scripts/reachability/reachability_gate.ts rule R3 now fails the build if an interactive role is ever wrapped around these controls again. RECOMMENDED FOR WAVE 41: give the guard a `relocations` map so a control moving between elements needs no removal entry.",
-      "approvedBy": "Ozan (WAVE 40 owner ruling 2026-08-13: \"Make the tabs work. Go with your recommendation.\")",
-      "date": "2026-08-13"
-    }
-  ]
+ "removedRoutes": [
+  {
+   "id": "GET /api/admin/pricing/billing-metrics",
+   "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "GET /api/admin/pricing/collective-tiers",
+   "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "GET /api/admin/pricing/regional",
+   "reason": "WAVE 2B / BLOCKER 3 — OBSOLETE, dropped under the owner's ruling. This endpoint served FABRICATED data, not platform data, and had zero repo consumers. Evidence: server/__tests__/sprint12.test.ts:448-458 records the deletion (\"/api/admin/pricing/collective-tiers served a fabricated 1200/2400/600 array (H-5)\" and \"/api/admin/pricing/regional served a fabricated 9-region matrix (H-13)\") and server/__tests__/platformPagesRegression.test.ts:195-197 locks them out of the smoke set. The real data lives in collective_subscription_configs (GET /api/admin/collective-subscriptions) and region_extensions. Restoring these would restore lies, not function.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "POST /api/webhooks/payment-gateway/stripe",
+   "reason": "WAVE 97B · R86 — A SIGNATURE-VERIFYING WEBHOOK ENDPOINT FOR A PAYMENT PROVIDER THE PLATFORM DOES NOT USE, REMOVED ON THE OWNER'S DIRECT INSTRUCTION. This route was registered by the SACRED file server/paymentGatewayAdapter.ts (was :1199) and called handleGatewayWebhook(\"stripe\"), which HMAC-verified the body with verifyStripeSig from server/lib/stripeGateway.ts and then dispatched into the subscription/payment/invoice machinery. The platform has routed every payment through Airwallex since v25.4 (11-Jun-2026, Ozan's directive), so this endpoint could only ever have accepted traffic for a provider that is not in use. IT WAS ALREADY UNREACHABLE IN THE RUNNING APP, WHICH IS PART OF WHY REMOVING IT IS SAFE: a PRE-EXISTING v25.6 middleware, deprecateStripeFounderWebhook in server/lib/founderBillingExtensions.ts:79, is registered BEFORE registerPaymentGatewayRoutes() and answers this exact path with a permanent 410 {error:\"gateway_deprecated\", migration:\"airwallex\"}. That 410 TOMBSTONE IS DELIBERATELY KEPT and is not part of this removal — it is the stop signal that tells an operator's old dashboard webhook to reconfigure to /api/webhooks/payment-gateway/airwallex, and replacing it with a silent 404 would be strictly worse for an operator. So what actually disappeared is the shadowed handler behind the tombstone, not the response an integrator sees. NOTHING IS LOST: the equivalent live endpoint POST /api/webhooks/payment-gateway/airwallex is unchanged, still registered by the same sacred registrar, still verified by verifyAirwallexSig, still idempotent on (intentId, type), and still fails CLOSED in production when the gateway is unconfigured. RESTORING THIS ROUTE IS NOT AN OPTION while Stripe is not in use: it would re-mount an authentication surface for an unused provider, which is the same reasoning already accepted for the fabricated /api/admin/pricing endpoints in removedRoutes above — restoring it would restore an attack surface, not a function. ENFORCED BY: server/__tests__/w97b_stripe_gone_and_seam.test.ts (the path reaches no gateway and no payment is dispatched; the Airwallex route still answers 200; the sacred adapter's source carries no stripe registration and no verifyStripeSig call) and the rewritten describe block in server/__tests__/airwallexGateway.test.ts (a bare adapter app returns 404 for this path, proving the handler itself is gone rather than merely shadowed). SACRED RECORD: the edit is registered as the WAVE 97B RE-FREEZE of the EXISTING WAIVER-8 row in scripts/sacred_check.sh; npm run sacred reads 48/48 with NINE ratified waivers, unchanged, because no row was added. FULL DETAIL: build_log/wave97b/W97B_REMOVAL.md and W97B_SACRED_REFREEZE.md.",
+   "approvedBy": "Ozan (2026-08-21, verbatim: \"remove stripe. I can add this at a later date. We are using Airwallex today.\", preceded by \"We do not use Stripe.\"), authorised for execution by spec/OWNER_RULINGS_2026_08_13.md · R86 (\"Stripe removal IS possible — Wave 97's blocker is incorrect, and a waiver is granted\"), which names this exact removal in its SCOPE list: \"REMOVE: the static stripeGateway import, the POST /api/webhooks/payment-gateway/stripe route registration, Stripe from the admin config endpoint's gateway list, and the lazy runtime require() of stripeCollective.ts in the DSC vote handler.\"",
+   "date": "2026-08-21"
+  },
+  {
+   "id": "POST /api/webhooks/stripe",
+   "reason": "WAVE 97B · R86 — THE SECOND STRIPE WEBHOOK, REMOVED WITH THE MODULE THAT SERVED IT. This route was mounted by registerStripeWebhookRoute() in server/stripeGatewayAdapter.ts, imported at server/routes.ts:256 and called at :1530. That module was a Sprint 29 KL-06 \"Stripe-style real payment gateway scaffold\": it went live only when PAYMENT_GATEWAY_MODE=live AND PAYMENT_GATEWAY_API_KEY were both set, lazily require()d the Stripe Node SDK, verified a Stripe-Signature header against PAYMENT_GATEWAY_WEBHOOK_SECRET, and otherwise fell through to the simulation adapter. It never carried a real customer payment on this platform — every charge, subscription, invoice, partner bill, Collective membership and SPV deployment fee goes through Airwallex — and the owner has instructed that Stripe be removed. The whole module is deleted, so the route has no handler left to register. NOTHING IS LOST: the live Airwallex webhook POST /api/webhooks/payment-gateway/airwallex is unchanged, and the Airwallex signature checks that this module's Stripe checks paralleled (valid HMAC accepted, tampered body rejected, missing header rejected, unset secret rejected, expired timestamp rejected) are all still asserted in server/__tests__/airwallexGateway.test.ts. The six KL-06 tests that exercised THIS route are removed with it and every dropped test name is recorded, with what replaces its coverage, in build_log/wave97b/W97B_TESTS.md §3 and in a comment block left in place at server/__tests__/sprint29_kl_closures.test.ts. RESTORING IT IS NOT AN OPTION while Stripe is not in use: it would re-introduce the npm `stripe` dependency (also dropped from package.json in this wave) and a second unauthenticated-until-configured webhook surface for a provider the platform does not use. ENFORCED BY: server/__tests__/w97b_stripe_gone_and_seam.test.ts asserts this path is 404, asserts all three Stripe modules are absent from disk, and asserts that NO live source file imports or lazily require()s any of them — the lazy-require fence being the one that matters, because the require() this wave had to repoint in the DSC vote handler was invisible to every static import scan. FULL DETAIL: build_log/wave97b/W97B_REMOVAL.md.",
+   "approvedBy": "Ozan (2026-08-21, verbatim: \"remove stripe. I can add this at a later date. We are using Airwallex today.\", preceded by \"We do not use Stripe.\"), authorised for execution by spec/OWNER_RULINGS_2026_08_13.md · R86 (\"Stripe removal IS possible — Wave 97's blocker is incorrect, and a waiver is granted\"), which names this exact removal in its SCOPE list: \"REMOVE: the static stripeGateway import, the POST /api/webhooks/payment-gateway/stripe route registration, Stripe from the admin config endpoint's gateway list, and the lazy runtime require() of stripeCollective.ts in the DSC vote handler.\"",
+   "date": "2026-08-21"
+  }
+ ],
+ "removedClientRoutes": [
+  {
+   "id": "/admin/application-fee",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'application-fee' in AdminFeesConsolidated.tsx → 8 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/collective-payment-pl",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'collective-payments/pl' in AdminFeesConsolidated.tsx → 6 hits (v8 spec line 46 confirms Collective P&L SURVIVED). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/commission-rates",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'commission-rates' in AdminFeesConsolidated.tsx → 3 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/partner-pl",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'partner-pl' in AdminFeesConsolidated.tsx → 9 hits, including both mark-paid mutations at :1502 and :1516 (v8 spec line 46 confirms Partner P&L SURVIVED). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/payments",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'payments' in AdminFeesConsolidated.tsx → 12 hits; the ledger lives in the /admin/fees \"Ledger & Invoices\" tab on the same endpoint (App.tsx:905). Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/platform-fees",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'platform-fees' in AdminFeesConsolidated.tsx → 5 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  }
+ ],
+ "removedNav": [
+  {
+   "id": "/collective/partner/contacts\tContacts",
+   "reason": "1f (v26.1.x Consortium Partner QA) — nav label renamed 'Contacts' -> 'Contacts (CRM)'. The route/page (/collective/partner/contacts) is UNCHANGED and still reachable; only the display label changed, which the guard tracks as href+label. No functionality removed.",
+   "approvedBy": "Ozan",
+   "date": "2026-07-09"
+  },
+  {
+   "id": "/admin/application-fee\tApplication Fee",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'application-fee' in AdminFeesConsolidated.tsx → 8 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/collective-payment-pl\tCollective P&L",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'collective-payments/pl' in AdminFeesConsolidated.tsx → 6 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/commission-rates\tCommission Rates",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'commission-rates' in AdminFeesConsolidated.tsx → 3 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/partner-pl\tPartner P&L",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'partner-pl' in AdminFeesConsolidated.tsx → 9 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/payments\tPayments",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'payments' in AdminFeesConsolidated.tsx → 12 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/platform-fees\tPlatform Fees",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'platform-fees' in AdminFeesConsolidated.tsx → 5 hits. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "/admin/pricing\tPricing & Billing",
+   "reason": "WAVE 2B / BLOCKER 3 — SUPERSEDED, not lost. D2.5 Slice 1 (July) consolidated the 15 separate admin fee pages into ONE page, /admin/fees → AdminFeesConsolidated (client/src/App.tsx:131-142 records the retirement; the route is registered at client/src/pages/admin/AdminFeesConsolidated.tsx via App.tsx:821). Server routes were UNCHANGED by the consolidation. This surface is verified live inside the consolidated page: grep 'pricing' in AdminFeesConsolidated.tsx → 50 hits; the Config tab carries pricing & billing. Capavate is in test mode, so there is deliberately no redirect window — the old URL falls through to the /admin/:rest* AdminNotFound catch-all. The nav entry is removed because its destination page no longer exists as a separate route; the function is reached from /admin/fees.",
+   "approvedBy": "Ozan (2026-08-09 ruling: \"bring them back if they are good for the platform or drop them if they are obsolete\")",
+   "date": "2026-08-09"
+  }
+ ],
+ "note": "each entry must include reason + approvedBy + date. Entry shape: { \"id\": \"<exact baseline id>\", \"reason\": \"...\", \"approvedBy\": \"...\", \"date\": \"YYYY-MM-DD\" }. A plain string id is also accepted but the object form (with reason/approvedBy/date) is required for a legitimate, logged removal. WAVE 2B / BLOCKER 3: entries dated 2026-08-09 resolve the 20 disappearances under Ozan's ruling. FOUR ids are DELIBERATELY NOT allowlisted — they are real losses, registered instead in scripts/silent-drop-guard/deferrals.json (v8 items RS-1 and RS-2).",
+ "removedCopy": [
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tCollection outcome",
+   "reason": "WAVE 1A / S-2 (fee self-mark security hole) — the GP-facing \"Collection outcome\" selector let a Consortium Partner name the carry settlement outcome, which reached state=\"paid\" at server/spvEngineStore.ts:752 with no gateway. The control is removed deliberately; the settlement outcome is now derived server-side only (gateway mint, or the Capavate platform-admin settle route). Replaced in-place by an explanatory note (data-testid=spv-distribution-settlement-note); no other distribution functionality removed.",
+   "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tCollected",
+   "reason": "WAVE 1A / S-2 — option label of the removed \"Collection outcome\" selector (see the entry for that control). Partner-supplied settlement outcomes are no longer accepted.",
+   "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tFailed / uncollected",
+   "reason": "WAVE 1A / S-2 — option label of the removed \"Collection outcome\" selector (see the entry for that control). Partner-supplied settlement outcomes are no longer accepted.",
+   "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\tversion:",
+   "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\tprev_revision_hash:",
+   "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\tversion:",
+   "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\tprev_revision_hash:",
+   "reason": "SC-1 — label removed for a field that CANNOT EXIST. `SpvDTO` (shared/spvEngine.ts:205-230) carries only revisionHash and createdAt; `version` and `prevRevisionHash` are on neither type at runtime. LIVE-VERIFIED on capavate.com: both rendered blank. Removing a label for a non-existent field removes a false promise, not functionality. Restore only if the fields are added to the DTO.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/admin/PricingModelDetail.tsx\ttext\tPercent (0.10 = 10%)",
+   "reason": "WAVE 3A / P-1 (DEF-007) — CORRECTED IN PLACE, not removed. This was the Select option label on the discount-code kind picker. It instructed the admin to TYPE a fraction (\"0.10 = 10%\"), which is exactly the convention the owner's 2026-08-09 ruling reversed for the input side: storage stays FRACTIONAL, but ADMIN INPUT is percent-as-written (type 100, store 1.0). The amount field beside this label now takes percent-as-written and converts to the stored fraction (client/src/lib/percentDisplay.ts parsePercentInputToFraction), so leaving the old label in place would have told the admin to type 0.10 into a field that reads it as 0.1% — a 100x under-charge. Replaced by \"Percent (type 10 for 10%)\" plus an explicit on-screen convention note (data-testid=discount-percent-convention). No control, option or capability was removed: all three discount kinds are still selectable.",
+   "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md, spec/00_SHARED_STANDARDS.md §1.1; WAVE 3A build directive)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\ttext\tShares authorized",
+   "reason": "WAVE 52 / Shadie item 2a — A MISLABELLING CORRECTED, NOT A CONTROL REMOVED. The input, its data-testid (input-shares), its validation and its wire key (sharesAuthorized) are all UNCHANGED and still on screen; only the visible label changed to ‘New shares issued in this round’. The field never meant authorized capital — Capavate has no authorized-capital field anywhere in the schema — and it is not a sum of holdings. RoundNew.tsx's own comment records the meaning: ‘Distinct from sharesAuthorized which is NEW shares issued in this round.’ Keeping the old label would keep a false sentence in front of a founder, and the label was the cause of the reviewer's confusion. Panel/button/event/tab identity counts for this file ROSE (392→473 panels) and nothing DISAPPEARED in those classes. Strategy Review 1 STRUCK the DGCL §161 / NVCA §2.2 authorized-ceiling rationale, so no authority claim replaces it.",
+   "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+   "date": "2026-08-15"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\ttext\tImplied post-money",
+   "reason": "WAVE 52 / Shadie item 1a — A FALSE LABEL ON A BOX THAT COULD NOT COMPUTE. The readout rendered Number(form.preMoney) + Number(form.targetAmount); on a Common round targetAmount is not a field the instrument collects, so the addend was always NaN→0 and the box displayed the PRE-money under a post-money label, beneath a tooltip promising ‘pre-money + target raise’. The rendered field was the defect, not the missing input. The readout is NOT removed: the same div and the same data-testid (input-post) remain, now labelled ‘Post-money valuation’, showing T·p when it can be computed and a named refusal when it cannot, plus a new on-screen derivation line (data-testid=w52-post-money-derivation). Strictly MORE disclosure, and a true label.",
+   "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+   "date": "2026-08-15"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\tplaceholder\tEnter pre-money and shares authorized",
+   "reason": "WAVE 52 / Shadie items 2a+5a — THE PLACEHOLDER NAMED THE WRONG DENOMINATOR. Price per share is pre-money ÷ fully-diluted PRE-MONEY shares, never ÷ the new shares this round issues. The placeholder told the founder the opposite and was the third recorded mislabelling of the same quantity (RoundNew.tsx:158, :1176 and this line). The input, its data-testid (input-pps), its auto/override toggle and its formula caption are all unchanged; only the placeholder text now names the quantity actually divided by. Corrected to ‘Enter pre-money and fully-diluted pre-money shares’.",
+   "approvedBy": "Ozan — RESPONSE_TO_SHADIE_ROUND_MATH_2026_08_14.md §10, items 1–3, already SENT to the external reviewer: “The post-money readout stops rendering a number it cannot compute”; “‘Shares authorized’ is renamed ‘New shares issued in this round,’ and the misleading price-per-share placeholder is corrected”. NOTE FOR RATIFICATION: this attributes approval to that already-sent commitment; it is not a new authority created inside Wave 52.",
+   "date": "2026-08-15"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\ttext\tDiscount (%)",
+   "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — “Relabel to ‘Discount (% off the round price)’ — never a bare ‘Discount’.” “Discount” and “Discount Rate” are INVERSES and the YC SAFE legal form uses the latter (a 20% discount is a Discount Rate of 80% — Wyrick); DLA Piper calls conflating them ‘quadrupling the intended discount’. A label reading only ‘Discount (%)’ does not say which of the two it is. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
+   "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Authority cited is owner ruling R30.1 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15), which mandates this exact label, and the WAVE 58e spec §D3.1 which repeats it. Recorded here per the R28 standard: the control is still reachable, the destination identity is named, and no recoverable identity was excused instead of restored — the old string cannot be restored as a sibling because R30 forbids the screen carrying a bare ‘Discount’ label at all. Ratify or refuse.",
+   "date": "2026-08-16"
+  },
+  {
+   "id": "client/src/pages/founder/Rounds.tsx\ttext\tDiscount (%)",
+   "reason": "WAVE 58e · D3.1 (owner ruling R30.1) — the SAME relabel on the Edit-terms modal, which on live v26.17.0 is the ONLY post-creation surface where the discount is visible or editable, and the only place the corrupt live value 20260707 (R31-a) was ever shown. THIS IS A LABEL CORRECTION, NOT A CONTROL REMOVAL. The input, its data-testid, its validation, its wire key `discount` and its position on the form are all unchanged and still on screen; only the label text is more specific. DESTINATION IDENTITY (same file, same panel, reachable in the browser): the copy string “Discount (% off the round price)” on the same <Label>. The file GAINS identities in this wave (a named validation error, a both-forms disclosure line, a conversion-arithmetic line, a lower-of line and a market-norm line), so nothing is net lost.",
+   "approvedBy": "SUBMITTED FOR RATIFICATION — NOT SELF-APPROVED. Same authority as the RoundNew entry above (owner ruling R30.1 + WAVE 58e spec §D3.1). Appended at the END of this class array as a sibling, never inserted mid-list — one mid-list insertion previously invalidated 46 child identities and produced 62 phantom drops.",
+   "date": "2026-08-16"
+  },
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tThis is a preview only — no money moves.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This is a projection only — no money moves.\" Same node, same warning, same position. \"preview\" named this project's BUILD STATE; \"projection\" names what the number actually is.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/Landing.tsx\ttext\tSprint 15 · login + entitlement",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Sign in and entitlement\". Same chip (data-testid=\"chip-sprint\"), same position on the landing page. Only this project's sprint number is gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t's",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph (a JSX text run between two <code> elements). The paragraph still explains the same behaviour; it no longer names server/subscriptionsStore.ts or startSubscription(), so the fragments around those <code> elements no longer exist as separate text runs.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) is not wired to this field yet.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The FACT is retained verbatim in the new single-run sentence: \"Managed founders are on a separate 90-day default, which this field does not yet control.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t) — there is no separate hardcoded map anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Every behavioural claim is retained: \"pricing_models.discountCodes is read directly on every charge — there is no separate hardcoded list anymore. A code you add, deactivate, or expire here takes effect on the very next checkout that uses it, across every pricing model and product line.\" Only the source-file name and two internal function names are gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Changing the charged amount at the gateway boundary is Slice 3 / M14 — not this page. Zero Airwallex code touched here.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Changing what the provider actually charges is done there, not on this page. This screen never writes to the payment provider.\" Same warning, same position; the slice/milestone code and the internal note about which code was touched are gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t. Unknown slugs fail closed. Source:",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Unknown slugs are refused rather than guessed.\" The fail-closed BEHAVIOUR is retained in plainer words; the \"Source: server/lib/partnerTiers.ts\" pointer is gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 14",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. The fallback is now stated in words a non-engineer reads: \"a 14-day trial is used only when no live pricing model or no trial length is configured.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\t?? 90",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element) of the rewritten trial-length paragraph. Retained in words: \"Managed founders are on a separate 90-day default.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tEditing the trial length affects new founder signups immediately —",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. The sentence still opens with exactly this fact: \"Editing the trial length affects new founder signups immediately: this field is read first…\".",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tKnown unit quirk (unchanged by this slice):",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Known unit quirk:\". The quirk, its lossiness and its consequence are all still stated; only \"(unchanged by this slice)\" — a claim about this project's own delivery increments — is gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tPublishing is deploy-gated: the package amount must equal the gateway tier amount resolved from",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"This package cannot be published until the amount matches the payment provider's own tier amount, which is set from\" — followed by the same <code> environment-variable name, which is a real operator instruction and is deliberately KEPT. Only the internal term \"deploy-gated\" is gone.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tcalcCouponDiscountCents",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. The behaviour it described is retained; the function name is not something an admin can act on.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tfindDiscountCodeByCode",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT (a <code> element naming an internal function) of the rewritten discount-code paragraph. Same reason.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tif no live model or no trial is configured. The separate managed-founder path (",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. Both facts are retained in the new single-run sentence.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tin",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT — a two-letter JSX text run between two <code> elements in the rewritten discount-code paragraph. It carried no information on its own.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tis read directly by",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. Now \"is read directly on every charge\", which says the same thing without naming the function that does it.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tmirror-writes this value into",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten unit-quirk paragraph. Now \"this value is also mirror-written into\" — same fact, passive voice, no source-file subject.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\ton every charge (via",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten discount-code paragraph. \"on every charge\" is retained verbatim in the new run.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\treads this field first and only falls back to",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — FRAGMENT of the rewritten trial-length paragraph. \"this field is read first\" is retained.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/adminPlatformFeesRoutes.ts",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The lossy legacy mirror write it named is still described, and the destination table and the rounding are still shown.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/lib/partnerTiers.ts",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The fail-closed behaviour it was cited for is retained in words.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/managedFounderStore.ts",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The managed-founder 90-day default it named is retained in words.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/paymentStore.ts",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin (twice — this text run, and inside the discount-code SectionTitle hint). Removed under Q25. The percent-as-a-fraction STORAGE RULE, which is the part an admin can get wrong, is retained verbatim.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tserver/subscriptionsStore.ts",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — SOURCE FILE NAME rendered to an admin. Removed under Q25. The trial-length read order it named is retained in words.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tstartSubscription()",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — INTERNAL FUNCTION NAME rendered to an admin. Removed under Q25. What it does — read this field first for new founder signups — is retained in words.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/Activity.tsx\tdescription\tAppend-only audit ledger. Hash-chained per R165 §12 in production.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Append-only audit ledger. Every entry is hash-chained, so the record cannot be altered after the fact.\" Same node, same panel description. The owner-ruling identifier is gone and the GUARANTEE it referred to is now stated plainly — which is more useful to a founder, not less.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/CapTable.tsx\ttext\tCap table engine per R200 §10. Source-of-truth ledger; SAFEs use post-money cap conversion. As-converted view applies cap/discount per R165 §2. New to a term?",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Computed by the cap-table engine. Source-of-truth ledger; SAFEs use post-money cap conversion. The as-converted view applies each instrument's own cap and discount. New to a term?\" Two owner-ruling identifiers gone; every stated FACT and the glossary link that follows are unchanged.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/Messages.tsx\ttext\tThreads are role-aware. You can DM cap-table members and active-round investors. Uninvited investors are gated per Sprint 15 entitlement rules.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: the first two sentences are byte-identical; the third becomes \"Investors you have not invited cannot be messaged.\" The RULE is now stated instead of the sprint that shipped it.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/Settings.tsx\ttext\tThe 2FA enforcement, SSO domain, and export controls below are preview placeholders. Programmatic exports and SSO domain enforcement are scheduled for an upcoming release.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE (same banner, same data-testid=\"banner-data-preview\"): \"Workspace 2FA enforcement, SSO domain enforcement and programmatic exports are not yet available. The controls below are shown so you can see what is coming; they are disabled until each one works, and none of them will report a change that has not been saved.\" STRONGER, not weaker: it drops the internal word \"preview\", drops a release promise nobody can hold anyone to, and states the new guarantee that the controls no longer claim false saves.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/investor/InvitationDetail.tsx\ttext\tFully-diluted view, shared with you under R165 §4 redaction policy.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE, on an INVESTOR screen: \"Fully-diluted view, shared with you under the company's cap-table redaction policy.\" Same node, same position. An investor was being shown this project's internal ruling number.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/investor/Signup.tsx\ttext\tKYC document (preview stub)",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"KYC document (not yet collected)\". Same form label, same position. \"(preview stub)\" told a prospective investor about this project's build state; \"(not yet collected)\" tells them the truth about their own document.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerDashboard.tsx\ttext\tComing with Sprint 32 consent ledger.",
+   "reason": "WAVE 80 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE on a PAYING CONSORTIUM PARTNER's dashboard, in the same card (data-testid=\"card-cross-portfolio\"), which is NOT deleted: \"Not yet available. Showing you that an investor in your portfolio also appears in another partner's portfolio requires that investor's recorded consent, and Capavate will not surface an overlap without it.\" The sprint number and the implied delivery date are gone; the reason the feature does not exist is now stated.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/components/CloseRoundPanel.tsx\ttext\tto write the immutable close transaction to the ledger and emit final telemetry events.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"to write the closing to the ledger permanently.\" Same node, same position. Drops an internal event-bus word (\"telemetry events\") and keeps the guarantee a founder cares about (permanence).",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/components/RoundCarryForwardPanel.tsx\ttext\t(SHA-256 of suggestion payload shown at",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"— this suggestion is fingerprinted so it can be proved unchanged later.\" The hash algorithm and the word \"payload\" are gone; the PROPERTY they were evidence of is stated instead.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/components/RoundCarryForwardPanel.tsx\ttext\tAudit digest:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Recorded for audit at <timestamp>\". The 12 hex characters of a SHA-256 digest told a founder nothing and looked like a leak; the timestamp is the part that is useful, and the tamper-evidence is now stated in words beside it.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\tplaceholder\tcmp_abc, cmp_xyz",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — PLACEHOLDER REPHRASED: \"one company id per line\". The field does take ids, so the placeholder now states the FORMAT rather than inventing two fake internal-looking keys.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tlabel\tColumn",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — ROW NO LONGER RENDERED on /admin/fees. The SQL column name is not something an operator can act on — they act through this screen — and this panel is screenshared during partner onboarding. The prop and the data-sot-column attribute are unchanged, so nothing downstream lost the value.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tlabel\tGET",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPLACED: the endpoint PATH is gone; the row now reads \"Read from: Capavate\". An admin cannot call the endpoint from this screen, and the path is internal architecture.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tlabel\tTable",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — ROW NO LONGER RENDERED on /admin/fees. Same reasoning as Column: an operator needs the units, the last editor and whether they can edit it here. A SQL table name is schema disclosure with no operational use.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tlabel\tType",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPHRASED to \"Units\", and the VALUE is now mapped to plain English (\"currency_minor (cents)\" renders as \"Whole cents (integer)\"). The union type and all 18 call sites are byte-unchanged.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tlabel\tWRITE",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPLACED: \"Written by: Capavate\", for the same reason as GET.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tGET /api/collective/application-fee",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED: \"Read by the public application screen.\" Names the SURFACE, not the route.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tNo live founder pricing model. Checkout will fail closed with",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"No live founder pricing model. Checkout will refuse rather than charge a guessed price until one is published.\" Same warning, same position, no error class.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tTierNotConfiguredError",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — ERROR CLASS REMOVED from the rendered sentence; the BEHAVIOUR (\"refuses rather than charging a guessed price\") is stated instead. The refusal itself is unchanged.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tgrace_period_days",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — COLUMN NAME REPLACED with the field label \"Grace period (days)\".",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tpast_due",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — INTERNAL STATE NAME REPLACED with \"escalated\" / \"Failures before escalation\" — the same fact in the words the screen already uses.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tplatform_fees",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — TABLE NAME REPLACED with \"Fee registry\" / \"Legacy fee registry\" throughout the fees screen.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tpricing_models.discountCodes",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED: \"Discount codes on the pricing model.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\ttext\tuntil one is published.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — MERGED into the single rewritten sentence above (\"... until one is published.\"), so the words a reader sees are identical in meaning and the fragment identity moved.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\tNVCA-flow round progression. Each stage emits an immutable telemetry event when entered. Click a future stage to preview the founder action required.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"... Each stage is recorded permanently when it is entered. Click a future stage to preview the founder action required.\" Only the event-name clause changed.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\tNVCA-style closing-conditions checklist. All items must be confirmed before the immutable round_close transaction commits.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"... before the closing is recorded, and the record cannot be altered afterwards.\" STRONGER: it states the immutability as a promise to the founder instead of naming a transaction.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\tVisualizes the path from invitation through funded → committed-to-cap-table. Commit fires the immutable cap-table mutation event and emits captable_committed telemetry.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"... Committing writes the position onto the cap table permanently.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\tstate; terms lock at",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"state; terms lock once the terms are set, with an audit-log entry.\" The state constant `terms_set` is gone; the RULE is unchanged and still stated.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\tterms_set",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — ERROR/STATE CONSTANT REMOVED — folded into the sentence above as \"once the terms are set\".",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\ttranches. Each tranche commit emits an immutable telemetry event.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"tranches. Each tranche commitment is recorded permanently.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\ttext\twith audit-log entry. Currently:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — FRAGMENT MERGED into the rewritten sentence (\"... with an audit-log entry. Currently:\"). Same words on screen, one fewer node boundary.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\ttext\tPPS = pre_money ÷ FD_pre_money_shares",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Price per share = pre-money valuation ÷ fully-diluted pre-money shares.\" The formula is the same; it is now readable by the founder it is shown to.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\ttext\tToggle on for milestone-gated tranches. Each tranche emits its own immutable round_close-tranche telemetry event.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"... Each tranche is recorded as its own permanent closing event.\"",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/OnboardingChecklistPage.tsx\ttext\tState is persisted as JSON on partner_organizations.onboarding_state. Checkboxes are optimistic; any failure rolls back and surfaces the error.",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — REPHRASED IN PLACE: \"Your progress is saved against your organisation. Checkboxes are optimistic; any failure rolls back and surfaces the error.\" Table and column gone; the honest rollback promise kept verbatim.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\tcreated_at:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPHRASED to \"Created:\" on both partner audit receipts. Same value, same position.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerFundDetail.tsx\ttext\trevision_hash:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPHRASED to \"Revision fingerprint:\" on both partner audit receipts. Same value, same position; \"fingerprint\" is the investor-grade word for it.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\tcreated_at:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPHRASED to \"Created:\" on both partner audit receipts. Same value, same position.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\ttext\trevision_hash:",
+   "reason": "WAVE 83 · ITEM 1 (owner ruling Q25) — LABEL REPHRASED to \"Revision fingerprint:\" on both partner audit receipts. Same value, same position; \"fingerprint\" is the investor-grade word for it.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/investor/Settings.tsx\ttext\tCapavate Investor Platform · v0.23.0",
+   "reason": "WAVE 90 · ITEM 2 (register PART 11 · M-1) — A FALSE STRING, REMOVED BECAUSE IT WAS FALSE. This was a HARDCODED JSX text literal claiming the investor portal was version 0.23.0. It was not a build, not a second package.json, not a stale constant read from anywhere: nothing computed it and nothing could ever update it. The repo has exactly one package.json and it says 26.19.0, which the live admin footer correctly reported on the same deployment. So the two portals disagreed by 26 major versions about the same running binary, and Avi's \"26.19.0 installed\" confirmation was taken from the one surface that happened to be right. RESTORING IT IS NOT AN OPTION: it would restore a lie, which is the same reasoning already accepted for the three fabricated /api/admin/pricing endpoints in removedRoutes above. WHAT REPLACES IT, in the same position, in the same footer: <PortalVersionFooter productName=\"Capavate Investor Platform\" /> (client/src/components/PortalVersionFooter.tsx), which reads the version the running server resolved from the shipped package.json and serves on GET /api/healthz — the SAME source client/src/components/BuildVersionMarker.tsx reads for the admin footer. NOTHING IS LOST: the product name survives verbatim as the productName prop and still renders; only the false number is gone. Enforced by server/__tests__/w90_version_single_source.test.ts, which fails if /api/healthz disagrees with package.json, if any rendered version literal appears anywhere under client/src/pages/investor, or if a NEW version literal appears anywhere in the client tree — and which carries its own falsification probe proving the scanner detects `v0.23.0` when it is present.",
+   "approvedBy": "Ozan (WAVE 90 build directive, ITEM 2: \"make version reporting single-sourced and dynamic — one source of truth, every portal reading it, no hardcoded version literals anywhere\"; and the standing rule \"EVERYTHING needs to work dynamically and db-driven. No dead variables.\")",
+   "date": "2026-08-21"
+  }
+ ],
+ "removedEvents": [
+  {
+   "id": "client/src/components/partner/SpvDetailTabs.tsx\tselect\tonChange\texpr:32763a19dccb",
+   "reason": "WAVE 1A / S-2 — onChange of the removed \"Collection outcome\" <select data-testid=spv-distribution-outcome>. That control was the client half of the fee self-mark hole (partner-named settlement outcome reaching state=\"paid\" at server/spvEngineStore.ts:752 with no gateway). Removed deliberately with the selector itself; the outcome is now derived server-side only.",
+   "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tButton\tonClick\texpr:3373339876a8",
+   "reason": "SC-2 — panel rendered INERT (code retained, nothing deleted). This form posts to the PLURAL ledger POST /api/partner/me/spvs/:id/distributions (spvFundStore -> spv_distributions) while the canonical engine writes the SINGULAR spv_distribution. One letter apart; the singular query cannot read the plural write. SC-2 adds an inbound link to this page, which would have made that split ledger reachable. Owner ruled the singular table canonical. Re-enable once SC-3 lands distribution_type on the canonical table and the form is repointed. This is that panel's submit handler.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09"
+  },
+  {
+   "id": "client/src/pages/admin/AdminFeesConsolidated.tsx\tButton\tonClick\texpr:70f4884aeeb9",
+   "approvedBy": "Ozan Isinak (delegated authority, 2026-08-11)",
+   "reason": "MODIFICATION, NOT A REMOVAL. The refund Button, its data-testid (button-refund-invoice-<id>), its disabled logic, its label and its refund.mutate call are all still present and unchanged. ONE LINE INSIDE the onClick changed: the confirmation dialog rendered the amount by dividing minor units by 100, which UNDERSTATES A JPY REFUND BY 100x (JPY is ISO-4217 exponent 0). It now calls formatMinor(inv.amountMinor, inv.currency). This is the confirm dialog on a screen whose own copy reads 'This moves real money and cannot be undone' - the admin was shown the wrong figure before authorising a refund. PROOF OF NON-REMOVAL: reverting that single line restores 'no silent drops' with nothing else changed (Wave 21 ran this revert-and-restore). ROOT CAUSE: the guard fingerprints handlers by EXPRESSION HASH, so any edit to a handler body is indistinguishable from deleting it - the same fingerprinting weakness Wave 11 fixed for CHILD MEMBERSHIP (adding a tab read as removing the tab list) and that blocked Wave 4B from adding a roster column. The expression case is still unfixed and is logged as a guard follow-up. Allowlisting this one entry beats shipping a known 100x money-display defect on a refund dialog."
+  },
+  {
+   "id": "client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:4cb80683e419",
+   "reason": "WAVE 58 / owner ruling R27 — A RELOCATION ENTRY, WITH ITS DESTINATION NAMED. DESTINATION ID: client/src/pages/founder/RoundNew.tsx\tInput\tonChange\texpr:<the handler on data-testid=\"addon-pool-percent\">, in the same file, in the same section (data-testid=\"addon-pool-section\"), reachable in the browser. WHAT THIS IDENTITY WAS: the inline onChange on the \"Pool size (shares)\" input — `e => setAddonPoolDraft(d => ({ ...d, poolSize: e.target.value }))`. R27 rules that the option pool is entered as a PERCENTAGE of fully diluted and that \"the share count becomes the derived output, shown to the founder, NEVER the input\". The share count input therefore has no writer any more: it is `readOnly` and displays the derived value. Its onChange is not suppressed or stubbed out — a dead handler would be a dead promise — it is genuinely gone, and the write it performed now happens on the percentage field. WHAT IS *NOT* REMOVED, all verified by the guard census in the same run: the control itself (data-testid=\"addon-pool-size\") is STILL ON SCREEN; its label text \"Pool size (shares)\" is UNCHANGED and still in the copy inventory; its container (data-testid=\"addon-pool-fields\") and the toggle (data-testid=\"addon-pool-toggle\") are unchanged; the wire key `poolSize` is unchanged, still sent on the `option_pool` child-round payload and still a SHARE COUNT there; and the four CardContent panel-membership records that a first attempt at this change did drop (inner=Input#24, Label#46, input#5, label#5) were RESTORED by keeping the relocated JSX lexically inside the card rather than hoisting it into a variable. This is the ONLY identity in any class that this wave could not carry across, and the file gains many more than it loses. NOTE FOR RATIFICATION: R27 authorises the percentage input and the derived share count explicitly, and its binding constraints require that a guard-identity change be \"a relocation entry naming its destination, submitted for ratification — never a quiet allowlist growth\". This entry is that submission. It grows scripts/silent-drop-guard/allowlist.json from 40 to 41 and is APPENDED AT THE END of its class array as a sibling, never inserted mid-list (a mid-list insertion once invalidated 46 child identities). It is NOT ratified until the owner says so.",
+   "approvedBy": "SUBMITTED FOR RATIFICATION — owner ruling R27 (spec/OWNER_RULINGS_2026_08_13.md, 2026-08-15): \"make it a percentage\"; \"the share count becomes the derived output, shown to the founder, never the input\". R27 authorises the change that causes this identity to move but does not itself name this identity, so this entry is flagged rather than treated as pre-approved.",
+   "date": "2026-08-15"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:422d190899b7",
+   "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/RoundDetail.tsx\tButton\tonClick\texpr:df9859db5a44",
+   "reason": "WAVE 80 · ITEM 4 — the onClick of a stub editor button whose ONLY effect was a toast admitting the editor was stubbed (\"Use-of-proceeds editor stubbed for the preview.\" / \"Scenario editor stubbed for the preview — wire this to the engine in production.\"). No data was written and no editor opened. THE BUTTON IS NOT DELETED: it keeps its label, its icon, its data-testid and its position, and is now `disabled` with a plain sentence rendered beside it saying the editor is not yet available. Removing the handler is the POINT of the fix — a control that reports success for work it did not do is the worst of the three options. Render proof: client/src/pages/founder/__tests__/w80_disclosure_readers_render.test.tsx and w80_investor_grade_copy_and_honest_controls.test.tsx.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:af61dc179bce",
+   "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/founder/Settings.tsx\tButton\tonClick\texpr:cc5284aa419d",
+   "reason": "WAVE 80 · ITEM 4.2 — the onClick of an export button whose ONLY effect was a SUCCESS TOAST for work never done (\"Audit log exported / Hash-chain verified.\" and \"Data export queued / You'll receive an email when ready.\"). No file was produced, nothing was queued, no email was ever sent. THE BUTTON IS NOT DELETED: same label, same icon, same data-testid, same position, now `disabled` with a sentence saying the export is not yet available and naming the Activity screen where the ledger can be read today. Removing the handler is the fix, not a regression. Proof: w80_investor_grade_copy_and_honest_controls.test.tsx.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; and the standing rule \"no dead promises\" / \"a control that reports success while doing nothing\" for the four event handlers)",
+   "date": "2026-08-19"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tInput\tonChange\texpr:62dea8aee0c5",
+   "reason": "WAVE 83 · ITEM 2.4 — THE HANDLER WAS NOT REMOVED. This onChange still sets the same state; it additionally records that the field has been TOUCHED, so the \"Last name is required\" message stops firing before the user has typed anything. The guard identifies a handler by the hash of its expression, so a changed expression reads as a removal. Same control, same data-testid, same position, same required-ness; the Invite/Commit buttons are byte-unchanged. Proof: client/src/pages/partner/__tests__/w83_partner_controls.test.ts.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tInput\tonChange\texpr:ec9160696305",
+   "reason": "WAVE 83 · ITEM 2.4 — THE HANDLER WAS NOT REMOVED. This onChange still sets the same state; it additionally records that the field has been TOUCHED, so the \"Last name is required\" message stops firing before the user has typed anything. The guard identifies a handler by the hash of its expression, so a changed expression reads as a removal. Same control, same data-testid, same position, same required-ness; the Invite/Commit buttons are byte-unchanged. Proof: client/src/pages/partner/__tests__/w83_partner_controls.test.ts.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tselect\tonChange\texpr:53aeb7e69b5d",
+   "reason": "WAVE 83 · ITEMS 2.5 + 5.2 — THE HANDLER WAS NOT REMOVED. The SPV-type select now calls onSpvTypeChange, which sets the same field AND moves the mandate default in step with it (a \"Fund\" no longer defaults to \"Deal-Specific (Single Asset)\"); the mandate select now records that the GP touched it, so an explicit choice is never overwritten. Every option in both dropdowns is unchanged. Proof: client/src/pages/partner/__tests__/w83_partner_controls.test.ts.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tselect\tonChange\texpr:904057227c1c",
+   "reason": "WAVE 83 · ITEMS 2.5 + 5.2 — THE HANDLER WAS NOT REMOVED. The SPV-type select now calls onSpvTypeChange, which sets the same field AND moves the mandate default in step with it (a \"Fund\" no longer defaults to \"Deal-Specific (Single Asset)\"); the mandate select now records that the GP touched it, so an explicit choice is never overwritten. Every option in both dropdowns is unchanged. Proof: client/src/pages/partner/__tests__/w83_partner_controls.test.ts.",
+   "approvedBy": "Ozan (Q25, verbatim: \"I don't want any exposure of our internal process. This needs to be investor grade and professional.\"; R44 governs the method: remove the identifier, keep the sentence)",
+   "date": "2026-08-20"
+  }
+ ],
+ "removedPanels": [
+  {
+   "id": "client/src/pages/partner/PartnerSpvDetail.tsx\tCard\tdata-testid=partner-spv-distribution-form\tchildren=3:d2216a8f8440",
+   "reason": "SC-2 — panel rendered INERT (code retained, nothing deleted). This form posts to the PLURAL ledger POST /api/partner/me/spvs/:id/distributions (spvFundStore -> spv_distributions) while the canonical engine writes the SINGULAR spv_distribution. One letter apart; the singular query cannot read the plural write. SC-2 adds an inbound link to this page, which would have made that split ledger reachable. Owner ruled the singular table canonical. Re-enable once SC-3 lands distribution_type on the canonical table and the form is repointed.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  },
+  {
+   "id": "client/src/pages/partner/PartnerFundDetail.tsx\tCard\tdata-testid=partner-fund-commitments\tchildren=3:26ef38722479",
+   "reason": "SC-0 — pledge form rendered INERT (code retained). It posts {lpName, amountMinor} to a route requiring {lpContactId, commitmentMinor, currency} — a guaranteed 400 on every submission. It is unreachable today only because the page crashes; fixing the crash would have exposed a form that fails every time. Re-enable once the payload contract is corrected.",
+   "approvedBy": "Ozan (delegated to lead dev 2026-08-09 13:16 EDT)",
+   "date": "2026-08-09",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  },
+  {
+   "id": "client/src/pages/admin/PricingModelDetail.tsx\tCard\ttext=Discount codes Add code\tchildren=1:f8c93dd9ec08",
+   "reason": "WAVE 3A / P-1 — CONTENT HASH CHURN, not a dropped panel. The Discount Codes card is still rendered, still routed and still editable; its child hash changed because the wave (a) added the required on-screen unit statement (data-testid=discount-percent-convention, per spec/00_SHARED_STANDARDS.md §1.1, which mandates that a percentage surface name its convention) and (b) swapped the raw numeric amount field for the percent-as-written PercentAmountInput on kind=percent rows. Verify: grep -c 'button-addDiscount' PricingModelDetail.tsx → 1, and the replacement panel is reported in the same guard run's 'new item(s) added' list. Nothing was deleted.",
+   "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md; WAVE 3A build directive)",
+   "date": "2026-08-09",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  },
+  {
+   "id": "client/src/pages/admin/PricingModelDetail.tsx\tCardContent\ttext=Discount codes Add code\tchildren=2:85ab60d3a9ae",
+   "reason": "WAVE 3A / P-1 — CONTENT HASH CHURN, not a dropped panel. Same panel as the Card entry above, one nesting level down: the CardContent gained a third child (the unit-convention paragraph) alongside the unchanged header row and code list, so its children count and hash both moved. Every pre-existing control — add code, active switch, code text, kind select, amount, expiry, max redemptions, delete — is still present and still wired to the same `update()` path.",
+   "approvedBy": "Ozan (owner ruling 2026-08-09 — spec/PERCENT_POLICY_v2.md; WAVE 3A build directive)",
+   "date": "2026-08-09",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  },
+  {
+   "id": "client/src/pages/collective/CollectiveMembers.tsx\tSheetContent\tdata-testid=sheet-member-detail\tchildren=1:bb5da2bc49e8",
+   "reason": "WAVE 8 / ORP-048 — PURELY ADDITIVE; nothing was removed from this Sheet. The member-detail Sheet gains a link to /collective/profile/:id (data-testid=link-member-public-profile), the public collective-profile route (client/src/App.tsx:1077; the audit cited :1038) which had ZERO inbound links tree-wide and was therefore unreachable. The guard fingerprints a panel by its DIRECT-CHILD tag sequence (extract-inventory.ts childSequenceDigest ~:974); this SheetContent had exactly one direct child, so the digest cannot be preserved while adding a sibling. Restructure was attempted and rejected: nesting the link inside the single existing child changes that child's own digest instead, moving the report rather than removing it. Every pre-existing element and copy string in this Sheet is intact — verified by the absence of any CollectiveMembers.tsx entry in the removedCopy / removedButtons / removedTabs classes of the same guard run.",
+   "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
+   "date": "2026-08-10",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  },
+  {
+   "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tCard\tdata-testid=spv-wizard\tchildren=7:79619b99e80e",
+   "reason": "WAVE 8 / ORP-030 + ORP-063 — PURELY ADDITIVE; no wizard card, step, field, button or copy string was removed. Two orphans are restored inside this wizard: (a) ORP-030, GET /api/partner/me/spv-wizard/defaults (server/spvEngineRoutes.ts:140) had no client caller at all — it is now a clone-from-prior-SPV selector (data-testid=spv-w-clone-select) plus a GP-context line; (b) ORP-063, the SPV_EDU.terms and SPV_EDU.reviewLaunch keys were defined but rendered nowhere — they are now rendered in wizard steps 3 and 4 (data-testid=spv-edu-terms, spv-edu-review-launch) rather than deleted. The wizard Card's direct-child count goes 7 -> 8, which the guard digests as a change; there is no way to add a visible wizard control without adding a node under this Card. Confirmed additive-only: the same guard run reports no removedCopy, removedButtons or removedTabs entries for PartnerSpvEngine.tsx.",
+   "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
+   "date": "2026-08-10",
+   "waveNote": "WAVE 11 — this id is in the PRE-WAVE-11 panel record format (`children=<n>:<digest>`), which the extractor no longer emits. The entry is retained for its owner ruling only; it matches nothing and the guard is not relying on it. The four 'CONTENT HASH CHURN' approvals here were false positives of the old concatenated-text fingerprint and are no longer needed."
+  }
+ ],
+ "removedRouteTargets": [
+  {
+   "id": "/founder/billing\ttarget=-\tmodule=unresolved\trender=redirect\tbody=unknown",
+   "reason": "WAVE 8 / ORP-027 — this is the guard reporting the REMOVAL OF THE DEFECT, not a loss of function. The baseline holds TWO entries for /founder/billing: this `render=redirect body=unknown` stub AND `target=FounderBilling module=client/src/pages/founder/Billing.tsx render=jsx` (baseline.route-targets.json:142-143). v25.45 F10c had left the redirect stub as the LIVE route, so the real page was unreachable and four capabilities were orphaned: PATCH /api/founder/subscription/payment-method (Billing.tsx:157), POST /api/founder/invoices/:invoiceId/email (:315), PATCH /api/founder/subscription cancel_at_period_end (:399) and POST /api/founder/subscription/resume (:414) — verified absent from founder/Settings.tsx. WAVE 8 replaces the redirect with <RequireAuth><FounderBilling /></RequireAuth> (client/src/App.tsx ~:626) and restores the Billing left-nav item (client/src/components/AppShell.tsx:131). The surviving baseline sibling entry for the same path is therefore now SATISFIED by real JSX; only the redirect stub signature disappears. Restructuring is impossible here: a path cannot simultaneously redirect away and render the page.",
+   "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
+   "date": "2026-08-10"
+  }
+ ],
+ "removedRoutedSurfaces": [
+  {
+   "id": "/founder/billing\ttarget=-\tmodule=unresolved\tsurface=unknown",
+   "reason": "WAVE 8 / ORP-027 — companion of the routeTargets entry above and the same fact: the `surface=unknown` signature belongs to the redirect stub. The baseline's other /founder/billing surface entry, `target=FounderBilling module=client/src/pages/founder/Billing.tsx surface=s4` (baseline.route-targets.json:355-356), is now the one that is live. Net effect is MORE reachable surface, not less.",
+   "approvedBy": "Ozan (standing rule, restated 2026-08-10: \"Never silent drop any functionality/widgets from anywhere on the platform\" / \"Functionality that exists should be all reflected in the UI\")",
+   "date": "2026-08-10"
+  }
+ ],
+ "removedButtons": [
+  {
+   "id": "client/src/pages/partner/PartnerSpvEngine.tsx\tCard\tdata-testid=<expr:`spv-row-${s.id}`>",
+   "reason": "WAVE 40 / F-1 — RELOCATION OF A CONTROL, NOT A SUBTRACTION OF ONE. This id exists only because the extractor records any element with role=\"button\" as a button (extract-inventory.ts: BUTTON_TAGS.has(tag) || role === \"button\"), and the SPV card carried role=\"button\" tabIndex={0}. That nesting was the proven cause of the live F-1 defect: the card's own onKeyDown fires on Enter/Space BUBBLED FROM ANY DESCENDANT, so pressing Enter on one of the 16 SPV tab triggers toggled selectedId and unmounted the entire tab panel mid-activation (reproduced in Chromium, both poles — build_log/WAVE40_REPORT.md), and role=\"button\" additionally makes the whole subtree presentational in the accessibility tree, hiding all 16 role=\"tab\" triggers, the publish Button and both Links from assistive tech. NOTHING WAS REMOVED: the Card keeps its data-testid, its onClick and its onKeyDown byte-identical (both event fingerprints are unchanged in this run), so click-anywhere-to-expand still works; and the disclosure gained a REAL native control appended at the end of the header column, <button data-testid=`spv-row-toggle-${s.id}`> with aria-expanded/aria-controls, which the browser activates on Enter and Space. The guard has no relocation/rename mechanism, so a role move can only be expressed as one removed id — enumeration of the four fingerprint classes shows 1 is the minimum possible loss for any fix that removes the interactive-role nesting. scripts/reachability/reachability_gate.ts rule R3 now fails the build if an interactive role is ever wrapped around these controls again. RECOMMENDED FOR WAVE 41: give the guard a `relocations` map so a control moving between elements needs no removal entry.",
+   "approvedBy": "Ozan (WAVE 40 owner ruling 2026-08-13: \"Make the tabs work. Go with your recommendation.\")",
+   "date": "2026-08-13"
+  }
+ ]
 }

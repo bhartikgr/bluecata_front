@@ -48,8 +48,41 @@ function walk(dir: string, acc: string[] = []): string[] {
 }
 
 describe("WAVE 80 · ITEM 5 — seniority has no user interface, and we say so", () => {
-  it("W80-I5-A — ZERO non-test round-term `seniority` references exist in client/src", () => {
+  /* ════════════════════════════════════════════════════════════════════
+     REWRITTEN BY WAVE 92 — AND FOR THE GOOD REASON THIS FILE'S OWN HEADER NAMES.
+     ════════════════════════════════════════════════════════════════════
+     THE OLD EXPECTATION: ZERO files under `client/src` may mention the word
+     "seniority" at all, except one terms-of-service sentence about the
+     professional seniority of a Member. The word was forbidden because no screen
+     read the exit waterfall's `seniority[]` and no control wrote a rank, and this
+     file said so out loud: *"IF THIS FILE GOES RED, one of two good things
+     happened: someone built the seniority UI (then update this pin and say so)
+     … It must never go red because a wave quietly claimed the UI exists."*
+
+     THE NEW EXPECTATION: the payment order may be READ AND DISPLAYED, by exactly
+     one screen, and nothing may WRITE it from the client yet.
+
+     WHY. Wave 92 built `client/src/pages/founder/ExitWaterfall.tsx`, the first and
+     only client caller of `GET /api/founder/captable/waterfall`. That endpoint
+     publishes `seniority[]`, `seniorityOnRecord` and `seniorityAssumed` precisely
+     so a reader can see which payment order produced the figures on the page, and
+     a waterfall screen that hid the ranking would be publishing money figures
+     while concealing the term that ordered them. So the screen renders "Position
+     0" beside each preference class, and "Not recorded" where the rank is absent.
+
+     WHAT IS STILL PINNED, AND IT IS THE PART THAT MATTERS. There is STILL no
+     control anywhere in the client that WRITES a seniority rank — no input, no
+     select, no drag handle, no mutation. The pre-flight's `§9` control is NOT in
+     this wave (`OQ-W92-1`), and `W80-I5-B` below, which forbids the word in the
+     creation wizard, is UNTOUCHED AND STILL GREEN. The assertion is therefore
+     NARROWED rather than deleted (R67 condition 1): the allowance is one named
+     file, and any second file, or any write from the first, fails this test. */
+  it("W80-I5-A — the payment order is READ by exactly one screen and WRITTEN by none", () => {
+    /* The one file allowed to name the term, and the reason, both stated here so a
+       later reader does not have to guess which screen was intended. */
+    const READER = "client/src/pages/founder/ExitWaterfall.tsx";
     const hits: string[] = [];
+    const readerHits: string[] = [];
     for (const abs of walk(path.join(ROOT, "client", "src"))) {
       const rel = path.relative(ROOT, abs).split(path.sep).join("/");
       const lines = fs.readFileSync(abs, "utf8").split("\n");
@@ -62,10 +95,22 @@ describe("WAVE 80 · ITEM 5 — seniority has no user interface, and we say so",
            its exact sentence — rather than by excluding the whole file — is what
            keeps this assertion honest. */
         if (/seniority or credibility of the Member/i.test(ln)) return;
+        if (rel === READER) { readerHits.push(`${rel}:${i + 1}: ${ln.trim().slice(0, 140)}`); return; }
         hits.push(`${rel}:${i + 1}: ${ln.trim().slice(0, 140)}`);
       });
     }
-    expect(hits, `unexpected seniority references:\n${hits.join("\n")}`).toEqual([]);
+    expect(hits, `unexpected seniority references outside ${READER}:\n${hits.join("\n")}`).toEqual([]);
+    /* AND THE ALLOWANCE IS NOT A BLANK CHEQUE — the one permitted file must
+       actually be there and must actually be reading it, or this test would pass
+       for the wrong reason if the screen were ever deleted. */
+    expect(readerHits.length, `${READER} no longer reads the payment order`).toBeGreaterThan(0);
+    /* NOTHING IN THE CLIENT WRITES IT. This is the half of the old assertion that
+       is still true and still load-bearing: `POST /api/rounds` and the two terms
+       patchers all validate a rank (Wave 91), but no control in the product sends
+       one, so the refusal must not imply that one exists. A write would appear as
+       the key inside a request body; the allowed screen issues GET only. */
+    const readerSrc = fs.readFileSync(path.join(ROOT, READER), "utf8");
+    expect(readerSrc).not.toMatch(/apiRequest\(\s*"(POST|PATCH|PUT|DELETE)"/);
   });
 
   it("W80-I5-B — the creation wizard has no seniority control and sends no seniority key", () => {

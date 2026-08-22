@@ -1,0 +1,312 @@
+/* ============================================================================
+ * ledger-investor.css — WAVE 5D · THE INVESTOR "LEDGER + GRID" SKIN
+ * ============================================================================
+ *
+ * WHAT THIS FILE IS — AND WHY IT IS LAST
+ * --------------------------------------
+ * R73 (owner): "Let's go with your recommendation - Ledger. I like the color
+ * coding applications."  Direction A "Ledger" is the base; Direction D "Grid"'s
+ * colour-coded status pills and table borders are adopted for the data tables.
+ * This is the FIFTH and LAST of the five areas, and it applies THE SAME TEN
+ * DECISIONS as Waves 1D, 2D+3D and 4D so the platform speaks ONE dialect.
+ *
+ * THE INVESTOR AREA WAS MISSED ENTIRELY BY R74 UNTIL THE OWNER ADDED IT
+ * (R78/OQ-1).  Nothing in it had ever been reviewed, so nothing below is
+ * inherited on trust: every value was read off the live rendered area with
+ * `tools/probe.mjs` on ten screens, and every state colour was enumerated from
+ * the CODE and the DATABASE by `tools/enum_states.py`.  It is also the most
+ * CUSTOMER-FACING of the five, which is why it is sequenced last — a mistake
+ * here costs most.
+ *
+ * WHAT THIS FILE IS NOT
+ * ---------------------
+ * NOT ONE ELEMENT OF FUNCTIONALITY OR USABILITY CHANGES.  No control moves, is
+ * renamed, removed, hidden, added or reordered.  There is no markup here, no
+ * `display`, no `visibility`, no `opacity`, no `pointer-events`, no `order`, no
+ * `position`, no `content`, no `width`, no `height`, no `text-align`, no
+ * `padding` and no `cursor`.  Colour, type, border, radius, shadow and weight
+ * only.  Asserted by
+ * `client/src/styles/__tests__/w4d5d_ledger_admin_investor_scope.test.ts`.
+ *
+ * SCOPE — EVERY SELECTOR IS SCOPED TO [data-product="investor"].
+ * -------------------------------------------------------------
+ * `AppShell.tsx:747` sets `data-product={product}` on the shell root and
+ * resolves `"investor"` for every `/investor/*` route.  MEASURED on the live
+ * local tree: all ten investor screens report `data-product="investor"` on their
+ * root.  Consortium Partner, Collective, founder, admin and the public marketing
+ * site read NOTHING from this file.  There is not one unscoped selector below.
+ *
+ * R80 — `pages/founder/Billing.tsx` IS NOT REACHABLE FROM HERE AT ALL, for the
+ * same reason as `ledger-admin.css` §0: Billing renders under
+ * `data-product="founder"`, and `[data-product="investor"]` is not an ancestor
+ * of it.  `ledger-founder.css` is NOT OPENED and its guard is neither weakened,
+ * narrowed nor re-implemented.
+ *
+ * WHY NO OTHER FILE IS EDITED — identical to `ledger-admin.css`, which states
+ * the full list.  In short: `capavate-tokens.css` SACRED and READ, not edited;
+ * `:root` shadowed rather than opened; the other four areas' stylesheets, the
+ * two `w8`-symmetry theme files, `home3style.css`, the 19 marketing components,
+ * `components/ui/**`, `computeConversionProjections` (R69), all of `server/`
+ * (WAVE 97B may be active) and WAVE 92's founder exit surfaces: NOT OPENED.
+ *
+ * WHAT MEASUREMENT SAID BEFORE ANY OF THIS WAS WRITTEN
+ * ---------------------------------------------------
+ * Ten screens, live, `tools/probe.mjs`:
+ *   root font-size            18px            -> 14px
+ *   font-variant-numeric      normal          -> tabular-nums lining-nums
+ *   h1 / page title           20px Montserrat 600 #141F34 on NINE screens, and
+ *                             ALREADY the ratified #041E41 on `earlier-investments`
+ *                             — so the area was already INTERNALLY INCONSISTENT by
+ *                             one screen, and that is what this closes.  Already
+ *                             20px and already sans: R78/OQ-5 needs no size here.
+ *   body background           #F8FAFC         -> UNCHANGED, already cool.
+ *   default border            #DADFE7 (35 elements on the dashboard alone) /
+ *                             #E0E5EB (29) / #C2CAD6 (3)  ->  #E5EAF0 / #D9DCE1
+ *   secondary / muted fill    #ECEFF4 (35) / #EFF2F5 (8)  ->  #F1F4F8
+ *   rail + top header         #1C2C4A (a SECOND navy)     ->  #041E41 ratified
+ *   table thead th            ALREADY 12px uppercase weight 500, inheriting 14px
+ *                             -> min(12px,1em) = 12px UNCHANGED IN SIZE, weight
+ *                             600, plus the pale band and the Grid rule.  So the
+ *                             investor tables gain STRUCTURE without gaining ONE
+ *                             PIXEL of width.  Measured, §5 of the report.
+ *   radius                    6px on 121 elements, 9999px on 44, 12px on 31 ->
+ *                             NO RADIUS IS SET.  6px is already the norm and the
+ *                             44 pills are exactly the thing the design keeps.
+ *
+ * ACCESSIBILITY
+ * -------------
+ * Computed by `tools/verify_contrast.py` over the REAL class pairings in the
+ * investor source.  No pair below AA 4.5:1 is introduced.  Transcript:
+ * `build_log/wave4d5d_admin_investor/STATUS_COLOURS.md`.
+ * ========================================================================== */
+
+/* ── 1 · SEMANTIC TOKEN SHADOW ──────────────────────────────────────────── */
+[data-product="investor"] {
+  --background: 210 40% 98%;      /* #F8FAFC — was 210 33% 98% (#F8FAFB) */
+
+  /* BORDERS — Ledger hairline + Grid rule.  THREE near-identical greys -> TWO,
+   * the same two the other four areas now use. */
+  --border: 213 27% 92%;          /* #E5EAF0 — was 215 20% 88% (#DADFE7) */
+  --card-border: 213 27% 92%;     /* #E5EAF0 — was 215 20% 90% (#E0E5EB) */
+  --popover-border: 213 27% 92%;  /* #E5EAF0 */
+  --input: 214 12% 87%;           /* #D9DCE1 — --ds-border-strong */
+
+  /* NEUTRAL FILLS */
+  --secondary: 214 33% 96%;       /* #F1F4F8 — was 215 25% 94% (#ECEFF4) */
+  --muted: 214 33% 96%;           /* #F1F4F8 — was 215 25% 95% (#EFF2F5) */
+
+  /* THE RAIL IS MOVED BY CLASS, NOT BY TOKEN — Wave 96's correction; see §6.
+   * --sidebar / --sidebar-border / --sidebar-accent / --sidebar-primary
+   * UNTOUCHED, so the rail's dividers stay lighter than the rail. */
+
+  /* SHADOWS — navy-tinted on the RATIFIED navy hue.  Same weights. */
+  --shadow-2xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.04);
+  --shadow-xs: 0px 1px 2px 0px hsl(214 88% 14% / 0.05);
+  --shadow-sm: 0px 1px 2px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow: 0px 2px 4px 0px hsl(214 88% 14% / 0.06), 0px 1px 2px -1px hsl(214 88% 14% / 0.04);
+  --shadow-md: 0px 4px 8px -2px hsl(214 88% 14% / 0.08), 0px 2px 4px -1px hsl(214 88% 14% / 0.05);
+  --shadow-lg: 0px 8px 16px -4px hsl(214 88% 14% / 0.10), 0px 4px 6px -1px hsl(214 88% 14% / 0.05);
+  --shadow-xl: 0px 16px 32px -8px hsl(214 88% 14% / 0.14);
+  --shadow-2xl: 0px 24px 48px -12px hsl(214 88% 14% / 0.20);
+}
+
+/* ── 2 · BASE TYPE ──────────────────────────────────────────────────────── */
+[data-product="investor"] {
+  font-size: 14px;
+  line-height: 1.45;
+  /* R78/OQ-4.  MEASURED: `normal`.  The portfolio, the earlier-investments
+   * ledger and the invitation CAP TABLE TAB are columns of shares, prices and
+   * ownership percentages; they must stack. */
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* The marketing stylesheet caps every `p`/`li` at 72ch, unscoped.  Released for
+ * this area only — which matters here because WAVE 90's cap-table REFUSAL COPY
+ * and the Glossary are long prose.  This WIDENS text; it cannot clip it, and it
+ * does not change one character of either. */
+[data-product="investor"] p,
+[data-product="investor"] li,
+[data-product="investor"] figcaption {
+  max-width: none;
+}
+
+/* ── 3 · TITLES — NAVY ────────────────────────────────────────────────────
+ * Already 20px Montserrat 600, so NO SIZE IS SET.  Ink only: #141F34 -> the
+ * ratified #041E41 at 16.57:1 AAA — which also makes `earlier-investments`,
+ * already #041E41, agree with its nine neighbours instead of being the odd one. */
+[data-product="investor"] h1,
+[data-product="investor"] [data-testid="text-page-title"] {
+  color: #041E41;
+  letter-spacing: -0.005em;
+}
+
+/* ── 4 · TABLES — DIRECTION D's "GRID" TREATMENT ──────────────────────────
+ * `text-align`, `padding` and `width` are DELIBERATELY NOT SET, so no authored
+ * `text-right` on an ownership column and no authored cell padding moves. */
+[data-product="investor"] table thead {
+  background: #F8FAFC;
+}
+
+[data-product="investor"] table thead th {
+  /* `min(12px, 1em)` — NEVER A HARD `12px`.  See `ledger-admin.css` §4 for the
+   * full history: a hard 12px pushed the founder cap table's last column and
+   * three ownership subtotals off screen (1141px into a 1134px container) while
+   * the instrument reported "clipped 8→8", because it counted text nodes and not
+   * container overflow.
+   *
+   * MEASURED HERE: the investor `th` ALREADY renders at 12px while inheriting
+   * 14px, so `min(12px, 1em)` resolves to 12px and the header row does not move
+   * by one pixel — both dashboard tables stay at 1086px of content in a 1184px
+   * container, before and after.  The rule is kept in the monotone form anyway,
+   * because it must hold for the tables real investor data will have and this
+   * fixture does not: it can only ever make a header SMALLER.
+   *
+   * `letter-spacing` is NOT set, for the same reason as in the admin file. */
+  font-size: min(12px, 1em);
+  font-weight: 600;
+  text-transform: uppercase;
+  /* WAVE 99 · ITEM 1 — SMALL CAPITALS, AND IT IS A REACHABILITY FIX, NOT A
+   * FLOURISH.  APPLIED IDENTICALLY IN ALL FIVE AREAS.
+   *
+   * WHAT WAS WRONG.  `text-transform: uppercase` above is a SECOND, INDEPENDENT
+   * widening vector that `font-size: min(12px, 1em)` does not bound: capitals are
+   * wider glyphs than lower case at the same size, so `Commission override` ->
+   * `COMMISSION OVERRIDE` is ~15-20% wider while the 14px->12px shrink only
+   * removes ~14%.  Net: WIDER.  On `/admin/partner-fees` at 1280 — where the
+   * table is already laid out at its `min-content` width in a 590px container —
+   * that landed straight in the overflow, and the `ACTIONS` column with its
+   * `Edit` / `Expire` buttons was CUT AT THE CONTAINER EDGE.  Wave 4D+5D
+   * DECOMPOSED IT PROPERTY BY PROPERTY on the live page: uppercase is the ENTIRE
+   * cause; `font-weight: 600` contributes EXACTLY ZERO and the 14px->12px shrink
+   * contributes EXACTLY ZERO.
+   *
+   * HOW IT WAS FOUND, AND THE LESSON.  Two instrument fields DISAGREED —
+   * `lastThTextClipped: false` (the `<th>`'s own box is not narrower than its
+   * text) against `lastThFullyInsideHost: false` (the CONTAINER clips it) — and
+   * THE SCREENSHOT SETTLED IT.  That is the third time in this programme that
+   * looking at the picture beat reading the number.
+   *
+   * WHY THIS PROPERTY.  Small capitals are x-height glyphs, so they are NARROWER
+   * than full capitals while still reading as a ledger header.  MEASURED on the
+   * real tree: table 1 633px -> 590px, table 2 611px -> 590px, both in a 590px
+   * container, overflow 43 and 21 -> 0 and 0, last `<th>` back INSIDE the host on
+   * both.  It is better than what shipped AND better than the pre-wave state
+   * (613/590, over 23, last `<th>` NOT inside), because it also fixes the table
+   * that was ALREADY cut before the restyle began.  Dropping `uppercase` instead
+   * was also measured and is WORSE: 601/590, over 11, still cut.
+   *
+   * WHY `text-transform: uppercase` IS KEPT ABOVE.  `all-small-caps` enables both
+   * `smcp` and `c2sc`, so it renders identically with or without the transform.
+   * Keeping the transform keeps `innerText` reporting `ACTIONS`, so no text
+   * census and no drop-detector entry moves on any table header in the product.
+   *
+   * WHY ALL FIVE AREAS.  Applying it in admin alone would make two of five areas
+   * diverge, which is exactly what R74 exists to prevent — and is exactly why
+   * Wave 4D+5D refused to apply it unilaterally.  One product, one treatment.
+   *
+   * THE FONT.  Montserrat carries no `smcp`/`c2sc` table, so Blink SYNTHESISES
+   * the small capitals by scaling the capitals down.  That is a RENDERING, not a
+   * fallback to lower case, and it was verified three ways rather than assumed —
+   * width vs full capitals, width vs plain lower case, and a screenshot of all
+   * four cases side by side.  `W99_OVERFLOW_ALL_AREAS.md` section 2.
+   *
+   * `font-size: min(12px, 1em)` above is UNTOUCHED and stays in the never-grow
+   * form.  A bare `12px` is forbidden by test and mutation-proved. */
+  font-variant-caps: all-small-caps;
+  color: #5B6B7F;                      /* 5.21:1 AA on #F8FAFC */
+  border-bottom: 1px solid #D9DCE1;    /* --ds-border-strong, the Grid rule */
+}
+
+[data-product="investor"] table tbody tr {
+  border-color: #E5EAF0;
+}
+
+[data-product="investor"] table tbody tr + tr {
+  border-top: 1px solid #E5EAF0;
+}
+
+[data-product="investor"] table tbody tr:hover {
+  background: #F8FAFC;
+}
+
+/* ── 5 · STATUS PILLS — DIRECTION D GEOMETRY ──────────────────────────────
+ * Colours come from the `[data-product="investor"]` ramp block.  Weight only, so
+ * a mixed roster of invitation states reads as one control family.  NO RADIUS IS
+ * SET: the 44 measured pills keep theirs, avatars stay round, and no icon button
+ * is wrongly boxed. */
+[data-product="investor"] span.rounded-full[class*="border-"],
+[data-product="investor"] span.rounded[class*="border-"][class*="text-xs"] {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ── 6 · ONE NAVY ─────────────────────────────────────────────────────────
+ * MEASURED: `aside` and `header` both paint `rgb(28, 44, 74)` = the legacy
+ * #1C2C4A on all ten investor screens, while the page title beside them is the
+ * ratified navy.  The rail and the header MOVE IN THE SAME EDIT, because Wave
+ * 2D+3D proved by rendering that moving one alone opens a visible seam.
+ * `[class~=]` and not `[class*=]` — Wave 96's correction; the full argument is in
+ * `ledger-admin.css` §6.  Both values are read from the SACRED
+ * `capavate-tokens.css` (NOT OPENED); nothing here declares a hex.
+ *
+ * DELIBERATELY LEFT, with reasons in STATUS_COLOURS.md §5:
+ *  · `investor/ApplyToCollective.tsx:413` — `from-[hsl(219_45%_20%)]
+ *    via-[hsl(219_45%_18%)] to-[hsl(333_75%_35%)]`, the hero GRADIENT.  ADJACENT
+ *    STOPS MUST DIFFER; moving the first stop to #041E41 while `via` stays at
+ *    18% would invert the ramp.  Wave 96 left the founder area's gradient stops
+ *    for exactly this reason and this wave follows it rather than inventing a
+ *    different answer for the same problem.
+ *  · the rail's own `--sidebar-border` / `--sidebar-accent` dividers, measured
+ *    #2B3F64 — deliberately LIGHTER than the rail.
+ *
+ * COLOUR ONLY. */
+
+/* the rail — moved with the header below */
+[data-product="investor"] [class~="bg-sidebar"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* the top header (AppShell.tsx:631) + the dark button fills in this area */
+[data-product="investor"] [class~="bg-[hsl(219_45%_20%)]"] {
+  background-color: var(--cv-color-navy);
+}
+
+/* the same buttons' rims */
+[data-product="investor"] [class~="border-[hsl(219_45%_20%)]"] {
+  border-color: var(--cv-color-navy);
+}
+
+/* `text-[hsl(219_45%_20%)]` — `ApplyToCollective.tsx:432`, the white "Apply now"
+ * button's own INK sitting on white.  It is the SAME legacy navy, not a
+ * hierarchy tone, so it is consolidated: #041E41 on white is 16.57:1 against the
+ * legacy #1C2C4A's 12.13:1, so this moves contrast UP, never down. */
+[data-product="investor"] [class~="text-[hsl(219_45%_20%)]"] {
+  color: var(--cv-color-navy);
+}
+
+/* the hover fill.  `:hover` is REQUIRED — a `[class*=…]` form would have painted
+ * this at rest, which is the functional defect Wave 2D+3D refused to ship. */
+[data-product="investor"] [class~="hover:bg-[hsl(219_45%_15%)]"]:hover {
+  background-color: var(--cv-color-navy-light);
+}
+
+/* the hover rim */
+[data-product="investor"] [class~="hover:border-[hsl(219_45%_15%)]"]:hover {
+  border-color: var(--cv-color-navy-light);
+}
+
+/* ── 7 · WHAT THIS FILE DELIBERATELY DOES NOT TOUCH ───────────────────────
+ *  · WAVE 90's cap-table REFUSAL COPY on the invitation cap-table tab, its
+ *    single-sourced `PortalVersionFooter`, and its 19 de-enumerated label sites.
+ *    Styled, never altered.  No raw enum value can be reintroduced by a colour.
+ *  · WAVE 93/97's corrected actor descriptions.  No name is restyled into an id.
+ *  · The `--chart-*` ramp and the portfolio's categorical series tones.
+ *  · The `ApplyToCollective` hero gradient — §6.
+ *  · `text-align`, `padding`, `width`, `height`, `display`, `visibility`,
+ *    `opacity`, `pointer-events`, `position`, `order`, `content`, `z-index`,
+ *    `float`, `transform`, `overflow`, `flex-direction`,
+ *    `grid-template-columns`, `cursor`, `user-select`.  None is declared
+ *    anywhere in this file.
+ *  · Any radius.
+ * ========================================================================== */

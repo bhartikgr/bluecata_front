@@ -124,7 +124,7 @@ export function majorToMinor(s: string, currency = "USD"): number | null {
 
 export type SourceOfTruthUnit =
   | "currency_minor (cents)"
-  | "currency_major (display dollars)"
+  | "Display dollars"
   | "fraction (0.10 = 10%)"
   | "integer (days)"
   | "integer (count)"
@@ -132,7 +132,7 @@ export type SourceOfTruthUnit =
      its unit depends on the row's `kind`. It was previously signed as "text",
      which told an admin nothing and let the percent/fraction ambiguity survive.
      00_SHARED_STANDARDS.md §1.1 requires the convention to be named. */
-  | "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat_minor: currency_minor (cents) · trial_extension_days: integer (days)"
+  | "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat amount: whole cents · trial extension: whole days"
   | "text";
 
 export interface SourceOfTruthProps {
@@ -162,6 +162,20 @@ export interface SourceOfTruthProps {
   testId: string;
 }
 
+/* WAVE 83 · ITEM 1 (owner ruling Q25) — the UNITS row said `currency_minor
+   (cents)`, a column type. An operator needs the unit, not the schema word, so
+   the union type (and every call site) is BYTE-UNCHANGED and only the rendered
+   words are mapped here. Anything unmapped renders exactly as before. */
+const UNIT_IN_PLAIN_ENGLISH: Partial<Record<SourceOfTruthUnit, string>> = {
+  "currency_minor (cents)": "Whole cents (integer)",
+  "fraction (0.10 = 10%)": "Fraction (0.10 = 10%)",
+  "integer (days)": "Whole days",
+  "integer (count)": "Whole number",
+  "text": "Text",
+  "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat amount: whole cents · trial extension: whole days":
+    "Discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat amount: whole cents · trial extension: whole days",
+};
+
 export function SourceOfTruth(props: SourceOfTruthProps) {
   const {
     table,
@@ -185,16 +199,19 @@ export function SourceOfTruth(props: SourceOfTruthProps) {
       data-sot-table={table}
       data-sot-column={column}
       data-sot-unit={unit}
-      aria-label={`Source of truth for ${table}.${column}`}
+      aria-label="Where this value is stored, and who last changed it"
     >
       <div className="flex items-center gap-1.5 font-semibold text-foreground">
         <Database className="h-3.5 w-3.5" />
         Source of truth
       </div>
       <dl className="space-y-1">
-        <Row label="Table" value={<code>{table}</code>} testId={`${testId}-table`} />
-        <Row label="Column" value={<code>{column}</code>} testId={`${testId}-column`} />
-        <Row label="Type" value={unit} testId={`${testId}-unit`} />
+        {/* WAVE 83 · ITEM 1 — the SQL table and column rows are no longer RENDERED. An
+            operator cannot act on a table name; they act through this screen, and this
+            panel is screenshared. The values stay on the props and on the data-sot-*
+            attributes, so nothing downstream loses them. */}
+        
+        <Row label="Units" value={UNIT_IN_PLAIN_ENGLISH[unit] ?? unit} testId={`${testId}-unit`} />
         <Row
           label="Last edited"
           value={
@@ -228,10 +245,10 @@ export function SourceOfTruth(props: SourceOfTruthProps) {
           />
         ) : null}
         {readEndpoint ? (
-          <Row label="GET" value={<code>{readEndpoint}</code>} testId={`${testId}-get`} />
+          <Row label="Read from" value="Capavate" testId={`${testId}-get`} />
         ) : null}
         {writeEndpoint ? (
-          <Row label="WRITE" value={<code>{writeEndpoint}</code>} testId={`${testId}-write`} />
+          <Row label="Written by" value="Capavate" testId={`${testId}-write`} />
         ) : null}
       </dl>
       {deprecated ? (
@@ -312,7 +329,7 @@ interface RenewalWorkerConfigWire {
 const RENEWAL_FIELD_BOUNDS: Record<string, { min: number; max: number; label: string; help: string }> = {
   pollIntervalMs: { min: 1000, max: 86_400_000, label: "Poll interval (ms)", help: "How often the worker sweeps for due renewals." },
   leadWindowSec: { min: 0, max: 2_592_000, label: "Lead window (seconds)", help: "How far before period end a renewal is minted." },
-  maxConsecutiveFailures: { min: 1, max: 100, label: "Failures before past_due", help: "Consecutive gateway errors on one row before it is escalated." },
+  maxConsecutiveFailures: { min: 1, max: 100, label: "Failures before escalation", help: "Consecutive gateway errors on one row before it is escalated." },
   quietAfterWriteMin: { min: 0, max: 1440, label: "Quiet window (minutes)", help: "A row just touched by a renewal is skipped for this long, so a slow webhook does not cause repeat intents." },
 };
 
@@ -372,8 +389,8 @@ function RenewalWorkerConfigEditor() {
       )}
       {cfg.source === "missing_row_fail_closed" && (
         <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm" data-testid="renewal-worker-fail-closed">
-          <strong>No configuration row.</strong> The worker fails closed and is minting no renewals. Run the pending
-          migrations to restore the singleton row.
+          <strong>No configuration row.</strong> No renewals are being created at all. Run the pending
+          migrations to restore the configuration row this worker reads.
         </div>
       )}
 
@@ -705,14 +722,14 @@ function CapavateAnnualTab() {
   return (
     <div className="space-y-6" data-testid="tab-capavate-annual">
       <AppCard>
-        <SectionTitle hint="The single Capavate founder annual SKU. Billing resolves this row through getPlanPriceStrict() and FAILS CLOSED (TierNotConfiguredError) when no live model exists — it never invents a price.">
+        <SectionTitle hint="The single Capavate founder annual SKU. Billing reads this row and nothing else. When no live model exists it refuses the charge outright — it never invents or inherits a price.">
           Capavate Annual Plan
         </SectionTitle>
         <div className="mt-4">
           <FieldWithSource
             source={{
               table: "pricing_models",
-              column: "base_price_minor / cadence_options[annual].priceMinor",
+              column: "Base price / annual cadence price",
               unit: "currency_minor (cents)",
               lastEditedAt: live?.updatedAt ?? null,
               lastEditedBy: live?.updatedBy ?? null,
@@ -732,8 +749,8 @@ function CapavateAnnualTab() {
               >
                 <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                 <span>
-                  No live founder pricing model. Checkout will fail closed with{" "}
-                  <code>TierNotConfiguredError</code> until one is published.
+                  No live founder pricing model. Checkout will refuse rather than charge a guessed price until one is published.{" "}
+                  
                 </span>
               </div>
             ) : (
@@ -873,7 +890,7 @@ function CapavateAnnualTab() {
                   </TableCell>
                   <TableCell>{m.name}</TableCell>
                   <TableCell>
-                    <Badge variant={m.status === "live" ? "default" : "secondary"}>
+                    <Badge variant={m.status === "live" ? "positive" : "secondary"}>
                       {m.status}
                     </Badge>
                   </TableCell>
@@ -1087,8 +1104,8 @@ function CollectiveTiersTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="Legacy platform_fees rows for the same concept. Kept visible so admins understand why they exist — but they are NOT the tier a member is charged from.">
-          Legacy <code>platform_fees</code> member-subscription rows
+        <SectionTitle hint="Legacy fee-registry rows for the same concept. Kept visible so admins understand why they exist — but they are NOT the tier a member is charged from.">
+          Legacy <code>Legacy fee registry</code> member-subscription rows
         </SectionTitle>
         <div className="mt-4 space-y-6">
           {legacyTiers.length === 0 ? (
@@ -1105,7 +1122,7 @@ function CollectiveTiersTab() {
                   lastEditedBy: t.updatedByUserId ?? null,
                   editableHere: false,
                   editableVia:
-                    "read-only here — legacy row, superseded by collective_subscription_configs",
+                    "read-only here — legacy row, superseded by the Collective subscription configuration",
                   readEndpoint: "GET /api/admin/collective/member-subscription-tiers",
                   provenance: "platform_fees (legacy)",
                   deprecated: true,
@@ -1208,7 +1225,7 @@ function ConsortiumPromotionsTab() {
   return (
     <div className="space-y-6" data-testid="tab-consortium-promotions">
       <AppCard>
-        <SectionTitle hint="The canonical 5-tier partner ladder. A partner is 'promoted' onto one of these tiers via POST /api/admin/partners/:id/promote-tier from the partner detail page; the PRICE of each tier is edited here.">
+        <SectionTitle hint="The canonical 5-tier partner ladder. A partner is 'promoted' onto one of these tiers from the partner detail page; the PRICE of each tier is edited here.">
           Partner subscription tiers (promotion ladder)
         </SectionTitle>
         <div className="mt-4 space-y-6">
@@ -1227,7 +1244,7 @@ function ConsortiumPromotionsTab() {
                   editableHere: true,
                   readEndpoint: "GET /api/admin/consortium/subscription-tiers",
                   writeEndpoint: "PUT /api/admin/consortium/subscription-tiers/:slug",
-                  provenance: `platform_fees key consortium.subscription.${t.slug}`,
+                  provenance: `Consortium subscription fee registry.${t.slug}`,
                   testId: `partner-tier-${t.slug}`,
                 }}
               >
@@ -1309,7 +1326,7 @@ function ConsortiumPromotionsTab() {
               editableHere: true,
               readEndpoint: "GET /api/admin/consortium/spv-deployment-fee",
               writeEndpoint: "PUT /api/admin/consortium/spv-deployment-fee",
-              provenance: "platform_fees key consortium.spv_deployment_fee",
+              provenance: "SPV deployment fee registry",
               testId: "spv-deployment-fee",
             }}
           >
@@ -1391,7 +1408,7 @@ function ConsortiumPromotionsTab() {
                   lastEditedBy: r.updatedByUserId ?? null,
                   editableHere: false,
                   editableVia:
-                    "PUT /api/admin/partner/commission-rates/:tier (endpoint preserved; editor lands with the partner-override component)",
+                    "Editing lands with the partner-override editor",
                   readEndpoint: "GET /api/admin/partner/commission-rates",
                   testId: `commission-rate-${r.tier}`,
                 }}
@@ -1407,7 +1424,7 @@ function ConsortiumPromotionsTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="partner_fee_schedules rows (fee_kind, tier or platform default, size bands, effective windows).">
+        <SectionTitle hint="Partner fee overrides (fee kind, tier or platform default, size bands, effective windows).">
           Partner fee schedules
         </SectionTitle>
         <div className="mt-4">
@@ -1426,11 +1443,11 @@ function ConsortiumPromotionsTab() {
                * partner_commission_rate_config.rate, and is already rendered
                * correctly as a FRACTION × 100 a few lines above (:1146). Corrected
                * to the columns that actually exist. */
-              column: "amount_minor (fixed fee, integer minor units)",
+              column: "Fixed fee, in whole cents",
               unit: "currency_minor (cents)",
               editableHere: false,
               editableVia:
-                "POST/PATCH/DELETE /api/admin/partner-fees (endpoints preserved)",
+                "Create, edit and delete are all available on this screen",
               readEndpoint: "GET /api/admin/partner-fees",
               testId: "partner-fee-schedules",
             }}
@@ -1515,7 +1532,7 @@ function ApplicationFeeTab() {
                   />
                   <p className="text-xs text-muted-foreground">
                     Stored as {row?.amountMinor ?? "—"} cents. Founders read it from{" "}
-                    <code>GET /api/collective/application-fee</code>.
+                    <code>Read by the public application screen</code>.
                   </p>
                 </div>
                 <Button
@@ -1555,8 +1572,8 @@ function ApplicationFeeTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="Every other platform_fees row, read-only, so admins can see the whole registry from one place.">
-          Full <code>platform_fees</code> registry
+        <SectionTitle hint="Every other fee-registry row, read-only, so admins can see the whole registry from one place.">
+          Full <code>Fee registry</code> registry
         </SectionTitle>
         <Table className="mt-3">
           <TableHeader>
@@ -1618,7 +1635,7 @@ function DiscountCodesTab() {
                Editing here now changes what a real checkout charges, immediately. */}
             <div className="font-semibold">These codes are LIVE — creating one applies immediately.</div>
             <p className="mt-1">
-              <code>pricing_models.discountCodes</code> is read directly on every
+              <code>Discount codes on the pricing model</code> is read directly on every
               charge — there is no separate hardcoded list anymore. A code you add, deactivate, or expire here takes effect
               on the very next checkout that uses it, across every pricing model and product line.
             </p>
@@ -1649,7 +1666,7 @@ function DiscountCodesTab() {
                      percentage unit must name which convention it means").
                      `amount` for kind=percent is a FRACTION; kind=flat_minor is
                      currency minor units; kind=trial_extension_days is days. */
-                  unit: "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat_minor: currency_minor (cents) · trial_extension_days: integer (days)",
+                  unit: "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat amount: whole cents · trial extension: whole days",
                   lastEditedAt: m.updatedAt ?? null,
                   lastEditedBy: m.updatedBy ?? null,
                   editableHere: true,
@@ -1699,7 +1716,9 @@ function DiscountCodesTab() {
                           {c.maxRedemptions ?? "∞"}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={c.active ? "default" : "secondary"}>
+                          {/* WAVE 101 - the chip literally reads "active" and was painted brand red.
+   Found only by the boolean-predicate pass. Colour only. */}
+                          <Badge variant={c.active ? "positive" : "secondary"}>
                             {c.active ? "active" : "inactive"}
                           </Badge>
                         </TableCell>
@@ -1726,7 +1745,7 @@ function DiscountCodesTab() {
         <div className="mt-4">
           <FieldWithSource
             source={{
-              table: "pricing_models (draft carrier row, seedLegacyCouponCodesIfMissing)",
+              table: "Pricing model draft carrier row",
               column: "discount_codes_json",
               unit: "text",
               editableHere: false,
@@ -1876,16 +1895,16 @@ function LedgerInvoicesTab() {
         <div className="mt-4">
           <FieldWithSource
             source={{
-              table: "payment_ledger / partner_billing_entries / collective_payment_entries",
-              column: "amount_cents, net_cents, state",
+              table: "Payment ledger / partner billing / Collective payments",
+              column: "amount, net amount and state",
               unit: "currency_minor (cents)",
               editableHere: true,
               editableVia:
-                "row actions below — POST /api/admin/partner-pl/:id/mark-paid, POST /api/admin/collective-payments/pl/:id/mark-paid",
+                "row actions below — mark paid, on both partner and Collective ledgers",
               readEndpoint:
-                "GET /api/admin/payments · /api/admin/partner-pl · /api/admin/collective-payments/pl",
+                "Payments, partner P&L and Collective payments",
               writeEndpoint:
-                "POST /api/admin/partner-pl/:id/mark-paid · POST /api/admin/collective-payments/pl/:id/mark-paid",
+                "Mark paid, on both partner and Collective ledgers",
               testId: "ledger",
             }}
           >
@@ -2039,7 +2058,7 @@ function LedgerInvoicesTab() {
               unit: "currency_minor (cents)",
               editableHere: true,
               editableVia:
-                "row actions below — GET /api/admin/invoices/:id/pdf, POST /api/admin/invoices/:id/refund",
+                "row actions below — download the invoice PDF, or refund it",
               readEndpoint: "GET /api/admin/invoices",
               writeEndpoint: "POST /api/admin/invoices/:id/refund",
               testId: "invoices",
@@ -2297,7 +2316,7 @@ function ConfigTab() {
             }}
           >
             <p className="text-sm" data-testid="grace-period-value">
-              <strong>Not configured.</strong> No <code>grace_period_days</code> field, no
+              <strong>Not configured.</strong> No <code>Grace period (days)</code> field, no
               worker, and no server-side non-payment enforcement for Capavate founder
               annual fees exists today. Shipping an editable knob here would wire a
               control to nothing — deliberately deferred.
@@ -2315,10 +2334,10 @@ function ConfigTab() {
             source={{
               table: "collective_renewal_worker_config",
               column:
-                "enabled, poll_interval_ms, lead_window_sec, max_consecutive_failures, quiet_after_write_min, env_override_allowed",
+                "enabled, poll interval, lead window, failures before escalation, quiet window, environment override",
               unit: "integer (count)",
               editableHere: true,
-              editableVia: "this panel — PUT /api/admin/collective/renewal-worker-config",
+              editableVia: "this panel",
               readEndpoint: "GET /api/admin/collective/renewal-worker-config",
               testId: "dunning-schedule",
             }}
@@ -2351,19 +2370,19 @@ function ConfigTab() {
                 <li>
                   Poll interval: <code>COLLECTIVE_RENEWAL_POLL_MS</code> (default 60000 ms).
                   <span className="ml-1 text-xs text-muted-foreground">
-                    Now <code>poll_interval_ms</code>.
+                    Now <code>Poll interval</code>.
                   </span>
                 </li>
                 <li>
                   Lead window: <code>COLLECTIVE_RENEWAL_LEAD_SEC</code> (default 86400 s).
                   <span className="ml-1 text-xs text-muted-foreground">
-                    Now <code>lead_window_sec</code>.
+                    Now <code>Lead window</code>.
                   </span>
                 </li>
                 <li>
-                  Failures before <code>past_due</code>: <strong>3</strong> — hard-coded{" "}
+                  Failures before <code>escalated</code>: <strong>3</strong> — hard-coded{" "}
                   <code>MAX_CONSECUTIVE_FAILURES</code> previously; now the stored
-                  <code className="mx-1">max_consecutive_failures</code> column.
+                  <code className="mx-1">Failures before escalation</code> column.
                 </li>
                 <li>Capavate founder equivalent: none.</li>
               </ul>
@@ -2654,19 +2673,19 @@ function CollectiveScheduleSection() {
 
   return (
     <AppCard>
-      <SectionTitle hint="collective_payment_schedules — the Collective fee catalogue. Precedence: per-member override → per-tier default → platform default.">
+      <SectionTitle hint="The Collective fee catalogue. Precedence: per-member override → per-tier default → platform default.">
         Collective payment schedules
       </SectionTitle>
       <div className="mt-4">
         <FieldWithSource
           source={{
             table: "collective_payment_schedules",
-            column: "amount_minor / cadence / effective_from / effective_to",
+            column: "Amount / cadence / effective from / effective to",
             unit: "currency_minor (cents)",
             editableHere: true,
             readEndpoint: "GET /api/admin/collective-payments/schedules",
             writeEndpoint:
-              "POST · PATCH /:id · DELETE /:id /api/admin/collective-payments/schedules",
+              "Create, edit and delete, on this screen",
             testId: "collective-payment-schedules",
           }}
         >
@@ -3057,18 +3076,18 @@ function PartnerFeeScheduleSection() {
 
   return (
     <AppCard>
-      <SectionTitle hint="partner_fee_schedules — OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. SPV deployment fees use stepped size bands.">
+      <SectionTitle hint="OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. SPV deployment fees use stepped size bands.">
         Consortium partner fee schedules
       </SectionTitle>
       <div className="mt-4">
         <FieldWithSource
           source={{
             table: "partner_fee_schedules",
-            column: "amount_minor / size_band_min / size_band_max / effective_to",
+            column: "Amount / smallest size band / largest size band / effective to",
             unit: "currency_minor (cents)",
             editableHere: true,
             readEndpoint: "GET /api/admin/partner-fees",
-            writeEndpoint: "POST · PATCH /:id · DELETE /:id /api/admin/partner-fees",
+            writeEndpoint: "Create, edit and delete, on this screen",
             testId: "partner-fee-schedules-editor",
           }}
         >

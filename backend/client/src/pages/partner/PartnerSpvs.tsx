@@ -11,6 +11,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { wireSafeMinorUnits } from "@/lib/wireSafeMinorUnits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -69,10 +70,17 @@ export default function PartnerSpvs() {
       /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
          guard was unreachable dead code. The thrown ApiError reaches onError
          unchanged, preserving the "Create SPV failed" toast. */
+      /* WAVE 100 · ITEM 3 (R72) — `parseInt(form.targetSizeMinor, 10)` was here, and
+         it destroyed a minor unit above 2^53 on a money field. The figure is now
+         REFUSED rather than narrowed; see `client/src/lib/wireSafeMinorUnits.ts`. */
+      const target = wireSafeMinorUnits(form.targetSizeMinor);
+      if (!target.ok) {
+        throw new Error(`TARGET_SIZE_NOT_EXACTLY_REPRESENTABLE — ${target.reason}.`);
+      }
       const res = await apiRequest("POST", "/api/partner/me/spvs", {
         spvName: form.spvName,
         jurisdiction: form.jurisdiction,
-        targetSizeMinor: parseInt(form.targetSizeMinor, 10),
+        targetSizeMinor: target.value,
         currency: form.currency,
       });
       return res.json();
