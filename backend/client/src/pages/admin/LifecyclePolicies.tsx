@@ -119,7 +119,12 @@ export default function AdminLifecyclePolicies() {
     <>
       <PageHeader
         title="Lifecycle policies"
-        description="Tenant-wide thresholds. Saving emits a lifecycle_policy.changed event to the Collective outbox for propagation."
+        /* WAVE 117 · FINDING 4 — was "emits a lifecycle_policy.changed event to the
+           Collective outbox for propagation": an event key and an internal queue,
+           named to a human. The consequence — saving is what makes the change reach
+           the Collective — is kept. The event key remains in the audit-log query
+           key just below, which is machine-readable and allowed. */
+        description="Thresholds that apply across this workspace. Saving here is what sends the change on to the Collective."
         breadcrumbs={[{ label: "Admin" }, { label: "Lifecycle policies" }]}
         actions={
           <>
@@ -134,9 +139,19 @@ export default function AdminLifecyclePolicies() {
             eyebrow: "Platform governance",
             title: "Lifecycle policies — the tenant-wide rules every flow obeys",
             description:
-              "Set thresholds that govern how founder workspaces age out, when investor invitations expire, how long archived data is retained, and the cadence of board metrics digests. Each save emits a `lifecycle_policy.changed` event to the Collective outbox so the rule propagates platform-wide within minutes.",
+              /* WAVE 117 · FINDING 4 — SECOND SITE ON THIS SCREEN, found by this
+                 wave's own test rather than by the fence registry, which had
+                 recorded only the page-header sentence. Was "...emits a
+                 `lifecycle_policy.changed` event to the Collective outbox so the rule
+                 propagates platform-wide within minutes": an event key and an
+                 internal queue. The TIMING promise — minutes, platform-wide — is what
+                 the admin acts on and is kept. */
+              "Set thresholds that govern how founder workspaces age out, when investor invitations expire, how long archived data is retained, and the cadence of board metrics digests. Each save is sent on to the Collective, so the rule takes effect platform-wide within minutes.",
             warning:
-              "Lowering retention (archivalRetentionDays) below your regional minimum can violate data protection law (GDPR ↑ 5y for fiduciary records, SEC 17a-4 ↑ 6y for broker-dealer comms). Reset to defaults if unsure.",
+              /* WAVE 117 · FINDING 4 — was "(archivalRetentionDays)": the internal
+                 field name, where the screen's own label for the same control is
+                 "Archival retention (days)". The legal thresholds are unchanged. */
+              "Lowering Archival retention (days) below your regional minimum can violate data protection law (GDPR ↑ 5y for fiduciary records, SEC 17a-4 ↑ 6y for broker-dealer comms). Reset to defaults if unsure.",
             positive:
               "Every change is hash-chained into the Audit Log with the actor email and JSON payload. You can roll back at any time by re-applying a previous value.",
           }}

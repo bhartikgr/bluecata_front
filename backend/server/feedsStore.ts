@@ -15,17 +15,47 @@
  * (market/crypto/macro) we either pull from a REAL provider or return
  * PROVIDER_NOT_CONFIGURED. We NEVER fabricate prices.
  *
- *   - External provider is OPT-IN via the `FEEDS_PROVIDER` env var:
- *       FEEDS_PROVIDER=yahoo_coingecko   → live fetch (CoinGecko crypto +
- *                                           Yahoo unofficial chart API stocks/
- *                                           macro), no API key required, with a
- *                                           60s in-process cache so we don't get
- *                                           rate-limited.
- *       (unset / anything else)          → status PROVIDER_NOT_CONFIGURED and
- *                                           empty market/crypto/macro arrays.
- *     This default-off design keeps CI / offline builds deterministic (no
- *     network dependency in tests) while letting Ozan flip on a real provider
- *     by setting one env var — no fake numbers ever ship.
+ * WAVE 105 — PROVIDER RESOLUTION IS NOW DB-DRIVEN AND PER REQUEST.
+ *
+ * Before this wave the provider was read ONCE at module load into a `const`,
+ * so (a) the admin Integrations screen (which persists its selection and its
+ * API keys into `collective_admin_settings`) could never reach this feed, and
+ * (b) even setting the env var required a restart. Both are fixed here:
+ * `resolveTickerProvider()` runs on EVERY request.
+ *
+ * PRECEDENCE (highest first):
+ *   1. `FEEDS_PROVIDER` env var, when set and non-empty, WINS OUTRIGHT.
+ *        - "yahoo_coingecko"          → live keyless feed (historical behaviour,
+ *                                        byte-identical outcome).
+ *        - any other KNOWN provider id (stooq, oecd_baseline,
+ *          official_exchange_scrape, alpha_vantage, finnhub, polygon,
+ *          twelve_data)               → live feed, same key-gate rule as below.
+ *        - an unrecognised value      → PROVIDER_NOT_CONFIGURED (historical
+ *                                        behaviour) plus a server-side warning.
+ *   2. Otherwise THE DATABASE DECIDES: the administrator's persisted
+ *      `ventureProvider` in `collective_admin_settings`, read live via
+ *      `getCollectiveSettings()`. Only a genuinely PERSISTED selection counts —
+ *      `getCollectiveSettings()` also returns a library default for a database
+ *      that was never configured, and a never-configured deployment must keep
+ *      the honest "not configured" state rather than silently claim a provider.
+ *   3. Nothing resolvable → status PROVIDER_NOT_CONFIGURED with EMPTY
+ *      market/crypto/macro arrays. We never fabricate a price, a zero or a dash.
+ *
+ * KEY GATE / DOCUMENTED FREE-FEED FALLBACK: for the key-gated providers
+ * (alpha_vantage, finnhub, polygon, twelve_data) the resolver reads the
+ * DB-stored key. A key-gated provider selected WITHOUT a key falls back to the
+ * free keyless feed (`freeFeedFallback: true`) instead of erroring — exactly
+ * what the admin screen promises and what `resolveVentureMarkets()` already does.
+ *
+ * ATTRIBUTION, HONESTLY: this ticker's adapters are keyless (Yahoo chart API +
+ * CoinGecko) and cover THIS symbol catalog. The keyed vendor adapters that exist
+ * on the platform return venture INDEX LEVELS, not this catalog. So the admin
+ * selection decides WHETHER live intraday feeds are on and is reported as
+ * `provider.configured`, while `provider.feed` truthfully reports the upstream
+ * that produced the numbers. Real prices from a real provider, always.
+ *
+ * NO SECRET EVER LEAVES THIS FILE: `/api/feeds/ticker` is polled by the browser.
+ * The resolver returns provider ids, an enum and a boolean — never a key.
  *
  *   - The Capavate-internal block is ALWAYS real: live drizzle queries against
  *     `founder_collective_applications` (applications), `rounds` (rounds opened
@@ -39,10 +69,125 @@ import {
   rounds as roundsTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+import { rawDb } from "./db/connection";
+import { getCollectiveSettings, getMarketDataApiKey } from "./collectiveAdminSettingsStore";
+import { isVentureProviderId, KEY_GATED_PROVIDER_IDS } from "./ventureMarketsStore";
 
-/* ---------- External-provider config ---------- */
-const PROVIDER = (process.env.FEEDS_PROVIDER ?? "").trim();
-const PROVIDER_ENABLED = PROVIDER === "yahoo_coingecko";
+/* ---------- External-provider config (WAVE 105: resolved per request) ---------- */
+
+/** The one intraday upstream this file can actually serve (keyless). */
+const FREE_FEED_ID = "yahoo_coingecko" as const;
+
+/** Row key used by collectiveAdminSettingsStore for the settings object. */
+const ADMIN_SETTINGS_ROW_KEY = "collective";
+
+/**
+ * Provider resolution result. Contains ONLY non-secret metadata: it is part of
+ * the browser-facing payload.
+ */
+export interface TickerProviderInfo {
+  /** Upstream that produced the quotes, or null when nothing is configured. */
+  feed: typeof FREE_FEED_ID | null;
+  /** Provider id chosen by the env var or by the administrator. Never a key. */
+  configured: string | null;
+  /** Where the decision came from. */
+  source: "environment" | "admin" | "none";
+  /** True when a key-gated selection had no key and fell back to the free feed. */
+  freeFeedFallback: boolean;
+}
+
+const PROVIDER_NONE: TickerProviderInfo = {
+  feed: null,
+  configured: null,
+  source: "none",
+  freeFeedFallback: false,
+};
+
+function isKeyGated(providerId: string): boolean {
+  return (KEY_GATED_PROVIDER_IDS as string[]).includes(providerId);
+}
+
+/**
+ * Resolve a known provider id to a feed descriptor, applying the key gate.
+ * A key-gated provider with no stored key falls back to the free feed.
+ */
+function describeProvider(
+  providerId: string,
+  source: "environment" | "admin",
+): TickerProviderInfo {
+  let freeFeedFallback = false;
+  if (isKeyGated(providerId)) {
+    let key = "";
+    try {
+      key = getMarketDataApiKey(providerId);
+    } catch (e) {
+      log.warn("[feedsStore] market-data key lookup failed:", (e as Error).message);
+    }
+    if (!key) {
+      freeFeedFallback = true;
+      log.warn(
+        `[feedsStore] ${providerId} selected but no API key configured; serving the free feed`,
+      );
+    }
+    // The key is intentionally consumed here and NEVER returned or logged.
+    key = "";
+    void key;
+  }
+  return { feed: FREE_FEED_ID, configured: providerId, source, freeFeedFallback };
+}
+
+/**
+ * Has an administrator actually persisted a settings row with a provider?
+ * `getCollectiveSettings()` falls back to library defaults for a database that
+ * was never configured, so the raw row is what tells "configured" apart from
+ * "never touched". Read-only; any failure means "not configured".
+ */
+function hasPersistedProviderSelection(): boolean {
+  try {
+    const row = rawDb()
+      .prepare(`SELECT value_json FROM collective_admin_settings WHERE key = ?`)
+      .get(ADMIN_SETTINGS_ROW_KEY) as { value_json: string | null } | undefined;
+    if (!row || !row.value_json) return false;
+    const parsed = JSON.parse(row.value_json) as Record<string, unknown>;
+    const v = parsed?.ventureProvider;
+    return typeof v === "string" && v.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * WAVE 105 — the live, per-request provider resolver. See the file header for
+ * the precedence rules. Pure read: never writes, never throws.
+ */
+export function resolveTickerProvider(): TickerProviderInfo {
+  // 1. Environment override (kept working for existing deployments).
+  const envValue = (process.env.FEEDS_PROVIDER ?? "").trim();
+  if (envValue.length > 0) {
+    if (envValue === FREE_FEED_ID) {
+      return { feed: FREE_FEED_ID, configured: envValue, source: "environment", freeFeedFallback: false };
+    }
+    if (isVentureProviderId(envValue)) {
+      return describeProvider(envValue, "environment");
+    }
+    log.warn("[feedsStore] configured market data provider is not recognised; feeds stay off");
+    return PROVIDER_NONE;
+  }
+
+  // 2. The database decides — the administrator's persisted selection.
+  try {
+    if (!hasPersistedProviderSelection()) return PROVIDER_NONE;
+    const selected = getCollectiveSettings().ventureProvider;
+    if (typeof selected === "string" && isVentureProviderId(selected.trim())) {
+      return describeProvider(selected.trim(), "admin");
+    }
+  } catch (e) {
+    log.warn("[feedsStore] provider resolution from settings failed:", (e as Error).message);
+  }
+
+  // 3. Nothing configured anywhere — honest empty state.
+  return PROVIDER_NONE;
+}
 
 /* ---------- Types ---------- */
 interface Quote {
@@ -63,6 +208,14 @@ export interface TickerPayload {
   crypto: Quote[];
   macro: Quote[];
   capavate: CapavatePulse;
+  /** WAVE 105 — non-secret provider status so the UI can be honest. */
+  provider: TickerProviderInfo;
+  /**
+   * WAVE 105 — true only for an authenticated administrator, so the empty state
+   * can tell an admin that a provider needs configuring while a member simply
+   * sees that live pricing is unavailable. Never affects the numbers.
+   */
+  viewerCanConfigure?: boolean;
 }
 
 /* ---------- Symbol catalogs ---------- */
@@ -83,9 +236,16 @@ const CRYPTO_IDS: Array<{ id: string; symbol: string; label: string }> = [
   { id: "solana", symbol: "SOL", label: "Solana" },
 ];
 
-/* ---------- 60s in-process cache (avoid provider rate limits) ---------- */
-let _cache: { at: number; market: Quote[]; crypto: Quote[]; macro: Quote[] } | null = null;
+/* ---------- 60s in-process cache (avoid provider rate limits) ----------
+   WAVE 105: keyed by the resolved feed id so a live provider change can never
+   be served the previous provider's rows. */
+let _cache: { at: number; feed: string; market: Quote[]; crypto: Quote[]; macro: Quote[] } | null = null;
 const CACHE_TTL_MS = 60_000;
+
+/** Test-only hook — drop the quote cache (mirrors _invalidateVentureMarketsCache). */
+export function _invalidateFeedsCache(): void {
+  _cache = null;
+}
 
 /* ---------- HTTPS GET helper (resolves null on any failure) ---------- */
 function httpsGetJson(url: string, timeoutMs = 4000): Promise<any | null> {
@@ -169,9 +329,9 @@ async function fetchYahooGroup(
 }
 
 /* ---------- External feeds (cached) ---------- */
-async function getExternalFeeds(): Promise<{ market: Quote[]; crypto: Quote[]; macro: Quote[] }> {
+async function getExternalFeeds(feed: string): Promise<{ market: Quote[]; crypto: Quote[]; macro: Quote[] }> {
   const now = Date.now();
-  if (_cache && now - _cache.at < CACHE_TTL_MS) {
+  if (_cache && _cache.feed === feed && now - _cache.at < CACHE_TTL_MS) {
     return { market: _cache.market, crypto: _cache.crypto, macro: _cache.macro };
   }
   const [market, macro, crypto] = await Promise.all([
@@ -179,7 +339,7 @@ async function getExternalFeeds(): Promise<{ market: Quote[]; crypto: Quote[]; m
     fetchYahooGroup(MACRO_SYMBOLS),
     fetchCrypto(),
   ]);
-  _cache = { at: now, market, crypto, macro };
+  _cache = { at: now, feed, market, crypto, macro };
   return { market, crypto, macro };
 }
 
@@ -253,27 +413,55 @@ export function getCapavatePulse(): CapavatePulse {
 /* ---------- Build full payload ---------- */
 export async function buildTickerPayload(): Promise<TickerPayload> {
   const capavate = getCapavatePulse();
+  // WAVE 105 — resolved per call: an admin change applies live, no restart.
+  const provider = resolveTickerProvider();
 
-  if (!PROVIDER_ENABLED) {
+  if (provider.feed == null) {
     // No external market-data provider configured — clearly marked, no fakes.
-    return { status: "PROVIDER_NOT_CONFIGURED", market: [], crypto: [], macro: [], capavate };
+    return {
+      status: "PROVIDER_NOT_CONFIGURED",
+      market: [],
+      crypto: [],
+      macro: [],
+      capavate,
+      provider,
+    };
   }
 
   try {
-    const { market, crypto, macro } = await getExternalFeeds();
-    return { status: "OK", market, crypto, macro, capavate };
+    const { market, crypto, macro } = await getExternalFeeds(provider.feed);
+    return { status: "OK", market, crypto, macro, capavate, provider };
   } catch (e) {
     log.warn("[feedsStore] external feeds failed, returning PROVIDER_NOT_CONFIGURED:", (e as Error).message);
-    return { status: "PROVIDER_NOT_CONFIGURED", market: [], crypto: [], macro: [], capavate };
+    return {
+      status: "PROVIDER_NOT_CONFIGURED",
+      market: [],
+      crypto: [],
+      macro: [],
+      capavate,
+      provider: PROVIDER_NONE,
+    };
   }
 }
 
 /* ---------- Route registration ---------- */
 export function registerFeedsRoutes(app: Express): void {
-  app.get("/api/feeds/ticker", async (_req: Request, res: Response) => {
+  app.get("/api/feeds/ticker", async (req: Request, res: Response) => {
+    // WAVE 105 — best-effort, read-only viewer check so the empty state can be
+    // admin-aware. Never gates the data; never returns identity details.
+    let viewerCanConfigure = false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getUserContext } = require("./lib/userContext");
+      const ctx = getUserContext(req);
+      viewerCanConfigure = Boolean(ctx?.isAuthed && ctx?.isAdmin);
+    } catch (e) {
+      log.warn("[feedsStore] viewer role lookup unavailable:", (e as Error).message);
+    }
+
     try {
       const payload = await buildTickerPayload();
-      res.json(payload);
+      res.json({ ...payload, viewerCanConfigure });
     } catch (e) {
       log.warn("[feedsStore] /api/feeds/ticker error:", (e as Error).message);
       // Even on error the Capavate-internal counts must come from the DB.
@@ -283,6 +471,8 @@ export function registerFeedsRoutes(app: Express): void {
         crypto: [],
         macro: [],
         capavate: getCapavatePulse(),
+        provider: PROVIDER_NONE,
+        viewerCanConfigure,
       } satisfies TickerPayload);
     }
   });

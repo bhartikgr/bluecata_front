@@ -27,6 +27,18 @@
 
 import type { Response } from "express";
 import PDFDocument from "pdfkit";
+/* WAVE 115 · FINDING 6 — the wave-110 export-naming helpers, reused. */
+import { companyExportSlug, ledgerPdfFilename } from "../../client/src/lib/captable/exportProvenance";
+/* WAVE 117 · FINDING 3 — the ONE interpreter of a liquidation preference, read
+   here rather than re-implemented. `shared/liquidationTermsReader.ts` is what the
+   exit waterfall in `server/track1Routes.ts` consults, so a term sheet an investor
+   keeps on disk states the same interpretation the engine would act on, and prints
+   the engine's own refusal wording where the stored free text cannot be read. No
+   regex for a multiple, a participation word or a cap appears in this file. */
+import {
+  readLiquidationTerms,
+  describeLiquidationTerms,
+} from "../../shared/liquidationTermsReader";
 
 export interface TermSheetData {
   roundId: string;
@@ -42,6 +54,18 @@ export interface TermSheetData {
   termsSummary: string | null;
   leadInvestor: string | null;
   generatedAt: string;
+  /* WAVE 117 · FINDING 4 (naming) — the company's own identifiers, so the
+     download is named after the company and not after an internal round id.
+     Optional: an older caller that omits them still renders, and the slug helper
+     falls back to the neutral `captable`-style token rather than to the id. */
+  companyId?: string | null;
+  legalName?: string | null;
+  /* WAVE 117 · FINDING 3 — the round's STORED terms, passed raw and interpreted
+     ONLY by the shared reader below. `liquidationPreference` is free text a founder
+     typed ("1x non-participating"); `capParticipation` is the round's own numeric
+     cap key. Neither is printed unchecked. */
+  liquidationPreference?: unknown;
+  capParticipation?: unknown;
 }
 
 export interface CapTableEntry {
@@ -74,6 +98,12 @@ export interface CapTableData {
     totalInvested: number;
     holderCount: number;
   };
+  /* WAVE 116 · FINDING 3 — the denominator, supplied by the caller from
+     `server/lib/captableDisplayResolver.ts` so the PDF, the interim cap-table
+     screen and the API response all name it with the SAME words. Optional: when
+     absent, the Wave 110 paragraph below is printed unchanged. */
+  ownershipBasisLabel?: string;
+  ownershipBasisSentence?: string;
   generatedAt: string;
 }
 
@@ -110,9 +140,28 @@ function safeFileName(s: string): string {
 export function streamTermSheetPdf(res: Response, data: TermSheetData): void {
   const doc = new PDFDocument({ size: "LETTER", margin: 50 });
   res.setHeader("Content-Type", "application/pdf");
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 117 · FINDING 4 — THE DOWNLOAD IS NAMED AFTER THE COMPANY, NOT AFTER AN
+                            INTERNAL ROUND ID.
+     ═══════════════════════════════════════════════════════════════════════════
+     Was: `termsheet_${safeFileName(data.roundId)}.pdf` — every term sheet reached
+     an investor's disk as `termsheet_rnd_novapay_foundation.pdf`, which names a
+     database key and not the company or the document. `companyExportSlug()` is
+     wave 110's helper (`client/src/lib/captable/exportProvenance.ts`), already
+     imported above for the cap-table ledger PDF, and is REUSED rather than
+     re-derived so the two exports of one company sort together in a downloads
+     folder. The date is the generation date, so two pulls of the same round are
+     distinguishable; the round id stays in the document body (`Round ID:` below),
+     where a human has context for it. */
+  const slug = companyExportSlug({
+    companyName: data.companyName,
+    legalName: data.legalName ?? null,
+    companyId: data.companyId ?? null,
+  });
+  const asOf = safeFileName(String(data.generatedAt ?? "").slice(0, 10)) || "undated";
   res.setHeader(
     "Content-Disposition",
-    `inline; filename="termsheet_${safeFileName(data.roundId)}.pdf"`,
+    `inline; filename="${slug}-term-sheet-${asOf}.pdf"`,
   );
   doc.pipe(res);
 
@@ -145,6 +194,37 @@ export function streamTermSheetPdf(res: Response, data: TermSheetData): void {
     ["Target close", data.closeDate ?? "—"],
     ["Lead investor", data.leadInvestor || "—"],
   ];
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 117 · FINDING 3 — THE LIQUIDATION PREFERENCE, AS THE ENGINE READS IT.
+     ═══════════════════════════════════════════════════════════════════════════
+     A liquidation preference decides who is paid first and how much on an exit: it
+     is the term on this page most able to mislead an investor about their own
+     money. It was absent from this document entirely, while the round's stored
+     `liquidationPreference` free text was printed verbatim on investor screens
+     with nothing reconciling it against the calculation.
+
+     The row below asks `shared/liquidationTermsReader.ts` — the module the exit
+     waterfall itself consults — and prints ITS sentence. Three consequences, all
+     deliberate:
+       1. When the terms read cleanly the sentence carries the founder's own
+          wording plus the reader's cap decision, so the sheet cannot claim a cap
+          the waterfall would refuse, nor omit one it applies.
+       2. When they DO NOT read cleanly the sentence says so, quotes what is on
+          record, and states that the exit calculation refuses. The free text is
+          never presented as a term.
+       3. Nothing is invented when nothing is recorded: the row still appears and
+          says the term is not on record, because an absent row reads as "there is
+          no preference", which is a claim about money.
+     The refusal NAME is printed alongside it so the sheet and a 422 from
+     `/api/companies/:id/exit-waterfall` can be matched by a human. */
+  const lpDecision = readLiquidationTerms({
+    liquidationPreference: data.liquidationPreference,
+    capParticipation: data.capParticipation,
+  });
+  rows.push(["Liquidation preference", describeLiquidationTerms(lpDecision)]);
+  if (!lpDecision.determined) {
+    rows.push(["Exit calculation", `refuses — ${lpDecision.refusal}`]);
+  }
   for (const [k, v] of rows) {
     doc.font("Helvetica-Bold").text(`${k}: `, { continued: true }).font("Helvetica").text(v);
   }
@@ -175,10 +255,45 @@ export function streamTermSheetPdf(res: Response, data: TermSheetData): void {
 export function streamCapTablePdf(res: Response, data: CapTableData): void {
   const doc = new PDFDocument({ size: "LETTER", margin: 50 });
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader(
-    "Content-Disposition",
-    `inline; filename="captable_${safeFileName(data.companyId)}.pdf"`,
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 115 · FINDING 6 — THE DOWNLOAD FILENAME WAS AN INTERNAL COMPANY ID.
+
+     This header produced `captable_co_novapay.pdf`. A founder or investor saves
+     it, opens their Downloads folder a month later, and reads a storage key. The
+     human name was available all along: `CapTableData` already carries
+     `companyName` (:67) and `asOf` (:69) — they were simply not used.
+
+     REUSED, NOT REWRITTEN. Wave 110 built exactly this pair in
+     `client/src/lib/captable/exportProvenance.ts`: `companyExportSlug()` (:107)
+     and `ledgerPdfFilename()` (:141), whose own docblock names
+     `server/lib/pdfGenerators.ts::streamCapTablePdf` as its intended consumer.
+     A second slug implementation here is precisely what the brief forbids.
+
+     The name is `<company>-captable-committed-ledger-<as-of>.pdf`, not
+     `-basic-`/`-fully-diluted-`, because this PDF is produced server-side from
+     the committed ledger on an outstanding-shares basis and is NOT a render of
+     whatever view was on screen. Naming it after a view would be a lie.
+
+     `safeFileName()` is still applied on top, so the header can never carry a
+     CR/LF or a quote regardless of what the company is called.
+
+     Server-importing-from-client is established practice in this tree, not a new
+     coupling: server/legalConsentStore.ts:40, server/regionExtensionStore.ts:27,
+     server/investorProvisioning.ts:26, server/investorMediaRoutes.ts:23,
+     server/wave25InvestorProfileRoutes.ts:66 and server/ventureMarketsStore.ts:23
+     all do it, and the module imported here is pure string formatting with no
+     React, no DOM and no side effects.
+     ═══════════════════════════════════════════════════════════════════════ */
+  const capTableFileName = safeFileName(
+    ledgerPdfFilename({
+      slug: companyExportSlug({ companyName: data.companyName, companyId: data.companyId }),
+      /* The as-of date, day precision, from the data the PDF is actually built
+         from. A raw ISO timestamp in a filename is the same leak in a different
+         costume. */
+      asOf: String(data.asOf ?? "").slice(0, 10) || String(data.generatedAt ?? "").slice(0, 10) || "as-of-unknown",
+    }),
   );
+  res.setHeader("Content-Disposition", `inline; filename="${capTableFileName}"`);
   doc.pipe(res);
 
   /* Header */
@@ -192,6 +307,25 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.fontSize(16).text(data.companyName || "—");
   doc.fontSize(10).fillColor("#666").text(`Company ID: ${data.companyId}`);
   doc.text(`As of: ${data.asOf}`);
+  /* WAVE 110 · FINDING 1 — AN EXPORTED PERCENTAGE MUST NAME ITS DENOMINATOR.
+     This PDF's percentages come from the committed cap-table ledger's share
+     totals (routes.ts, `/api/companies/:id/cap-table/pdf`), i.e. an OUTSTANDING
+     basis. That is NOT the same denominator as the Fully Diluted or As Converted
+     view of the founder cap-table screen, and a file that travels to an investor
+     without saying which basis it used is a wrong number waiting to happen. No
+     computed value changes here — only the basis is now stated. */
+  /* WAVE 116 · FINDING 3 — the sentence is now the SHARED one when the caller
+     supplies it, so this file and the screen cannot drift into describing the
+     same denominator two different ways. The Wave 110 wording is retained
+     verbatim as the fallback and as the outstanding-basis clarification, which
+     the shared sentence does not repeat. */
+  doc.text(
+    data.ownershipBasisSentence
+      ? `Basis: ${data.ownershipBasisLabel ?? "committed ledger"} — ${data.ownershipBasisSentence}`
+      : "Basis: committed ledger — ownership percentages below are of the total shares recorded on " +
+        "the committed ledger as of the date above (an outstanding-shares basis). This is NOT a " +
+        "fully-diluted or as-converted figure and must not be quoted as one.",
+  );
   doc.fillColor("#000");
   doc.moveDown(1);
 
@@ -237,7 +371,12 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.text("Shareholder", colShareholder, startY);
   doc.text("Kind", colKind, startY);
   doc.text("Shares", colShares, startY, { width: 80, align: "right" });
-  doc.text("%", colPct, startY, { width: 60, align: "right" });
+  /* WAVE 110 · FINDING 1 — was a bare "%", which named no denominator. */
+  /* WAVE 116 · FINDING 3 — the column header keeps the Wave 110 text "% of
+     ledger" (it must fit 60pt), and the full denominator is stated in the Basis
+     paragraph above and repeated under the table so a reader who only looks at
+     the table still finds it. */
+  doc.text("% of ledger", colPct, startY, { width: 60, align: "right" });
   doc.text("Invested", colInvested, startY, { width: 80, align: "right" });
   doc.font("Helvetica");
 
@@ -261,6 +400,17 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.text("Total", colShareholder, y + 8);
   doc.text(fmtNumber(data.totals.totalShares), colShares, y + 8, { width: 80, align: "right" });
   doc.text(anyPctUndefined ? "—" : fmtPct(computedPct), colPct, y + 8, { width: 60, align: "right" });
+  /* WAVE 116 · FINDING 3 — the `% of ledger` column, named in full immediately
+     beneath the figures it labels. */
+  if (data.ownershipBasisLabel) {
+    doc.fontSize(8).fillColor("#666").text(
+      `"% of ledger" is each holder's share of the ${data.ownershipBasisLabel}.`,
+      50,
+      y + 26,
+      { width: 500 },
+    );
+    doc.fontSize(10).fillColor("#000");
+  }
   doc.text(
     fmtMoney(data.totals.totalInvested, data.entries[0]?.currency || "USD"),
     colInvested,

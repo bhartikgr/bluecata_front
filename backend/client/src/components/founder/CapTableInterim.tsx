@@ -48,7 +48,17 @@ type InterimResp = {
   funded: InterimRow[];
   soft_circle: InterimRow[];
   subtotals: { committed: Subtotal; funded: Subtotal; soft_circle: Subtotal };
+  /* WAVE 116 · FINDING 3 — the denominator, named on the wire by
+     `server/lib/captableDisplayResolver.ts` and printed by this component. */
+  ownershipBasis?: string;
+  ownershipBasisLabel?: string;
+  ownershipBasisSentence?: string;
 };
+
+/* WAVE 116 · FINDING 3 — used only if an older server response omits the field.
+   It is the same words as `COMMITTED_LEDGER_BASIS_LABEL`; it is duplicated here
+   rather than imported because this client bundle does not import from `server/`. */
+const COMMITTED_LEDGER_BASIS_LABEL_FALLBACK = "committed shares on this company's ledger";
 
 const KIND_META: Record<InterimKind, { label: string; badgeClass: string; dot: string }> = {
   // WCAG: badges carry text labels; colour is not the sole signal.
@@ -235,12 +245,21 @@ export function CapTableInterim({ companyId, readOnly = false }: { companyId: st
         </span>
       </div>
 
+      {/* WAVE 116 · FINDING 3 — the basis, as a sentence, once per page. "Every
+          percentage you leave standing must name its denominator." */}
+      {data?.ownershipBasisSentence ? (
+        <p className="text-[11px] text-muted-foreground" data-testid="interim-ownership-basis-sentence">
+          {data.ownershipBasisSentence}
+        </p>
+      ) : null}
+
       <InterimSection
         kind="committed"
         rows={data?.committed ?? []}
         subtotal={data?.subtotals.committed}
         loaded={interimQ.isSuccess}
         refused={interimOutOfScope}
+        ownershipBasisLabel={data?.ownershipBasisLabel}
       />
       <InterimSection
         kind="funded"
@@ -313,10 +332,13 @@ function InterimSection({
   rowAction,
   loaded = true,
   refused = false,
+  ownershipBasisLabel,
 }: {
   kind: InterimKind;
   rows: InterimRow[];
   subtotal?: Subtotal;
+  /** WAVE 116 · FINDING 3 — the name of the denominator, from the server. */
+  ownershipBasisLabel?: string;
   action?: React.ReactNode;
   rowAction?: (r: InterimRow) => React.ReactNode;
   /** WAVE 55b · OQ-3 — `true` only when the query SUCCEEDED. A zero row count is
@@ -349,7 +371,12 @@ function InterimSection({
                 <th className="text-left font-medium px-2 py-2">Round</th>
                 <th className="text-right font-medium px-2 py-2">Amount</th>
                 <th className="text-right font-medium px-2 py-2">Shares</th>
-                <th className="text-right font-medium px-2 py-2">Own %</th>
+                {/* WAVE 116 · FINDING 3 — the header named no denominator, so the
+                    reader could not tell this column from a Basic, Fully Diluted or
+                    As Converted percentage (Wave 113 measured those disagreeing by
+                    up to 11.91 points). The original "Own %" text node is kept
+                    intact and the basis is appended beside it. */}
+                <th className="text-right font-medium px-2 py-2">Own %<span className="block normal-case font-normal text-[9px] text-muted-foreground" data-testid={`interim-own-basis-${kind}`}>of {ownershipBasisLabel ?? COMMITTED_LEDGER_BASIS_LABEL_FALLBACK}</span></th>
                 <th className="text-left font-medium px-2 py-2">Status</th>
                 {rowAction && <th className="text-right font-medium px-4 py-2">Action</th>}
               </tr>

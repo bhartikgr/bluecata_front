@@ -31,6 +31,37 @@
  * defect with a longer call stack (R6).
  */
 import { getRoundById } from "../roundsStore";
+/* ── WAVE 111 — THE PARSING BELOW MOVED TO `shared/liquidationTermsReader.ts` ──
+   The liquidation preference, the participation flag and the participation cap are
+   read by FOUR surfaces (Terms tab, term sheet, Edit-terms warning, exit
+   waterfall) and only one of them can be right about a founder's money. Measured
+   before the move: 8 of 16 ordinary term shapes disagreed
+   (`server/__tests__/w111_before_disagreement_probe.test.ts`). The rules are now
+   declared ONCE, in a module the browser bundle can import too, and this file
+   CONSUMES them. Nothing about what the engine concludes changes: the moved code is
+   this file's own, and `w111_one_term_reader_agreement.test.ts` pins every field
+   below against the values the pre-move code produced. */
+import {
+  readLiquidationTermFacts,
+  parseCapMultiple,
+  PARTICIPATION_CAP_MAX as SHARED_PARTICIPATION_CAP_MAX,
+} from "../../shared/liquidationTermsReader";
+
+/* Re-exported so the surfaces that already import the decided interpretation from
+   `shared/liquidationTermsReader` and the routes that import the write fence from
+   here are talking about the same thing. */
+export {
+  readLiquidationTermFacts,
+  readLiquidationTerms,
+  decideLiquidationTerms,
+  describeLiquidationTerms,
+  describeLiquidationTermsShort,
+} from "../../shared/liquidationTermsReader";
+export type {
+  LiquidationTermDecision,
+  LiquidationTermFacts,
+  LiquidationTermRefusal,
+} from "../../shared/liquidationTermsReader";
 
 export type RoundStoredTerms = {
   safeCapType: string | null;
@@ -191,7 +222,7 @@ export const SENIORITY_RANK_MAX = 99 as const;
    the free-text field the sibling terms are read from. Accepting it here costs
    nothing and refusing it would fail a founder for typing the term correctly.
    ═══════════════════════════════════════════════════════════════════════════ */
-export const PARTICIPATION_CAP_MAX = 10 as const;
+export const PARTICIPATION_CAP_MAX = SHARED_PARTICIPATION_CAP_MAX;
 
 export const PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE =
   `capParticipation is the CEILING on what a participating preference class can take in total at an ` +
@@ -207,19 +238,9 @@ export type ParticipationCapVerdict =
   | { readonly ok: true; readonly value: string }
   | { readonly ok: false; readonly error: string; readonly message: string };
 
-/** Parse a cap multiple out of one raw value. `null` = not a readable multiple. */
-function parseCapMultiple(raw: unknown): number | null {
-  if (typeof raw !== "number" && typeof raw !== "string") return null;
-  const text = String(raw).trim();
-  if (text === "") return null;
-  /* One optional trailing `x`, and nothing else. `"2 x"` and `"2X"` read; `"2xx"`
-     and `"x2"` do not, because a value nobody can spell is not a term. */
-  const m = /^([0-9]+(?:\.[0-9]+)?)\s*[xX]?$/.exec(text);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0 || n > PARTICIPATION_CAP_MAX) return null;
-  return n;
-}
+/* `parseCapMultiple` is imported from `shared/liquidationTermsReader` — the write
+   fence below and the reader must be the same function, and after Wave 111 they
+   are literally one function in one file. */
 
 export function validateParticipationCapStored(raw: unknown): ParticipationCapVerdict {
   /* ABSENT — untouched. Tested on the LITERAL value, never on `String(raw).trim()`:
@@ -245,14 +266,8 @@ export function validateParticipationCapStored(raw: unknown): ParticipationCapVe
   return { ok: true, value: String(n) };
 }
 
-/** The cap phrases that count in the free-text `liquidationPreference` field.
- *  STRICT and explicit: the word "cap" must be present, so "1x participating" is
- *  never read as a cap and a bare second multiple never becomes one. */
-const CAP_TEXT_PATTERNS: readonly RegExp[] = [
-  /capp?e?d?\s*(?:at|to)\s*([0-9]+(?:\.[0-9]+)?)\s*x/i,
-  /cap(?:ped)?\s*(?:of|=|:)\s*([0-9]+(?:\.[0-9]+)?)\s*x/i,
-  /([0-9]+(?:\.[0-9]+)?)\s*x\s*(?:participation\s+)?cap\b/i,
-];
+/* The cap phrases that count in the free-text `liquidationPreference` field are
+   declared once, as `CAP_TEXT_PATTERNS` in `shared/liquidationTermsReader.ts`. */
 
 /* ═══════════════════════════════════════════════════════════════════════════
    WAVE 81 · ITEM 2 (D4) — THE SENIORITY WRITE FENCE, DECLARED ONCE.
@@ -357,27 +372,23 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
-  /* `liquidationPreference` is free text on the round ("1x non-participating",
-     "1x participating"). It is read STRICTLY: only an explicit, unambiguous
-     statement of participation counts, and anything else stays `null` so the
-     caller omits the key rather than asserting a liquidation term. */
-  let participating: boolean | null = null;
-  const lpRaw = str("liquidationPreference");
-  const lp = (lpRaw ?? "").toLowerCase();
-  if (lp !== "") {
-    if (/non[-\s]?participating/.test(lp)) participating = false;
-    else if (/participating/.test(lp)) participating = true;
-  }
-  /* WAVE 71 · D11 — the multiple. `1x`, `1.5x`, `2 x` all read; `[0, 10]` is the
-     domain, because a multiple outside it is a typing error and not a term. */
-  let lpMultiple: number | null = null;
-  if (lp !== "") {
-    const m = /(^|[^0-9.])([0-9]+(?:\.[0-9]+)?)\s*x\b/.exec(lp);
-    if (m) {
-      const n = Number(m[2]);
-      if (Number.isFinite(n) && n > 0 && n <= 10) lpMultiple = n;
-    }
-  }
+  /* ── WAVE 111 — THE PREFERENCE, THE PARTICIPATION FLAG AND THE CAP, READ ONCE ─
+     `liquidationPreference` is free text on the round ("1x non-participating",
+     "1x participating, capped at 2x") and `capParticipation` is the round's own
+     numeric cap key. Both are read by `shared/liquidationTermsReader`, which is the
+     ONLY interpreter of them on the platform: the Terms tab, the term sheet, the
+     Edit-terms warning and this reader all consume that module, so a founder cannot
+     be shown "capped at 3x" on one screen while the exit waterfall refuses on
+     another. The RULES are unchanged — that module's body is this function's own
+     code, moved. Absent still stays absent, and an unreadable cap is still
+     reported as unreadable rather than as "no cap". */
+  const facts = readLiquidationTermFacts({
+    liquidationPreference: rnd?.["liquidationPreference"],
+    capParticipation: rnd?.["capParticipation"],
+  });
+  const participating = facts.participating;
+  const lpRaw = facts.raw;
+  const lpMultiple = facts.multiple;
   /* WAVE 71 · D13 — `mfn`. Stored by the Edit-terms dialog as a boolean or as the
      strings a form control produces. Only an explicit yes turns it on. */
   let mfn: boolean | null = null;
@@ -405,73 +416,17 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
      Neither source is preferred over the other: if both carry a cap and the two
      numbers differ, the CONFLICT is reported and the caller refuses. An
      unreadable cap is reported as unreadable and NEVER falls through to "no cap",
-     because "silently modelled as uncapped" is the defect. */
-  let capFromKey: number | null = null;
-  let capKeyPresent = false;
-  let capKeyRawText: string | null = null;
-  const capKeyRaw = rnd?.["capParticipation"];
-  if (capKeyRaw !== null && capKeyRaw !== undefined && String(capKeyRaw).trim() !== "") {
-    capKeyPresent = true;
-    capKeyRawText = String(capKeyRaw).trim();
-    capFromKey = parseCapMultiple(capKeyRaw);
-  }
+     because "silently modelled as uncapped" is the defect.
 
-  let capFromText: number | null = null;
-  let capTextPresent = false;
-  let capTextRawText: string | null = null;
-  if (lp !== "") {
-    for (const re of CAP_TEXT_PATTERNS) {
-      const m = re.exec(lpRaw ?? "");
-      if (!m) continue;
-      capTextPresent = true;
-      capTextRawText = m[0];
-      const n = Number(m[1]);
-      capFromText = Number.isFinite(n) && n > 0 && n <= PARTICIPATION_CAP_MAX ? n : null;
-      break;
-    }
-    /* The word "cap" appears but no multiple can be read off it — "capped", "cap
-       TBD", "capped at market". A cap IS asserted and is not readable. */
-    if (
-      !capTextPresent &&
-      /\bcapp?e?d?\b/i.test(lp) &&
-      !/uncapped/i.test(lp) &&
-      /* `"valuation cap"` is a SAFE's conversion cap and a different instrument
-         entirely. If it appears in the liquidation-preference field it is a data
-         error, but it is not an assertion of a PARTICIPATION cap, so it must not
-         make the waterfall refuse. */
-      !/valuation\s*cap/i.test(lp)
-    ) {
-      capTextPresent = true;
-      capTextRawText = lpRaw;
-      capFromText = null;
-    }
-  }
-
-  let participationCapMultiple: number | null = null;
-  let participationCapSource: RoundStoredTerms["participationCapSource"] = null;
-  let participationCapRaw: string | null = null;
-  let participationCapUnreadable = false;
-  let participationCapConflict = false;
-
-  if (capKeyPresent && capTextPresent) {
-    participationCapRaw = `${capKeyRawText} / ${capTextRawText}`;
-    if (capFromKey === null || capFromText === null) {
-      participationCapUnreadable = true;
-    } else if (capFromKey !== capFromText) {
-      participationCapConflict = true;
-    } else {
-      participationCapMultiple = capFromKey;
-      participationCapSource = "capParticipation";
-    }
-  } else if (capKeyPresent) {
-    participationCapRaw = capKeyRawText;
-    if (capFromKey === null) participationCapUnreadable = true;
-    else { participationCapMultiple = capFromKey; participationCapSource = "capParticipation"; }
-  } else if (capTextPresent) {
-    participationCapRaw = capTextRawText;
-    if (capFromText === null) participationCapUnreadable = true;
-    else { participationCapMultiple = capFromText; participationCapSource = "liquidationPreference"; }
-  }
+     WAVE 111 — these five values now come out of `readLiquidationTermFacts` above,
+     which holds Wave 94's code verbatim. The four fields published below keep their
+     names and their meanings, so `server/track1Routes.ts`'s refusal branches see
+     exactly what they saw before. */
+  const participationCapMultiple = facts.capMultiple;
+  const participationCapSource = facts.capSource;
+  const participationCapRaw = facts.capRaw;
+  const participationCapUnreadable = facts.capUnreadable;
+  const participationCapConflict = facts.capConflict;
 
   return {
     safeCapType: str("safeType"),

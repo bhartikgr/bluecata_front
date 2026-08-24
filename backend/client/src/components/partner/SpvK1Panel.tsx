@@ -25,6 +25,8 @@
  * HERE, at the render boundary, and nowhere else.
  */
 import { useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -111,7 +113,7 @@ function StatementCard({
   return (
     <div className="rounded-md p-3 mb-3" style={{ border: "1px solid rgba(4,30,65,0.18)" }} data-testid="spv-k1-statement">
       <div className="flex items-baseline gap-3 flex-wrap mb-2">
-        <div className="font-medium text-sm" data-testid="spv-k1-investor">{s.investorId}</div>
+        <div className="font-medium text-sm" data-testid="spv-k1-investor">{partyReferenceLabel(s.investorId)}</div>
         <div className="text-xs text-[var(--cv-color-text-muted)]">Tax year {s.taxYear}</div>
         {s.status && (
           <span

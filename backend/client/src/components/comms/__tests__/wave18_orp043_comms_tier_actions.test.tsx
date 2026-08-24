@@ -131,10 +131,37 @@ describe("ORP-043 — refusal copy", () => {
     }
   });
 
-  it("an UNKNOWN code still produces visible copy carrying the code — never a blank card", () => {
+  /* ═════════════════════════════════════════════════════════════════════════
+     AMENDED BY WAVE 115 · FINDING 3 — DELIBERATELY, WITH THE REASON RECORDED.
+
+     This test previously asserted `expect(out).toContain("some_new_server_error")`
+     — that an unrecognised code IS shown to the customer. Wave 18 wrote that in
+     good faith: its concern was a BLANK card, and echoing the code guaranteed
+     some visible text.
+
+     Wave 115 found the cost of that guarantee in production. The auditor's toast
+     read *"That request could not be completed (network). Nothing was changed."*
+     on a widget that had simply failed to load — the code was visible, and it
+     told the customer nothing they could act on. An unmapped internal token is
+     not copy; it is a machine key on a customer's screen, which is the same
+     defect class as `soft_circle` on the partner dashboard.
+
+     WHAT IS PRESERVED: wave 18's actual requirement, in full. The output is
+     still never blank, is still a real sentence, and still carries "Nothing was
+     changed". Only the demand that the RAW CODE be echoed is dropped, and it is
+     replaced with the stronger assertion that it must NOT be. `tierErrorReference`
+     remains available for support surfaces that legitimately need the token.
+
+     This is a contract change, not a weakened test: the assertion count goes up.
+     ═════════════════════════════════════════════════════════════════════════ */
+  it("an UNKNOWN code still produces visible copy — a real sentence, and never the raw code (WAVE 115 F3)", () => {
     const out = tierErrorCopy("some_new_server_error");
-    expect(out).toContain("some_new_server_error");
+    /* Wave 18's real requirement: never a blank card. */
+    expect(out.length).toBeGreaterThan(40);
     expect(out).toMatch(/Nothing was changed/);
+    /* Wave 115's requirement: the internal token is not the message. */
+    expect(out).not.toContain("some_new_server_error");
+    expect(out).not.toContain("_");
     /* And a missing code is still a sentence, not "". */
     expect(tierErrorCopy(null).length).toBeGreaterThan(10);
     expect(tierErrorCopy(undefined)).toBe(tierErrorCopy(null));

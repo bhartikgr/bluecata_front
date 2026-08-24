@@ -427,8 +427,21 @@ describe("ORP-031 — detail view: mode change, hand-over and the event log", ()
       { id: "ev_2", eventType: "mode_changed", detail: null, actor: null, createdAt: "2026-08-02T10:00:00.000Z" },
     ];
     renderPage();
-    expect((await screen.findByTestId("mf-event-ev_1")).textContent).toContain("engagement_created");
-    expect(screen.getByTestId("mf-event-ev_2").textContent).toContain("mode_changed");
+    /* AMENDED BY WAVE 115 · FINDING 1. This previously asserted the raw event
+       code `engagement_created` was visible in the log. It was — and that is the
+       leak the owner's screenshot exposed elsewhere on this surface. The event
+       log now renders a human label. The assertion is STRENGTHENED, not relaxed:
+       it pins the human label AND forbids the machine key. */
+    const row = (await screen.findByTestId("mf-event-ev_1")).textContent ?? "";
+    expect(row).toContain("Engagement created");
+    expect(row).not.toContain("engagement_created");
+    /* Same amendment as above (WAVE 115 · FINDING 1): human label required, raw
+       event code forbidden. */
+    {
+      const r = (await screen.findByTestId("mf-event-ev_2")).textContent ?? "";
+      expect(r).toContain("Mode changed");
+      expect(r).not.toContain("mode_changed");
+    }
     expect(screen.queryByTestId("mf-events-empty")).toBeNull();
   });
 

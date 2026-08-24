@@ -23,6 +23,12 @@ import {
 import { useRole } from "@/lib/role";
 import { appendTransaction, type ReconciliationResult } from "@capavate/cap-table-engine";
 import { apiRequest, queryClient } from "@/lib/queryClient"; /* v25.20 Lane 4 — real server close */
+/* WAVE 124 · FINDING 1 — the platform's OWN display library, not a new one.
+   `partyReferenceLabel` (WAVE 115) turns a storage key into a labelled
+   reference; `humanizeMachineKey` turns a machine key into a sentence. Both are
+   reused here rather than re-derived, so the round-close screen cannot word this
+   differently from the twelve partner tables wave 115 fixed. */
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 
 type Props = {
  roundId: string;
@@ -275,8 +281,21 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  <tbody>
  {state.reconciliation.diffs.map((d) => (
  <tr key={d.key} className="border-t border-rose-200 ">
- <td className="py-1">{d.holderId}</td>
- <td className="py-1">{d.kind}</td>
+ {/* WAVE 124 · FINDING 1 — THE SCREEN THAT GATES A ROUND CLOSE NO LONGER
+     PRINTS A DATABASE KEY UNDER A COLUMN HEADED "Holder".
+     This table read `co_…` / `u_…` in the Holder cell and `unit`-style
+     machine keys in the Kind cell, on the blocking card a founder is told to
+     forward to his platform admin. `HolderDiff`
+     (packages/cap-table-engine/src/reconcile/reconcile.ts:34-45) carries NO
+     name field, so there is no name to print and NOTHING IS FABRICATED: the
+     id is presented as what it is, a labelled reference, via wave 115's
+     helper. The reference stays unique wherever the id was unique, so two
+     diverging holders are still told apart and support can still read the
+     value aloud. The row `key` above is untouched: that is machine-readable.
+     The element shape is unchanged — one `td` per column, no sibling added or
+     removed — so the silent-drop guard's positional child identity holds. */}
+ <td className="py-1">{partyReferenceLabel(d.holderId)}</td>
+ <td className="py-1">{humanizeMachineKey(d.kind)}</td>
  <td className="py-1 text-right font-mono">{d.primaryShares}</td>
  <td className="py-1 text-right font-mono">{d.referenceShares}</td>
  <td className="py-1 text-right font-mono text-rose-700">{d.shareDelta}</td>

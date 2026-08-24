@@ -92,6 +92,9 @@ import {
   engineListLegacyDistributions,
   engineListLegacyPositions,
   engineReconcileLegacySpv,
+  /* WAVE 112 · FINDING 1 — disclosure only; nothing on this route gates on it. */
+  canonicalCommittedMinorForSpv,
+  legacyRegisterCommittedMinorForSpv,
   engineAddCommitment,
   engineTransitionCommitment,
   engineRecordCapitalCall,
@@ -249,12 +252,44 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
     const capitalCalls = engineListCapitalCalls(spv.id);
     const distributions = engineListLegacyDistributions(spv.id);
     const recon = engineReconcileLegacySpv(spv.id);
+    /* ═══ WAVE 112 · FINDING 1 + FINDING 2 — SAY WHERE THE FIGURE CAME FROM. ═══
+     *
+     * `reconciliation.committedMinor` used to be summed from this route's OWN
+     * register (`spv_commitments` rows in `signed`/`funded`), which disagreed
+     * with the engine register that actually gates deployment and allocates
+     * distributions — UNDER-reporting an lp-commit by its whole value (B-42) and
+     * OVER-reporting a review-stage subscription as committed capital. It is now
+     * the canonical figure, translated to this route's string shape by
+     * `engineReconcileLegacySpv`; this route computes no committed figure.
+     *
+     * WHY A DISCLOSURE AND NOT JUST A QUIETER NUMBER. A commitment created
+     * through this family's own routes (POST /commitments then PATCH to
+     * `signed`) has no engine subscription, so it is correctly absent from the
+     * canonical figure — but absent silently is how the two registers diverged
+     * unnoticed for several releases. Naming both figures and whether they agree
+     * turns that into something a GP can see. The `commitments` array above is
+     * unchanged, so no row is hidden either way.
+     *
+     * ADDITIVE AND SAFE. `grep -rn "me/spvs/" client/src` finds NO caller of
+     * this route at all (only `/capital-calls` and `/esignature` are called, plus
+     * two comments referring to the 409-closed distribution route), so the six
+     * pre-existing `reconciliation` keys keep their exact names, order and string
+     * type, and this block is a new sibling that no existing reader can trip on.
+     * A w112_ test pins both facts. */
+    const canonicalCommittedMinor = canonicalCommittedMinorForSpv(spv.id);
+    const legacyRegisterCommittedMinor = legacyRegisterCommittedMinorForSpv(spv.id);
     res.json({
       spv,
       positions,
       commitments,
       capitalCalls,
       distributions,
+      committedFigure: {
+        source: "engine_committed_subscriptions",
+        canonicalMinor: canonicalCommittedMinor.toString(),
+        legacyRegisterMinor: legacyRegisterCommittedMinor.toString(),
+        agrees: canonicalCommittedMinor === legacyRegisterCommittedMinor,
+      },
       reconciliation: {
         committedMinor: recon.committedMinor.toString(),
         calledMinor: recon.calledMinor.toString(),

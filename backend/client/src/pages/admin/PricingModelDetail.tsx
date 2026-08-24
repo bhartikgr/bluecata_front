@@ -355,7 +355,11 @@ export default function PricingModelDetail() {
             <DialogDescription>
               You are about to move <span className="font-semibold">{draft.name}</span> from <span className="font-mono">{draft.status}</span> to <span className="font-mono">{confirmPromote}</span>.
               {confirmPromote === "live" && (
-                <span className="block mt-2 text-emerald-700">This will emit a <span className="font-mono">pricing_model.published</span> bridge event to the Collective and make this model billable.</span>
+                /* WAVE 117 · FINDING 4 — was "emit a pricing_model.published bridge
+                   event to the Collective": an event key named to a human in a
+                   confirmation dialog, of all places. Both consequences of
+                   confirming are kept. */
+                <span className="block mt-2 text-emerald-700">This will publish the model to the Collective and make it billable.</span>
               )}
               {confirmPromote === "deprecated" && (
                 <span className="block mt-2 text-rose-700">Deprecated models cannot be undeprecated. Existing subscribers can be grandfathered if that flag is set.</span>

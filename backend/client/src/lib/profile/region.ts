@@ -42,9 +42,58 @@ export function regionForCountry(countryCode: string | null | undefined): Region
   return COUNTRY_TO_REGION[countryCode] ?? "Custom";
 }
 
-/** Engine attribution string for badges: "Computed by IN-default v1.0.0". */
+/**
+ * Engine attribution string. NOT FOR DISPLAY — this is the machine-shaped value
+ * persisted on the company-profile sync object (`legal.engineAttribution`) and
+ * asserted by `__tests__/companyProfile.test.ts`. Wave 108 · Finding 2: anything
+ * a HUMAN reads must use `regionConventionName` / `regionConventionLabel` below,
+ * which name the jurisdictional convention in words and carry no package name
+ * and no version number.
+ */
 export function engineAttribution(region: Region, version = "1.0.0"): string {
   return `Computed by ${region}-default v${version}`;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 108 · FINDING 2 — KEEP THE MEANING, DROP THE MACHINE FORM.
+   ════════════════════════════════════════════════════════════════════════════
+   A founder in Hong Kong read "Computed by HK-default v1.0.0" on their own cap
+   table. The badge was NOT deleted, and must not be: WHICH jurisdictional
+   convention produced a share count is information an investor and an auditor
+   both need — a Hong Kong option-pool convention and a US one do not give the
+   same fully-diluted number. What has to go is the internal form of it: the
+   region CODE, the pack name and the version string. So the same fact is stated
+   in words a reader already understands, and the code stays available to
+   machines in `data-region` / `data-testid` / CSV export (R77).
+   ════════════════════════════════════════════════════════════════════════════ */
+
+const REGION_CONVENTION_NAME: Record<Region, string> = {
+  US: "United States",
+  CA: "Canada",
+  UK: "United Kingdom",
+  SG: "Singapore",
+  HK: "Hong Kong",
+  CN: "Mainland China",
+  IN: "India",
+  JP: "Japan",
+  AU: "Australia",
+  Custom: "international default",
+};
+
+/** The jurisdiction whose cap-table convention is in force, in words. */
+export function regionConventionName(region: Region): string {
+  return REGION_CONVENTION_NAME[region] ?? "international default";
+}
+
+/**
+ * Human-facing attribution for a badge or a footer: "Hong Kong cap-table
+ * conventions". Never contains a package name, a region code or a version.
+ */
+export function regionConventionLabel(region: Region): string {
+  const name = regionConventionName(region);
+  return region === "Custom"
+    ? "International default cap-table conventions"
+    : `${name} cap-table conventions`;
 }
 
 /**

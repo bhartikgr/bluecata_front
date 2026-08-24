@@ -35,6 +35,9 @@ import { serverRefusalMessage } from "@/lib/serverRefusalMessage";
  * which is the fence that rejects it — that fence deliberately does not strip
  * comments, so this comment must not spell the pattern either). */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
+/* WAVE 115 · FINDING 1 (L4/L5/L6) — this page printed raw `status`, `tierSlug`,
+   `cadence` and a raw superseding subscription id straight into table cells. */
+import { subscriptionStatusLabel, planTierLabel, billingCadenceLabel, supersededPlanLabel } from "@/lib/partnerDisplay";
 /* WAVE 16 / CP-BRG-07 + ORP-052 — the partner surface subscribes to the
  * already-mounted, already-authorised `/api/stream` (CP-034). */
 import { useCollectiveStream } from "@/lib/sseClient";
@@ -279,7 +282,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
                                 : "inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
                             }
                           >
-                            {e.status}
+                            {subscriptionStatusLabel(e.status)}
                           </span>
                         </td>
                         <td className="px-4 py-2">{formatDate(e.paidAt)}</td>
@@ -593,7 +596,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
                   <li key={e.id} className="flex justify-between gap-3">
                     <span className="font-mono">{e.eventKind}</span>
                     <span>
-                      {e.fromStatus ? `${e.fromStatus} → ` : ""}
+                      {e.fromStatus ? `${subscriptionStatusLabel(e.fromStatus)} → ` : ""}
                       {e.toStatus ?? "—"}
                     </span>
                     <span>{formatDate(e.createdAt)}</span>
@@ -816,7 +819,7 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
                             : "inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
                         }
                       >
-                        {e.status}
+                        {subscriptionStatusLabel(e.status)}
                       </span>
                     </td>
                     <td className="px-4 py-2">{formatDate(e.createdAt)}</td>
@@ -1514,15 +1517,15 @@ function SubscriptionHistoryTab({ ready }: { ready: boolean }) {
               <tbody>
                 {rows.map((r) => (
                   <tr className="border-b last:border-0" key={r.id} data-testid={`partner-subscription-history-row-${r.id}`}>
-                    <td className="px-4 py-2">{r.tierSlug}</td>
-                    <td className="px-4 py-2">{r.cadence}</td>
+                    <td className="px-4 py-2">{planTierLabel(r.tierSlug)}</td>
+                    <td className="px-4 py-2">{billingCadenceLabel(r.cadence)}</td>
                     <td className="px-4 py-2">
-                      {r.status}
+                      {subscriptionStatusLabel(r.status)}
                       {/* CP-PROMO-19 — a superseded plan is SHOWN, with what replaced
                           it. Hiding it would make supersession look like deletion. */}
                       {r.supersededBy && (
                         <span className="ml-1 text-xs text-muted-foreground" data-testid={`partner-subscription-superseded-${r.id}`}>
-                          (replaced by {r.supersededBy}
+                          (replaced by {supersededPlanLabel(r.supersededBy)}
                           {r.supersededReason ? ` — ${r.supersededReason}` : ""})
                         </span>
                       )}

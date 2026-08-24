@@ -477,7 +477,12 @@ export default function AdminPartnerDetail() {
                     <Badge
                       variant="outline"
                       className="text-muted-foreground"
-                      title="Legacy free-text type from contacts.metadata_json, set once at application approval. Read-only and retained for grandfathered rows — use Classification below."
+                      /* WAVE 117 · FINDING 4 — was "Legacy free-text type from
+                         contacts.metadata_json": a storage table and column named to
+                         a human. That it is legacy, free text, written once at
+                         approval, read-only, and superseded by Classification is
+                         every fact the admin needs, and all of it is kept. */
+                      title="Legacy free-text type, written once when the application was approved. Read-only and kept for older records — use Classification below."
                       data-testid="badge-partner-legacy-type"
                     >
                       Legacy type: {partner.partnerType}

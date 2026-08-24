@@ -49,6 +49,13 @@ export interface CommsSearchRow {
  * rather than a re-typed guess (a re-typed expectation cannot catch a copy
  * regression).
  * ------------------------------------------------------------------------ */
+/**
+ * WAVE 115 · FINDING 3 — the transport sentinel. A `fetch` that rejects produced
+ * no response and therefore no server code; this names that condition instead of
+ * borrowing an engineering category word.
+ */
+export const TRANSPORT_FAILURE = "transport_unreachable";
+
 export const TIER_ERROR_COPY: Record<string, string> = {
   missing_identity: "Sign in again to use co-investor comms.",
   actorId_must_match_session: "This action was refused: it named a different user than your session.",
@@ -64,11 +71,103 @@ export const TIER_ERROR_COPY: Record<string, string> = {
   missing_fields: "Some required details are missing.",
   NOT_ON_CAP_TABLE: "You do not have access to this company's advocate list.",
   "companyId required": "Select a company first.",
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 115 · FINDING 3 — EVERY TRANSPORT FAILURE SAID THE WORD "network".
+
+     Eight call sites in this file (:121, :154, :182, :206, :244, :264, :288,
+     :319) passed the bare literal `"network"` when `fetch` itself rejected, and
+     `tierErrorCopy` had no entry for it, so it fell through the `??` arm and the
+     customer read, verbatim:
+
+         "That request could not be completed (network). Nothing was changed."
+
+     — on a widget that had simply failed to load. "network" is an engineer's
+     word for a category, not a statement about what happened or what to do.
+
+     THE REASSURING HALF IS KEPT VERBATIM. "Nothing was changed" is true (the
+     request never reached the server, so no state moved) and it is the single
+     most valuable sentence in this map. It is preserved in every message below.
+     What is added is WHAT FAILED and WHAT THE CUSTOMER CAN DO.
+
+     The sentinel is renamed from `"network"` to `TRANSPORT_FAILURE` so it can
+     never again be mistaken for a server-supplied error code, and the old
+     literal is kept as an alias in case any other surface still passes it.
+     ═══════════════════════════════════════════════════════════════════════ */
+  [TRANSPORT_FAILURE]:
+    "We could not reach Capavate to send this — your connection dropped, or the service is briefly unavailable. Nothing was changed. Check your connection and try again.",
+  network:
+    "We could not reach Capavate to send this — your connection dropped, or the service is briefly unavailable. Nothing was changed. Check your connection and try again.",
+
+  /* WAVE 115 · FINDING 3 — `readError` falls back to `String(res.status)`, so a
+     bare HTTP number reached the customer as a "code" too. Each one now says
+     which side the problem is on and what to do about it. The 401 line SAYS the
+     session may have expired and invites the customer to sign in again; per
+     OWNER RULING R90 it triggers NO sign-out, clears no cookie, redirects
+     nowhere and touches no session state. R90 forbids the behaviour, not the
+     sentence. */
+  "400": "Some of the details in this request were not accepted. Nothing was changed. Check the fields and try again.",
+  "401": "Your session may have expired. Nothing was changed. Sign in again and retry this action.",
+  "403": "Your account does not have permission for this action. Nothing was changed.",
+  "404": "That item no longer exists. Nothing was changed.",
+  "408": "The request took too long and was abandoned. Nothing was changed. Try again.",
+  "409": "Someone else changed this first. Nothing was changed here. Reload and try again.",
+  "413": "That was too large to send. Nothing was changed.",
+  "429": "You have sent this too many times in a short period. Nothing was changed. Wait a moment and try again.",
+  "500": "Something failed on our side, not yours. Nothing was changed. Try again shortly.",
+  "502": "Something failed on our side, not yours. Nothing was changed. Try again shortly.",
+  "503": "This service is temporarily unavailable. Nothing was changed. Try again shortly.",
+  "504": "Our server took too long to answer. Nothing was changed. Try again shortly.",
 };
+
+/**
+ * WAVE 115 · FINDING 3 — the `??` arm used to interpolate the raw code into the
+ * sentence, so ANY unmapped server code became customer copy verbatim. It now
+ * does two things instead:
+ *
+ *   · a code that looks internal (snake_case, camelCase, SCREAMING_CASE, a bare
+ *     number, or an `id`-shaped token) is NOT printed. The customer gets a
+ *     complete honest sentence, and the raw code is returned separately so the
+ *     caller can put it in a `title`/reference for support.
+ *   · a code that is already a human sentence (it contains a space and no
+ *     underscore) is shown, because refusing to show it would hide a real
+ *     server explanation.
+ *
+ * `tierErrorCopy` keeps its exact signature and return type so every existing
+ * call site and the wave-18 suite are unaffected.
+ */
+export function looksInternalCode(code: string): boolean {
+  const raw = code.trim();
+  if (!raw) return false;
+  if (/^\d+$/.test(raw)) return true;                 // a bare HTTP status
+  if (/[_-]/.test(raw)) return true;                  // snake_case / kebab-case
+  if (/^[a-z]+[A-Z]/.test(raw)) return true;          // camelCase
+  if (/^[A-Z0-9]+$/.test(raw) && raw.length > 2) return true; // SCREAMING_CASE
+  if (!/\s/.test(raw)) return true;                   // a single bare token
+  return false;
+}
 
 export function tierErrorCopy(code: string | null | undefined): string {
   if (!code) return "That request could not be completed. Nothing was changed.";
-  return TIER_ERROR_COPY[code] ?? `That request could not be completed (${code}). Nothing was changed.`;
+  const known = TIER_ERROR_COPY[code];
+  if (known) return known;
+  if (looksInternalCode(code)) {
+    /* No raw code in the sentence. Use `tierErrorReference()` alongside this if
+       the surface wants support to be able to read the code. */
+    return "That request could not be completed. Nothing was changed. Try again, and contact support if it keeps happening.";
+  }
+  return `That request could not be completed: ${code.replace(/[.\s]+$/, "")}. Nothing was changed.`;
+}
+
+/**
+ * The raw code, for a `title` attribute or a support line — labelled, never bare
+ * inside a sentence. Returns `null` when there is nothing worth exposing.
+ */
+export function tierErrorReference(code: string | null | undefined): string | null {
+  const raw = String(code ?? "").trim();
+  if (!raw) return null;
+  if (TIER_ERROR_COPY[raw]) return null;
+  return looksInternalCode(raw) ? raw : null;
 }
 
 async function readError(res: Response): Promise<string> {
@@ -118,7 +217,7 @@ export function CommsTierActionsPanel({
       /* Fail-closed and RENDERED. An empty list here would read as "you are in
          no groups", which is a different and false statement. */
       setGroups(null);
-      setGroupsRefusal(res ? await readError(res) : "network");
+      setGroupsRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
       return;
     }
     const j = (await res.json()) as { groups?: CoInvestorGroupRow[] };
@@ -151,7 +250,7 @@ export function CommsTierActionsPanel({
         participants,
       }).catch(() => null);
       if (!res || !res.ok) {
-        setCreateRefusal(res ? await readError(res) : "network");
+        setCreateRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
         return;
       }
       setParticipantsRaw("");
@@ -179,7 +278,7 @@ export function CommsTierActionsPanel({
         { body: messageBody.trim() },
       ).catch(() => null);
       if (!res || !res.ok) {
-        setMessageRefusal(res ? await readError(res) : "network");
+        setMessageRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
         return;
       }
       const j = (await res.json()) as { id?: string };
@@ -203,7 +302,7 @@ export function CommsTierActionsPanel({
         { targetId: introTarget.trim() },
       ).catch(() => null);
       if (!res || !res.ok) {
-        setIntroRefusal(res ? await readError(res) : "network");
+        setIntroRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
         return;
       }
       setIntroOk(introTarget.trim());
@@ -241,7 +340,7 @@ export function CommsTierActionsPanel({
     if (!res || !res.ok) {
       /* 429 here is not a bug: it is the privacy guard or the hard cap doing its
          job. It must still be rendered as a sentence the investor can act on. */
-      setDmRefusal(res ? await readError(res) : "network");
+      setDmRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
       return;
     }
     const j = (await res.json()) as { id?: string; status?: string };
@@ -261,7 +360,7 @@ export function CommsTierActionsPanel({
       mutedId: muteTarget.trim(),
     }).catch(() => null);
     if (!res || !res.ok) {
-      setMuteRefusal(res ? await readError(res) : "network");
+      setMuteRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
       return;
     }
     setMutedIds((prev) => (prev.includes(muteTarget.trim()) ? prev : [...prev, muteTarget.trim()]));
@@ -285,7 +384,7 @@ export function CommsTierActionsPanel({
     const res = await apiRequest("GET", `/api/comms/search?q=${encodeURIComponent(q)}`).catch(() => null);
     if (!res || !res.ok) {
       setResults(null);
-      setSearchRefusal(res ? await readError(res) : "network");
+      setSearchRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
       return;
     }
     const j = (await res.json()) as { results?: CommsSearchRow[] };
@@ -316,7 +415,7 @@ export function CommsTierActionsPanel({
       if (!live) return;
       if (!res || !res.ok) {
         setAdvocates(null);
-        setAdvocatesRefusal(res ? await readError(res) : "network");
+        setAdvocatesRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
         return;
       }
       const j = (await res.json()) as { advocates?: string[]; label?: string; note?: string };

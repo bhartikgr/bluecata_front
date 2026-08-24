@@ -157,7 +157,11 @@ describe("WAVE 69 · V-4 — a vanished plan card now explains itself", () => {
     expect(node.getAttribute("role")).toBe("alert");
     expect(node.textContent).toBe(REASON);
     expect(screen.getByTestId("card-plan-unavailable")).toBeTruthy();
-    expect(screen.getByTestId("plan-unavailable-tier").textContent).toContain("gold");
+    /* AMENDED BY WAVE 115 · FINDING 1. The tier slug is now rendered through
+       `planTierLabel`, so the partner reads "Gold" rather than the storage key
+       `gold`. Wave 69's requirement — that the tier is NAMED rather than left a
+       mystery — is fully preserved and is what is asserted here. */
+    expect(screen.getByTestId("plan-unavailable-tier").textContent).toContain("Gold");
     /* The card it replaces is genuinely absent — that is the defect being explained. */
     expect(screen.queryByTestId("card-plan")).toBeNull();
   });

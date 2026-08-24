@@ -70,15 +70,92 @@ export function resolveRoundName(roundId: string | null | undefined): string {
   return short ? `Round ${short}` : "—";
 }
 
+/* WAVE 116 · FINDING 3 — WHY THIS PERCENTAGE IS STILL COMPUTED HERE, AND WHAT IT
+ * NOW SAYS ABOUT ITSELF.
+ * ══════════════════════════════════════════════════════════════════════
+ * FIRST, WHAT IS *NOT* WRONG WITH IT. This is not an invented denominator. The
+ * basis is a real quantity read from real rows: the sum of share counts across
+ * the committed entries of THIS company. The `null` returns are already correct —
+ * a zero or non-finite basis refuses instead of dividing (R47/R48, D18).
+ *
+ * WHAT WAS WRONG. It had no name. The number reached
+ * `client/src/components/founder/CapTableInterim.tsx` as a bare `ownershipPct`
+ * and was rendered as a bare `%`, next to figures whose denominators are
+ * different quantities entirely (issued shares, fully-diluted shares,
+ * as-converted shares — `client/src/lib/captable/exportProvenance.ts`). Wave 113
+ * measured disagreements up to 11.91 percentage points between bases on this
+ * platform, so an unnamed percentage is not a rounding nuisance, it is an
+ * unanswerable number.
+ *
+ * WHY IT CANNOT ROUTE THROUGH THE CAP-TABLE ENGINE (the honest limit). The
+ * engine's input is the SECURITIES ledger — issued instruments. The rows here
+ * are the committed and funded QUEUES: money and share counts agreed but not yet
+ * issued as securities. There is no security row for the engine to consume, so
+ * the engine has nothing to divide. Feeding it synthesised rows to obtain a
+ * number would be the Finding 2 defect in a different file. WHAT IT WOULD TAKE:
+ * commitment acceptance would have to issue (or provisionally issue) a security
+ * row, at which point this interim view disappears and the engine answers it.
+ * That is a data-model change well outside this wave and is recorded as an open
+ * question in `build_log/wave116/W116_TESTS.md`.
+ *
+ * SO: same arithmetic, exported name for the basis, and every renderer prints it. */
+
+/** Machine token for the basis this percentage divides by. */
+export const COMMITTED_LEDGER_BASIS = "committed_ledger_shares" as const;
+
+/** The basis, named the way a reader would say it (short form, for a column header). */
+export const COMMITTED_LEDGER_BASIS_LABEL = "committed shares on this company's ledger";
+
+/** The basis, as a full sentence — for a footnote, a tooltip or a PDF paragraph. */
+export const COMMITTED_LEDGER_BASIS_SENTENCE =
+  "Percentages are each holder's share of the total COMMITTED shares recorded for this company. " +
+  "That is not the same denominator as Basic (issued shares), Fully Diluted (issued plus options, " +
+  "warrants and unallocated pool) or As Converted (plus convertibles at their conversion terms), so " +
+  "these figures are not comparable with the cap-table views and will change when commitments are issued.";
+
+/** A percentage together with the basis it divides by. Neither travels alone. */
+export interface CommittedOwnership {
+  /** Holder's share of `COMMITTED_LEDGER_BASIS`, or `null` when undeterminable. */
+  pct: number | null;
+  basis: typeof COMMITTED_LEDGER_BASIS;
+  basisLabel: string;
+  basisSentence: string;
+  /** The denominator actually used, so a caller can show its own working. */
+  totalShares: number;
+}
+
 /**
- * Compute committed ownership % for a holder (holderShares ÷ totalCommittedShares).
- * Returns null when the basis is zero/unknown so the FE can render "pending".
+ * Compute committed ownership % for a holder (holderShares ÷ totalCommittedShares)
+ * TOGETHER WITH THE NAME OF THAT DENOMINATOR.
+ * Returns `pct: null` when the basis is zero/unknown so the FE can render "pending".
+ */
+export function computeCommittedOwnership(
+  holderShares: number,
+  totalCommittedShares: number,
+): CommittedOwnership {
+  const determinable =
+    Number.isFinite(holderShares) &&
+    Number.isFinite(totalCommittedShares) &&
+    totalCommittedShares > 0 &&
+    holderShares > 0;
+  return {
+    pct: determinable ? (holderShares / totalCommittedShares) * 100 : null,
+    basis: COMMITTED_LEDGER_BASIS,
+    basisLabel: COMMITTED_LEDGER_BASIS_LABEL,
+    basisSentence: COMMITTED_LEDGER_BASIS_SENTENCE,
+    totalShares: Number.isFinite(totalCommittedShares) ? totalCommittedShares : 0,
+  };
+}
+
+/**
+ * WAVE 116 — kept as a thin delegation to `computeCommittedOwnership` so no
+ * existing caller or test changes behaviour. New callers should use
+ * `computeCommittedOwnership`, because it cannot hand back a percentage without
+ * also handing back the denominator's name.
  */
 export function computeOwnershipPct(
   holderShares: number,
   totalCommittedShares: number,
 ): number | null {
-  if (!Number.isFinite(holderShares) || !Number.isFinite(totalCommittedShares)) return null;
-  if (totalCommittedShares <= 0 || holderShares <= 0) return null;
-  return (holderShares / totalCommittedShares) * 100;
+  return computeCommittedOwnership(holderShares, totalCommittedShares).pct;
 }

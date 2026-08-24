@@ -272,7 +272,17 @@ describe("v17 Phase C — sweepClosedRounds (periodic scan)", () => {
 
   it("closes a time-expired round and lapses its pending offers", () => {
     const companyId = rid("co");
-    const past = nowIso(-1000 * 60 * 60); // 1h in the past
+    /* WAVE 121 · FINDING 2 — this fixture used to be `nowIso(-1000 * 60 * 60)`,
+       "1h in the past", which on a DATE-ONLY column (`rounds.close_date`) is
+       TODAY. The test therefore passed only because `sweepClosedRounds` compared
+       that date against a full UTC timestamp and treated today as expired — i.e.
+       it asserted the defect. `shared/roundTargetCloseRule.ts` (WAVE 83 / Shadie
+       V6 1a) ratifies that a date is past only when it is STRICTLY BEFORE today,
+       so the fixture is moved to a genuinely elapsed day. The test's INTENT — a
+       time-expired round closes and its offers lapse — is unchanged and still
+       proved; the boundary case in both directions is
+       server/__tests__/w121_sweeper_boundary_and_dead_code.test.ts. */
+    const past = nowIso(-1000 * 60 * 60 * 26); // 26h in the past — YESTERDAY, not today
     const roundId = seedRound({
       companyId,
       state: "soft_circle_open",

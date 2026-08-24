@@ -809,7 +809,25 @@ export const INSTRUMENTS = [
        investor cap table and the round wizard read one source. */
     shortLabel: "Common shares",
     label: "Common Shares",
-    description: "Founder + employee equity. Typically used for Foundation rounds and ESOP issuance.",
+    /* WAVE 107 - F5. WAS: "Founder + employee equity. Typically used for
+       Foundation rounds and ESOP issuance." That sentence asserted a
+       RESTRICTION THAT DOES NOT EXIST anywhere in this codebase, and the owner
+       proved it with a live test: common shares were issuable to every holder
+       type. Verified from the source in this wave, not assumed - there is no
+       CHECK constraint in `migrations/*.sql` pairing `holder_type` with an
+       instrument, no branch in `server/routes.ts` conditioning an accepted
+       `instrument` on a `holderType`, and no holder-type filter on this list in
+       the wizard (`INSTRUMENTS` is filtered by `suggestedFor` / round category
+       only). `HOLDER_TYPE_LABELS` below is display copy. So nothing was removed,
+       because there was nothing to remove: the restriction lived only in this
+       sentence.
+
+       Issuing common shares to outside investors is ordinary practice across
+       Europe and Asia, so the description now says what the INSTRUMENT IS and
+       stays jurisdiction-neutral. It names no holder class, recommends no
+       structure and expresses no preference between share classes - choosing one
+       is the founder's and their counsel's decision, not this table's. */
+    description: "Ordinary equity with no liquidation preference and no anti-dilution protection. Issuable to any holder - founders, employees or investors - in any jurisdiction.",
     suggestedFor: ["foundation"],
     // Wave C v26.5.0 (Shadie Finding 1a) — for a POST-FORMATION priced common
     // round we need pre-money and fully-diluted pre-money shares to compute
@@ -828,7 +846,14 @@ export const INSTRUMENTS = [
        investor cap table and the round wizard read one source. */
     shortLabel: "Preferred shares",
     label: "Preferred Shares (Priced Round)",
-    description: "NVCA-style priced equity with liquidation preference. Standard for Series A+.",
+    /* WAVE 107 - F5. WAS: "NVCA-style priced equity with liquidation preference.
+       Standard for Series A+." Rewritten for the same reason as `common` above:
+       "Standard for Series A+" is a recommendation, and tying the class to a
+       US-centric NVCA template is not jurisdiction-neutral. The description now
+       states what the class carries. `suggestedFor` still drives the wizard's
+       suggestions and the `fields` array still drives which inputs render;
+       neither is a restriction on who may hold the class and neither is changed. */
+    description: "Priced equity carrying a liquidation preference, and optionally participation and anti-dilution terms recorded on the round. Issuable to any holder in any jurisdiction.",
     suggestedFor: ["series_a", "series_b", "series_c"],
     // W-V44 FIX B (Avi #1): the server REQUIRES sharesAuthorized > 0 for a priced
     // `preferred` round (routes.ts priced-round guard, deliberately fail-closed as

@@ -27,6 +27,7 @@ import { fmtBytes, timeAgo } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+import { partyReferenceLabel } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — wave 115's labelled-reference helper, reused. */
 
 type Folder = { id: string; companyId: string; name: string; isRoundFolder: boolean; roundId?: string; createdAt: string };
 type DRFile = { id: string; companyId: string; folderId: string; name: string; sizeBytes: number; mime: string; uploadedAt: string; uploadedBy: string; sha256: string; watermark: boolean };
@@ -443,7 +444,13 @@ export default function Dataroom() {
                     {(engQ.data?.investors ?? []).map(i => (
                       <li key={i.investorId} className="flex items-center justify-between text-sm" data-testid={`engagement-inv-${i.investorId}`}>
                         <div className="truncate flex-1">
-                          <div className="font-medium">{i.investorId}</div>
+                          {/* WAVE 124 · FINDING 1 — the per-investor engagement list
+                              printed a raw `u_…` / `usr_…` account key in the position a
+                              founder reads as the investor's identity. The engagement
+                              payload (`DREngagement.investors`) carries no name, so the
+                              key is presented as a labelled reference instead of a bare
+                              token; no name is fabricated, and the row stays unique. */}
+                          <div className="font-medium">{partyReferenceLabel(i.investorId)}</div>
                           <div className="text-xs text-muted-foreground">{i.docsViewed} docs · {Math.round((i.totalSeconds || 0) / 60)} min</div>
                         </div>
                         <span className="text-xs text-muted-foreground">{i.lastActiveAt ? timeAgo(i.lastActiveAt) : ""}</span>
@@ -464,7 +471,7 @@ export default function Dataroom() {
                     <li key={e.id} className="px-5 py-3 text-sm flex items-start gap-3" data-testid={`audit-row-${e.id}`}>
                       <ActivityIcon className="h-4 w-4 text-muted-foreground mt-0.5" />
                       <div className="flex-1 min-w-0">
-                        <div><span className="font-medium">{e.actor}</span> <span className="text-muted-foreground">{e.action.replace(/_/g, " ")}</span> <span className="font-mono text-xs">{e.targetId}</span></div>
+                        <div><span className="font-medium">{e.actor}</span> <span className="text-muted-foreground">{e.action.replace(/_/g, " ")}</span> <span className="font-mono text-xs">{partyReferenceLabel(e.targetId)}</span></div>
                         <div className="text-[11px] text-muted-foreground">{timeAgo(e.ts)}</div>
                       </div>
                     </li>

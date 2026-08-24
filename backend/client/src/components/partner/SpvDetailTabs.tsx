@@ -19,6 +19,18 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor as formatMinorLib } from "@/lib/currency";
+/* WAVE 120 · FINDING 2 — the shared committed-capital predicate (one spelling of
+   "committed", summed in bigint) and the platform's bigint money formatter. */
+import {
+  summariseCommittedCapital,
+  pendingSubscriptionsStatement,
+  SPV_COMMITTED_FIGURE_LABEL,
+} from "@shared/spvCommittedCapital";
+import { displayCompanyMinor } from "@/lib/money/companyMoneyOnRecord";
+/* WAVE 115 · FINDING 6 — the wave-106 field-refusal helper, reused. */
+import { fieldValidityProps } from "@/lib/fieldValidityClass";
+/* WAVE 115 · FINDING 1 sweep — no raw storage key or event code in rendered copy. */
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { parsePercentInputToFraction, formatFractionAsPercent } from "@/lib/percentDisplay"; /* WAVE 10 / EN-5 — the single canonical percent parser */
 import { Link } from "wouter"; /* WAVE 10 — link into the EN-1/EN-2 performance surface */
@@ -77,8 +89,8 @@ import {
  * Returns a finite non-negative integer or throws. */
 function parseMinor(v: string): number {
   const s = (v ?? "").trim();
-  if (!s) throw new Error("Enter an amount in minor units (integer)");
-  if (!/^\d+$/.test(s)) throw new Error("Amount must be a whole number of minor units (no decimals, no scientific notation)");
+  if (!s) throw new Error("Enter a whole amount in the currency's smallest unit (cents)");
+  if (!/^\d+$/.test(s)) throw new Error("Amount must be a whole number in the currency's smallest unit (cents) - no decimals, no scientific notation");
   const n = Number(s);
   if (!Number.isSafeInteger(n) || n < 0) throw new Error("Amount is out of range");
   return n;
@@ -127,13 +139,13 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
   INVALID_UNITS_PCT: "Units percentage must be a fraction greater than 0 and at most 1 (0.25 = 25%).",
   SPV_WOUND_DOWN: "This SPV has been wound down. No further transfers can be recorded against it.",
   // WAVE 25 / FE-1 — mandate check-size bounds.
-  INVALID_CHECK_MIN: "Minimum check must be a whole, non-negative number of minor units.",
-  INVALID_CHECK_MAX: "Maximum check must be a whole, non-negative number of minor units.",
+  INVALID_CHECK_MIN: "Minimum check must be a whole, non-negative number, entered in the currency's smallest unit (cents).",
+  INVALID_CHECK_MAX: "Maximum check must be a whole, non-negative number, entered in the currency's smallest unit (cents).",
   INVALID_CHECK_RANGE: "Minimum check cannot be greater than maximum check.",
   // WAVE 25 / FE-7 — the compliance write path.
   INVALID_COMPLIANCE_PROFILE_PATCH: "Some compliance fields were not accepted. Check the KYC and accreditation values.",
   INVESTOR_NOT_RELATED_TO_PARTNER: "That investor is not in your partner workspace, so their compliance profile cannot be read or edited here.",
-  INVALID_AMOUNT: "Amount must be greater than zero (minor units).",
+  INVALID_AMOUNT: "Amount must be greater than zero, entered in the currency's smallest unit (cents).",
   INVALID_GROSS: "Gross proceeds must be a non-negative number.",
   EVENT_REQUIRED: "Please pick an event type.",
   DISTRIBUTION_BASIS_REQUIRED: "Cost basis is required for every distribution (never assumed).",
@@ -162,6 +174,85 @@ function spvErrorMessage(err: unknown): string {
 function fmt(minor: number | null | undefined, currency: string) {
   if (minor == null) return "—";
   return formatMinorLib(minor, currency, { locale: "en-US" });
+}
+
+/* ==========================================================================
+ * WAVE 106 - FINDING 3: money fields that asked a human for "minor units".
+ *
+ * "Gross proceeds (minor)" accepted 100000 and meant $1,000.00, with nothing on
+ * screen saying so. A partner reading the label as dollars is out by a factor of
+ * one hundred, on a distribution.
+ *
+ * The INPUT CONTRACT IS NOT CHANGED. These fields still post the integer that
+ * was typed, and every conversion downstream (parseMinor, the server's
+ * decimalStringToMinor) is untouched, so the arithmetic cannot have moved. What
+ * changes is that the label now names the unit AND the currency in words, and a
+ * live echo states the amount the platform will actually use. An operator who
+ * types the wrong magnitude can now see it before acting, which is the failure
+ * that mattered.
+ *
+ * Chosen over switching the fields to ordinary currency amounts because these
+ * are money paths shared with the offline distribution and fee engines: proving
+ * a contract change safe across all of them is a larger piece of work than this
+ * wave can honestly claim, and a mislabelled-but-correct field is a smaller risk
+ * than a re-scaled one.
+ * ========================================================================== */
+
+/** e.g. minorLabel("Gross proceeds", "USD") -> "Gross proceeds - in USD cents, not whole USD" */
+export function minorUnitsLabel(name: string, currency: string): string {
+  const unit = minorUnitName(currency);
+  return `${name} - in ${currency} ${unit}, not whole ${currency}`;
+}
+
+/**
+ * The same guidance where the component has no currency in scope (the mandate
+ * editor takes no currency prop, and inventing one would be worse than saying
+ * "cents"). Wording deliberately matches minorUnitsLabel.
+ */
+export function minorUnitsLabelNoCurrency(name: string): string {
+  return `${name} - in cents, not whole currency units`;
+}
+
+/** The human name for a currency's smallest unit. Never the phrase "minor units". */
+export function minorUnitName(currency: string): string {
+  const c = (currency || "").toUpperCase();
+  if (c === "JPY" || c === "KRW" || c === "VND" || c === "CLP" || c === "ISK") return "whole units";
+  if (c === "GBP") return "pence";
+  if (c === "EUR") return "cents";
+  return "cents";
+}
+
+/**
+ * The live echo beside a smallest-unit money field: what the typed digits mean.
+ * Returns null when there is nothing usable to echo, so the caller renders the
+ * guidance sentence instead of a misleading zero.
+ */
+export function minorUnitsEcho(raw: string, currency: string): string | null {
+  const digits = (raw ?? "").trim();
+  if (!digits || !/^\d+$/.test(digits)) return null;
+  return fmt(Number(digits), currency);
+}
+
+/** Human, Title-Case names for waterfall tiers. Never a snake_case tier code. */
+const WATERFALL_TIER_LABELS: Record<string, string> = {
+  return_of_capital: "Return of Capital",
+  preferred_return: "Preferred Return",
+  gp_catch_up: "GP Catch-Up",
+  gp_carry: "GP Carry",
+  lp_profit: "LP Profit",
+  lp_residual: "LP Residual",
+};
+
+export function waterfallTierLabel(tier: string): string {
+  const known = WATERFALL_TIER_LABELS[tier];
+  if (known) return known;
+  /* Unknown tier codes still render as words, Title Case, never as raw
+     snake_case: a tier added on the server must not leak its identifier. */
+  return String(tier ?? "")
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => (w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ") || "Tier";
 }
 
 /* Educational callout shown at the top of each tab. */
@@ -317,7 +408,41 @@ export function SpvDetailTabs({
   );
   const closeSummary = detail.closeSummary;
   const spv = detail.spv ?? {};
-  const raised = register.reduce((a, r) => a + r.commitmentMinor, 0);
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 120 · FINDING 2 — THIS TILE NO LONGER COMPUTES A RIVAL RAISED FIGURE.
+     ══════════════════════════════════════════════════════════════════════════
+     WHAT IT USED TO SAY, AND WHY IT WAS FALSE:
+
+         const raised = register.reduce((a, r) => a + r.commitmentMinor, 0);
+
+     `register` is the server's `investorRegister` (server/spvEngineStore.ts:1670),
+     which excludes ONLY `withdrawn` and whose own doc comment says it is "NOT for
+     money gates". So `review`, `soft_circled`, `founder_confirmed` and
+     `wire_funded` subscriptions were all rendered as money RAISED, beside the
+     target, under the label "Raise progress" — a second committed figure for the
+     same vehicle, and an indication of interest presented as money. Wave 112's
+     central claim ("one committed figure per SPV") was false on this surface.
+
+     WHAT IT SAYS NOW. The figure comes from the shared predicate in
+     `@shared/spvCommittedCapital`, whose `committed` spelling is pinned equal to
+     the server's canonical `COMMITTED_SUBSCRIPTION_STATUS` by
+     `server/__tests__/w120_spv_committed_tile.test.ts`. It reads
+     `detail.subscriptions`, which carries `status`; the register does not carry
+     one at all, which is why the wrong array was being summed.
+
+     MONEY. The sum is `bigint` and is rendered by `displayCompanyMinor`, which
+     formats by string construction. No `Number()`, `parseInt` or `parseFloat`
+     touches an amount on this path.
+
+     AND IT REFUSES INSTEAD OF PRINTING $0. `detail.subscriptions` absent is
+     "not reported", not "zero raised" — the `?? []` that produced a confident
+     `$0` is not repeated here. The pending subscriptions the figure deliberately
+     omits are DISCLOSED in words beneath it, so the smaller number is explained
+     rather than silently substituted. */
+  const committedSummary = summariseCommittedCapital(subs);
+  const committedMinor = committedSummary.committedMinor;
+  const committedReported = Array.isArray(detail.subscriptions);
+  const committedPendingStatement = pendingSubscriptionsStatement(committedSummary);
   // WAVE 3C / J-3 — resolve the jurisdiction the COMPLIANCE copy is keyed on.
   // `terms.jurisdictionCountry` is what the GP actually chose in the wizard and
   // is the more specific value; the `jurisdiction` enum column is the legacy
@@ -430,7 +555,21 @@ export function SpvDetailTabs({
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div data-testid="spv-detail-raise">
             <div className="font-medium">Raise progress</div>
-            <div className="font-mono">{fmt(raised, currency)}{spv.targetRaiseMinor ? ` / ${fmt(spv.targetRaiseMinor, currency)} target` : ""}</div>
+            <div className="font-mono" data-testid="spv-detail-raise-figure">
+              {committedReported
+                ? `${displayCompanyMinor(committedMinor, currency)}${spv.targetRaiseMinor ? ` / ${fmt(spv.targetRaiseMinor, currency)} target` : ""}`
+                : "Not reported"}
+            </div>
+            <div className="text-[10px] text-muted-foreground" data-testid="spv-detail-raise-basis">
+              {committedReported
+                ? SPV_COMMITTED_FIGURE_LABEL
+                : "No subscription register arrived with this vehicle, so no raised figure is shown — that is unknown, not zero."}
+            </div>
+            {committedReported && committedPendingStatement && (
+              <div className="text-[10px] text-muted-foreground" data-testid="spv-detail-raise-pending">
+                {committedPendingStatement}
+              </div>
+            )}
           </div>
           <div data-testid="spv-detail-status">
             <div className="font-medium">Status</div>
@@ -617,7 +756,7 @@ export function SpvDetailTabs({
               </div>
               {capitalAccountRows.map((c) => (
                 <div key={c.investorId} className="grid grid-cols-5 gap-2 py-0.5" data-testid={`spv-cap-acct-${c.investorId}`}>
-                  <div className="truncate">{c.investorId}</div>
+                  <div className="truncate">{partyReferenceLabel(c.investorId)}</div>
                   <div className="font-mono">{fmt(c.contributedMinor, currency)}</div>
                   <div className="font-mono">{fmt(c.confirmedMinor, currency)}</div>
                   <div className="font-mono">{fmt(c.distributedMinor, currency)}</div>
@@ -716,7 +855,7 @@ export function SpvDetailTabs({
                   .flatMap((t) => t.adjustments ?? [])
                   .map((a, j) => (
                     <div key={`${i}-${j}`} className="text-xs" data-testid="spv-side-letter-effect-row">
-                      {d.event}: {a.investorId} · carry {carryScaledToPercentLabel(a.lpCarryScaled)} vs fund{" "}
+                      {humanizeMachineKey(d.event)}: {partyReferenceLabel(a.investorId)} · carry {carryScaledToPercentLabel(a.lpCarryScaled)} vs fund{" "}
                       {carryScaledToPercentLabel(a.fundCarryScaled)} · {fmt(a.carryBeforeMinor, currency)} →{" "}
                       {fmt(a.carryAfterMinor, currency)} · net {fmt(a.netBeforeMinor, currency)} →{" "}
                       {fmt(a.netAfterMinor, currency)}
@@ -758,7 +897,7 @@ export function SpvDetailTabs({
             <div className="text-xs text-[var(--cv-color-text-faint)]">no transfers</div>
           ) : (
             transfers.map((t, i) => (
-              <div key={t.id ?? i} className="text-xs">{t.fromInvestorId} → {t.toInvestorId} · {t.status}</div>
+              <div key={t.id ?? i} className="text-xs">{partyReferenceLabel(t.fromInvestorId)} → {partyReferenceLabel(t.toInvestorId)} · {humanizeMachineKey(t.status)}</div>
             ))
           )}
         </div>
@@ -1112,7 +1251,7 @@ function EsignaturePanel({
                 {d.events.slice(-6).map((e) => (
                   <li key={e.id}>
                     {e.eventKind}
-                    {e.toStatus ? ` → ${e.toStatus}` : ""} · {new Date(e.createdAt).toLocaleString()}
+                    {e.toStatus ? ` → ${humanizeMachineKey(e.toStatus)}` : ""} · {new Date(e.createdAt).toLocaleString()}
                   </li>
                 ))}
               </ul>
@@ -1230,7 +1369,7 @@ function LpRow({
   return (
     <div className="text-xs border rounded p-2" data-testid={`spv-lp-row-${row.investorId}`}>
       <div className="flex justify-between items-center gap-2">
-        <span className="truncate">{row.investorId}: {fmt(row.commitmentMinor, currency)} ({(row.ownershipPct * 100).toFixed(1)}%)</span>
+        <span className="truncate">{partyReferenceLabel(row.investorId)}: {fmt(row.commitmentMinor, currency)} ({(row.ownershipPct * 100).toFixed(1)}%)</span>
         {canWrite && (
           <Button variant="outline" size="sm" data-testid={`spv-confirm-funds-open-${row.investorId}`} onClick={() => setOpen((o) => !o)}>
             {open ? "Cancel" : "Confirm funds"}
@@ -1240,7 +1379,7 @@ function LpRow({
       {open && (
         <div className="mt-2 space-y-2" data-testid={`spv-confirm-funds-panel-${row.investorId}`}>
           <div>
-            <Label className="text-[10px]">Amount received (minor units)</Label>
+            <Label className="text-[10px]">{minorUnitsLabel("Amount received", currency)}</Label>
             <Input value={received} onChange={(e) => setReceived(e.target.value)} type="number" data-testid={`spv-confirm-received-${row.investorId}`} />
           </div>
           <div>
@@ -1327,8 +1466,13 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
       <div className="font-medium text-sm mb-1">Distribution preview (offline)</div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <Label className="text-[10px]">Gross proceeds (minor)</Label>
-          <Input value={gross} onChange={(e) => setGross(e.target.value)} type="number" data-testid="spv-preview-gross" />
+          <Label className="text-[10px]">{minorUnitsLabel("Gross proceeds", currency)}</Label>
+          <Input value={gross} onChange={(e) => setGross(e.target.value)} type="number" aria-describedby="spv-preview-gross-echo" data-testid="spv-preview-gross" />
+          <div id="spv-preview-gross-echo" className="text-[10px] mt-0.5 text-[var(--cv-color-text-faint)]" data-testid="spv-preview-gross-echo">
+            {minorUnitsEcho(gross, currency)
+              ? `= ${minorUnitsEcho(gross, currency)}`
+              : `Enter the amount in ${currency} ${minorUnitName(currency)}. The amount appears here as you type.`}
+          </div>
         </div>
         <div>
           <Label className="text-[10px]">Hurdle % (optional)</Label>
@@ -1366,7 +1510,7 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
       {split && (
         <div className="mt-2 text-xs space-y-0.5" data-testid="spv-preview-result">
           {split.tiers.map((t, i) => (
-            <div key={i} className="flex justify-between"><span>{t.tier.replace(/_/g, " ")}</span><span className="font-mono">{fmt(t.amountMinor, currency)}</span></div>
+            <div key={i} className="flex justify-between"><span>{waterfallTierLabel(t.tier)}</span><span className="font-mono">{fmt(t.amountMinor, currency)}</span></div>
           ))}
           <div className="flex justify-between border-t pt-1 font-medium"><span>LP total</span><span className="font-mono">{fmt(split.lpTotalMinor, currency)}</span></div>
           <div className="flex justify-between font-medium"><span>GP total</span><span className="font-mono">{fmt(split.gpTotalMinor, currency)}</span></div>
@@ -1821,7 +1965,7 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">Instrument is sourced from this round automatically.</div>
           </div>
           <div>
-            <Label htmlFor={`${id}-amount`} className="text-[10px]">Amount ({currency}, minor units \u2014 whole integer only)</Label>
+            <Label htmlFor={`${id}-amount`} className="text-[10px]">{minorUnitsLabel("Amount", currency)} (whole number only)</Label>
             <Input id={`${id}-amount`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-deploy-amount" placeholder="e.g. 5000000 = $50,000" />
             {amount && /^\d+$/.test(amount) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(amount), currency)}</div>}
           </div>
@@ -1971,11 +2115,11 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <Label htmlFor={`${id}-checkMin`} className="text-[10px]">Min check (minor units)</Label>
+              <Label htmlFor={`${id}-checkMin`} className="text-[10px]">{minorUnitsLabelNoCurrency("Minimum check")}</Label>
               <Input id={`${id}-checkMin`} value={checkMin} onChange={(e) => setCheckMin(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-min" placeholder="optional" />
             </div>
             <div>
-              <Label htmlFor={`${id}-checkMax`} className="text-[10px]">Max check (minor units)</Label>
+              <Label htmlFor={`${id}-checkMax`} className="text-[10px]">{minorUnitsLabelNoCurrency("Maximum check")}</Label>
               <Input id={`${id}-checkMax`} value={checkMax} onChange={(e) => setCheckMax(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-max" placeholder="optional" />
             </div>
           </div>
@@ -2051,7 +2195,7 @@ function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: str
           </div>
           {showFixed && (
             <div>
-              <Label htmlFor={`${id}-fixed`} className="text-[10px]">Fixed amount ({currency}, minor units)</Label>
+              <Label htmlFor={`${id}-fixed`} className="text-[10px]">{minorUnitsLabel("Fixed amount", currency)}</Label>
               <Input id={`${id}-fixed`} value={fixed} onChange={(e) => setFixed(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-fee-fixed" />
               {fixed && /^\d+$/.test(fixed) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(fixed), currency)}</div>}
             </div>
@@ -2102,6 +2246,52 @@ function DocumentPanel({ spvId, jurisdiction, onChanged }: { spvId: string; juri
   const [expiry, setExpiry] = useState("");
   const id = useId();
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 115 · FINDING 6 — THE SILENTLY ACCEPTED BAD DATE.
+
+     Before this wave the only thing standing between this field and the server
+     was `if (expiry.trim()) body.expiry = expiry.trim();`. A GP could type
+     `2020-01-01` — a document that expired six years ago — or, in any client that
+     does not render `type="date"` as a picker (and in every automated client), a
+     string that is not a date at all, and the form accepted it, cleared itself,
+     and said "Document registered". The register calls this class out
+     explicitly: a control that accepts a value and discards or mis-stores it is
+     the defect the owner cares most about.
+
+     The rule is deliberately narrow and is stated in the copy, so a GP is never
+     guessing why the button will not submit:
+       · empty  → allowed. The field is genuinely optional.
+       · not a real calendar date → refused. `2026-02-30` is rejected because the
+         Date round-trip does not return the same day, which catches the overflow
+         `new Date()` would otherwise silently roll forward to March 2nd.
+       · already in the past → refused. An expiry that has already passed cannot
+         be what the GP means, and a document silently filed as pre-expired is
+         worse than no document at all.
+
+     Refusal is INLINE and BEFORE the request: the Register button is disabled,
+     the field is marked invalid, and the reason renders beside it. Nothing is
+     sent and no toast pretends success. `fieldValidityProps` is the wave-106
+     helper (client/src/lib/fieldValidityClass.ts) — reused, not re-implemented,
+     so this field looks and reads like every other refused field in the tree.
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const expiryRaw = expiry.trim();
+  const expiryProblem: string | null = (() => {
+    if (!expiryRaw) return null; // optional
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryRaw)) {
+      return "Enter the expiry as a calendar date (YYYY-MM-DD), or leave it empty.";
+    }
+    const parsed = new Date(`${expiryRaw}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== expiryRaw) {
+      return "That is not a real calendar date. Check the month and day.";
+    }
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    if (expiryRaw < todayUtc) {
+      return "That expiry has already passed. Enter a future date, or leave it empty.";
+    }
+    return null;
+  })();
+  const expiryValid = expiryProblem === null;
+
   const submit = useMutation({
     mutationFn: async () => {
       if (!storageKey.trim()) throw new Error("Storage key required (upload the file first, then paste the returned key)");
@@ -2113,7 +2303,11 @@ function DocumentPanel({ spvId, jurisdiction, onChanged }: { spvId: string; juri
         contentType: contentType.trim() || undefined,
       };
       if (sizeBytes.trim()) body.sizeBytes = parseMinor(sizeBytes);
-      if (expiry.trim()) body.expiry = expiry.trim();
+      /* WAVE 115 · FINDING 6 — second gate, at the writer. The button is already
+         disabled when the date is bad; refusing here too means a programmatic
+         caller cannot slip a past or impossible expiry through. */
+      if (expiryProblem) throw new Error(expiryProblem);
+      if (expiryRaw) body.expiry = expiryRaw;
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/documents`, body)).json();
     },
     onSuccess: () => {
@@ -2179,11 +2373,23 @@ function DocumentPanel({ spvId, jurisdiction, onChanged }: { spvId: string; juri
             </div>
             <div>
               <Label htmlFor={`${id}-expiry`} className="text-[10px]">Expiry (optional)</Label>
-              <Input id={`${id}-expiry`} value={expiry} onChange={(e) => setExpiry(e.target.value)} type="date" data-testid="spv-document-expiry" />
+              <Input
+                id={`${id}-expiry`}
+                value={expiry}
+                onChange={(e) => setExpiry(e.target.value)}
+                type="date"
+                data-testid="spv-document-expiry"
+                {...fieldValidityProps(expiryValid)}
+              />
+              {expiryProblem && (
+                <div className="text-[10px] text-destructive mt-1" data-testid="spv-document-expiry-error">
+                  {expiryProblem}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-document-submit">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending || !expiryValid} data-testid="spv-document-submit">
               {submit.isPending ? "Registering…" : "Register"}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-document-cancel">Cancel</Button>
@@ -2307,7 +2513,7 @@ function InvestorCompliancePanel({
             >
               <option value="">Select an investor…</option>
               {register.map((r) => (
-                <option key={r.investorId} value={r.investorId}>{r.investorId}</option>
+                <option key={r.investorId} value={r.investorId}>{partyReferenceLabel(r.investorId)}</option>
               ))}
             </select>
           </div>
@@ -2419,7 +2625,7 @@ function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency
             <Input id={`${id}-to`} value={toId} onChange={(e) => setToId(e.target.value)} data-testid="spv-transfer-to" />
           </div>
           <div>
-            <Label htmlFor={`${id}-amt`} className="text-[10px]">Amount ({currency}, minor units)</Label>
+            <Label htmlFor={`${id}-amt`} className="text-[10px]">{minorUnitsLabel("Amount", currency)}</Label>
             <Input id={`${id}-amt`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-transfer-amount" placeholder="or leave blank and use % below" />
           </div>
           <div>
@@ -2491,12 +2697,12 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
             </select>
           </div>
           <div>
-            <Label htmlFor={`${id}-gross`} className="text-[10px]">Gross proceeds ({currency}, minor units)</Label>
+            <Label htmlFor={`${id}-gross`} className="text-[10px]">{minorUnitsLabel("Gross proceeds", currency)}</Label>
             <Input id={`${id}-gross`} value={gross} onChange={(e) => setGross(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-gross" />
             {gross && /^\d+$/.test(gross) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(gross), currency)}</div>}
           </div>
           <div>
-            <Label htmlFor={`${id}-cb`} className="text-[10px]">Cost basis <span className="text-red-700">(required)</span> — minor units</Label>
+            <Label htmlFor={`${id}-cb`} className="text-[10px]">{minorUnitsLabel("Cost basis", currency)} <span className="text-red-700">(required)</span></Label>
             <Input id={`${id}-cb`} value={costBasis} onChange={(e) => setCostBasis(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-cost-basis" />
             {costBasis && /^\d+$/.test(costBasis) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(costBasis), currency)}</div>}
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">The total capital originally deployed (used to compute profit for carry).</div>
@@ -2618,7 +2824,7 @@ function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currenc
             <Input id={`${id}-inv`} value={investorId} onChange={(e) => setInvestorId(e.target.value)} data-testid="spv-subscription-investor-id" placeholder="inv_…" />
           </div>
           <div>
-            <Label htmlFor={`${id}-commit`} className="text-[10px]">Commitment ({currency}, minor units)</Label>
+            <Label htmlFor={`${id}-commit`} className="text-[10px]">{minorUnitsLabel("Commitment", currency)}</Label>
             <Input id={`${id}-commit`} value={commitment} onChange={(e) => setCommitment(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-subscription-commitment" />
             {commitment && /^\d+$/.test(commitment) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(commitment), currency)}</div>}
           </div>

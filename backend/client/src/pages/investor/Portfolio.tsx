@@ -102,11 +102,26 @@ export default function InvestorPortfolio() {
   );
   // DEF-048: guard to prevent flash of error during redirect when portfolio is empty
   const positions = useQuery<{ companyId: string }[]>({ queryKey: ["/api/investor/portfolio2"], staleTime: 30_000 });
-  const hasPositions = (positions.data?.length ?? 1) > 0; // default true until loaded
+  /* ══ WAVE 113 · FINDING 4 (wave 45) — THE PAGE-LEVEL HALF OF THE SAME DEFECT ══
+
+     `hasPositions` was `(positions.data?.length ?? 1) > 0` — defaulting an ERRORED
+     query to `true`, so a failed load rendered "Select a portfolio company above
+     to view its details." above a switcher that would never offer one. The
+     investor sat looking at a permanent instruction they could not follow, with
+     nothing anywhere saying the request had failed.
+
+     Both flags are now gated on `positions.isSuccess`, so neither claims to know
+     anything while the answer is unknown — and neither an error nor a PAUSED
+     (offline) query is read as "loaded and empty". `PortfolioCompanySwitcher`
+     renders the one honest refusal for this query, with the retry; this page just
+     stops asserting over the top of it. No position is invented. */
+  const positionCount = positions.isSuccess ? positions.data?.length ?? 0 : null;
+  const hasPositions = positionCount === null ? false : positionCount > 0;
   // v25.48.2 Q8 — once positions have loaded and there are none, the switcher
   // renders the empty-state CTA; suppress the "select a company" hint so we
-  // don't stack two empty messages.
-  const portfolioIsEmpty = !positions.isLoading && (positions.data?.length ?? 0) === 0;
+  // don't stack two empty messages. `null` (not loaded / failed) suppresses it
+  // too: the switcher is showing the load-failure refusal in that case.
+  const portfolioIsEmpty = positionCount === null || positionCount === 0;
 
   // When the switcher selects a company, update both state and URL param
   function handleCompanyChange(companyId: string) {

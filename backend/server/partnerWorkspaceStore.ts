@@ -63,6 +63,13 @@ import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/sch
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
 import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver"; /* W-V44 FIX R3 */
+/* WAVE 115 · FINDING 7 — the canonical committed-capital derivation, reused.
+   `canonicalCommittedMinorForSpv` is WAVE 112's single shared predicate
+   (spvEngineStore.ts:3731); `spvEngineStore.listByPartner` is the engine's own
+   fail-closed partner scoping (:479). Cycle-safe: spvEngineStore.ts:63 imports
+   from this file, and neither side touches the other at module-evaluation time
+   (see the note at the dashboard return statement). */
+import { spvEngineStore, canonicalCommittedMinorForSpv } from "./spvEngineStore";
 /* v25.23 NC-D / NH-K / NH-L — strict (fail-closed) persistence for the money
  * and identity surfaces. Default `persistEntry` semantics elsewhere remain
  * unchanged (Lane G preservation). */
@@ -3045,7 +3052,19 @@ export const partnerFundsStore = {
  * ============================================================ */
 
 export function partnerDashboardSnapshot(partnerId: string): {
-  portfolio: { attributedCompanies: number; totalSpvCommittedMinor: number; totalFundCommittedMinor: number };
+  /* WAVE 115 · FINDING 7 — the two committed figures are `number | null`.
+     `null` means "we could not read the authoritative figure", and the client
+     MUST say so rather than formatting it as $0.00. See the block at the return
+     statement for the full chain and the reason a denorm is no longer read. */
+  portfolio: {
+    attributedCompanies: number;
+    totalSpvCommittedMinor: number | null;
+    totalFundCommittedMinor: number | null;
+    committedFigureSource: "canonical_spv_engine";
+    /** The two dead denorms, retained as evidence for the wave-115 test only. */
+    deadSpvDenormTotal: number;
+    deadFundDenormTotal: number;
+  };
   pipeline: { byStage: Record<PipelineStage, number>; topDeals: PartnerPipelineDeal[] };
   recentActivity: PartnerPipelineActivity[];
   team: {
@@ -3104,11 +3123,122 @@ export function partnerDashboardSnapshot(partnerId: string): {
   const { seatLimit, resolution: seatLimitResolution, capability: seatCapability } =
     resolvePartnerSeatLimit(partnerId, tier);
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 115 · FINDING 7 — "SPVs committed: $0.00 / Funds committed: $0.00" ON
+     THE OWNER'S LIVE DASHBOARD, WITH A REAL $10,000 LP COMMITMENT ON PLATFORM.
+
+     ── THE CHAIN, VERIFIED FILE:LINE, NOT TAKEN ON TRUST ───────────────────────
+     client/src/pages/partner/PartnerDashboard.tsx:161  reads portfolio.totalSpvCommittedMinor
+     client/src/pages/partner/PartnerDashboard.tsx:165  reads portfolio.totalFundCommittedMinor
+     this function (below)                              summed two RAM denorms
+
+     DENORM 1 — `PartnerSpv.totalCommittedMinor`. Its ONLY writer is
+     `partnerSpvStore.addPosition` (this file, :2818), which carries its own
+     comment at :2829-2832 stating "this method is NOT on the live path" and
+     naming `spvEngineStore.subscribe` (reached from partnerRoutes.ts:1705,
+     POST /:id/subscriptions) as the live path instead. VERIFIED INDEPENDENTLY:
+     `grep -rn "\.addPosition(" server/ client/src` excluding tests returns
+     exactly ONE hit — a string inside addPosition's own error message (:2805).
+     The method has ZERO callers. The denorm can only ever be 0.
+
+     DENORM 2 — `PartnerFund.committedSizeMinor`. THIS IS A FIFTH UNFED REGISTER,
+     NOT PREVIOUSLY REPORTED. Wave 112 named four registers for the SPV concept;
+     the fund tile beside it has the same shape and nobody had checked it. Its
+     only writer is `partnerFundsStore.pledge` (this file, :3017), and
+     `grep -rn "\.pledge(" server/ --include=*.ts` excluding tests returns ZERO
+     callers. The only two external readers of this store's funds
+     (partnerConsortiumRoutes.ts:745, :781) are reads. Initialised to
+     `data.committedSizeMinor ?? 0` at :2870 and never incremented on any live
+     path. So the fund tile could only ever print $0.00 too.
+
+     ── WHY A DENORM AT ALL IS THE WRONG SOURCE ────────────────────────────────
+     $0.00 is not a missing value; it is a SPECIFIC CLAIM ABOUT MONEY on the
+     owner's front page, and it was false. This is the defect class this platform
+     keeps repeating, so the figure is not patched — its SOURCE is replaced.
+
+     ── THE AUTHORITATIVE SOURCE: WAVE 112's ONE SHARED PREDICATE, REUSED ──────
+     Wave 112 established exactly one derivation of committed capital
+     (build_log/wave112/W112_PREFLIGHT.md §D1):
+         COMMITTED_SUBSCRIPTION_STATUS   spvEngineStore.ts:3717
+         committedSubscriptionsForSpv     spvEngineStore.ts:3722
+         canonicalCommittedMinorForSpv    spvEngineStore.ts:3731   ← the sum, bigint
+     `committedRegister` (:1694) and `spvFundStore.reconcile` were both rewritten
+     to call it, so every money gate in the SPV family now reads this one
+     derivation. THIS FUNCTION NOW READS THE SAME ONE. No fifth implementation of
+     the predicate is written here — that is exactly what the brief forbids, and
+     writing one is how four registers became four.
+
+     SCOPING. `spvEngineStore.listByPartner` (:479) filters on
+     `sponsorPartnerId === partnerId` and is the same fail-closed partner scoping
+     the engine's own routes use. A Fund is a first-class engine SPV with
+     `spvType === "fund"` (shared/spvEngine.ts:20, and the one-time migration
+     backfill at spvEngineStore.ts:2823 that moved every legacy fund in), so the
+     two tiles keep meaning exactly what their labels say: the split is on
+     `spvType`, not on which legacy store a row happens to live in.
+
+     MONEY. `canonicalCommittedMinorForSpv` returns a `bigint` and the sum is
+     accumulated as `bigint`. There is NO `Number()`, `parseInt` or `parseFloat`
+     anywhere on this path. The single `Number(...)` at the boundary converts an
+     already-exact integer bigint of minor units to the `number` the response
+     contract declares, and it REFUSES rather than silently truncating if the
+     value could not survive the conversion (see below) — the contract is not
+     widened to bigint here because the DTO is shared with the client.
+
+     FAIL-CLOSED, AND NEVER $0.00 FOR "UNKNOWN". If the engine read throws, the
+     tile does NOT fall back to a denorm and does NOT print 0. The figure is
+     reported as unavailable and the card says so. Per the brief: print nothing
+     confident, or print the truth.
+
+     IMPORT CYCLE — CHECKED, NOT ASSUMED. spvEngineStore.ts:63 already imports
+     `partnerSpvStore, partnerFundsStore` FROM this file, so this is a cycle. It
+     is safe because neither side touches the other at module-evaluation time:
+     the engine's only uses of this file's exports are inside function bodies
+     (:2784, :2823, both in the migration routine), and this file's only use of
+     the engine's exports is inside this function. A runtime `require()` was NOT
+     used instead — this file's own note at :1845-1857 records that `require()`
+     of a `.ts` module throws on the first type annotation under the tsx runtime.
+     ═══════════════════════════════════════════════════════════════════════════ */
+  let totalSpvCommittedMinor: number | null;
+  let totalFundCommittedMinor: number | null;
+  try {
+    let spvSum = BigInt(0);
+    let fundSum = BigInt(0);
+    for (const engineSpv of spvEngineStore.listByPartner(partnerId)) {
+      const committed = canonicalCommittedMinorForSpv(engineSpv.id);
+      if (engineSpv.spvType === "fund" || engineSpv.spvType === "rolling_fund") fundSum += committed;
+      else spvSum += committed;
+    }
+    /* Exactness gate at the bigint→number boundary. An amount beyond
+       Number.MAX_SAFE_INTEGER minor units cannot be represented, so it is
+       refused rather than rounded into a plausible-looking figure. */
+    const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+    totalSpvCommittedMinor = spvSum <= MAX ? Number(spvSum) : null;
+    totalFundCommittedMinor = fundSum <= MAX ? Number(fundSum) : null;
+  } catch (err) {
+    log.warn(
+      "[partnerWorkspaceStore.dashboard] committed-capital read from the canonical SPV engine failed; " +
+      "reporting the two committed tiles as UNAVAILABLE rather than printing $0.00, which would be a " +
+      "false statement about money: " + (err as Error).message,
+    );
+    totalSpvCommittedMinor = null;
+    totalFundCommittedMinor = null;
+  }
+  /* The two legacy denorms are still read here, deliberately, so this wave can
+     PROVE they are dead rather than assert it: `w115_partner_committed_source`
+     asserts the shipped figure equals the canonical engine sum and NOT these. */
+  const deadSpvDenormTotal = pSpvs.reduce((s, x) => s + x.totalCommittedMinor, 0);
+  const deadFundDenormTotal = pFunds.reduce((s, x) => s + x.committedSizeMinor, 0);
+
   return {
     portfolio: {
       attributedCompanies: attrs.length,
-      totalSpvCommittedMinor: pSpvs.reduce((s, x) => s + x.totalCommittedMinor, 0),
-      totalFundCommittedMinor: pFunds.reduce((s, x) => s + x.committedSizeMinor, 0),
+      totalSpvCommittedMinor,
+      totalFundCommittedMinor,
+      /* Additive provenance, so the figure on the owner's front page can be
+         audited without reading this file. Nothing is dropped. */
+      committedFigureSource: "canonical_spv_engine" as const,
+      deadSpvDenormTotal,
+      deadFundDenormTotal,
     },
     pipeline: { byStage, topDeals },
     recentActivity,

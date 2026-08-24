@@ -19,6 +19,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+/* WAVE 113 · FINDING 4 — the platform's ONE "a failed load is not an empty list"
+ * refusal (Wave 22 · ITEM 4), reused rather than re-implemented here. */
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
 import {
   useLpVehicleInterests,
   lpOnlyBody,
@@ -107,9 +110,53 @@ export function PortfolioCompanySwitcher({
     );
   }
 
+  /* ══ WAVE 113 · FINDING 4 (wave 45) — A FAILURE IS NOT AN EMPTY PORTFOLIO ════
+
+     THE HONEST ANSWER FIRST, because the brief asked for one: the empty state
+     below is CORRECT for an investor who holds nothing, and it is left standing.
+     No position is fabricated to fill this page.
+
+     THE DEFECT. `const data = positions.data ?? []` erased the difference between
+     "the server said you hold nothing" and "we never got an answer". A 403, a 429,
+     a 500 and an offline/PAUSED query all arrived at `data.length === 0` and
+     rendered "Your portfolio is empty — You don't hold any positions yet", which
+     is this platform's forbidden failure mode: a fault shown to a customer as a
+     fact about their holdings. `positions.isError` was checked nowhere on this
+     page, even though three honest sibling states (`portfolio-empty-pending-lp`,
+     `portfolio-lp-only-state`, `portfolio-lp-unavailable`) already existed here.
+
+     Both halves of `LoadFailedRefusal`'s contract are honoured: the refusal is a
+     sibling `role="alert"` block with a retry, AND the empty states below are
+     re-gated on `positions.isSuccess` — not on `!isLoading && !isError` — so a
+     PAUSED query (the investor is simply offline) is not read as emptiness either.
+     That is the mutation the original wave missed. */
+  if (positions.isError) {
+    return (
+      <LoadFailedRefusal
+        what="your portfolio positions"
+        onRetry={() => { void positions.refetch(); }}
+        testId="portfolio-positions-load-failed"
+        isRetrying={positions.isFetching}
+      />
+    );
+  }
+
   // Hold the empty-state until we know whether there are vehicle interests.
   // Rendering "empty" during the LP request and then correcting it is still a
   // moment in which the product lied to the investor.
+  if (!positions.isSuccess) {
+    /* Neither loading, nor errored, nor successful — a PAUSED query. We do not
+       know what this investor holds, so we do not assert that they hold nothing. */
+    return (
+      <LoadFailedRefusal
+        what="your portfolio positions"
+        onRetry={() => { void positions.refetch(); }}
+        testId="portfolio-positions-not-loaded"
+        isRetrying={positions.isFetching}
+      />
+    );
+  }
+
   if (data.length === 0 && !lp.isResolved) {
     return (
       <div

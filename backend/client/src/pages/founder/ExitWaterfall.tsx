@@ -940,9 +940,17 @@ export default function ExitWaterfall(): JSX.Element {
                         <td className={TD_L}>{r.className}</td>
                         <td className={TD_R}><Money value={r.investedMinor} /></td>
                         <td className={TD_R}>
-                          {r.liquidationPreferenceMultiple === null
+                          {/* WAVE 111 — `null` MEANS UNKNOWN, NOT "non-participating".
+                              This cell used to print "non-participating" whenever
+                              `participatingOnRecord` was not exactly `true`, so an
+                              unread participation flag was rendered as a definite —
+                              and payout-changing — term. The server refuses before it
+                              can happen (`liquidation_term_not_on_record`), so this is
+                              a belt on top of that brace: unknown reads as unavailable,
+                              in the same words the money columns use. */}
+                          {r.liquidationPreferenceMultiple === null || r.participatingOnRecord === null
                             ? EXACT_MONEY_UNAVAILABLE
-                            : `${r.liquidationPreferenceMultiple}x ${r.participatingOnRecord === true ? "participating" : "non-participating"}`}
+                            : `${r.liquidationPreferenceMultiple}x ${r.participatingOnRecord ? "participating" : "non-participating"}`}
                         </td>
                         <td className={TD_R}><Money value={r.claimMinor} /></td>
                         <td className={TD_L}>

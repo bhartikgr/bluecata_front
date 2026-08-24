@@ -161,7 +161,11 @@ function computeKpis() {
   // v25.48 DATA-2 (V-3) — Regions: derived from REAL DB companies + their DB
   // rounds (dbRegions), not the mockData `companies`/`rounds` arrays. Falls back
   // to a single "GLOBAL" bucket only when a company has no region set.
-  const regionAcc = new Map<string, { companies: number; raised: number }>();
+  /* WAVE 116 · FINDING 1 — `raised` is now `number | null`. It used to be a sum of
+     `rounds.raised_amount`, a column with no writer, so every region reported a
+     confident `0`. `null` means "not determined" and the admin client renders it
+     as a dash (R6: never a fabricated zero). */
+  const regionAcc = new Map<string, { companies: number; raised: number | null }>();
   for (const r of dbRegions()) {
     regionAcc.set(r.code, { companies: r.companies, raised: r.raised });
   }

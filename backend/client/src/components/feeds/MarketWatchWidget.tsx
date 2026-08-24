@@ -12,8 +12,15 @@
  * white card, slate border, brand-red (#cc0001) accents, navy (#041e41) text.
  *
  * HARD RULE: when the provider isn't configured the market/crypto cells show
- * an em-dash and a configure hint — never fabricated numbers. The Capavate
- * Pulse row always shows real DB numbers.
+ * an em-dash and a hint — never fabricated numbers. The Capavate Pulse row
+ * always shows real DB numbers.
+ *
+ * WAVE 105 — the empty state no longer names any deployment or configuration
+ * mechanics to a customer. It is viewer-aware: an administrator is told that a
+ * market data provider needs selecting and is linked to the market data
+ * settings screen; a member simply learns that live pricing is unavailable.
+ * "Provider selected but it returned no quotes" is shown as its own state so
+ * nobody is sent to change a setting that is already correct.
  */
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,12 +38,22 @@ interface CapavatePulse {
   connectionsToday: number;
   asOf: string;
 }
+interface TickerProviderInfo {
+  feed: string | null;
+  configured: string | null;
+  source: "environment" | "admin" | "none";
+  freeFeedFallback: boolean;
+}
 interface TickerPayload {
   status: "OK" | "PROVIDER_NOT_CONFIGURED";
   market: Quote[];
   crypto: Quote[];
   macro: Quote[];
   capavate: CapavatePulse;
+  /** WAVE 105 — non-secret provider status (never carries an API key). */
+  provider?: TickerProviderInfo;
+  /** WAVE 105 — true only for an administrator, drives the admin-only hint. */
+  viewerCanConfigure?: boolean;
 }
 
 function fmtNum(n: number | null): string {
@@ -92,8 +109,17 @@ export function MarketWatchWidget() {
   }, []);
 
   const providerOff = !data || data.status === "PROVIDER_NOT_CONFIGURED";
-  const marketAndMacro = data ? [...data.market, ...data.macro] : [];
+  // Defensive: tolerate a partial payload rather than crashing the dashboard.
+  const marketRows: Quote[] = Array.isArray(data?.market) ? data!.market : [];
+  const cryptoRows: Quote[] = Array.isArray(data?.crypto) ? data!.crypto : [];
+  const macroRows: Quote[] = Array.isArray(data?.macro) ? data!.macro : [];
+  const marketAndMacro = [...marketRows, ...macroRows];
   const pulse = data?.capavate;
+  // A server that predates WAVE 105 sends no `viewerCanConfigure` field; in that
+  // case keep the historical hint rather than hiding it from administrators.
+  const canConfigure = data?.viewerCanConfigure !== false;
+  const quotes: Quote[] = [...marketRows, ...cryptoRows, ...macroRows];
+  const feedSilent = !providerOff && quotes.length > 0 && quotes.every((q) => q.last == null);
 
   return (
     <Card
@@ -109,15 +135,22 @@ export function MarketWatchWidget() {
             className="rounded-xl border border-slate-200 bg-[#faf6f1] p-4 text-sm text-slate-600"
             data-testid="marketwatch-provider-unavailable"
           >
-            Configure a market data provider in <code>.env</code> to enable live
-            feeds.{" "}
-            <a
-              href="/admin/integrations"
-              className="underline text-[#cc0001] hover:text-[#a30001]"
-              data-testid="marketwatch-configure-link"
-            >
-              Open integrations
-            </a>
+            {canConfigure ? (
+              <>
+                Select a market data provider to enable live pricing.{" "}
+                <a
+                  href="/admin/integrations"
+                  className="underline text-[#cc0001] hover:text-[#a30001]"
+                  data-testid="marketwatch-configure-link"
+                >
+                  Open market data settings
+                </a>
+              </>
+            ) : (
+              <span data-testid="marketwatch-provider-unavailable-member">
+                Live market pricing is unavailable right now.
+              </span>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -136,13 +169,23 @@ export function MarketWatchWidget() {
                 Crypto
               </div>
               <div className="divide-y divide-slate-100">
-                {data!.crypto.map((q) => (
+                {cryptoRows.map((q) => (
                   <QuoteRow key={`cr-${q.symbol}`} q={q} />
                 ))}
               </div>
             </div>
           </div>
         )}
+
+        {feedSilent ? (
+          <div
+            className="rounded-xl border border-slate-200 bg-[#faf6f1] p-3 text-xs text-slate-600"
+            data-testid="marketwatch-feed-silent"
+          >
+            The selected market data provider returned no quotes just now. Live
+            pricing will resume automatically.
+          </div>
+        ) : null}
 
         {/* Capavate Pulse — ALWAYS real DB numbers. */}
         <div

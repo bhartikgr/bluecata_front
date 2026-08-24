@@ -18,6 +18,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StateBadge } from "@/components/common";
 import { ArrowRight, Check, Activity, AlertTriangle, Users } from "lucide-react";
 import { fmtUSD, fmtPct, fmtDate } from "@/lib/format";
+/* WAVE 122 · FINDINGS 1 & 2 — the ONE money reader and the ONE currency
+ * decision, both declared in `shared/`. Nothing on this screen derives a total,
+ * divides a money figure or picks a denomination for itself. */
+import {
+  readRoundMoneyOnRecord,
+  progressBarPercent,
+  ROUND_MONEY_SECTION_LABEL,
+} from "@shared/roundMoneyOnRecordView";
+import { readRoundCurrency } from "@shared/roundCurrencyOnRecordView";
 import type { MaIntelligence } from "@shared/schema";
 import { useRealtimeSync } from "@/lib/realtimeSync";
 // SPINE-0 (Wave 2): the ONE canonical source of investor ladder derivation.
@@ -60,9 +69,28 @@ type Inv = {
   closeDate?: string | null;
   roundState?: string | null;
   targetAmount: number;
-  raisedAmount: number;
-  minTicket: number;
-  preMoney: number;
+  /* WAVE 122 · FINDING 1 — `rounds.raised_amount` HAS NO WRITER ANYWHERE IN THE
+   * PRODUCT (`server/roundsStore.ts:278,326` insert the literal 0;
+   * `server/routes.ts:7773` excludes the key from the accepted patch), so this
+   * arrived permanently `0` and the card printed "$0 soft-circled of $5M · 0%"
+   * with an empty bar on every real round. The server now sends honest `null`
+   * under R6 and THIS SCREEN NO LONGER READS IT: the figures come from
+   * `moneyOnRecord`, Wave 114's single derivation. The field stays on the type,
+   * nullable, so a reader cannot be reintroduced without noticing. */
+  raisedAmount: number | null;
+  /** WAVE 122 · FINDING 1 — the derived, LABELLED three-state money projection
+   *  (`shared/roundMoneyOnRecordView.ts`). `unknown` on purpose: it is read
+   *  through `readRoundMoneyOnRecord`, which refuses anything that is not a
+   *  complete, determined projection rather than printing a number. */
+  moneyOnRecord?: unknown;
+  /** WAVE 122 · FINDING 2 — the round's own currency. It was NEVER on this type,
+   *  so every figure below went through `fmtUSD` with no currency and a
+   *  €2,000,000 round was shown to an investor as $2,000,000. Nullable because
+   *  the server refuses to guess when nothing is recorded. */
+  currency?: string | null;
+  /* R6 (Wave 42) — nullable on the wire: a valuation never entered is not 0. */
+  minTicket: number | null;
+  preMoney: number | null;
   hasProRata?: boolean;
 };
 
@@ -304,9 +332,22 @@ export default function Invitations() {
 
 function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; nowMs: number }) {
   const intel = useQuery<MaIntelligence>({ queryKey: ["/api/investor/ma/intelligence", i.company.id] });
-  const pct = (i.raisedAmount / i.targetAmount) * 100;
+  /* WAVE 122 · FINDING 1 — `const pct = (i.raisedAmount / i.targetAmount) * 100`
+     IS GONE. It divided a column nothing writes by the target, so it was a
+     permanent 0 on every real round, printed as a percentage AND drawn as an
+     empty progress bar. The ratio now arrives from the server in basis points
+     (Wave 114's derivation, so no browser divides money) and is `null` when
+     there is nothing honest to draw — never 0 standing in for unknown (R6). */
+  const moneyView = readRoundMoneyOnRecord(i.moneyOnRecord);
+  const barPct = progressBarPercent(moneyView.money?.progressBp?.subscribed);
+  /* WAVE 122 · FINDING 2 — the round's own denomination, or a refusal. */
+  const cur = readRoundCurrency(i.currency);
+  const money = (v: unknown) =>
+    cur.canDenominate ? fmtUSD(v, { compact: true, currency: cur.currency ?? undefined }) : null;
   // Sprint 20 fix: pro-rata based on minTicket OR backend flag — not pct condition
-  const proRata = i.hasProRata === true || i.minTicket >= 250_000;
+  /* R6: a null min ticket is NOT a small one — an unrecorded value must not
+     decide a badge, so the comparison happens only on a recorded number. */
+  const proRata = i.hasProRata === true || (i.minTicket != null && i.minTicket >= 250_000);
   /* WAVE 43 · R7 + R6 + F-10 — THE COUNTDOWN.
    *
    * WAS: `const days = Math.max(0, Math.floor((new Date(i.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));`
@@ -373,19 +414,61 @@ function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; no
 
             {/* Soft-circle countdown */}
             <div className="mt-4">
-              <div className="flex items-baseline justify-between text-sm mb-1">
-                <div>
-                  <span className="font-semibold">{fmtUSD(i.raisedAmount, { compact: true })}</span>
-                  <span className="text-muted-foreground"> soft-circled of {fmtUSD(i.targetAmount, { compact: true })}</span>
+              {/* WAVE 122 · FINDING 1 — WHAT THIS BLOCK USED TO SAY, AND WHY IT
+                  IS GONE. It printed `{fmtUSD(i.raisedAmount)} soft-circled of
+                  {target}` beside `{fmtPct(pct)}` and an emerald bar at
+                  `Math.min(100, pct)%`. Because `rounds.raised_amount` has no
+                  writer, every real round read "$0 soft-circled of $5M · 0%"
+                  with a bar that can never fill, to the investor deciding
+                  whether to wire money. It now prints the SUBSCRIBED total
+                  (committed + funded) with the word attached, the three states
+                  named underneath, and the server's SENTENCE instead of a
+                  number when the figures could not be derived. A bar that
+                  cannot be computed is not drawn at 0% — an empty bar is a
+                  false statement drawn as a picture. */}
+              {moneyView.canPrintFigures ? (
+                <>
+                  <div className="flex items-baseline justify-between text-sm mb-1">
+                    <div data-testid={`inv-subscribed-${i.id}`}>
+                      <span className="font-semibold">{moneyView.money?.subscribedDisplay}</span>
+                      <span className="text-muted-foreground"> subscribed (committed + funded) of {money(i.targetAmount) ?? "the recorded target"}</span>
+                    </div>
+                    {barPct === null ? (
+                      <div className="text-xs text-muted-foreground" data-testid={`inv-progress-unavailable-${i.id}`}>{moneyView.money?.progressBp?.targetNote ?? "No target amount recorded to measure against."}</div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground" data-testid={`inv-progress-pct-${i.id}`}>{fmtPct(barPct, 0)} of target subscribed</div>
+                    )}
+                  </div>
+                  {barPct !== null && (
+                    <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                      {/* WAVE 101 - soft-circled-of-target progress off the negative anchor. */}
+                      <div className="h-full bg-emerald-700" style={{ width: `${barPct}%` }} />
+                    </div>
+                  )}
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid={`inv-money-states-${i.id}`}>
+                    {moneyView.buckets.map((b) => (
+                      <span key={b.key} data-testid={`inv-money-${b.key}-${i.id}`}>
+                        <span className="font-medium text-foreground">{b.display}</span> {b.label}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs" data-testid={`inv-money-not-recorded-${i.id}`}>
+                  <div className="font-medium">{moneyView.statement}</div>
+                  <div className="text-muted-foreground mt-0.5">{ROUND_MONEY_SECTION_LABEL}: no figure and no progress bar are shown, because none could be determined — that is not the same as zero.</div>
                 </div>
-                <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)}</div>
-              </div>
-              <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                {/* WAVE 101 - soft-circled-of-target progress off the negative anchor. */}
-                <div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />
-              </div>
+              )}
               <div className="flex items-center justify-between text-xs text-muted-foreground mt-1.5">
-                <span>Min ticket {fmtUSD(i.minTicket, { compact: true })} · pre-money {fmtUSD(i.preMoney, { compact: true })}</span>
+                {/* WAVE 122 · FINDING 2 — these two figures used to be printed by
+                    `fmtUSD` with no currency, so a €2M round read as $2M. They
+                    now carry the round's own denomination, and when no currency
+                    is recorded the screen says so instead of guessing one. */}
+                <span data-testid={`inv-terms-${i.id}`}>
+                  {cur.canDenominate
+                    ? <>Min ticket {money(i.minTicket)} · pre-money {money(i.preMoney)} ({cur.currency})</>
+                    : <>Min ticket and pre-money not shown — {cur.statement}</>}
+                </span>
                 {/* WAVE 43 · R7 — the surface STATES THE FACT. The old muted
                     "Window closed" caption rendered beside an enabled red CTA;
                     it is replaced by the full sentence "This round closed on

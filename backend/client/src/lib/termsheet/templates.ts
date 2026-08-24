@@ -147,14 +147,35 @@ function pricedRoundCore(d: TermSheetData, instrumentLabel: string): TermSheetSe
          count and the option pool in this same template. */
       body: (x) => {
         if (x.liqPrefMultiple === null || x.participating === null) {
+          /* ── WAVE 111 — THE REASON IS THE ONE READER'S OWN SENTENCE ────────────
+             `liquidationTermsNotice` comes from `describeLiquidationTerms` in
+             `shared/liquidationTermsReader.ts`, the single interpreter of the
+             round's preference wording and participation cap. Where it is present
+             it is printed verbatim, so this document, the round's Terms tab and the
+             exit waterfall's 422 give a founder the SAME reason in the same words —
+             including the two cases this clause used to get confidently wrong, a
+             cap that conflicts with the wording and a cap that cannot be read at
+             all, both of which it printed as "with no cap on participation
+             recorded". Nothing is invented when it is absent: the general sentence
+             below is Wave 92's and still says the term is not on record. */
           return (
             `[TO BE AGREED — NOT ON RECORD] The liquidation preference for the ` +
             `${instrumentLabel} has not been recorded on this round, so Capavate has not ` +
             `stated one here. ` +
-            (x.liquidationPreferenceRaw
-              ? `The round's terms currently say "${x.liquidationPreferenceRaw}", which does not state ` +
-                `BOTH a multiple and whether the ${instrumentLabel} is participating. `
-              : `No liquidation preference is stored against this round at all. `) +
+            (x.liquidationTermsNotice
+              ? /* The one reader's own reason REPLACES the generic sentence rather
+                   than joining it: "does not state BOTH a multiple and whether the
+                   class is participating" is the right reason for an incomplete
+                   wording and the WRONG reason for two caps that disagree, and a
+                   document must not state a reason that is not the reason. */
+                `${x.liquidationTermsNotice} ` +
+                (x.liquidationPreferenceRaw
+                  ? `The round's terms currently say "${x.liquidationPreferenceRaw}". `
+                  : "")
+              : x.liquidationPreferenceRaw
+                ? `The round's terms currently say "${x.liquidationPreferenceRaw}", which does not state ` +
+                  `BOTH a multiple and whether the ${instrumentLabel} is participating. `
+                : `No liquidation preference is stored against this round at all. `) +
             `Record it on the round's terms — for example "1× non-participating" or ` +
             `"1× participating, capped at 2×" — and regenerate this term sheet. ` +
             `A sale of all or substantially all of the Company's assets, a merger, ` +

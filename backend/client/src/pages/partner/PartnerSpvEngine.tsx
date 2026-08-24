@@ -20,6 +20,7 @@ import { formatMinor as formatMinorLib, toMinor } from "@/lib/currency";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter"; /* SC-2 (WAVE 2) — inbound link to the SPV detail route */
 import { apiRequest } from "@/lib/queryClient";
+import { fieldValidityProps } from "@/lib/fieldValidityClass";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
@@ -67,6 +68,9 @@ import {
    on this card and "United States (Delaware)" on its own page. The body moved
    verbatim into `spvJurisdictionDisplay()` (shared/spvEngine.ts) and all three
    SPV surfaces now call that, so the two reads cannot disagree again. */
+/* WAVE 106 - FINDING 5: the two fields below now take their border from the
+   SAME predicate that drives their inline error text and the Next button, so a
+   valid field cannot keep an invalid border. See lib/fieldValidityClass.ts. */
 function jurisdictionLabelFor(s: SpvDTO): string {
   return spvJurisdictionDisplay(s).label;
 }
@@ -424,6 +428,39 @@ export default function PartnerSpvEngine() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Launch failed", description: e.message }),
   });
 
+  /* ══════════════════════════════════════════════════════════════════════
+     W104 · EVERY HOOK IN THIS COMPONENT MUST SIT ABOVE THE GUARD BELOW.
+     DO NOT ADD A HOOK AFTER THE `role.ready` RETURN.
+
+     The guard below returns early while the partner role is still resolving.
+     Wave 83 added three hooks BELOW it — a `useState` tracking whether the GP
+     had touched the mandate dropdown, and a `useRef`/`useEffect` pair that
+     focuses the first wizard field. On the first render the guard fired and
+     React recorded the shorter hook list; on the render after the role
+     resolved, three further hooks appeared. React threw error #310, "Rendered
+     more hooks than during the previous render", and the whole SPV engine page
+     rendered a crash screen ON PRODUCTION.
+
+     None of these three hooks reads `role.identity`, so they belong here,
+     above the guard, where they run on every render. A hook placed below the
+     guard breaks this page again — and neither `tsc` nor the unit suite will
+     tell you, because only a render that takes the early return FIRST and then
+     re-renders can expose it.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  /* WAVE 83 · ITEM 2.5 — has the GP touched the mandate dropdown yet? */
+  const [mandateModeTouched, setMandateModeTouched] = useState(false);
+
+  /* WAVE 83 · ITEM 5.1 — ref for the field the wizard focuses first. */
+  const spvNameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    /* Radix places focus itself when the dialog opens; this runs after that and
+       puts it on the first required field, which is where a GP starts typing. */
+    if (!wizardOpen || step !== 0) return;
+    const t = setTimeout(() => spvNameRef.current?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [wizardOpen, step]);
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const canWrite = me.subRole === "managing_partner" || me.subRole === "associate" || me.subRole === "bd";
@@ -459,23 +496,12 @@ export default function PartnerSpvEngine() {
     syndicate: "deal_specific",
     rolling_fund: "open",
   };
-  const [mandateModeTouched, setMandateModeTouched] = useState(false);
   const onSpvTypeChange = (spvType: string) =>
     setW((prev) => ({
       ...prev,
       spvType,
       mandateMode: mandateModeTouched ? prev.mandateMode : (DEFAULT_MANDATE_FOR_TYPE[spvType] ?? prev.mandateMode),
     }));
-
-  /* WAVE 83 · ITEM 5.1 — the field the wizard must focus first. */
-  const spvNameRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    /* Radix places focus itself when the dialog opens; this runs after that and
-       puts it on the first required field, which is where a GP starts typing. */
-    if (!wizardOpen || step !== 0) return;
-    const t = setTimeout(() => spvNameRef.current?.focus(), 0);
-    return () => clearTimeout(t);
-  }, [wizardOpen, step]);
 
   const onJurisdictionCountryChange = (country: string) =>
     setW((prev) => ({
@@ -694,7 +720,7 @@ export default function PartnerSpvEngine() {
                   year, swallowed exactly four characters and then silently refused the
                   rest. Focus is now placed on the SPV name field explicitly. Nothing
                   moved, nothing was renamed, and Vintage keeps its own validation. */}
-              <div><Label>SPV name *</Label><Input autoFocus ref={spvNameRef} data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              <div><Label>SPV name *</Label><Input autoFocus ref={spvNameRef} data-testid="spv-w-name" {...fieldValidityProps(w.name.trim().length > 0)} value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
               {/* WAVE 7B V-1 (DEF-085) — vintage year. The admin create form has
                   always had this field; the PARTNER-facing wizard never did, so
                   every partner-created SPV carried no vintage and the admin
@@ -794,6 +820,7 @@ export default function PartnerSpvEngine() {
                 <Label>Description of mandate *</Label>
                 <Textarea
                   data-testid="spv-w-mandate-desc"
+                  {...fieldValidityProps(w.mandateDescription.trim().length > 0)}
                   rows={4}
                   maxLength={MANDATE_DESCRIPTION_MAX}
                   value={w.mandateDescription}
@@ -831,7 +858,7 @@ export default function PartnerSpvEngine() {
                   values. They narrow which companies can ever match (fail-closed). */}
               <div className="grid grid-cols-2 gap-3" data-testid="spv-w-mandate-optional">
                 <div><Label>Geography (optional)</Label><Input data-testid="spv-w-geography" value={w.geography} onChange={(e) => setW({ ...w, geography: e.target.value })} placeholder="e.g. United States, EU" /></div>
-                <div><Label>Stage (optional)</Label><Input data-testid="spv-w-stage" value={w.stage} onChange={(e) => setW({ ...w, stage: e.target.value })} placeholder="e.g. seed, series_a" /></div>
+                <div><Label>Stage (optional)</Label><Input data-testid="spv-w-stage" value={w.stage} onChange={(e) => setW({ ...w, stage: e.target.value })} placeholder="e.g. Seed, Series A" /></div>
                 <div><Label>{amountLabel("Min check")} (optional)</Label><Input data-testid="spv-w-checkmin" type="number" value={w.checkMinMajor} onChange={(e) => setW({ ...w, checkMinMajor: e.target.value })} placeholder="e.g. 25000" /></div>
                 <div><Label>{amountLabel("Max check")} (optional)</Label><Input data-testid="spv-w-checkmax" type="number" value={w.checkMaxMajor} onChange={(e) => setW({ ...w, checkMaxMajor: e.target.value })} placeholder="e.g. 250000" /></div>
               </div>
@@ -841,8 +868,16 @@ export default function PartnerSpvEngine() {
                   a separate, deliberate money-path step on the Deployments tab). */}
               <div>
                 <Label>Target company (optional)</Label>
-                <Input data-testid="spv-w-target-company" value={w.targetCompanyId} onChange={(e) => setW({ ...w, targetCompanyId: e.target.value })} placeholder="Company id to link (no allocation committed)" />
-                <div className="text-[10px] text-[var(--cv-color-text-faint)]">Links a target company to this SPV for reference only — no capital is allocated or committed here.</div>
+                <Input data-testid="spv-w-target-company" value={w.targetCompanyId} onChange={(e) => setW({ ...w, targetCompanyId: e.target.value })} placeholder="Paste the company's reference code from its Capavate page" />
+                <div className="text-[10px] text-[var(--cv-color-text-faint)]">
+                  Links a target company to this SPV for reference only — no capital is allocated or committed here.
+                  {/* WAVE 106 - FINDING 4.2: this field still needs the company's
+                      reference code because there is no company picker yet. A
+                      picker is out of scope for this wave and is recorded as an
+                      open item; the wording at least now says where to find the
+                      code instead of naming an internal identifier. */}
+                  {" "}You can copy it from the address bar of that company's page. Leave this blank if you are not linking a company yet.
+                </div>
               </div>
 
               <p className="text-xs text-[var(--cv-color-text-muted)]">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match — eligibility is fail-closed.</p>
@@ -1104,7 +1139,10 @@ export default function PartnerSpvEngine() {
                   the screen does not imply it was typed. This is the only collected
                   key not represented above. */}
               <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-review-derived-note">
-                Engine jurisdiction ({w.jurisdiction}) is derived automatically from the country above and is not separately entered.
+                {/* WAVE 106 - FINDING 4.3: this printed the raw enum ("cayman"). The
+                    same shared label map the rest of the SPV surfaces use is
+                    used here, so a partner reads "Cayman Islands". */}
+                The registration used by the engine ({SPV_JURISDICTION_LABELS[w.jurisdiction as keyof typeof SPV_JURISDICTION_LABELS] ?? w.jurisdiction}) is derived automatically from the country above and is not separately entered.
               </div>
               {/* B2 — per-SPV-type helper note (Syndicate, Rolling Fund) */}
               {SPV_TYPE_REVIEW_NOTE[w.spvType] && (

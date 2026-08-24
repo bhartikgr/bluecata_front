@@ -113,7 +113,10 @@ export default function AdminUsers() {
     <>
       <PageHeader
         title="Users & Auth"
-        description="Real user list backed by auth_users. Manage roles, suspend, force-logout, reset password, and audit."
+        /* WAVE 117 · FINDING 4 — named the storage table (`auth_users`) to a human.
+           The sentence now says what the list IS. The table name is still in the
+           file docblock, where an engineer reads it. */
+        description="Every real account that can sign in to Capavate. Manage roles, suspend, force-logout, reset password, and audit."
         breadcrumbs={[{ label: "Admin" }, { label: "Users & Auth" }]}
         actions={
           <div className="flex gap-2">

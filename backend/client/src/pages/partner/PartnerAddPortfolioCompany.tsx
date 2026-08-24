@@ -10,6 +10,8 @@
  * section.
  */
 import { useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -164,7 +166,7 @@ export default function PartnerAddPortfolioCompany() {
             claim the account and complete the full company profile.
           </p>
           <div className="text-xs text-[var(--cv-color-text-muted)] mb-2" data-testid="apc-company-id">
-            Company id: <span className="font-mono">{result.companyId}</span>
+            Company id: <span className="font-mono">{partyReferenceLabel(result.companyId)}</span>
           </div>
           {result.founderInvite ? (
             <div className="rounded-md border p-3" style={{ borderColor: "var(--cv-color-border)" }}>

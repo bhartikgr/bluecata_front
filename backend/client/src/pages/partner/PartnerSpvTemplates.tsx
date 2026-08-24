@@ -10,12 +10,29 @@
  * re-enter jurisdiction, carry basis, minimum check and LP visibility into the
  * SPV wizard on every launch. A template saves those defaults once.
  *
- * WHAT "APPLY" DOES, AND DELIBERATELY DOES NOT DO: it copies the template's
- * values into the SPV create form. It does NOT create an SPV, and the UI says so
- * in as many words. SPV creation is gated by the Wave 1c launch sign-off, which
- * records a durable attested signature before the SPV row exists; an
- * apply-and-launch shortcut would route around that gate. The operator still
- * signs.
+ * WHAT "APPLY" DOES, AND DELIBERATELY DOES NOT DO — CORRECTED BY WAVE 117.
+ *
+ * This docblock used to read "it copies the template's values into the SPV create
+ * form". IT DOES NOT, AND NEVER DID. Apply calls
+ * `POST /api/partner/me/spv-templates/:id/apply`, which writes an append-only
+ * `spv_template_application` row, increments `usage_count`, and RETURNS the
+ * template's values as a prefill payload. Nothing on the platform carries that
+ * payload into the SPV wizard — the wizard
+ * (`client/src/pages/partner/PartnerSpvEngine.tsx`) builds its own defaults and
+ * has never read a prefill. Wave 115 verified this; wave 117 stopped the page
+ * claiming otherwise.
+ *
+ * So what Apply really does is: RECORD that the structure was used, and SHOW the
+ * saved values so the operator can carry them across. That is genuinely useful
+ * and is not removed — the copy now describes it accurately, the panel shows
+ * every value the server returned instead of four of eleven, and a copy-to-
+ * clipboard control makes "carry these across" a supported action rather than a
+ * transcription exercise.
+ *
+ * It does NOT create an SPV, and the UI says so in as many words. SPV creation is
+ * gated by the Wave 1c launch sign-off, which records a durable attested
+ * signature before the SPV row exists; an apply-and-launch shortcut would route
+ * around that gate. The operator still signs.
  *
  * MONEY RENDERING: every amount goes through `formatMinor(minor, currency)`.
  * Never `/100` — that is wrong by a factor of one hundred for JPY and every
@@ -35,6 +52,9 @@ import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinor, toMinor } from "@/lib/currency";
 
+/* WAVE 115 · FINDING 1 (L9) — the jurisdiction key (`cayman`), the SPV type and
+   the carry basis all reached this table raw. */
+import { jurisdictionDisplayLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 /** Must match `CARRY_FRACTION_SCALE` in server/lib/money.ts. */
 const CARRY_SCALE = 1000000000;
 
@@ -86,6 +106,11 @@ function Amount({ minor, currency }: { minor: number | null; currency: string })
   return <span>{formatMinor(minor, currency)}</span>;
 }
 
+/* WAVE 117 · FINDING 1 — one label for "the template does not record this",
+   matching `Amount`'s wording so the panel does not use two vocabularies for the
+   same absence. It is NOT "—" and NOT "0". */
+const NOT_SET_LABEL = "Not set";
+
 /** Carry as a percentage, derived from the scaled integer fraction. */
 function carryLabel(scaled: number | null): string {
   if (scaled === null || scaled === undefined) return "Not set";
@@ -100,6 +125,13 @@ export default function PartnerSpvTemplates() {
   const [showNew, setShowNew] = useState(false);
   const [prefill, setPrefill] = useState<Record<string, unknown> | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  /* WAVE 117 · FINDING 1 — the clipboard hand-off reports what actually happened,
+     including when the browser refuses. A control that silently fails is the
+     defect this wave exists to remove, so "nothing was copied" is a state the UI
+     can be in and say. */
+  const [copyState, setCopyState] = useState<string | null>(null);
+  /* WAVE 117 · FINDING 1 — an apply that FAILS says so. See `applyM.onError`. */
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     name: "",
@@ -112,6 +144,57 @@ export default function PartnerSpvTemplates() {
     targetRaise: "",
     carryPct: "",
   });
+
+  /* WAVE 117 · FINDING 1 — THE HAND-OFF, MADE REAL AS FAR AS THIS PAGE CAN MAKE IT.
+     Amounts are rendered by `formatMinor(minor, currency)`, the same function the
+     panel uses, so the clipboard text and the screen cannot disagree; minor units
+     are never divided by 100 here or anywhere on this page. Absent values are
+     copied as "Not set", never as a zero, because pasting a zero minimum check
+     into a wizard would assert a term the template does not hold. */
+  function prefillClipboardText(p: Record<string, unknown>): string {
+    const currency = String(p.currency ?? "USD");
+    /* No `Number()`, `parseInt` or `parseFloat` touches a money value: the minor
+       unit is either already an integer count or it is absent, and "absent" is
+       reported as such rather than coerced into a zero amount. */
+    const money = (minor: unknown): string =>
+      typeof minor === "number" && Number.isFinite(minor) ? formatMinor(minor, currency) : NOT_SET_LABEL;
+    const key = (v: unknown): string => (v ? humanizeMachineKey(String(v)) : NOT_SET_LABEL);
+    return [
+      `Capavate SPV template values — ${String(p.templateName ?? "")}`,
+      `(Copied for manual entry on the SPV create form. No SPV has been created.)`,
+      `Vehicle type: ${key(p.spvType)}`,
+      `Jurisdiction: ${jurisdictionDisplayLabel(String(p.jurisdiction ?? ""))}`,
+      `Carry basis: ${key(p.carryBasis)}`,
+      `Distribution scope: ${key(p.distributionScope)}`,
+      `LP visibility: ${key(p.lpVisibility)}`,
+      `Currency: ${currency}`,
+      `Minimum check: ${money(p.minCheckMinor)}`,
+      `Target raise: ${money(p.targetRaiseMinor)}`,
+      `Cap: ${money(p.capMinor)}`,
+      `Carry: ${carryLabel((p.carryFractionScaled as number | null) ?? null)}`,
+    ].join("\n");
+  }
+
+  async function copyPrefill(): Promise<void> {
+    if (!prefill) return;
+    const text = prefillClipboardText(prefill);
+    const clip = (navigator as unknown as { clipboard?: { writeText?: (s: string) => Promise<void> } })
+      .clipboard;
+    if (!clip || typeof clip.writeText !== "function") {
+      setCopyState(
+        "This browser did not allow Capavate to use the clipboard — nothing was copied. Select the values above and copy them manually.",
+      );
+      return;
+    }
+    try {
+      await clip.writeText(text);
+      setCopyState("Copied — paste them into the SPV create form. No SPV has been created.");
+    } catch {
+      setCopyState(
+        "The clipboard was refused — nothing was copied. Select the values above and copy them manually.",
+      );
+    }
+  }
 
   const listQ = useQuery<ListResponse>({
     queryKey: ["/api/partner/me/spv-templates", includeArchived],
@@ -142,9 +225,24 @@ export default function PartnerSpvTemplates() {
   const applyM = useMutation({
     mutationFn: async (id: string) =>
       (await apiRequest("POST", `/api/partner/me/spv-templates/${id}/apply`, {})).json(),
+    /* WAVE 117 · FINDING 1 — a click on this control now always produces a visible
+       outcome. Before, `onSuccess` set the panel and there was NO `onError` at all:
+       an archived or partner-scoped refusal from the server left the button looking
+       as though it had worked and the page unchanged — the "appears to succeed and
+       changes nothing" case, which is the worst of the three. A refusal is now
+       stated. */
     onSuccess: (res: any) => {
+      setApplyError(null);
+      setCopyState(null);
       setPrefill(res?.prefill ?? null);
       invalidate();
+    },
+    onError: (e: any) => {
+      setPrefill(null);
+      setCopyState(null);
+      setApplyError(
+        String(e?.message ?? "Capavate could not record this template — nothing was applied."),
+      );
     },
   });
 
@@ -231,10 +329,11 @@ export default function PartnerSpvTemplates() {
         <section className="rounded-lg border p-4" data-testid="spv-templates-intro">
           <h2 className="text-lg font-semibold">Reusable SPV structures</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Save the jurisdiction, carry basis and economics you use repeatedly, then apply them
-            when launching a vehicle. Applying a template fills in the create form —{" "}
-            <strong>it does not create an SPV</strong>. Every launch still goes through the signed
-            sign-off flow.
+            Save the jurisdiction, carry basis and economics you use repeatedly, then apply one when
+            you launch a vehicle. Applying <strong>records that the template was used and lists its
+            saved values here for you to copy across</strong> — it does not type them into the SPV
+            create form for you, and <strong>it does not create an SPV</strong>. Every launch still
+            goes through the signed sign-off flow.
           </p>
         </section>
 
@@ -375,26 +474,77 @@ export default function PartnerSpvTemplates() {
           </section>
         )}
 
+        {applyError !== null && (
+          <section
+            className="rounded-lg border border-destructive p-4"
+            data-testid="spv-template-apply-error"
+          >
+            <h3 className="text-sm font-semibold">Nothing was applied</h3>
+            <p className="text-xs text-muted-foreground mt-1">{applyError}</p>
+          </section>
+        )}
+
         {prefill && (
           <section
             className="rounded-lg border border-primary p-4"
             data-testid="spv-template-prefill-panel"
           >
-            <h3 className="text-sm font-semibold">
-              Template applied — carry these values into the SPV create form
+            {/* WAVE 117 · FINDING 1 — the heading told the operator the values had
+                been carried somewhere. They had not: this panel IS the whole of the
+                hand-off. It now says which of the two things happened. */}
+            <h3 className="text-sm font-semibold" data-testid="prefill-panel-heading">
+              Template recorded — these are its saved values, to copy into the SPV create form
             </h3>
             <p className="text-xs text-muted-foreground mt-1">
-              No SPV has been created. Launching still requires the signed sign-off on the SPV
-              create form.
+              Capavate has logged that this template was used. It has <strong>not</strong> filled in
+              the SPV create form and no SPV has been created — enter these values on the form
+              yourself. Launching still requires the signed sign-off there.
             </p>
+            {/* WAVE 117 · FINDING 1 — ELEVEN VALUES CAME BACK; FOUR WERE SHOWN.
+                `applyTemplate()` in `server/spvTemplateStore.ts` returns the SPV
+                type, distribution scope, LP visibility, target raise and cap as
+                well, and the panel dropped them silently — so an operator told to
+                "carry these values across" could not, because most of them were
+                never on screen. Machine keys go through the wave-115 display
+                helpers, as everywhere else on this page. */}
             <dl className="mt-3 grid gap-2 sm:grid-cols-2 text-sm">
               <div>
+                <dt className="text-muted-foreground">Template</dt>
+                <dd data-testid="prefill-template-name">{String(prefill.templateName ?? "")}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Vehicle type</dt>
+                <dd data-testid="prefill-spv-type">
+                  {humanizeMachineKey(String(prefill.spvType ?? ""))}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-muted-foreground">Jurisdiction</dt>
-                <dd data-testid="prefill-jurisdiction">{String(prefill.jurisdiction ?? "")}</dd>
+                <dd data-testid="prefill-jurisdiction">
+                  {jurisdictionDisplayLabel(String(prefill.jurisdiction ?? ""))}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Carry basis</dt>
-                <dd data-testid="prefill-carry-basis">{String(prefill.carryBasis ?? "")}</dd>
+                <dd data-testid="prefill-carry-basis">
+                  {humanizeMachineKey(String(prefill.carryBasis ?? ""))}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Distribution scope</dt>
+                <dd data-testid="prefill-distribution-scope">
+                  {prefill.distributionScope
+                    ? humanizeMachineKey(String(prefill.distributionScope))
+                    : NOT_SET_LABEL}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">LP visibility</dt>
+                <dd data-testid="prefill-lp-visibility">
+                  {prefill.lpVisibility
+                    ? humanizeMachineKey(String(prefill.lpVisibility))
+                    : NOT_SET_LABEL}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Minimum check</dt>
@@ -406,20 +556,62 @@ export default function PartnerSpvTemplates() {
                 </dd>
               </div>
               <div>
+                <dt className="text-muted-foreground">Target raise</dt>
+                <dd data-testid="prefill-target-raise">
+                  <Amount
+                    minor={(prefill.targetRaiseMinor as number | null) ?? null}
+                    currency={String(prefill.currency ?? "USD")}
+                  />
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Cap</dt>
+                <dd data-testid="prefill-cap">
+                  <Amount
+                    minor={(prefill.capMinor as number | null) ?? null}
+                    currency={String(prefill.currency ?? "USD")}
+                  />
+                </dd>
+              </div>
+              <div>
                 <dt className="text-muted-foreground">Carry</dt>
                 <dd data-testid="prefill-carry">
                   {carryLabel((prefill.carryFractionScaled as number | null) ?? null)}
                 </dd>
               </div>
             </dl>
-            <button
-              type="button"
-              className="mt-3 rounded border px-3 py-1.5 text-sm"
-              onClick={() => setPrefill(null)}
-              data-testid="button-dismiss-prefill"
-            >
-              Dismiss
-            </button>
+            <div className="mt-3 flex flex-wrap gap-2 items-center">
+              {/* WAVE 117 · FINDING 1 — the owner's rule is "add rather than delete".
+                  Rather than delete a control that does real, logged work, the
+                  hand-off it always implied is made real as far as this page can
+                  make it: the values go to the clipboard in one click, labelled, so
+                  they can be pasted into the wizard. This does NOT claim to fill
+                  the form — the confirmation says exactly what happened. */}
+              <button
+                type="button"
+                className="rounded border px-3 py-1.5 text-sm"
+                onClick={() => void copyPrefill()}
+                data-testid="button-copy-prefill"
+              >
+                Copy these values
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-1.5 text-sm"
+                onClick={() => {
+                  setPrefill(null);
+                  setCopyState(null);
+                }}
+                data-testid="button-dismiss-prefill"
+              >
+                Dismiss
+              </button>
+              {copyState !== null && (
+                <span className="text-xs text-muted-foreground" data-testid="prefill-copy-state">
+                  {copyState}
+                </span>
+              )}
+            </div>
           </section>
         )}
 
@@ -462,9 +654,9 @@ export default function PartnerSpvTemplates() {
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <div>{t.jurisdiction}</div>
+                        <div>{jurisdictionDisplayLabel(t.jurisdiction)}</div>
                         <div className="text-xs text-muted-foreground">
-                          {t.spvType} · {t.carryBasis}
+                          {humanizeMachineKey(t.spvType)} · {humanizeMachineKey(t.carryBasis)}
                         </div>
                       </td>
                       <td className="px-3 py-2" data-testid={`min-check-${t.id}`}>
@@ -479,14 +671,19 @@ export default function PartnerSpvTemplates() {
                       <td className="px-3 py-2">
                         {canWrite ? (
                           <div className="flex gap-2">
+                            {/* WAVE 117 · FINDING 1 — the label states the outcome the
+                                click actually produces. "Apply" was read as "apply to
+                                the create form", which is the one thing it does not do.
+                                The testid is unchanged. */}
                             <button
                               type="button"
                               className="rounded border px-2 py-1 text-xs"
                               disabled={t.isArchived || applyM.isPending}
                               onClick={() => applyM.mutate(t.id)}
                               data-testid={`button-apply-${t.id}`}
+                              title="Records that this template was used and lists its saved values for you to copy into the SPV create form"
                             >
-                              Apply
+                              Apply · show values
                             </button>
                             <button
                               type="button"

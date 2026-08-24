@@ -14,6 +14,8 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+/* WAVE 115 · FINDING 1 (L8) — the fund status reached the page title raw. */
+import { fundStatusLabel, partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useToast } from "@/hooks/use-toast"; /* v25.14 NC3 — pledge error toast */
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
 
@@ -143,7 +145,7 @@ export default function PartnerFundDetail() {
   const canPledge = me.subRole === "managing_partner" || me.subRole === "associate";
 
   return (
-    <PartnerShell title={`${f.name}${vintage ? ` · Vintage ${vintage}` : ""} · ${f.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+    <PartnerShell title={`${f.name}${vintage ? ` · Vintage ${vintage}` : ""} · ${fundStatusLabel(f.status)}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-fund-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -170,7 +172,7 @@ export default function PartnerFundDetail() {
           <div className="space-y-2">
             {commitments.map((c) => (
               <div key={c.investorId} className="flex justify-between text-sm border-b pb-2" data-testid={`partner-commitment-${c.investorId}`}>
-                <div>{c.investorId}</div>
+                <div>{partyReferenceLabel(c.investorId)}</div>
                 <div className="font-mono">{formatMinor(c.commitmentMinor, f.currency)}</div>
               </div>
             ))}

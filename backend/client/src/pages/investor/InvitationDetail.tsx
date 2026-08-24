@@ -31,6 +31,29 @@ import { SoftCircleExpiryBanner } from "@/components/SoftCircleExpiryBanner";
 import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy, Minus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
+/* WAVE 122 · FINDINGS 1 & 2 — the ONE money projection reader and the ONE
+ * currency decision, both declared in `shared/` and shared with the invitations
+ * LIST screen. No total is derived and no denomination is chosen on this page. */
+import {
+  readRoundMoneyOnRecord,
+  progressBarPercent,
+  ROUND_MONEY_SECTION_LABEL,
+} from "@shared/roundMoneyOnRecordView";
+import { readRoundCurrency } from "@shared/roundCurrencyOnRecordView";
+/* WAVE 113 · FINDING 1 — the ONE ownership-percentage implementation, shared with
+ * the founder cap table (it calls the same `runEngine`). This page performs no
+ * ownership arithmetic of its own any more, and every percentage it prints now
+ * names the denominator it is a percentage OF. */
+import {
+  computeInvestorOwnership,
+  INVESTOR_DEFAULT_VIEW,
+  ownershipDenominatorSentence,
+} from "@/lib/captable/investorOwnership";
+import { ownershipPercentBarWidth, ownershipPercentCellText } from "@/lib/captable/ownershipPercent";
+/* WAVE 113 · FINDING 3 — fetch-then-present, so a refusal is spoken rather than
+ * swallowed by a fire-and-forget `window.open`. */
+import { openDataroomDocument } from "@/lib/investor/dataroomOpen";
+import { VIEW_DENOMINATOR_LABEL } from "@/lib/captable/exportProvenance";
 /* WAVE 43 · OWNER RULING R7 — the ONE close definition, shared with the server
  * route that refuses the money. This page must never offer an action the API
  * will reject. */
@@ -96,8 +119,25 @@ type Inv = {
  /** Round-level close inputs (R7 · S3: the earliest deadline wins). */
  closeDate?: string | null;
  roundState?: string | null;
- minTicket: number; targetAmount: number; raisedAmount: number;
- preMoney: number; postMoney: number;
+ /* WAVE 122 · FINDINGS 1 & 2 — R6 on the wire, and the round's own currency.
+  *
+  * `minTicket` / `preMoney` / `postMoney` were declared non-null here while the
+  * handler has sent `null` for unentered valuations since Wave 42 (R6), so the
+  * type lied about the payload (REVIEW_C C-33). They are nullable now.
+  *
+  * `raisedAmount` is nullable AND UNREAD: `rounds.raised_amount` has no writer
+  * anywhere in the product (`server/roundsStore.ts:278,326` insert the literal
+  * 0; `server/routes.ts:7773` excludes the key from the accepted patch), so the
+  * "soft-circled · 0%" caption and the progress bar on the Round-target card
+  * were a permanent, false zero. The figures come from `moneyOnRecord` now. */
+ minTicket: number | null; targetAmount: number; raisedAmount: number | null;
+ preMoney: number | null; postMoney: number | null;
+ /** WAVE 122 · FINDING 1 — Wave 114's single money derivation, read through
+  *  `readRoundMoneyOnRecord`; `unknown` so it cannot be printed unchecked. */
+ moneyOnRecord?: unknown;
+ /** WAVE 122 · FINDING 2 — the round's denomination, `null` when none is
+  *  recorded. The handler used to send `"USD"` as a guess; it no longer does. */
+ currency?: string | null;
  // v25.25 Avi-8 — priced rounds sometimes leave price_per_share NULL when
  // sharesAuthorized isn't filled. Allow null so callers must guard.
  pricePerShare: number | null;
@@ -231,6 +271,22 @@ export default function InvitationDetail() {
  const queryClient = useQueryClient();
  const { data: entitlementCtx } = useEntitlement();
  const [, navigate] = useLocation();
+
+ /* WAVE 113 · FINDING 3 — one document-opening path for this page, which always
+    says what happened. A success opens or downloads; a refusal is surfaced as a
+    destructive toast carrying the SERVER's own sentence, so the investor learns
+    whether their access was switched off, whether download specifically is
+    withheld, or whether it was our fault. Deliberately NOT a hook: it takes no
+    state and must not add to this component's hook order. */
+ const openDocument = async (fileId: string, fileName: string | null | undefined, disposition: "inline" | "attachment") => {
+  const outcome = await openDataroomDocument({ fileId, fileName, disposition });
+  if (outcome.ok) return;
+  toast({
+   title: outcome.kind === "refused" ? "You do not have access to this document" : outcome.kind === "not_found" ? "Document not available" : "Could not open the document",
+   description: outcome.message,
+   variant: "destructive",
+  });
+ };
 
  // B4: URL-synced tab — read ?tab= from search
  const search = useSearch();
@@ -576,13 +632,73 @@ export default function InvitationDetail() {
  }
  if (!inv.data) return <PageBody>Loading…</PageBody>;
  const i = inv.data;
- const pct = (i.raisedAmount / i.targetAmount) * 100;
- // Defect 7 fix: guard against totalShares <= 0 to avoid garbage percentages
- const rawTotalShares = asArray(sec.data).reduce((s, x) => s + x.shares, 0);
- const totalShares = rawTotalShares > 0 ? rawTotalShares : null;
- const captableRows = totalShares
-  ? asArray(sec.data).map(x => ({ ...x, ownership: (x.shares / totalShares) * 100 }))
-  : [];
+ /* ── WAVE 122 · FINDING 1 — THE FALSE PROGRESS RATIO IS GONE ────────────────
+
+    WAS: `const pct = (i.raisedAmount / i.targetAmount) * 100;`
+
+    `raisedAmount` is `rounds.raised_amount`, a `NOT NULL DEFAULT 0` column that
+    NOTHING IN THE PRODUCT WRITES. So `pct` was 0 on every real round, and the
+    Round-target card printed "$0 soft-circled · 0%" above a bar drawn at
+    `Math.min(100, pct)%` — an empty bar that could never fill — on the page
+    carrying the "Submit soft-circle" button.
+
+    The ratio now arrives from the server in BASIS POINTS from Wave 114's single
+    derivation (`server/lib/roundRaisedTotals.ts` via `roundMoneyOnRecordForRound`),
+    so no browser divides money, and it is `null` — not 0 — when there is no
+    usable target. `progressBarPercent` returns `null` in that case and the bar
+    IS NOT RENDERED: a bar that cannot be computed must not be drawn at 0%.
+
+    The three states are kept distinct and labelled (soft-circled, committed,
+    funded) instead of being collapsed into one word, and when the platform
+    cannot determine them the card prints the server's SENTENCE and NO NUMBER. */
+ const moneyView = readRoundMoneyOnRecord(i.moneyOnRecord);
+ const barPct = progressBarPercent(moneyView.money?.progressBp?.subscribed);
+ /* WAVE 122 · FINDING 2 — the round's own denomination, or an honest refusal.
+    Every `fmtUSD` on this page ran with no currency argument, so a €2,000,000
+    round was shown to an investor as $2,000,000. `money`/`moneyFull` return
+    `null` when nothing is recorded, and each call site prints a sentence rather
+    than picking a currency. */
+ const cur = readRoundCurrency(i.currency);
+ const money = (v: unknown) =>
+  cur.canDenominate ? fmtUSD(v, { compact: true, currency: cur.currency ?? undefined }) : null;
+ const moneyFull = (v: unknown) =>
+  cur.canDenominate ? fmtUSD(v, { currency: cur.currency ?? undefined }) : null;
+ /** What a single figure becomes when the round has no currency on record. */
+ const NO_CURRENCY_CELL = "Not shown — no currency on record";
+ /* ── WAVE 113 · FINDING 1 — THE SECOND OWNERSHIP IMPLEMENTATION IS GONE ─────
+
+    WHAT USED TO BE HERE (and what it got wrong):
+
+      const rawTotalShares = asArray(sec.data).reduce((s, x) => s + x.shares, 0);
+      const totalShares = rawTotalShares > 0 ? rawTotalShares : null;
+      const captableRows = totalShares
+        ? asArray(sec.data).map(x => ({ ...x, ownership: (x.shares / totalShares) * 100 }))
+        : [];
+
+    A float division over the raw wire rows — a SECOND ownership-percentage
+    implementation, disagreeing with the founder cap table's engine by up to
+    11.91 percentage points, and printing a REAL 5% SAFE holder as `0`
+    (`build_log/wave113/W113_PREFLIGHT.md` §1.1, measured, not assumed). It also
+    honoured no view at all, under a card header that asserted "Fully-diluted
+    view" in static prose — a percentage whose stated denominator had nothing to
+    do with its arithmetic.
+
+    `computeInvestorOwnership` calls the SAME `runEngine` the founder's cap table
+    imports, on the WHOLE cap table, and passes each row's exact decimal
+    `ownershipPercent` string straight through. No division happens on this page
+    any more. The `totalShares > 0` guard the old "Defect 7 fix" comment describes
+    is now the engine's own D18 contract: a 0 ÷ 0 ratio arrives as `null` and
+    renders as the em-dash, never as a confident `0.00%`.
+
+    If the engine refuses (As-Converted with convertibles and no priced round), we
+    render its refusal instead of a number. Nothing is fabricated and no view is
+    silently substituted. */
+ const ownership = computeInvestorOwnership({
+  securities: asArray(sec.data),
+  view: INVESTOR_DEFAULT_VIEW,
+ });
+ const captableRows = ownership.ok ? ownership.rows : [];
+ const ownershipRefusal = ownership.ok ? null : ownership.message;
 
  // W-FIX2 F1 (owner decision) — surface the investor's OWN pending/accepted
  // position as a clearly-labelled row so the cap-table tab is never blank after
@@ -597,7 +713,17 @@ export default function InvitationDetail() {
  const myPendingPos = showMyPendingRow
   ? computeIllustrativePosition(
       amountTouched ? amount : "",
-      inv.data.minTicket,
+      /* WAVE 122 · FINDING 1/2 note — `minTicket` is now typed as the wire
+         actually sends it (nullable since Wave 42's R6 change; the old
+         non-null type was a lie, REVIEW_C C-33). `computeIllustrativePosition`
+         lives in `client/src/lib/wave4Display.ts`, which this wave does NOT own,
+         and its signature takes `number`; it already treats a non-positive min
+         ticket as "no example basis" (`minTicket > 0 ? minTicket : 0`). Passing
+         `?? 0` therefore preserves the EXACT runtime behaviour that a null wire
+         value already produced — it introduces no new fabricated figure. The
+         residual (an example built on a 0 basis) is reported, not silently
+         changed in a file another wave owns. */
+      inv.data.minTicket ?? 0,
       inv.data.pricePerShare,
       inv.data.postMoney,
     )
@@ -814,24 +940,83 @@ export default function InvitationDetail() {
       <div className="grid md:grid-cols-3 gap-4">
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Round target</div>
-        <div className="text-2xl font-semibold mt-1">{fmtUSD(i.targetAmount, { compact: true })}</div>
-        <div className="text-xs text-muted-foreground mt-1">{fmtUSD(i.raisedAmount, { compact: true })} soft-circled · {fmtPct(pct, 0)}</div>
-        {/* WAVE 101 - the same progress-to-target bar as the invitations LIST; only
-   the list copy was reported, so the detail page is an added find. */}
-        <div className="h-2 mt-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        <div className="text-2xl font-semibold mt-1" data-testid="text-round-target">{money(i.targetAmount) ?? NO_CURRENCY_CELL}</div>
+        {/* ── WAVE 122 · FINDING 1 — THE THIRD AND FOURTH CHILDREN OF THIS CARD.
+
+            WAS: child 3 = `{fmtUSD(i.raisedAmount)} soft-circled · {fmtPct(pct, 0)}`
+                 child 4 = the progress-bar track at `Math.min(100, pct)%`
+            i.e. "$0 soft-circled · 0%" over an empty bar, on every real round,
+            because `rounds.raised_amount` has no writer anywhere in the product.
+
+            THE PANEL SHAPE IS DELIBERATELY PRESERVED. The silent-drop guard
+            identifies panel children POSITIONALLY (`childorder=div|div|div|div`),
+            and Wave 116 hit exactly this when a ternary replaced sibling divs:
+            the panel appeared to LOSE children. Its remedy — which this follows —
+            is to keep the static sibling shape and vary only the CONTENT inside
+            each child. So this card still renders FOUR div children in the same
+            order; child 3 is the money line (a figure, or the refusal sentence)
+            and child 4 is the progress region (the bar, or the sentence saying
+            why there is no bar). Nothing structural was dropped.
+
+            THE BAR ELEMENT ITSELF is the one deliberate removal: when the ratio
+            cannot be derived the `<div className="h-2 …">` track is NOT rendered,
+            because a bar drawn at 0% is a false statement drawn as a picture. It
+            is ratified as such in scripts/silent-drop-guard/allowlist.json rather
+            than restored. */}
+        <div className="text-xs text-muted-foreground mt-1" data-testid="text-round-money-line">
+         {moneyView.canPrintFigures ? (
+          <span data-testid="text-round-subscribed">
+           {moneyView.money?.subscribedDisplay} subscribed (committed + funded)
+           {barPct === null ? "" : ` · ${fmtPct(barPct, 0)} of target`}
+          </span>
+         ) : (
+          <span data-testid="text-round-money-not-recorded">
+           <span className="font-medium text-foreground">{moneyView.statement}</span>{" "}
+           {ROUND_MONEY_SECTION_LABEL}: no figure and no progress bar are shown, because none could be determined — which is not the same as zero.
+          </span>
+         )}
+        </div>
+        <div className="mt-2" data-testid="round-money-progress-region">
+         {barPct !== null && (
+          /* WAVE 101 - progress-to-target bar off the negative anchor; WAVE 122 -
+             drawn ONLY when the ratio is a real derived number. */
+          <div className="h-2 bg-secondary rounded-full overflow-hidden" data-testid="bar-round-progress"><div className="h-full bg-emerald-700" style={{ width: `${barPct}%` }} /></div>
+         )}
+         {barPct === null && (
+          <div className="text-xs text-muted-foreground" data-testid="text-round-progress-unavailable">
+           {moneyView.money?.progressBp?.targetNote ?? "No progress bar is shown: this round's progress towards its target could not be derived."}
+          </div>
+         )}
+         {moneyView.canPrintFigures && (
+          <div className="mt-2 space-y-0.5" data-testid="round-money-states">
+           {moneyView.buckets.map((b) => (
+            <div key={b.key} className="text-xs text-muted-foreground" data-testid={`round-money-${b.key}`}>
+             <span className="font-medium text-foreground">{b.display}</span> {b.label}
+            </div>
+           ))}
+          </div>
+         )}
+        </div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Pre / post-money</div>
-        <div className="text-2xl font-semibold mt-1">{fmtUSD(i.preMoney, { compact: true })}</div>
+        {/* WAVE 122 · FINDING 2 — denominated in the round's OWN currency. */}
+        <div className="text-2xl font-semibold mt-1" data-testid="text-round-premoney">{money(i.preMoney) ?? NO_CURRENCY_CELL}</div>
         {/* COS-4 (Wave 4): render exactly "Not set" when PPS is 0/null/unset
             (never $0.0000 / "PPS not set"). ppsDisplay returns "Not set" or
             "$X.XX"; the "/sh" suffix is only appended when a real PPS exists. */}
-        <div className="text-xs text-muted-foreground mt-1">Post: {fmtUSD(i.postMoney, { compact: true })} · {i.pricePerShare != null && i.pricePerShare !== 0 ? `${ppsDisplay(i.pricePerShare, 2)}/sh` : ppsDisplay(i.pricePerShare, 2)}</div>
+        <div className="text-xs text-muted-foreground mt-1">Post: {money(i.postMoney) ?? NO_CURRENCY_CELL} · {i.pricePerShare != null && i.pricePerShare !== 0 ? `${ppsDisplay(i.pricePerShare, 2)}/sh` : ppsDisplay(i.pricePerShare, 2)}</div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Min ticket</div>
-        <div className="text-2xl font-semibold mt-1">{fmtUSD(i.minTicket, { compact: true })}</div>
+        {/* WAVE 122 · FINDING 2 — the round's own currency, or a refusal. */}
+        <div className="text-2xl font-semibold mt-1" data-testid="text-round-min-ticket">{money(i.minTicket) ?? NO_CURRENCY_CELL}</div>
+        {/* WAVE 122 · FINDING 2 — the pro-rata sentence is UNCHANGED, static copy
+            (the drop guard is right to insist: it was never the defect). The
+            denomination note is an ADDITION beside it, or the refusal when the
+            round carries no currency. */}
         <div className="text-xs text-muted-foreground mt-1">Pro-rata for $250k+ investors</div>
+        <div className="text-xs text-muted-foreground mt-1" data-testid="text-round-currency-note">{cur.canDenominate ? `Amounts shown in ${cur.currency}.` : cur.statement}</div>
        </CardContent></Card>
       </div>
 
@@ -939,13 +1124,26 @@ export default function InvitationDetail() {
         <div>
          <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><PieIcon className="h-4 w-4" /> Pre-money cap table</CardTitle>
          <p className="text-sm text-muted-foreground mt-0.5">Fully-diluted view, shared with you under the company's cap-table redaction policy.</p>
+         {/* WAVE 113 · FINDING 1 — THE DENOMINATOR, NAMED. The line above claimed a
+             view in prose while the arithmetic below honoured none. It is now the
+             view the shared engine was actually called with, and the sentence is
+             derived from the same label map the founder's screen and both exports
+             use — so the two sides cannot drift on wording either. */}
+         <p className="text-xs text-muted-foreground mt-1" data-testid="text-investor-ownership-denominator" data-view={INVESTOR_DEFAULT_VIEW}>
+          {ownershipDenominatorSentence(INVESTOR_DEFAULT_VIEW)}
+         </p>
         </div>
         <Badge variant="outline" className="text-[10px]"><ShieldCheck className="h-3 w-3 mr-1" /> Redacted to investor-grade</Badge>
        </CardHeader>
        <CardContent>
         <div className="flex h-10 rounded-md overflow-hidden border border-border mb-4">
-         {captableRows.map(r => (
-          <div key={r.id} className="relative group" style={{ width: `${r.ownership}%`, backgroundColor: INSTRUMENT_COLORS[r.instrument] }} title={`${r.holderName} · ${fmtPct(r.ownership, 2)}`} />
+         {captableRows.map((r, ri) => (
+          <div
+           key={`${r.holderId}|${r.kind}|${r.series ?? ""}|${ri}`}
+           className="relative group"
+           style={{ width: ownershipPercentBarWidth(r.ownershipPercent), backgroundColor: INSTRUMENT_COLORS[r.kind] }}
+           title={`${r.holderName} · ${ownershipPercentCellText(r.ownershipPercent)}% of ${VIEW_DENOMINATOR_LABEL[INVESTOR_DEFAULT_VIEW]}`}
+          />
          ))}
         </div>
         <table className="w-full text-sm" data-testid="table-investor-captable">
@@ -954,17 +1152,17 @@ export default function InvitationDetail() {
            <th className="text-left font-medium py-2">Holder</th>
            <th className="text-left font-medium py-2">Instrument</th>
            <th className="text-right font-medium py-2">Shares</th>
-           <th className="text-right font-medium py-2 w-40">Ownership</th>
+           <th className="text-right font-medium py-2 w-40">Ownership <span className="normal-case font-normal text-[10px]" data-testid="th-investor-ownership-denominator">of {VIEW_DENOMINATOR_LABEL[INVESTOR_DEFAULT_VIEW]}</span></th>
           </tr>
          </thead>
          <tbody>
-          {captableRows.map(r => (
-           <tr key={r.id} className="border-b border-border/60">
+          {captableRows.map((r, ri) => (
+           <tr key={`${r.holderId}|${r.kind}|${r.series ?? ""}|${ri}`} className="border-b border-border/60">
             <td className="py-2.5">
              {/* WAVE 90 · ITEM 3 (M-3) — `displayName` describes the row rather
                  than printing an id when the name field carries one (the
                  `u_redeemed_...` / "New contact data" class, M-11). */}
-             <div className="font-medium">{displayName(r.holderName, "holder", r.id)}</div>
+             <div className="font-medium">{displayName(r.holderName, "holder", r.holderId)}</div>
              <div className="text-xs text-muted-foreground" data-holder-type={r.holderType}>{holderTypeLabel(r.holderType)}</div>
             </td>
             {/* WAVE 90 · ITEM 3 — THE M-3 DEFECT ITSELF. This cell rendered the raw
@@ -974,9 +1172,12 @@ export default function InvitationDetail() {
                 round wizard renders its options from, so there is one source and
                 no per-component switch to go stale. R77: the machine value is
                 retained as a `data-` attribute for tests and tooling. */}
-            <td className="py-2.5" data-instrument={r.instrument}>{instrumentLabel(r.instrument)}</td>
-            <td className="py-2.5 text-right font-mono tabular-nums">{fmtNum(r.shares)}</td>
-            <td className="py-2.5 text-right font-mono tabular-nums">{fmtPct(r.ownership, 2)}</td>
+            <td className="py-2.5" data-instrument={r.kind}>{instrumentLabel(r.kind)}</td>
+            <td className="py-2.5 text-right font-mono tabular-nums">{fmtNum(Number(r.shares))}</td>
+            {/* WAVE 113 · FINDING 1 — the engine's exact decimal string, rendered by
+                the platform's one null-aware percentage formatter. `null` (0 ÷ 0,
+                the D18 contract) prints the em-dash, never a confident 0.00%. */}
+            <td className="py-2.5 text-right font-mono tabular-nums" data-testid="cell-investor-ownership" data-ownership-percent={r.ownershipPercent ?? ""}>{ownershipPercentCellText(r.ownershipPercent)}%</td>
            </tr>
           ))}
           {/* W-FIX2 F1 (owner decision) — the investor's own pending/accepted row,
@@ -994,6 +1195,17 @@ export default function InvitationDetail() {
           )}
          </tbody>
         </table>
+        {/* WAVE 113 · FINDING 1 — THE ENGINE'S REFUSAL, SHOWN INSTEAD OF A NUMBER.
+            The shared engine refuses rather than invent a conversion price (As-
+            Converted with convertibles and no priced round). Before this wave the
+            page had no such concept: it divided floats and always produced
+            something. Appended as a NEW sibling at the end of this container so no
+            existing copy string or container ordinal moves (silent-drop guard). */}
+        {ownershipRefusal !== null && (
+         <p className="mt-4 rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-900 dark:text-amber-200" data-testid="note-investor-ownership-refusal">
+          {ownershipRefusal}
+         </p>
+        )}
        </CardContent>
       </Card>
 
@@ -1006,7 +1218,10 @@ export default function InvitationDetail() {
       {(() => {
        const pos = computeIllustrativePosition(
         amountTouched ? amount : "",
-        i.minTicket,
+        /* WAVE 122 — see the identical note on the pending-row call above: the
+           nullable type matches the wire, and `?? 0` reproduces exactly what a
+           null already did inside the unowned helper. */
+        i.minTicket ?? 0,
         i.pricePerShare,
         i.postMoney,
        );
@@ -1026,7 +1241,14 @@ export default function InvitationDetail() {
         </p>
         <div className="grid md:grid-cols-3 gap-3">
          <div><div className="text-xs text-muted-foreground">Shares purchased</div><div className="font-mono tabular-nums font-medium" data-testid="text-illustrative-shares">{fmtNum(pos.shares)}</div></div>
-         <div><div className="text-xs text-muted-foreground">Implied ownership</div><div className="font-mono tabular-nums font-medium" data-testid="text-illustrative-ownership">{pos.ownershipPct != null ? fmtPct(pos.ownershipPct, 3) : NOT_PROVIDED}</div></div>
+         {/* WAVE 113 · FINDING 1 — THIS ONE NAMES ITS DENOMINATOR AND IS NOT
+             CONVERGED, DELIBERATELY. `computeIllustrativePosition` is a MONEY ratio
+             (ticket ÷ post-money valuation) for a hypothetical, uncommitted ticket —
+             not a share ratio of a cap table. Feeding it into the share engine would
+             mean inventing a post-round share count, which is the exact class of
+             fabrication R6 forbids. So it keeps computing what it computes, and now
+             says what it is a percentage OF. */}
+         <div><div className="text-xs text-muted-foreground" data-testid="label-illustrative-ownership">Implied ownership <span className="text-[10px]">of post-money valuation</span></div><div className="font-mono tabular-nums font-medium" data-testid="text-illustrative-ownership">{pos.ownershipPct != null ? fmtPct(pos.ownershipPct, 3) : NOT_PROVIDED}</div></div>
          <div><div className="text-xs text-muted-foreground">Pro-rata reservation</div><div className="font-mono tabular-nums font-medium">{pos.proRata ? "Yes" : "No"}</div></div>
         </div>
        </CardContent>
@@ -1051,15 +1273,21 @@ export default function InvitationDetail() {
         {/* DEF-022 fix: source liquidation pref / anti-dilution / pro-rata / board from round.terms */}
         {([
          ["Instrument", "Series Seed Preferred Stock", "Investor shares with extra rights compared to Common: liquidation preference, anti-dilution, board seats, information rights."],
-         ["Pre-money valuation", fmtUSD(i.preMoney), "The company's value before this round's new money lands."],
-         ["Post-money valuation", fmtUSD(i.postMoney), "Pre-money plus the round size — the company's value the instant the round closes."],
-         ["Round size", fmtUSD(i.targetAmount), "Total new money the company is targeting in this round."],
+         /* WAVE 122 · FINDING 2 — every one of these three ran through `fmtUSD`
+            with no currency argument, so a round denominated in euros or
+            Canadian dollars was presented to the investor, on the HEADLINE
+            TERMS table, with a US dollar sign. They carry the round's own
+            currency now, and refuse to print a figure at all when the round has
+            no currency on record rather than guessing one. */
+         ["Pre-money valuation", moneyFull(i.preMoney) ?? NO_CURRENCY_CELL, "The company's value before this round's new money lands."],
+         ["Post-money valuation", moneyFull(i.postMoney) ?? NO_CURRENCY_CELL, "Pre-money plus the round size — the company's value the instant the round closes."],
+         ["Round size", moneyFull(i.targetAmount) ?? NO_CURRENCY_CELL, "Total new money the company is targeting in this round."],
          /* v25.25 Avi-8 — was `$${i.pricePerShare?.toFixed(4)}` which rendered
             "$undefined" when price_per_share is NULL (priced rounds where the
             founder didn't fill sharesAuthorized). Surface honestly. */
          /* COS-4 (Wave 4): exactly "Not set" when PPS is 0/null/unset. */
          ["Price per share", ppsDisplay(i.pricePerShare, 4), "The cost of one share in this round, set by pre-money divided by fully-diluted shares."],
-         ["Min ticket", fmtUSD(i.minTicket), "The smallest cheque the founder will accept."],
+         ["Min ticket", moneyFull(i.minTicket) ?? NO_CURRENCY_CELL, "The smallest cheque the founder will accept."],
          /* COS-1 (Wave 4): empty term fields render "Not provided" (consistent
             with the rest of the deal surface) instead of "Not specified". */
          ["Liquidation preference", nonEmpty(i.round.terms?.liquidationPref, NOT_PROVIDED), "On exit you receive your invested capital back BEFORE common shareholders — OR you convert to common and share pro-rata, whichever is better. 1× non-participating is the founder-friendly standard."],
@@ -1177,11 +1405,18 @@ export default function InvitationDetail() {
                  nonexistent `(f as any).url` field. The server enforces auth +
                  investor permission (v25.17 Lane A NC1). */}
              <div className="inline-flex gap-1">
+              {/* WAVE 113 · FINDING 3 — SILENCE WAS THE DEFECT. Both buttons used to
+                  be `try { window.open(…) } catch { }`: fire-and-forget at an
+                  address with no handler, so the SPA shell came back as HTTP 200 and
+                  a blank tab opened. Nothing threw, so the catch never even ran.
+                  `openDataroomDocument` reads the response and, when the server
+                  refuses — including the CORRECT refusal a revoked investor now gets
+                  — says so in plain English instead of opening nothing. */}
               <Button size="sm" variant="ghost" data-testid={`button-view-dr-${f.id}`}
-               onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download?disposition=inline`, "_blank", "noopener,noreferrer"); } catch { /* swallow */ } }}
+               onClick={() => { void openDocument(f.id, f.name, "inline"); }}
               ><Eye className="h-3.5 w-3.5" /></Button>
               <Button size="sm" variant="ghost" data-testid={`button-dl-dr-${f.id}`}
-               onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download`, "_blank", "noopener,noreferrer"); } catch { /* swallow */ } }}
+               onClick={() => { void openDocument(f.id, f.name, "attachment"); }}
               ><Download className="h-3.5 w-3.5" /></Button>
              </div>
             </td>
@@ -1592,8 +1827,10 @@ export default function InvitationDetail() {
         <div className="font-medium mb-1">Term sheet summary</div>
         <div>Company: <strong>{i.company.name}</strong></div>
         <div>Round: <strong>{i.round.name}</strong></div>
-        <div>Pre-money: <strong>{fmtUSD(i.preMoney)}</strong></div>
-        <div>Target: <strong>{fmtUSD(i.targetAmount)}</strong></div>
+        {/* WAVE 122 · FINDING 2 — the term-sheet summary an investor signs must
+            state the round's real denomination, not a defaulted dollar sign. */}
+        <div>Pre-money: <strong>{moneyFull(i.preMoney) ?? NO_CURRENCY_CELL}</strong></div>
+        <div>Target: <strong>{moneyFull(i.targetAmount) ?? NO_CURRENCY_CELL}</strong></div>
        </div>
        <div className="space-y-1.5">
         <Label>Your full legal name (typed signature)</Label>

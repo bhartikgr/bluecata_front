@@ -35,6 +35,7 @@ import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { HelpTip } from "@/components/HelpTip";
 import { apiRequest } from "@/lib/queryClient";
 import { minorToMajorString } from "@/lib/moneyDisplay";
+import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — the platform's existing key-humanising helper. */
 
 /* ---------- types matching server payload ---------- */
 type SubscriptionStatus = "active" | "trialing" | "past_due" | "unpaid" | "cancelled";
@@ -90,6 +91,26 @@ const STATUS_TONE: Record<SubscriptionStatus, { label: string; bg: string; text:
   unpaid:    { label: "Unpaid",    bg: "bg-rose-100",    text: "text-rose-900" },
   cancelled: { label: "Cancelled", bg: "bg-slate-100",   text: "text-slate-700" },
 };
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 124 · FINDING 2 — THE ONE SENTENCE THE PAST-DUE TILE IS ALLOWED TO SAY.
+   ════════════════════════════════════════════════════════════════════════════
+   Exported and pure so the rule can be EXECUTED by a test instead of inferred
+   from the JSX: the defect was a disagreement between two numbers on one row,
+   and the only way to prove it cannot recur is to run the sentence for the
+   count/figure combinations that produced it. `outstandingMinor` must already be
+   summed over past-due subscriptions that carry a recorded figure — an absent
+   register contributes nothing, it does not contribute zero. */
+export function pastDueOutstandingHint(
+  pastDueCount: number,
+  figuresOnRecord: number,
+  outstandingMinor: number,
+): string {
+  if (pastDueCount === 0) return "0 outstanding";
+  if (figuresOnRecord === 0) return "Outstanding amount not on record";
+  if (figuresOnRecord === pastDueCount) return `${fmtMoney(outstandingMinor)} outstanding`;
+  return `${fmtMoney(outstandingMinor)} outstanding on ${figuresOnRecord} of ${pastDueCount}`;
+}
 
 /** Format integer minor units as a localised currency string. */
 function fmtMoney(minor: number, currency = "USD"): string {
@@ -156,13 +177,37 @@ export default function AdminCompanies() {
     const unpaid = subs.filter(s => s.status === "unpaid").length;
     const cancelled = subs.filter(s => s.status === "cancelled").length;
     const annualArrMinor = subs.filter(s => s.status === "active").reduce((sum, s) => sum + s.annualAmountMinor, 0);
-    const pastDueMinor = subs.filter(s => s.status === "past_due").reduce((sum, s) => sum + (s.pastDueMinor ?? 0), 0);
+    /* WAVE 124 · FINDING 2 — A CONFIDENT $0 THAT MEANS "UNKNOWN".
+       `subscriptions.past_due_minor` is the SEVENTH unfed money register on this
+       platform: the only writer in the tree is the `co_quanta` seed constant
+       (server/subscriptionsStore.ts:258). `updateSubscription` (:414) lists the
+       key as mutable but NO caller ever passes it — not the payment-gateway
+       adapter, not the partner portfolio route, not the store's own helpers. So
+       for every past-due tenant except the one seeded row, `pastDueMinor` is
+       absent, this sum collapsed to 0, and the tile printed "0 outstanding"
+       directly beside a NON-ZERO past-due count. The two numbers on one row
+       contradicted each other, and the $0 was not a measurement — it was a
+       missing measurement wearing a number.
+       The sum is now taken ONLY over past-due subscriptions that actually carry
+       a recorded figure, and the count of those is carried out so the hint can
+       state what is and is not on record. No figure is invented and no register
+       is back-filled here: feeding the register is a server change outside this
+       wave's ownership and is reported, not faked. */
+    const pastDueSubs = subs.filter(s => s.status === "past_due");
+    const pastDueWithFigure = pastDueSubs.filter(s => typeof s.pastDueMinor === "number" && s.pastDueMinor > 0);
+    const pastDueMinor = pastDueWithFigure.reduce((sum, s) => sum + (s.pastDueMinor ?? 0), 0);
+    const pastDueFiguresOnRecord = pastDueWithFigure.length;
     const stale = allRows.filter(r => {
       const d = daysSince(r.lastActivityAt);
       return d !== null && d > 14;
     }).length;
     const avgMaScore = total > 0 ? Math.round(allRows.reduce((sum, r) => sum + r.maScore, 0) / total) : 0;
-    return { total, active, trialing, pastDue, unpaid, cancelled, annualArrMinor, pastDueMinor, stale, avgMaScore };
+    /* WAVE 124 · FINDING 2 — the hint is resolved HERE, inside the memo, and the
+       tile below reads ONE value. The stats array keeps its five static entries
+       and its static shape, so the silent-drop guard's positional child identity
+       for this panel is untouched (build_log/wave116/W116_TESTS.md §3.1). */
+    const pastDueHint = pastDueOutstandingHint(pastDue, pastDueFiguresOnRecord, pastDueMinor);
+    return { total, active, trialing, pastDue, unpaid, cancelled, annualArrMinor, pastDueMinor, pastDueFiguresOnRecord, pastDueHint, stale, avgMaScore };
   }, [allRows]);
 
   return (
@@ -194,7 +239,7 @@ export default function AdminCompanies() {
             { label: "Total tenants", value: aggregates.total, hint: "Across all stages" },
             { label: "Active subs", value: aggregates.active, hint: `${fmtMoney(aggregates.annualArrMinor)} annual ARR`, tone: "positive" },
             { label: "Trialing", value: aggregates.trialing, hint: "Convert within trial" },
-            { label: "Past-due", value: aggregates.pastDue, hint: aggregates.pastDueMinor > 0 ? `${fmtMoney(aggregates.pastDueMinor)} outstanding` : "0 outstanding", tone: aggregates.pastDue > 0 ? "warning" : "neutral" },
+            { label: "Past-due", value: aggregates.pastDue, hint: aggregates.pastDueHint, tone: aggregates.pastDue > 0 ? "warning" : "neutral" },
             { label: "Stale (>14d)", value: aggregates.stale, hint: "No activity", tone: aggregates.stale > 1 ? "warning" : "neutral" },
           ]}
         />
@@ -344,7 +389,12 @@ function CompanyRowComponent({
           </div>
         </td>
         <td className="px-3 py-3"><Badge variant="outline" className="text-[10px]">{c.region}</Badge></td>
-        <td className="px-3 py-3 capitalize text-muted-foreground">{c.stage}</td>
+        {/* WAVE 124 · FINDING 1 — the tenant table printed the raw fundraising
+            stage key and leaned on CSS `capitalize`, which turns `series_a` into
+            "Series_a" and `pre_seed` into "Pre_seed" — the underscore is still on
+            screen. Humanised in the data, not in the stylesheet. R91: this ladder
+            is NOT remapped onto the CRM or partner ladders. */}
+        <td className="px-3 py-3 capitalize text-muted-foreground">{humanizeMachineKey(c.stage, "—")}</td>
         <td className="px-3 py-3 text-right">
           <span className={`font-mono tabular-nums ${c.maScore >= 80 ? "text-emerald-600" : c.maScore >= 60 ? "text-amber-600" : "text-muted-foreground"}`}>
             {c.maScore || "—"}
@@ -398,7 +448,7 @@ function CompanyRowComponent({
                     <Stat label="Renews" value={sub.renewsOn} />
                     <Stat label="Card" value={sub.cardLast4 ? `•••• ${sub.cardLast4}` : "—"} />
                     <Stat label="Invoices" value={String(sub.invoicesCount)} />
-                    {sub.pastDueMinor && (
+                    {typeof sub.pastDueMinor === "number" && sub.pastDueMinor > 0 && (
                       <Stat label="Past-due" value={fmtMoney(sub.pastDueMinor, sub.currency)} tone="warn" />
                     )}
                     {sub.trialEndsOn && (

@@ -14,6 +14,8 @@
  * the two cannot drift.
  */
 import { useMemo, useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
@@ -115,7 +117,7 @@ export default function PartnerPortfolio() {
               {filtered.map((r) => (
                 <tr key={r.companyId} className="border-t" data-testid={`portfolio-row-${r.companyId}`}>
                   <td className="p-3 font-medium">{r.companyName ?? r.companyId}</td>
-                  <td className="p-3 text-[var(--cv-color-text-muted)]">{r.companyId}</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{partyReferenceLabel(r.companyId)}</td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">
                     {r.updatedAt ? new Date(r.updatedAt).toLocaleDateString() : "—"}
                   </td>

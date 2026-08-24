@@ -22,7 +22,6 @@
  * the sacred ledger, in spv_deployment, at this route/parallel layer.
  */
 import type { Express, Request, Response } from "express";
-import { createHash } from "crypto";
 import { z } from "zod";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 /* WAVE 22 · ITEM 2 (REVIEW B F-3) — the SPV launch sign-off `ip` used to be the
@@ -40,7 +39,16 @@ import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNK
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
-import { listLpInvites, createLpInvite } from "./spvLpInviteStore";
+import {
+  listLpInvites,
+  createLpInvite,
+  recordLpCommitIdentity,
+  lpIdentitiesByInvestorId,
+  lpInviteDisplayName,
+  /* WAVE 112 · FINDING 3 — compensating write when the ledger insert fails. */
+  revertLpCommitIdentityStatus,
+} from "./spvLpInviteStore";
+import { lpInvestorIdForEmail, lpCommitInvitationId } from "./lib/lpIdentity";
 /* WAVE 25 / FE-3 — the rolling-close window comes from the DB policy ladder.
  * `resolveCloseWindowDays` shipped in WAVE 6 with ZERO callers while the literal
  * `30` stayed at this file's reopen route and at SpvDetailTabs.tsx. A policy
@@ -943,29 +951,106 @@ export function registerSpvEngineRoutes(app: Express): void {
       if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
       const subs = spvEngineStore.listSubscriptions(ctx.partnerId, spvId);
       const names = resolveDisplayNames(subs.map((s) => s.investorId));
+      /* WAVE 106 — READ-TIME IDENTITY REPAIR.
+       *
+       * `resolveDisplayNames` can only resolve an id that belongs to a platform
+       * user. An off-platform LP seated by the commit form carries a derived
+       * `ext_<hash-of-email>` id, which resolves to nothing, and the resolver's
+       * fallback then printed the literal "Pending member" — an anonymous row
+       * holding real money, next to an unrelated "invited" row for the same
+       * human. The LP identity register (spv_lp_invite) holds the name and email
+       * that were actually typed, keyed by the SAME derivation, so the money can
+       * be put back on the person here. This also repairs rows written before
+       * this wave, which is why it is a read and not a migration. */
+      const identities = lpIdentitiesByInvestorId(ctx.partnerId, spvId);
       const total = subs
         .filter((s) => s.status !== "withdrawn")
         .reduce((a, s) => a + s.commitmentMinor, 0);
       const subscribers = subs.map((s) => {
         const idn = names.get(String(s.investorId).trim());
+        const identity = identities.get(String(s.investorId).trim());
+        const identityName = identity ? lpInviteDisplayName(identity) : null;
+        /* `resolveDisplayNames` always returns a renderable `name`, but when it
+         * resolved nothing that name is a PLACEHOLDER ("Pending member"). A
+         * placeholder must never beat a real name the operator typed, so the
+         * register wins whenever the resolver did not actually resolve. */
+        const resolvedName = idn?.resolved ? idn.name : null;
         return {
           investorId: s.investorId,
-          name: idn?.name ?? null,
-          email: idn?.email ?? null,
+          name: resolvedName ?? identityName ?? idn?.name ?? null,
+          email: idn?.email ?? identity?.email ?? null,
           commitmentMinor: s.commitmentMinor,
           status: s.status,
           ownershipPct: total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
         };
       });
-      const invites = listLpInvites(ctx.partnerId, spvId).map((i) => ({
-        id: i.id,
-        email: i.email,
-        firstName: i.firstName,
-        lastName: i.lastName,
-        note: i.note,
-        status: i.status,
-        createdAt: i.createdAt,
-      }));
+      /* An identity row whose LP is already on the roster above is NOT repeated
+       * here: they are one limited partner, and listing them twice is the defect
+       * this wave exists to remove. Nothing is lost — the subscriber entry now
+       * carries their name, email, amount and status. */
+      const seatedInvestorIds = new Set(
+        subs.filter((s) => s.status !== "withdrawn").map((s) => String(s.investorId).trim()),
+      );
+      /* ═══ WAVE 112 · FINDING 3 — A COMMITMENT CANNOT RENDER WITHOUT ITS
+       * LEDGER ENTRY. ═══
+       *
+       * THE LIE (OPEN_ITEMS B-38, Reviewer B). The lp-commit route writes the LP
+       * identity row (status `committed`) BEFORE the sacred cap-table ledger
+       * entry, across two stores with no shared transaction. If the ledger write
+       * failed, the row still said `committed` and this read printed `committed`
+       * straight out of the register — an LP presented as committed while holding
+       * $0. It fails SAFELY for accounting (the money genuinely is not there) but
+       * it is a lie on a screen, and a GP chasing a wire that was never asked for
+       * is a real cost.
+       *
+       * WHY THE READER AND NOT A ROLLBACK. `commitFunded` lives in the SACRED
+       * captableCommitStore with its own transaction; `spv_lp_invite` is a
+       * separate rawDb write. A true transaction across both is NOT AVAILABLE
+       * within this wave’s scope, and inventing a rollback the storage layer
+       * cannot honour would be worse than the defect. So the READ becomes the
+       * invariant: this route will not call an LP committed unless it can see the
+       * ledger entry under the deterministic id the writer used
+       * (`lpCommitInvitationId`, the ONE derivation both sides share).
+       *
+       * FAIL CLOSED. The ledger is read ONCE for the whole roster, and if that
+       * read throws, EVERY unseated invite is reported unconfirmed rather than
+       * optimistically committed — an unreadable ledger is not evidence that
+       * money exists.
+       *
+       * NOT A DEMOTION OF REAL LPs. An LP whose commitment did land is already in
+       * `subscribers` above (this list is only the UNSEATED remainder), so the
+       * honest path cannot hide a genuine commitment; a w112_ test pins that
+       * positive case alongside the negative one. */
+      let ledgerInvitationIds: Set<string> | null = null;
+      try {
+        ledgerInvitationIds = new Set(getLedger().map((e) => String(e.invitationId)));
+      } catch {
+        ledgerInvitationIds = null;
+      }
+      const invites = listLpInvites(ctx.partnerId, spvId)
+        .filter((i) => !seatedInvestorIds.has(lpInvestorIdForEmail(i.email)))
+        .map((i) => {
+          const claimsCommitted = i.status === "committed";
+          const hasLedgerEntry =
+            ledgerInvitationIds !== null &&
+            ledgerInvitationIds.has(lpCommitInvitationId(spvId, i.email));
+          const unconfirmed = claimsCommitted && !hasLedgerEntry;
+          return {
+            id: i.id,
+            email: i.email,
+            firstName: i.firstName,
+            lastName: i.lastName,
+            note: i.note,
+            /* The truthful pre-commit state, not the claim the row carries. */
+            status: unconfirmed ? "invited" : i.status,
+            createdAt: i.createdAt,
+            /* Additive disclosure: the register says `committed`, the ledger has
+             * no entry, so this is a half-state and not a commitment. Present
+             * only when that is actually the case, so an ordinary invited LP is
+             * not decorated with a field about a failure that never happened. */
+            ...(unconfirmed ? { commitmentUnconfirmed: true as const } : {}),
+          };
+        });
       res.json({ spvId, lpVisibility: spv.lpVisibility, subscribers, invites });
     },
   );
@@ -1125,11 +1210,64 @@ export function registerSpvEngineRoutes(app: Express): void {
       }
       const amountMinor = Number(amountMinorExact);
 
-      // Deterministic per-LP + per-SPV keys → idempotent re-commit (no dup line).
-      const stableKey = createHash("sha256").update(investorEmail, "utf8").digest("hex").slice(0, 16);
-      const investorId = `ext_${stableKey}`;
+      /* ── WAVE 106 · FINDING 1 — WHO THIS COMMITMENT BELONGS TO ─────────────
+       * The name and email above used to travel as far as the sacred ledger and
+       * then vanish: the roster projection below has no field for either, so the
+       * GP roster showed an anonymous "Pending member" holding the money and a
+       * separate, still-"invited" row for the very same person.
+       *
+       * The identity is now recorded FIRST, into the SPV's LP identity register,
+       * which MATCHES an already-invited LP on this SPV by trimmed,
+       * case-insensitive email instead of creating a second record. Writing it
+       * BEFORE the ledger means a commitment cannot come into existence unless
+       * the platform knows whose it is: if this write fails, nothing is
+       * committed. Nothing is guessed — a commit with no name or no usable email
+       * was already refused above and still is. */
+      let identity;
+      try {
+        identity = recordLpCommitIdentity(
+          ctx.partnerId,
+          spvId,
+          { email: investorEmail, firstName: holderFirstName, lastName: holderLastName },
+          String(ctx.userId ?? ""),
+        );
+      } catch (e) {
+        const code = e instanceof Error ? e.message : "LP_IDENTITY_PERSIST_FAILED";
+        if (code === "LP_IDENTITY_EMAIL_REQUIRED" || code === "LP_IDENTITY_LAST_NAME_REQUIRED") {
+          return res.status(400).json({
+            error: code,
+            message:
+              "This commitment cannot be recorded because it does not say who it belongs to. " +
+              "Enter the limited partner's first name, last name and email address, then commit again. " +
+              "Nothing has been committed.",
+          });
+        }
+        return res.status(503).json({
+          error: "LP_IDENTITY_PERSIST_FAILED",
+          message:
+            "The limited partner's details could not be saved, so nothing has been committed. " +
+            "Please try again.",
+        });
+      }
+
+      /* Deterministic per-LP + per-SPV keys → idempotent re-commit (no dup line).
+       * WAVE 106: the investor id now comes from the SHARED derivation in
+       * lib/lpIdentity, which the roster read also uses to walk back from this
+       * id to the human. Two copies of this hash would let writer and reader
+       * disagree, and a roster that cannot find the name is how "Pending member"
+       * happened. `stableKey` is kept for the invitation id, unchanged. */
+      const investorId = lpInvestorIdForEmail(investorEmail);
       const roundId = `spvlp_${spv.id}`;            // synthetic, price-less → no reconcile price coupling
-      const invitationId = `spvlp_${spv.id}_${stableKey}`;
+      /* WAVE 112 · FINDING 3 — the invitation id now comes from the SHARED
+       * derivation in lib/lpIdentity, for the same reason the investor id above
+       * does. The LP-ROSTER READ has to look this ledger entry up in order to
+       * refuse to render a commitment that has none (B-38); with the template
+       * inline here, the reader carried a second copy of the hash and any drift
+       * between them would silently make every commitment look unconfirmed.
+       * `investorEmail` is already trimmed and lower-cased, and the helper applies
+       * the same normal form, so every invitation id ever written is reproduced
+       * byte-identically. */
+      const invitationId = lpCommitInvitationId(spv.id, investorEmail);
 
       // Idempotency: a prior commit under this deterministic invitationId is
       // returned rather than double-writing the ledger. Ledger reads fail-closed.
@@ -1154,6 +1292,22 @@ export function registerSpvEngineRoutes(app: Express): void {
           holderLastName,
         });
         if (!result.ok) {
+          /* ═══ WAVE 112 · FINDING 3 — THE HALF-STATE, COMPENSATED AND DISCLOSED.
+           *
+           * The identity row above is ALREADY `committed` at this point, and the
+           * ledger entry does not exist. Nothing used to undo that, so the LP
+           * rendered as committed while holding $0 (B-38). There is no
+           * transaction spanning `spv_lp_invite` and the sacred cap-table ledger,
+           * and one cannot be fabricated without editing a sacred money store, so
+           * this is a COMPENSATING WRITE and is not presented as a rollback: it
+           * demotes the row back to `invited` and may itself fail.
+           *
+           * The actual guarantee is on the read side — GET .../lp-roster will not
+           * show an invite as `committed` without its ledger entry — so a failure
+           * here cannot put a false commitment on a screen. Deliberately not
+           * escalated to a 5xx: the caller’s commitment genuinely did not happen,
+           * which is what this response already says. */
+          revertLpCommitIdentityStatus(ctx.partnerId, spvId, investorEmail);
           const status = result.error.startsWith("compliance_hold") ? 409 : 400;
           return res.status(status).json({ error: "LEDGER_COMMIT_FAILED", detail: result.error });
         }
@@ -1179,6 +1333,16 @@ export function registerSpvEngineRoutes(app: Express): void {
         idempotent: !!existing,
         ledger: entry ? { hash: entry.hash, seq: entry.seq } : null,
         subscription,
+        /* WAVE 106 — the commitment now names its holder in the response, so a
+         * caller can see WHO it was attributed to and whether an existing
+         * invited LP was matched rather than duplicated. */
+        lp: {
+          investorId,
+          firstName: identity.invite.firstName,
+          lastName: identity.invite.lastName,
+          email: identity.invite.email,
+          matchedExistingInvite: identity.matchedExistingInvite,
+        },
       });
     },
   );

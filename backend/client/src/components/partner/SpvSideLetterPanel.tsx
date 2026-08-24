@@ -22,6 +22,8 @@
  * and the form keeps them distinct — a blank sends null, never 0.
  */
 import { useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -226,7 +228,7 @@ export function SpvSideLetterPanel({ spvId, canWrite }: { spvId: string; canWrit
               data-testid="spv-side-letter-row"
             >
               <div className="flex items-baseline gap-3 flex-wrap">
-                <span className="font-medium" data-testid="spv-side-letter-row-investor">{l.investorId}</span>
+                <span className="font-medium" data-testid="spv-side-letter-row-investor">{partyReferenceLabel(l.investorId)}</span>
                 <span
                   className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
                   style={

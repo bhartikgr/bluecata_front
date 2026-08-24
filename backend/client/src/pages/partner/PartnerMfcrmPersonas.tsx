@@ -65,6 +65,11 @@ import { useToast } from "@/hooks/use-toast";
  * exponent table and cannot disagree. */
 import { formatMinor, currencyExponent as currencyExponentFor } from "@/lib/currency";
 import { formatPercentValue } from "@/lib/percentDisplay";
+/* WAVE 124 · FINDING 1 — Reviewer C (C-25) measured server field names rendered
+   as human content in a partner-facing CRM: a raw `company_id` under a column
+   headed "Company", plus `doc_ref`, `doc_type`, `status`. The platform already
+   owns the two helpers this needs; nothing new is written here. */
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 import {
   MFCRM_PERSONAS,
   capabilityLabel,
@@ -270,7 +275,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
                   <td className="py-1.5">{c.name}</td>
                   <td className="py-1.5">{c.region ?? "—"}</td>
                   <td className="py-1.5" data-testid={`mfcrm-angel-chapter-carry-${c.id}`}>{carryBpsToPercentText(c.carry_bps)}</td>
-                  <td className="py-1.5">{c.status}</td>
+                  <td className="py-1.5">{humanizeMachineKey(c.status)}</td>
                   <td className="py-1.5 text-right">
                     {canWrite && personaActionState(act("angel-chapter-carry"), capability).allowed && (
                       <ChapterCarryEditor
@@ -508,10 +513,10 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
               <tbody>
                 {rebills.map((r) => (
                   <tr key={r.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-acct-rebill-${r.id}`}>
-                    <td className="py-1.5">{r.company_id}</td>
+                    <td className="py-1.5">{partyReferenceLabel(r.company_id)}</td>
                     <td className="py-1.5">{r.description}</td>
                     <td className="py-1.5" data-testid={`mfcrm-acct-rebill-amount-${r.id}`}>{formatMinor(Number(r.amount_minor) || 0, (r.currency || "USD").toUpperCase())}</td>
-                    <td className="py-1.5">{r.status}</td>
+                    <td className="py-1.5">{humanizeMachineKey(r.status)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -549,7 +554,7 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
             <tbody>
               {custody.map((c) => (
                 <tr key={c.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-acct-custody-${c.id}`}>
-                  <td className="py-1.5">{c.company_id}</td><td className="py-1.5">{c.doc_ref}</td><td className="py-1.5">{c.doc_type ?? "—"}</td><td className="py-1.5">{c.status}</td>
+                  <td className="py-1.5">{partyReferenceLabel(c.company_id)}</td><td className="py-1.5">{partyReferenceLabel(c.doc_ref)}</td><td className="py-1.5">{humanizeMachineKey(c.doc_type, "—")}</td><td className="py-1.5">{humanizeMachineKey(c.status)}</td>
                 </tr>
               ))}
             </tbody>
@@ -690,7 +695,7 @@ function LawPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaDe
             <tbody>
               {matters.map((m) => (
                 <tr key={m.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-law-matter-${m.id}`}>
-                  <td className="py-1.5">{m.company_id}</td><td className="py-1.5">{m.title}</td><td className="py-1.5">{m.matter_type ?? "—"}</td><td className="py-1.5">{m.status}</td>
+                  <td className="py-1.5">{partyReferenceLabel(m.company_id)}</td><td className="py-1.5">{m.title}</td><td className="py-1.5">{humanizeMachineKey(m.matter_type, "—")}</td><td className="py-1.5">{humanizeMachineKey(m.status)}</td>
                 </tr>
               ))}
             </tbody>
@@ -728,8 +733,8 @@ function LawPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaDe
             <tbody>
               {conflicts.map((c) => (
                 <tr key={c.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-law-conflict-${c.id}`}>
-                  <td className="py-1.5">{c.company_id}</td><td className="py-1.5">{c.conflict_code}</td><td className="py-1.5">{c.counterparty ?? "—"}</td>
-                  <td className="py-1.5" data-testid={`mfcrm-law-conflict-status-${c.id}`}>{c.status}</td>
+                  <td className="py-1.5">{partyReferenceLabel(c.company_id)}</td><td className="py-1.5">{c.conflict_code}</td><td className="py-1.5">{c.counterparty ?? "—"}</td>
+                  <td className="py-1.5" data-testid={`mfcrm-law-conflict-status-${c.id}`}>{humanizeMachineKey(c.status)}</td>
                   <td className="py-1.5 text-right">
                     {canWrite && c.status === "open" && (
                       <Button size="sm" variant="outline" data-testid={`mfcrm-law-conflict-resolve-${c.id}`} disabled={resolveM.isPending} onClick={() => resolveM.mutate(c.id)}>Resolve</Button>

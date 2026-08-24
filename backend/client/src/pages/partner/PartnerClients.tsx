@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
+import { attributionSourceLabel, formatDateOnly } from "@/lib/partnerDisplay";
 import {
   PARTNER_CLIENT_STAGES,
   PARTNER_CLIENT_STAGE_LABELS,
@@ -118,7 +119,7 @@ export default function PartnerClients() {
           <table className="w-full text-sm" data-testid="clients-table">
             <thead className="bg-[var(--cv-color-surface-2)]">
               <tr>
-                <th className="text-left p-3">Company ID</th>
+                <th className="text-left p-3">Company</th>
                 <th className="text-left p-3">Stage</th>
                 <th className="text-left p-3">Source</th>
                 <th className="text-left p-3">Attributed</th>
@@ -135,11 +136,16 @@ export default function PartnerClients() {
                 <tr key={c.id} className="border-t" data-testid={`client-row-${c.id}`}>
                   {/* w-partner F1(d) — prefer the joined name; the id remains
                       the fallback so a company with no record still renders. */}
-                  <td className="p-3 font-medium">{c.companyName || c.companyId}</td>
+                  {/* WAVE 106 - FINDING 4.5: when only the code is known it is
+                      now LABELLED as a reference rather than printed bare as if
+                      it were the company's name. */}
+                  <td className="p-3 font-medium">{c.companyName || `Company reference ${c.companyId}`}</td>
                   <td className="p-3"><StageBadge stage={stageOf(c.companyId)} /></td>
-                  <td className="p-3 text-[var(--cv-color-text-muted)]">{c.attributionSource}</td>
+                  {/* WAVE 106 - FINDING 4.5: this printed the storage code for
+                      the attribution source (e.g. `partner_claim`). */}
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{attributionSourceLabel(c.attributionSource)}</td>
                   {/* v25.16 NM5 — guard null attributedAt to avoid "Invalid Date". */}
-                  <td className="p-3 text-[var(--cv-color-text-muted)]">{c.attributedAt ? new Date(c.attributedAt).toLocaleDateString() : "—"}</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{formatDateOnly(c.attributedAt)}</td>
                   <td className="p-3 text-right">
                     {/* v25.13 NM6 — wouter Link renders its own <a>; nesting a literal <a> produced invalid HTML (<a><a>). */}
                     <Link

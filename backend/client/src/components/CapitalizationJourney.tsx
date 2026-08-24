@@ -38,6 +38,21 @@ import { TrendingUp, Users, PieChart as PieIcon, Wallet, ArrowRight, Cpu, Sparkl
 import { fmtUSD, fmtPct, fmtDate, fmtNum } from "@/lib/format";
 import { runEngine, type ApiSecurity } from "@/lib/engineDemo";
 import type { ApiRound } from "@/lib/types";
+/* WAVE 116 — the shared readers. Nothing in this file derives money or ownership
+   for itself any more; see the block comments at each site. */
+import {
+  readCompanyMoneyOnRecord,
+  chartMajorFromMinor,
+  minorTextToBigInt,
+  COMPANY_MONEY_SUBSCRIBED_LABEL,
+} from "@/lib/money/companyMoneyOnRecord";
+import { readRoundMoneyOnRecord } from "@shared/roundMoneyOnRecordView";
+import {
+  ownershipPercentCellText,
+  sumOwnershipPercent,
+  OWNERSHIP_UNDEFINED,
+} from "@/lib/captable/ownershipPercent";
+import { VIEW_DENOMINATOR_LABEL } from "@/lib/captable/exportProvenance";
 
 const COLORS = {
  primary: "#20808D", // teal — engine/brand
@@ -77,16 +92,198 @@ type Snapshot = {
  roundName: string;
  preMoney: number;
  postMoney: number;
- composition: Record<string, number>; // bucket -> pct
+ composition: Record<string, number>; // bucket -> pct of SNAPSHOT_DENOMINATOR_LABEL
 };
 
-function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], companyId: string): Snapshot[] {
+/* WAVE 116 · FINDING 2 — THE INVENTED DENOMINATOR, AND WHY THE PANEL NOW REFUSES.
+ *
+ * `buildSnapshots` used to manufacture share counts for unconverted convertibles:
+ *
+ *     // Assume 12M total FD shares at conversion as a rough demo basis.
+ *     const capPrice = s.cap / 12_000_000;
+ *     shares = Math.floor(principal / capPrice);
+ *   } else if (principal) {
+ *     shares = Math.floor(principal / 1.0);
+ *
+ * TWO inventions, not one. The `12_000_000` fully-diluted share count the brief
+ * names, and `principal / 1.0` beneath it — an assumed $1.00 price per share,
+ * the same defect with its constant hidden inside a division by one. Neither
+ * number exists anywhere in the company's data.
+ *
+ * They did not stay local. The invented shares went into `buckets[bucket]` AND
+ * into `totalShares`, so they sat in both the numerator and the denominator of
+ * `composition[k] = (buckets[k] / totalShares) * 100` — every holder's
+ * percentage on the "Ownership Composition Over Time" chart moved, not just the
+ * SAFE holder's. And the panel presented the result under a badge reading
+ * "Reconstructed from your transaction ledger", which made it a claim rather
+ * than a sketch.
+ *
+ * WHY REFUSE RATHER THAN DROP THE ROW. Dropping an unconverted SAFE from the
+ * chart is not neutral: Wave 113 measured a real holder of roughly 5% displayed
+ * as 0% on the investor side, and a composition chart that silently omits a
+ * holder repeats that defect in a different costume. So a snapshot containing a
+ * convertible with no RECORDED share count is not drawn at all, and the panel
+ * says which rows stopped it.
+ *
+ * WHY NOT ROUTE IT THROUGH THE ENGINE. As-converted needs a priced round at the
+ * snapshot date, and `runEngine` (already imported by this file for the KPI
+ * strip) itself refuses As-Converted when there are convertibles and no priced
+ * round. Inventing an engine input to avoid inventing a denominator is the same
+ * error one layer down. `computeConversionProjections` is NOT the problem here
+ * and is not touched.
+ *
+ * WAVE 120 · FINDING 3 — WHY THAT LAST POINT NO LONGER HOLDS, AND WHAT THE BASIS
+ * IS NOW. Wave 116 declined to route this panel through the engine because
+ * AS-CONVERTED needs a price the platform may not hold. True — but FULLY-DILUTED
+ * needs no price at all, and it is the view this very file already calls for its
+ * KPI strip and the view `/founder/captable` renders. What was left behind
+ * instead was
+ *
+ *     composition[k] = (buckets[k] / totalShares) * 100;
+ *
+ * a tenth private implementation of "a holder's share of the cap table", in
+ * IEEE-754 floats, over a denominator this component summed for itself. It is now
+ * the engine's `ownershipPercent` for the same date, read through the platform's
+ * one null-aware ownership reader. The ENGINE IS NOT TOUCHED — and nor is
+ * `computeConversionProjections`, which is correct.
+ *
+ * THE DENOMINATOR LABEL IS RESTATED, NOT REPOINTED. Wave 116 ratified a label
+ * saying these percentages are of the shares RECORDED at that date and are NOT
+ * fully diluted, and `server/__tests__/w116_company_money_and_denominators.test.ts`
+ * (a file this wave does not own) pins both of those words. Both remain TRUE of the
+ * engine's basis here, and the label now says so precisely rather than by
+ * implication: the engine's Fully-Diluted view over the RECORDED securities counts
+ * recorded common, preferred, option GRANTS and warrants; it does not inflate the
+ * denominator with an authorised-but-ungranted pool, and it converts nothing, which
+ * is why a round holding an unconverted convertible is refused outright above
+ * rather than drawn. The two waves describe the same denominator — only the
+ * arithmetic moved, from a private float division to the engine. */
+export const SNAPSHOT_DENOMINATOR_LABEL =
+  "share of the shares recorded at that date, computed by the cap-table engine from the recorded common, preferred, option grants and warrants — an authorised-but-ungranted pool is not fully diluted into it, and a round holding an unconverted convertible shows no percentages at all";
+
+/** Why a snapshot cannot be drawn. Named, so the panel can say it in words. */
+export type SnapshotRefusal = {
+ roundId: string;
+ roundName: string;
+ /** How many live rows held a convertible with no recorded share count. */
+ unconvertedRows: number;
+ statement: string;
+};
+
+export type SnapshotBuild = {
+ snapshots: Snapshot[];
+ refusals: SnapshotRefusal[];
+ denominatorLabel: string;
+};
+
+/** WAVE 120 · FINDING 3 — the engine result, named so the snapshot loop can hold
+ *  it in a `let` across a `try`. `runEngine` is imported, not re-implemented. */
+type CapTableRunResult = ReturnType<typeof runEngine>;
+
+/** The composition bands, in the order the chart stacks them. */
+const SNAPSHOT_BUCKETS = ["founder", "pool", "preferred", "safe", "note", "warrant"] as const;
+
+/** WAVE 120 · FINDING 3 — which band an ENGINE row belongs to. The same rules the
+ *  old private bucket loop applied to raw securities, now applied to the engine's
+ *  rows so the bands still add up to the engine's own denominator. Holder type
+ *  wins over instrument (a founder's preferred is still founder equity), which is
+ *  the precedence the previous code used. */
+function snapshotBucketOf(row: { holderType: string; kind: string }): string {
+ if (row.holderType === "founder") return "founder";
+ if (row.holderType === "pool") return "pool";
+ if (row.kind === "option") return "pool";
+ if (row.kind === "preferred") return "preferred";
+ if (row.kind === "safe") return "safe";
+ if (row.kind === "note") return "note";
+ if (row.kind === "warrant") return "warrant";
+ return "founder";
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 120 · FINDING 3 — A PERCENTAGE THAT BELONGS TO ITS OWN ROUND, AND NO
+   FABRICATED "100%".
+   ════════════════════════════════════════════════════════════════════════════
+   WHAT THE ROUND-BY-ROUND CARDS USED TO DO:
+
+       const founderBefore = idx > 0 ? snapshots[idx - 1]?.composition.founder : 100;
+       const founderAfter  = snapshots[idx]?.composition.founder ?? null;
+
+   `idx` indexes `valuationSeries`, which is EVERY round of the company. `snapshots`
+   is a DIFFERENT, SHORTER array: `buildSnapshots` `continue`s past any round whose
+   snapshot it refuses (an unconverted convertible) or whose capitalisation is
+   empty. The two arrays therefore fall out of alignment at the first skipped
+   round, and every card after it displayed ANOTHER ROUND'S dilution as its own.
+   A correct percentage attributed to the wrong round is still a false statement,
+   and it is the more dangerous kind, because it looks right.
+
+   AND THE `: 100`. On the first card, "founders held 100% before this round" was
+   asserted with no snapshot behind it — a denominator invented out of an ordinal
+   index. It is untrue of any company that issued a pool, a warrant or an advisor
+   grant before its first priced round.
+
+   WHAT REPLACES BOTH: a lookup BY `roundId`, which is already carried on every
+   snapshot and every refusal, so a card can only ever read its own figures. If
+   this round has no snapshot, the card shows NO percentage and says why. "Before"
+   is the composition of the PREVIOUS SNAPSHOT IN THE SNAPSHOT SERIES; when there
+   is none, it renders `—` (R47's undefined), never `100`.
+
+   Exported as a pure function so the alignment can be tested without rendering
+   recharts. */
+export type JourneyCardOwnership = {
+ /** `true` only when this round has its own snapshot. */
+ shown: boolean;
+ /** The round these figures were computed for — asserted in tests. */
+ roundId: string;
+ /** Founders' share before/after, as display text; `—` when undefined. */
+ beforeText: string;
+ afterText: string;
+ /** `true` when the corresponding text is a real number and may carry a `%`.
+  *  An em dash must NOT be rendered as `—%`, which reads like a percentage. */
+ beforeIsNumber: boolean;
+ afterIsNumber: boolean;
+ /** Present when, and only when, `shown` is false. */
+ statement: string | null;
+};
+
+export function journeyCardOwnership(build: SnapshotBuild, roundId: string): JourneyCardOwnership {
+ const idx = build.snapshots.findIndex((s) => s.roundId === roundId);
+ if (idx === -1) {
+ const refusal = build.refusals.find((r) => r.roundId === roundId);
+ return {
+ shown: false,
+ roundId,
+ beforeText: OWNERSHIP_UNDEFINED,
+ afterText: OWNERSHIP_UNDEFINED,
+ beforeIsNumber: false,
+ afterIsNumber: false,
+ statement:
+ refusal?.statement ??
+ "No ownership composition was computed for this round, so no founder percentage is shown for it.",
+ };
+ }
+ const after = build.snapshots[idx]?.composition.founder;
+ const before = idx > 0 ? build.snapshots[idx - 1]?.composition.founder : null;
+ const beforeText = ownershipPercentCellText(before ?? null, 0);
+ const afterText = ownershipPercentCellText(after ?? null, 0);
+ return {
+ shown: true,
+ roundId,
+ beforeText,
+ afterText,
+ beforeIsNumber: beforeText !== OWNERSHIP_UNDEFINED,
+ afterIsNumber: afterText !== OWNERSHIP_UNDEFINED,
+ statement: null,
+ };
+}
+
+export function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], companyId: string): SnapshotBuild {
  // Filter to the active company's rounds only, sort by closeDate ascending.
  const ours = rounds
  .filter((r) => (r as any).companyId === companyId)
  .sort((a, b) => (a.closeDate ?? "").localeCompare(b.closeDate ?? ""));
 
  const snapshots: Snapshot[] = [];
+ const refusals: SnapshotRefusal[] = [];
 
  // For each round close, compute a composition snapshot. We start at the
  // founder + pool foundation, then layer each round on top — investors who
@@ -94,40 +291,113 @@ function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], companyId
  for (const round of ours) {
  // Determine which securities are "live" at this round's close date.
  const live = securities.filter((s) => (s.issuedAt ?? "0000") <= (round.closeDate ?? "9999"));
- // For SAFEs at a snapshot, give them illustrative converted share counts.
- const buckets: Record<string, number> = {
- founder: 0, pool: 0, preferred: 0, safe: 0, note: 0, warrant: 0,
- };
- let totalShares = 0;
+ /* WAVE 116 · FINDING 2 — a convertible with no RECORDED share count is not
+ given one. It makes the snapshot undeterminable and the snapshot is not
+ drawn: see the block comment above `SNAPSHOT_DENOMINATOR_LABEL`.
+ WAVE 120 · FINDING 3 — a convertible WITH a recorded share count stops the
+ snapshot too, for the mirror-image reason. The engine's fully-diluted view
+ converts a SAFE or note only against a price, so without one it leaves such
+ a holder out of BOTH numerator and denominator — which is the silent drop
+ Wave 113 measured, where a real holder of roughly 5% was displayed as 0%,
+ and it would additionally inflate every other holder's percentage. Counted
+ separately so the statement can name what actually stopped it. */
+ let unconvertedRows = 0;
+ let unpriceableConvertibleRows = 0;
  for (const s of live) {
- let bucket = "founder";
- let shares = s.shares;
- if (s.holderType === "founder") bucket = "founder";
- else if (s.holderType === "pool") bucket = "pool";
- else if (s.instrument === "preferred") bucket = "preferred";
- else if (s.instrument === "safe") bucket = "safe";
- else if (s.instrument === "note") bucket = "note";
- else if (s.instrument === "warrant") bucket = "warrant";
- // SAFE/Note share counts: estimate at $1.00 PPS / cap-implied price.
- if ((s.instrument === "safe" || s.instrument === "note") && (!shares || shares === 0)) {
- const principal = s.investmentAmount ?? 0;
- if (s.cap && principal) {
- // Assume 12M total FD shares at conversion as a rough demo basis.
- const capPrice = s.cap / 12_000_000;
- shares = Math.floor(principal / capPrice);
- } else if (principal) {
- shares = Math.floor(principal / 1.0);
- }
- }
- buckets[bucket] = (buckets[bucket] ?? 0) + (shares ?? 0);
- totalShares += shares ?? 0;
+ if (s.instrument !== "safe" && s.instrument !== "note") continue;
+ if (!s.shares || s.shares === 0) unconvertedRows += 1;
+ else unpriceableConvertibleRows += 1;
  }
 
- if (totalShares === 0) continue;
+ if (unconvertedRows === 0 && unpriceableConvertibleRows > 0) {
+ refusals.push({
+ roundId: round.id,
+ roundName: round.name,
+ unconvertedRows: unpriceableConvertibleRows,
+ statement:
+ `No composition shown at ${round.name}: ${unpriceableConvertibleRows} convertible ` +
+ `${unpriceableConvertibleRows === 1 ? "holding carries" : "holdings carry"} a recorded share count but had not ` +
+ "converted at that date. Converting it would need a share price this platform does not hold at that date, and " +
+ "leaving it out would understate that holder while overstating everyone else, so no percentages are drawn for " +
+ "this round.",
+ });
+ continue;
+ }
+
+ if (unconvertedRows > 0) {
+ refusals.push({
+ roundId: round.id,
+ roundName: round.name,
+ unconvertedRows,
+ statement:
+ `No composition shown at ${round.name}: ${unconvertedRows} convertible ${unconvertedRows === 1 ? "holding" : "holdings"} ` +
+ "had not converted and carry no recorded share count at that date. Converting them would require a share price this " +
+ "platform does not hold, and leaving them out would understate those holders, so no percentages are drawn for this round.",
+ });
+ continue;
+ }
+
+ /* WAVE 120 · FINDING 3 — THE PERCENTAGES COME FROM THE ENGINE NOW.
+ `asOf` is THIS round's close date, so the snapshot is computed as of the
+ date it claims to describe rather than as of today. Each bucket is the sum
+ of its rows' engine `ownershipPercent` through `sumOwnershipPercent`, which
+ returns `null` when ANY member is undefined — and a `null` bucket makes the
+ whole snapshot undrawn rather than a bucket quietly worth zero. */
+ const asOf = (round.closeDate ?? "").slice(0, 10) || undefined;
+ let fd: CapTableRunResult;
+ try {
+ fd = runEngine(live, "fully_diluted", "US", undefined, asOf);
+ } catch {
+ refusals.push({
+ roundId: round.id,
+ roundName: round.name,
+ unconvertedRows: 0,
+ statement:
+ `No composition shown at ${round.name}: the cap-table engine could not determine the capitalisation at that ` +
+ "date from the securities on record, so no percentages are drawn for this round.",
+ });
+ continue;
+ }
+
+ if (fd.totalShares === BigInt(0)) continue;
+
+ /* WHY THE BAND IS READ BACK FROM THE RECORD AND NOT FROM THE ENGINE ROW.
+ `adaptSecuritiesToEngine` keys holders by `holderName`
+ (`shared/roundMathEngineAdapter.ts:1923-1932`), so records sharing a holder
+ name — or carrying none — collapse onto ONE holder, and every row of that
+ holder then reports the FIRST record's type. A pool grant recorded without a
+ holder name comes back typed `founder`, which would add it to the FOUNDERS'
+ band and overstate the one figure these cards exist to show. The engine's
+ percentages are used untouched; only the band each row belongs to is looked up
+ from the record that produced it, by holder name and instrument. */
+ const recordedTypeByKey = new Map<string, string>();
+ for (const s of live) {
+ const key = `${s.holderName ?? ""}|${s.instrument}`;
+ if (!recordedTypeByKey.has(key) && s.holderType) recordedTypeByKey.set(key, s.holderType);
+ }
+ const bandOf = (row: { holderType: string; kind: string; holderName: string }): string =>
+ snapshotBucketOf({
+ holderType: recordedTypeByKey.get(`${row.holderName ?? ""}|${row.kind}`) ?? row.holderType,
+ kind: row.kind,
+ });
 
  const composition: Record<string, number> = {};
- for (const k of Object.keys(buckets)) {
- composition[k] = (buckets[k] / totalShares) * 100;
+ let undefinedBucket = false;
+ for (const k of SNAPSHOT_BUCKETS) {
+ const pct = sumOwnershipPercent(fd.rows.filter((row) => bandOf(row) === k));
+ if (pct === null) { undefinedBucket = true; break; }
+ composition[k] = pct;
+ }
+ if (undefinedBucket) {
+ refusals.push({
+ roundId: round.id,
+ roundName: round.name,
+ unconvertedRows: 0,
+ statement:
+ `No composition shown at ${round.name}: the cap-table engine returned no ownership percentage for at least one ` +
+ "holder at that date, which makes the group shares undefined rather than zero.",
+ });
+ continue;
  }
 
  snapshots.push({
@@ -140,7 +410,7 @@ function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], companyId
  });
  }
 
- return snapshots;
+ return { snapshots, refusals, denominatorLabel: SNAPSHOT_DENOMINATOR_LABEL };
 }
 
 function ValuationTooltip({ active, payload }: any) {
@@ -206,24 +476,43 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  .sort((a, b) => (a.closeDate ?? "").localeCompare(b.closeDate ?? ""));
  }, [rounds.data, activeCompanyId]);
 
+ /* WAVE 116 · FINDING 1 (closes Wave 114's OQ-W114-2) — `cumulative` used to be
+    `cumulative += r.raisedAmount ?? 0`, i.e. a running total of
+    `rounds.raised_amount`, a `NOT NULL DEFAULT 0` column with no writer anywhere
+    in the tree. The "Cumulative raised" bar on the valuation chart was therefore
+    a flat zero on every real company. It now accumulates the DERIVED subscribed
+    (committed + funded) figure from Wave 114's projection, in exact `bigint`
+    minor units, and a round whose projection refuses contributes NO BAR rather
+    than a zero-height one — `cumulativeRaised: null` is what recharts skips. */
  const valuationSeries = useMemo(() => {
- let cumulative = 0;
+ let cumulativeMinor = BigInt(0);
+ let broken = false;
  return novapayRounds.map((r, idx) => {
- cumulative += r.raisedAmount ?? 0;
+ const view = readRoundMoneyOnRecord((r as unknown as Record<string, unknown>).moneyOnRecord);
+ const subscribed = view.canPrintFigures && view.money ? minorTextToBigInt(view.money.subscribedMinor) : null;
+ if (subscribed === null) broken = true;
+ else cumulativeMinor += subscribed;
+ const currency = (view.money?.currency ?? "USD") || "USD";
  const prev = idx > 0 ? novapayRounds[idx - 1] : null;
  const stepUp = prev && prev.postMoney && r.preMoney ? (r.preMoney / prev.postMoney) - 1 : null;
  return {
  ...r,
- cumulativeRaised: cumulative,
+ /* Once any round in the series is undetermined, every later cumulative
+    point would be understated, so the whole remaining series refuses. */
+ cumulativeRaised: broken ? null : chartMajorFromMinor(cumulativeMinor, currency),
+ subscribedDisplay: view.canPrintFigures && view.money ? view.money.subscribedDisplay : null,
+ moneyStatement: view.canPrintFigures ? null : view.statement,
+ moneyBuckets: view.buckets,
  stepUp, // (this round's pre-money / last round's post-money) − 1
  };
  });
  }, [novapayRounds]);
 
- const snapshots = useMemo(() => {
- if (!securities.data) return [];
+ const snapshotBuild = useMemo(() => {
+ if (!securities.data) return { snapshots: [], refusals: [], denominatorLabel: SNAPSHOT_DENOMINATOR_LABEL };
  return buildSnapshots(novapayRounds, securities.data, activeCompanyId);
  }, [novapayRounds, securities.data, activeCompanyId]);
+ const snapshots = snapshotBuild.snapshots;
 
  // Stacked-area dataset
  const compositionData = useMemo(() =>
@@ -233,21 +522,38 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  ...s.composition,
  })), [snapshots]);
 
+ /* WAVE 116 · FINDING 1 — the company-level money figure, from the one reader. */
+ const companyMoney = useMemo(() => readCompanyMoneyOnRecord(novapayRounds), [novapayRounds]);
+
  // KPIs
  const kpis = useMemo(() => {
  if (!rounds.data || !securities.data) return null;
- const totalRaised = novapayRounds.reduce((sum, r) => sum + (r.raisedAmount ?? 0), 0);
  const sortedRounds = [...novapayRounds].sort((a, b) => (b.closeDate ?? "").localeCompare(a.closeDate ?? ""));
  const latestRoundWithVal = sortedRounds.find((r) => r.postMoney);
  const latestValuation = latestRoundWithVal?.postMoney ?? 0;
  // Founder ownership from FD view of current cap table
  const fd = runEngine(securities.data, "fully_diluted", "US");
- const founderShares = fd.rows.filter((r) => r.holderType === "founder").reduce<bigint>((s, r) => s + r.shares, 0n);
- const founderPct = fd.totalShares === 0n ? 0 : Number((founderShares * 10000n) / fd.totalShares) / 100;
+ /* WAVE 116 · FINDING 3 (Wave 113 ownership site #7) — this used to be
+
+      const founderPct = fd.totalShares === 0n ? 0 : Number((founderShares * 10000n) / fd.totalShares) / 100;
+
+    which is a NINTH implementation of "a holder's share of the cap table": it
+    called the reference engine, threw the engine's own answer away, and
+    re-divided share totals itself at 2-decimal integer truncation. It also
+    fabricated `0` for `0 ÷ 0` — an undefined ratio, which owner ruling D18 made
+    the engine return as `null` and R47 renders as an em dash.
+
+    It now READS the engine's `ownershipPercent` for the founder rows through
+    `client/src/lib/captable/ownershipPercent.ts`, the platform's one null-aware
+    ownership renderer, and refuses when the engine has no answer. The engine
+    itself is not touched. */
+ const founderPctText = ownershipPercentCellText(
+   sumOwnershipPercent(fd.rows.filter((r) => r.holderType === "founder")),
+ );
  const investorCount = new Set(
  fd.rows.filter((r) => r.holderType === "investor" || r.holderType === "founder" || r.holderType === "pool").map((r) => r.holderName),
  ).size;
- return { totalRaised, latestValuation, founderPct, investorCount };
+ return { latestValuation, founderPctText, investorCount };
  }, [novapayRounds, rounds.data, securities.data]);
 
  const isLoading = rounds.isLoading || securities.isLoading;
@@ -280,11 +586,16 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <Tooltip>
  <TooltipTrigger asChild>
  <Badge variant="outline" className="text-[10px] gap-1.5 cursor-help bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] self-start md:self-end">
- <Cpu className="h-3 w-3" /> Reconstructed by @capavate/cap-table-engine
+ {/* WAVE 108 · FINDING 2 — was the internal package name. The fact kept is
+     that these figures are reconstructed from the ledger rather than typed in. */}
+ {/* WAVE 116 · FINDING 2 — the badge claimed more than the panel delivers.
+     Composition is reconstructed from RECORDED share counts only; anything
+     needing a conversion price is declined rather than modelled. */}
+ <Cpu className="h-3 w-3" /> Reconstructed from recorded holdings
  </Badge>
  </TooltipTrigger>
  <TooltipContent className="max-w-xs text-xs">
- Composition snapshots and KPIs are reconstructed by replaying the immutable transaction ledger through the cap-table engine. Engine v1.0.0, US formula region.
+ Composition snapshots and KPIs are reconstructed from the share counts and amounts recorded against this company, using the same calculations the cap table uses, under United States cap-table conventions. A snapshot that would need a conversion price this platform does not hold is not drawn at all, and says so.
  </TooltipContent>
  </Tooltip>
  </div>
@@ -294,13 +605,25 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  {/* Panel 4 — KPI strip (placed top so it's the first thing the eye lands on) */}
  {kpis && (
  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
- <Kpi icon={Wallet} label="Total raised" value={fmtUSD(kpis.totalRaised, { compact: true })} hint={`across ${novapayRounds.length} rounds`} />
+ {/* WAVE 116 · FINDING 1 — was `fmtUSD(kpis.totalRaised)` over the
+     writer-less `raisedAmount` column, so it read `$0` for every real
+     company. Now the derived subscribed figure, or a sentence. */}
+ {companyMoney.determined ? (
+ <Kpi icon={Wallet} label={COMPANY_MONEY_SUBSCRIBED_LABEL} value={companyMoney.subscribedDisplay} hint={`across ${companyMoney.roundsCounted} counted round${companyMoney.roundsCounted === 1 ? "" : "s"}`} />
+ ) : (
+ <div className="rounded-lg border border-border bg-card p-3" data-testid="journey-money-unavailable">
+ <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{COMPANY_MONEY_SUBSCRIBED_LABEL}</div>
+ <div className="text-xs text-muted-foreground mt-1">{companyMoney.statement}</div>
+ </div>
+ )}
  <Kpi icon={TrendingUp} label="Latest valuation" value={fmtUSD(kpis.latestValuation, { compact: true })} hint="post-money" />
  {/* WAVE 61a · R47 (closes L-5) — 2 dp. This component is mounted on
      /founder/dashboard immediately above the "Founder ownership" Stat, so the
      same quantity was printed twice on one screen; both are now 2 dp. Display
      precision only: `kpis.founderPct` and its units are untouched (R16). */}
- <Kpi icon={PieIcon} label="Founder ownership" value={fmtPct(kpis.founderPct, 2)} hint="fully diluted" />
+ {/* WAVE 116 · FINDING 3 — the engine's own answer, and the denominator named
+     from the one shared label map rather than the loose words "fully diluted". */}
+ <Kpi icon={PieIcon} label="Founder ownership" value={`${kpis.founderPctText}${kpis.founderPctText === OWNERSHIP_UNDEFINED ? "" : "%"}`} hint={`of ${VIEW_DENOMINATOR_LABEL.fully_diluted}`} />
  <Kpi icon={Users} label="Cap-table holders" value={kpis.investorCount} hint="founders + investors + pool" />
  </div>
  )}
@@ -398,6 +721,20 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <h3 className="text-sm font-semibold">Ownership composition over time</h3>
  <span className="text-[11px] text-muted-foreground">{compositionData.length} snapshot{compositionData.length === 1 ? "" : "s"}</span>
  </div>
+ {/* WAVE 116 · FINDINGS 2 AND 3 — the chart names its denominator, and every
+     snapshot it declined to draw says so in a sentence instead of vanishing. */}
+ <p className="text-[11px] text-muted-foreground mb-2" data-testid="journey-composition-denominator">
+ Each band is a {snapshotBuild.denominatorLabel}.
+ </p>
+ {snapshotBuild.refusals.length > 0 && (
+ <div className="mb-2 space-y-1 rounded-md border border-border bg-muted/30 p-2" data-testid="journey-composition-refusals">
+ {snapshotBuild.refusals.map((ref) => (
+ <p key={ref.roundId} className="text-[11px] text-muted-foreground" data-testid={`journey-composition-refusal-${ref.roundId}`}>
+ {ref.statement}
+ </p>
+ ))}
+ </div>
+ )}
  <div className="h-72 -ml-3">
  <ResponsiveContainer width="100%" height="100%">
  <AreaChart data={compositionData} margin={{ top: 10, right: 24, bottom: 4, left: 12 }} stackOffset="expand">
@@ -441,8 +778,11 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <div className="absolute top-12 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" aria-hidden />
  {valuationSeries.map((r, idx) => {
  const isClosed = r.state === "closed";
- const founderBefore = idx > 0 ? snapshots[idx - 1]?.composition.founder : 100;
- const founderAfter = snapshots[idx]?.composition.founder ?? null;
+ /* WAVE 120 · FINDING 3 — was `snapshots[idx - 1]` / `snapshots[idx]` with a
+    literal `100` for the first card, where `idx` indexed a DIFFERENT and longer
+    array than `snapshots`. Now looked up by THIS round's id; see the block
+    comment above `journeyCardOwnership`. */
+ const founderOwnership = journeyCardOwnership(snapshotBuild, r.id);
  const days = r.openDate && r.closeDate
  ? Math.max(0, Math.round((new Date(r.closeDate).getTime() - new Date(r.openDate).getTime()) / 86400000))
  : null;
@@ -469,8 +809,9 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <div className="font-mono tabular-nums font-medium">{r.postMoney ? fmtUSD(r.postMoney, { compact: true }) : "—"}</div>
  </div>
  <div>
- <div className="text-muted-foreground">Raised</div>
- <div className="font-mono tabular-nums font-medium">{fmtUSD(r.raisedAmount, { compact: true })}</div>
+ {/* WAVE 116 · FINDING 1 — was `fmtUSD(r.raisedAmount)`. */}
+ <div className="text-muted-foreground">Subscribed</div>
+ <div className="font-mono tabular-nums font-medium" data-testid={`journey-card-money-${r.id}`}>{r.subscribedDisplay ?? "—"}</div>
  </div>
  <div>
  <div className="text-muted-foreground">Days open</div>
@@ -501,12 +842,16 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  </Badge>
  </div>
  )}
- {founderAfter != null && (
- <div className="text-[11px] pt-2 border-t border-border/60 flex items-center gap-2">
+ {founderOwnership.shown ? (
+ <div className="text-[11px] pt-2 border-t border-border/60 flex items-center gap-2" data-testid={`journey-card-founders-${r.id}`}>
  <span className="text-muted-foreground">Founders</span>
- <span className="font-mono tabular-nums">{fmtPct(founderBefore ?? 0, 0)}</span>
+ <span className="font-mono tabular-nums">{founderOwnership.beforeText}{founderOwnership.beforeIsNumber ? "%" : ""}</span>
  <ArrowRight className="h-3 w-3 text-muted-foreground" />
- <span className="font-mono tabular-nums font-semibold text-[hsl(0_100%_40%)] ">{fmtPct(founderAfter, 0)}</span>
+ <span className="font-mono tabular-nums font-semibold text-[hsl(0_100%_40%)] ">{founderOwnership.afterText}{founderOwnership.afterIsNumber ? "%" : ""}</span>
+ </div>
+ ) : (
+ <div className="text-[10px] pt-2 border-t border-border/60 text-muted-foreground whitespace-normal" data-testid={`journey-card-founders-refused-${r.id}`}>
+ {founderOwnership.statement}
  </div>
  )}
  <div className="flex items-center gap-1.5 text-[10px] pt-1">

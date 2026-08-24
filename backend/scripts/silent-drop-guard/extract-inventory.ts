@@ -482,13 +482,450 @@ function relOf(repoRoot: string, abs: string): string {
 // 1. routes (server)
 // ===========================================================================
 
+/* ===========================================================================
+ * WAVE 118 · FINDING 1 — THE GATE WAS BLIND TO LOOP-REGISTERED ROUTES.
+ *
+ * Before this wave the route scanner recognised exactly one shape:
+ * `app.get("<string literal>", …)`. Anything else became the opaque token
+ * `METHOD <expr:…>`. WAVE 113 replaced two literal registrations with loops
+ * over an array of literal paths (server/dataroomStore.ts:828 and :908):
+ *
+ *     for (const p of ["/api/founder/dataroom/files/:id", "/api/dataroom/files/:id"]) {
+ *       app.get(p, requireAuth, fileMetaHandler);
+ *     }
+ *
+ * Both addresses are still served, but the scanner saw only `GET <expr:p>`, so
+ * the two baseline ids disappeared and the gate reported a REMOVAL that had not
+ * happened. That false positive is the small half of the defect. The dangerous
+ * half is the inverse: a REAL removal can be hidden from this gate by wrapping
+ * the surviving paths in a loop, because the survivors and the casualty all
+ * collapse into the same single `<expr:p>` token and the gate never names the
+ * casualty. This gate is the platform's only automated defence against
+ * silently dropped functionality, so a shape it cannot read is a hole in that
+ * defence, not a cosmetic annoyance.
+ *
+ * The resolver below reads the shapes whose path set is STATICALLY KNOWN:
+ *
+ *   (1) `for (const P of ["/a", "/b"])            { app.get(P, …) }`
+ *   (2) `for (const P of ["/a", "/b"] as const)   { app.get(P, …) }`
+ *   (3) `for (const P of NAMED)  { … }` where `const NAMED = ["/a", "/b"]`
+ *   (4) `["/a", "/b"].forEach((P) => { app.get(P, …) })` (and `.map`)
+ *   (5) `app.get(["/a", "/b"], …)`  — Express's own array-of-paths form
+ *   (6) a template literal whose every substitution is such a loop variable:
+ *       for (const op of ["pin", "unpin"]) app.post(`/x/:id/${op}`, …)
+ *
+ * DELIBERATE CONSERVATISM — the gate must never become more permissive:
+ *   · if ANY array element or ANY template substitution cannot be reduced to a
+ *     literal, the original opaque `<expr:…>` token is emitted UNCHANGED, so an
+ *     unreadable registration is still tracked as an unreadable registration;
+ *   · resolution only ever ADDS concrete ids. It never suppresses one.
+ * KNOWN LIMIT, stated rather than hidden: form (3) matches the const by NAME
+ * within the file, with no scope analysis, so a shadowed same-named const
+ * would resolve to whichever declaration the walk finds. A wrong-but-concrete
+ * path still yields a tracked id; it cannot silence a drop.
+ * =========================================================================== */
+
+/** Unwrap `as const` / parenthesised / `satisfies` wrappers around a node. */
+function unwrapExpr(node: ts.Node): ts.Node {
+  let n = node;
+  for (;;) {
+    if (ts.isAsExpression(n) || ts.isParenthesizedExpression(n)) {
+      n = n.expression;
+      continue;
+    }
+    if (ts.isSatisfiesExpression && ts.isSatisfiesExpression(n)) {
+      n = n.expression;
+      continue;
+    }
+    return n;
+  }
+}
+
+/** The literal text of a node if it is a plain string literal; else undefined. */
+function plainStringText(node: ts.Node): string | undefined {
+  const n = unwrapExpr(node);
+  if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+  return undefined;
+}
+
+/**
+ * `["/a", "/b"]` → `["/a", "/b"]`. An identifier is followed to a
+ * `const NAME = [...]` declaration in the same file. undefined unless EVERY
+ * element is a plain string literal.
+ */
+function stringLiteralArray(node: ts.Node, sf: ts.SourceFile): string[] | undefined {
+  const arr = arrayLiteralOf(node, sf);
+  if (!arr) return undefined;
+  const out: string[] = [];
+  for (const el of arr.elements) {
+    const t = plainStringText(el);
+    if (t === undefined) return undefined;
+    out.push(t);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * The array literal a node denotes: either the literal itself, or the
+ * `const NAME = [ … ]` declaration an identifier resolves to in the same file.
+ *
+ * Extracted from `stringLiteralArray` in WAVE 121 so the tuple / object forms of
+ * a loop iterable (FINDING 1 below) follow a named const exactly as the
+ * string-array form always has. Behaviour for the string-array form is
+ * unchanged: same `visitLive` walk, same first-match-wins, same known limit
+ * (match by NAME, no scope analysis).
+ */
+function arrayLiteralOf(node: ts.Node, sf: ts.SourceFile): ts.ArrayLiteralExpression | undefined {
+  const n = unwrapExpr(node);
+  if (ts.isArrayLiteralExpression(n)) return n;
+  if (ts.isIdentifier(n)) {
+    const name = n.text;
+    let found: ts.ArrayLiteralExpression | undefined;
+    visitLive(sf, (m) => {
+      if (found) return;
+      if (
+        ts.isVariableDeclaration(m) &&
+        ts.isIdentifier(m.name) &&
+        m.name.text === name &&
+        m.initializer
+      ) {
+        const init = unwrapExpr(m.initializer);
+        if (ts.isArrayLiteralExpression(init)) found = init;
+      }
+    });
+    return found;
+  }
+  return undefined;
+}
+
+/* ===========================================================================
+ * WAVE 121 · FINDING 1 — THE SEVENTH FORM: A DESTRUCTURING LOOP BINDING.
+ * ===========================================================================
+ * `loopLiteralValues` required `ts.isIdentifier(d.name)` for the `for…of`
+ * declaration, so this shape — which exists in application source today at
+ * `server/routes.ts` and registers THREE live investor endpoints (accept,
+ * decline, soft-circle) — fell through to the opaque token:
+ *
+ *     for (const [path, action] of [
+ *       ["/api/investor/invitations/:id/accept",      "accept"],
+ *       ["/api/investor/invitations/:id/decline",     "decline"],
+ *       ["/api/investor/invitations/:id/soft-circle", "soft_circle"],
+ *     ] as const) { app.post(path, …) }
+ *
+ * Reviewer A deleted two of the three, and then all three, and the whole route
+ * inventory was BYTE-IDENTICAL (`before=1185 after=1185, REMOVED []`), because
+ * the only id they produced — `POST <expr:path>` — was ALSO produced by a
+ * different, resolvable loop twenty lines above that happens to name its loop
+ * variable `path` too. One route's presence masked another's absence.
+ *
+ * Resolved here for the array-destructuring and object-destructuring forms, in
+ * both `for…of` and `.forEach` / `.map` position, with the same conservatism as
+ * every other form: if ANY entry of the iterable is not an array/object literal
+ * whose bound cell is a plain string, NOTHING is resolved and the registration
+ * stays an opaque (now collision-proof) token. A rest element (`...rest`) has no
+ * single position, so it is refused rather than guessed.
+ * =========================================================================== */
+function destructuredLoopValues(
+  idName: string,
+  binding: ts.BindingName,
+  iterable: ts.Node,
+  sf: ts.SourceFile,
+): string[] | undefined {
+  const arr = arrayLiteralOf(iterable, sf);
+  if (!arr || arr.elements.length === 0) return undefined;
+
+  /* `for (const [path, action] of [["/a", "accept"], …])` — positional. */
+  if (ts.isArrayBindingPattern(binding)) {
+    let index = -1;
+    binding.elements.forEach((el, i) => {
+      if (!ts.isBindingElement(el) || el.dotDotDotToken) return;
+      if (ts.isIdentifier(el.name) && el.name.text === idName) index = i;
+    });
+    if (index < 0) return undefined;
+    const out: string[] = [];
+    for (const entry of arr.elements) {
+      const tuple = unwrapExpr(entry);
+      if (!ts.isArrayLiteralExpression(tuple)) return undefined;
+      const cell = tuple.elements[index];
+      if (!cell) return undefined;
+      const t = plainStringText(cell);
+      if (t === undefined) return undefined;
+      out.push(t);
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
+  /* `for (const { path } of [{ path: "/a" }, …])` — by property name. */
+  if (ts.isObjectBindingPattern(binding)) {
+    let prop: string | undefined;
+    for (const el of binding.elements) {
+      if (!ts.isBindingElement(el) || el.dotDotDotToken) continue;
+      if (!ts.isIdentifier(el.name) || el.name.text !== idName) continue;
+      const pn = el.propertyName;
+      if (pn === undefined) prop = el.name.text;
+      else if (ts.isIdentifier(pn) || ts.isStringLiteral(pn)) prop = pn.text;
+      else return undefined;
+    }
+    if (prop === undefined) return undefined;
+    const out: string[] = [];
+    for (const entry of arr.elements) {
+      const obj = unwrapExpr(entry);
+      if (!ts.isObjectLiteralExpression(obj)) return undefined;
+      let val: string | undefined;
+      for (const p of obj.properties) {
+        if (
+          ts.isPropertyAssignment(p) &&
+          (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+          p.name.text === prop
+        ) {
+          val = plainStringText(p.initializer);
+        }
+      }
+      if (val === undefined) return undefined;
+      out.push(val);
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * The literal values a loop variable named `idName` can take at `from`, if it
+ * is bound by an enclosing `for…of` over an array of string literals or by a
+ * `.forEach` / `.map` callback on one — or, since WAVE 121, by a DESTRUCTURING
+ * pattern over an array of tuples / objects of string literals.
+ */
+function loopLiteralValues(
+  idName: string,
+  from: ts.Node,
+  sf: ts.SourceFile,
+): string[] | undefined {
+  let p: ts.Node | undefined = from;
+  while (p) {
+    if (ts.isForOfStatement(p)) {
+      const init = p.initializer;
+      if (ts.isVariableDeclarationList(init)) {
+        for (const d of init.declarations) {
+          if (ts.isIdentifier(d.name) && d.name.text === idName) {
+            const els = stringLiteralArray(p.expression, sf);
+            if (els) return els;
+          } else if (ts.isArrayBindingPattern(d.name) || ts.isObjectBindingPattern(d.name)) {
+            /* WAVE 121 · FINDING 1 — the seventh form. */
+            const els = destructuredLoopValues(idName, d.name, p.expression, sf);
+            if (els) return els;
+          }
+        }
+      }
+    }
+    if (
+      (ts.isArrowFunction(p) || ts.isFunctionExpression(p)) &&
+      p.parent &&
+      ts.isCallExpression(p.parent) &&
+      ts.isPropertyAccessExpression(p.parent.expression)
+    ) {
+      const m = p.parent.expression.name.text;
+      if ((m === "forEach" || m === "map") && p.parameters.length >= 1) {
+        const p0 = p.parameters[0].name;
+        if (ts.isIdentifier(p0) && p0.text === idName) {
+          const els = stringLiteralArray(p.parent.expression.expression, sf);
+          if (els) return els;
+        } else if (ts.isArrayBindingPattern(p0) || ts.isObjectBindingPattern(p0)) {
+          /* WAVE 121 · FINDING 1 — `[["/a","accept"]].forEach(([path, action]) => …)`. */
+          const els = destructuredLoopValues(idName, p0, p.parent.expression.expression, sf);
+          if (els) return els;
+        }
+      }
+    }
+    p = p.parent;
+  }
+  return undefined;
+}
+
+/**
+ * Every path a single route registration can serve, resolved statically.
+ * Returns undefined when the argument is not resolvable, in which case the
+ * caller falls back to the unchanged opaque token.
+ */
+export function resolveRoutePaths(
+  arg: ts.Node,
+  at: ts.Node,
+  sf: ts.SourceFile,
+): string[] | undefined {
+  const node = unwrapExpr(arg);
+
+  // (5) app.get(["/a", "/b"], …) — Express's own array form.
+  if (ts.isArrayLiteralExpression(node)) return stringLiteralArray(node, sf);
+
+  // (1)–(4) app.get(P, …) where P is a loop variable over literal paths.
+  if (ts.isIdentifier(node)) return loopLiteralValues(node.text, at, sf);
+
+  // (6) app.post(`/x/:id/${op}`, …) — every substitution must be resolvable.
+  if (ts.isTemplateExpression(node)) {
+    let combos: string[] = [node.head.text];
+    for (const span of node.templateSpans) {
+      const e = unwrapExpr(span.expression);
+      let values: string[] | undefined;
+      const lit = plainStringText(e);
+      if (lit !== undefined) values = [lit];
+      else if (ts.isIdentifier(e)) values = loopLiteralValues(e.text, at, sf);
+      if (!values) return undefined;
+      const next: string[] = [];
+      for (const prefix of combos) {
+        for (const v of values) next.push(prefix + v + span.literal.text);
+      }
+      combos = next;
+      /* Refuse to enumerate a combinatorial blow-up; fall back to the opaque
+         token rather than flood the inventory. */
+      if (combos.length > 64) return undefined;
+    }
+    return combos;
+  }
+
+  return undefined;
+}
+
+/**
+ * The path of a scanned file RELATIVE to its `server/` root, so an id is the
+ * same whether the tree is the repo or a throwaway copy under os.tmpdir().
+ * `sf.fileName` is absolute, and an absolute path inside an id would make every
+ * before/after comparison against a copied tree pure noise.
+ */
+function serverRelPath(fileName: string): string {
+  const norm = fileName.replace(/\\/g, "/");
+  const i = norm.lastIndexOf("/server/");
+  return i >= 0 ? norm.slice(i + 1) : path.basename(norm);
+}
+
+/**
+ * WAVE 121 · FINDING 1 (second half) — A COLLISION-PROOF OPAQUE ID.
+ *
+ * `canonicalizeArg` returns `<expr:${text}>`, so two registrations the resolver
+ * cannot read produce the SAME id whenever their argument text matches — which
+ * for a loop variable means merely sharing a variable name. Reviewer A proved
+ * the consequence in `server/routes.ts`: `POST <expr:path>` was emitted by a
+ * resolvable loop AND by the unresolvable destructuring loop twenty lines below
+ * it, so the resolvable one kept the token alive and three real investor
+ * endpoints could be deleted with a byte-identical inventory. A COLLISION IS
+ * WORSE THAN A BLIND SPOT: one route's presence masks another's absence.
+ *
+ * So every registration whose first argument is not a plain string ALSO gets an
+ * id no OTHER registration can produce:
+ *
+ *     POST <expr:path @server/routes.ts#3f9c1a0b7e42>
+ *
+ * The digest covers the file (relative to its `server/` root), the argument
+ * text, the enclosing iterable + binding text when there is one, and an
+ * occurrence ordinal within that identical group — so two `<expr:path>`
+ * registrations in one file are two DISTINCT ids even if their surroundings are
+ * identical.
+ *
+ * DELIBERATELY ADDITIVE, for the same reason WAVE 118's resolution was: the
+ * PROTECTED `baseline.json` holds the bare `<expr:…>` tokens, is generated only
+ * from the immutable G-0 snapshot, and is never rewritten by this tool.
+ * REPLACING the bare token would delete 45 baselined ids and make the gate
+ * report 45 removals that never happened — a scanner change manufacturing false
+ * positives, followed by the re-baseline that would hide them. The bare token is
+ * therefore still emitted UNCHANGED and the disambiguated id is emitted IN
+ * ADDITION.
+ *
+ * The digest deliberately excludes the handler body and any line number: an id
+ * that moves when an unrelated line is edited is an id that reports removals
+ * nobody caused.
+ */
+function opaqueRegistrationId(
+  method: string,
+  arg: ts.Node,
+  sf: ts.SourceFile,
+  seen: Map<string, number>,
+  resolved: boolean,
+): string {
+  const raw = normText(arg.getText(sf));
+  const rel = serverRelPath(sf.fileName);
+
+  /* The nearest enclosing loop that binds the argument, if any: its BINDING text
+     (`const [path, action]`, `const p`, `([path, action])`) and, separately, the
+     text of the thing being iterated. */
+  let binding = "";
+  let source = "";
+  let p: ts.Node | undefined = arg;
+  while (p) {
+    if (ts.isForOfStatement(p) || ts.isForInStatement(p)) {
+      binding = normText(p.initializer.getText(sf));
+      source = normText(p.expression.getText(sf));
+      break;
+    }
+    if (
+      (ts.isArrowFunction(p) || ts.isFunctionExpression(p)) &&
+      p.parent &&
+      ts.isCallExpression(p.parent) &&
+      ts.isPropertyAccessExpression(p.parent.expression)
+    ) {
+      const m = p.parent.expression.name.text;
+      if (m === "forEach" || m === "map") {
+        binding = normText(p.parameters.map((x) => x.getText(sf)).join(","));
+        source = normText(p.parent.expression.expression.getText(sf));
+        break;
+      }
+    }
+    p = p.parent;
+  }
+
+  /* WHAT THE DIGEST COVERS, AND WHY IT DEPENDS ON `resolved`.
+       · RESOLVABLE registration — the concrete paths are already in the
+         inventory and they ARE the content signal, so the id must NOT move when
+         the array changes. Dropping one path out of a loop of three has to
+         report exactly that one path, not that path plus a churned opaque id.
+       · UNRESOLVABLE registration — nothing concrete is emitted, so a digest of
+         the iterable is the ONLY signal that the unreadable thing changed, and
+         it is included deliberately (Reviewer A's own suggestion: "a digest of
+         the initialiser, not just the variable name").
+     In both cases the ordinal makes two otherwise-identical registrations in one
+     file two distinct ids, which is the collision this exists to kill. */
+  const group = resolved
+    ? `${rel}|${method} <expr:${raw}>|${binding}`
+    : `${rel}|${method} <expr:${raw}>|${binding} of ${source}`;
+  const ordinal = (seen.get(group) ?? 0) + 1;
+  seen.set(group, ordinal);
+  return `${method} <expr:${raw} @${rel}#${digest(`${group}|${ordinal}`)}>`;
+}
+
 function extractRoutesFromFile(sf: ts.SourceFile, routes: Set<string>): void {
+  /* WAVE 121 · FINDING 1 — per-file occurrence ordinals for the collision-proof
+     opaque id. The walk is deterministic, so the ordinals are too. */
+  const opaqueSeen = new Map<string, number>();
   visitLive(sf, (node) => {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const method = node.expression.name.text.toLowerCase();
       const objText = node.expression.expression.getText(sf);
       if (objText === "app" && HTTP_METHODS.has(method) && node.arguments.length >= 1) {
-        routes.add(`${method.toUpperCase()} ${canonicalizeArg(node.arguments[0], sf)}`);
+        const arg = node.arguments[0];
+        const M = method.toUpperCase();
+        /* WAVE 118 · FINDING 1 — resolve array-of-literal-path registrations.
+           A literal argument is unaffected: canonicalizeArg already returns its
+           text, and resolveRoutePaths returns undefined for it. */
+        /* STRICTLY ADDITIVE. The opaque token is ALWAYS emitted, exactly as
+           before this wave, and the resolved concrete paths are emitted IN
+           ADDITION. Two consequences, both deliberate:
+             · no id this scanner used to produce can disappear because of the
+               scanner change itself, so re-baselining is never needed and the
+               change cannot manufacture a false removal (the baseline holds
+               `POST <expr:` + "`/api/collective/announcements/:id/${op}`" + `>`,
+               which is still produced);
+             · the opaque token keeps recording "a registration is computed
+               here", so deleting the whole loop still removes something the
+               gate names, and deleting ONE path out of the array removes that
+               path's concrete id. Both poles are proved in
+               __tests__/w118_route_loop_resolution.test.ts. */
+        routes.add(`${M} ${canonicalizeArg(arg, sf)}`);
+        if (!ts.isStringLiteral(arg) && !ts.isNoSubstitutionTemplateLiteral(arg)) {
+          const resolved = resolveRoutePaths(arg, node, sf);
+          /* WAVE 121 · FINDING 1 — the collision-proof companion id, emitted for
+             EVERY non-literal-argument registration (resolvable or not) so that
+             no two of them can ever share an id. See `opaqueRegistrationId`. */
+          routes.add(opaqueRegistrationId(M, arg, sf, opaqueSeen, !!resolved));
+          if (resolved) for (const p of resolved) routes.add(`${M} ${p}`);
+        }
       }
     }
   });

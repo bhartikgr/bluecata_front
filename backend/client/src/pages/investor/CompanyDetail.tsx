@@ -53,6 +53,9 @@ import { moneyMajorOrNotProvided } from "@/lib/moneyDisplay";
 import { ppsDisplay } from "@/lib/wave4Display";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 113 · FINDING 3 — fetch-then-present, so a data-room refusal is spoken in
+ * plain English instead of opening a blank tab. */
+import { openDataroomDocument } from "@/lib/investor/dataroomOpen";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
 import {
  SUPPORTED_CURRENCIES, SOFT_CIRCLE_TYPES, YOUR_DECISION_TRANSITIONS,
@@ -130,6 +133,17 @@ export default function InvestorCompanyDetail({
  const id = companyIdOverride ?? params?.id;
  const isPreview = mode === "preview";
  const { toast } = useToast();
+ /* WAVE 113 · FINDING 3 — the ONE document-opening path for this page. Not a
+    hook: no state, and it must not change this component's hook order. */
+ const openDocument = async (fileId: string, fileName: string | null | undefined, disposition: "inline" | "attachment") => {
+  const outcome = await openDataroomDocument({ fileId, fileName, disposition });
+  if (outcome.ok) return;
+  toast({
+   title: outcome.kind === "refused" ? "You do not have access to this document" : outcome.kind === "not_found" ? "Document not available" : "Could not open the document",
+   description: outcome.message,
+   variant: "destructive",
+  });
+ };
  const [, navigate] = useLocation();
  // Sprint 20 Wave 2 — use wouter useSearch() for tab routing (replaces readTabFromHash)
  const searchString = useSearch();
@@ -450,7 +464,12 @@ export default function InvestorCompanyDetail({
  </tr>
  </thead>
  <tbody>
- {asArray(dr.data).slice(0, 8).map(f => (
+{/* WAVE 113 · FINDING 3 — `asArray(...)` with no type argument returns
+     `unknown[]`, so every `f.id` / `f.name` read in this table was unchecked (the
+     same untyped-`asArray` defect Wave 42 R6 fixed for `myInv` twenty lines above).
+     Parameterised with the `DR` type declared at the top of this file, so the ids
+     and names handed to `openDocument` are actually checked. */}
+ {asArray<DR>(dr.data).slice(0, 8).map(f => (
  <tr key={f.id} className="border-b border-border/60" data-testid={`row-doc-${f.id}`}>
  <td className="px-5 py-2.5 flex items-center gap-2"><FileText className="h-4 w-4 text-muted-foreground" /> {f.name}</td>
  <td className="px-3 py-2.5 text-muted-foreground capitalize">{(f.category ?? "").replace("_", " ") || "Uncategorized"}</td>
@@ -461,17 +480,18 @@ export default function InvestorCompanyDetail({
  {/* v25.18 Lane D NC1 + NC3 — server-streaming download instead of a
      potentially-tainted `(f as any).url`. The streaming endpoint
      enforces v25.17 Lane A NC1 dataroom auth + per-investor permission. */}
+{/* WAVE 113 · FINDING 3 — the view button's `catch` could never fire (the
+     unregistered route answered 200 with the SPA shell, so nothing threw) and
+     the download was a bare `<a href>`, which cannot report a 403 AT ALL: the
+     browser navigates and shows whatever comes back. Both now fetch first and
+     speak the outcome. The advice "try the download button instead" goes with
+     them — it was untrue, because the download used the SAME missing address. */}
  <Button size="sm" variant="ghost" data-testid={`button-view-${f.id}`}
- onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download?disposition=inline`, "_blank", "noopener,noreferrer"); } catch { toast({ title: "Could not open", description: "Please try the download button instead." }); } }}>
+ onClick={() => { void openDocument(f.id, f.name, "inline"); }}>
  <Eye className="h-3.5 w-3.5" />
  </Button>
- <a
- href={`/api/dataroom/files/${encodeURIComponent(f.id)}/download`}
- rel="noopener noreferrer"
- tabIndex={-1}
- >
- <Button size="sm" variant="ghost" data-testid={`button-dl-${f.id}`}><Download className="h-3.5 w-3.5" /></Button>
- </a>
+ <Button size="sm" variant="ghost" data-testid={`button-dl-${f.id}`}
+ onClick={() => { void openDocument(f.id, f.name, "attachment"); }}><Download className="h-3.5 w-3.5" /></Button>
  </div>
  </td>
  </tr>

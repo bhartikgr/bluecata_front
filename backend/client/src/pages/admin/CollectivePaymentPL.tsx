@@ -116,7 +116,11 @@ export default function CollectivePaymentPL() {
 
   return (
     <>
-      <PageHeader title="Collective P&L" description="Collective payment ledger aggregated from collective_payment_entries. Totals are grouped per currency. Quote-only — these are owed amounts the admin reconciles, not automatic card charges." />
+      {/* WAVE 117 · FINDING 4 — was "aggregated from collective_payment_entries":
+          a storage table named to a human. The per-currency rule and the
+          quote-only warning — the two things that change how the figure is read —
+          are kept word for word. */}
+      <PageHeader title="Collective P&L" description="Collective payment ledger aggregated from every recorded Collective payment entry. Totals are grouped per currency. Quote-only — these are owed amounts the admin reconciles, not automatic card charges." />
       <PageBody>
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <Select value={statusFilter} onValueChange={setStatusFilter}>

@@ -1,5 +1,10 @@
 import { asArray } from "@/lib/safeArray";
-import { useState } from "react";
+/* WAVE 107 · FINDING 4 — the DISPLAY label for a round state, from the one table
+   that declares them (`shared/schema.ts`). R77: the machine value keeps travelling
+   on the wire and in every `data-testid`; only the sentence a founder reads is
+   humanised, so no customer-facing string in this wave carries an identifier. */
+import { ROUND_STATE_LABELS } from "@shared/schema";
+import { useMemo, useState } from "react";
 import { useParams, Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -48,6 +53,26 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useTermSheetStore } from "@/lib/termsheet/store";
 import { signSES, captureSessionMetadata, type SESSignature } from "@/lib/esign/ses";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+/* WAVE 111 — the ONE interpreter of liquidation preference, participation and the
+   participation cap, shared with the exit waterfall and the term sheet. */
+import { readLiquidationTerms, describeLiquidationTerms } from "@shared/liquidationTermsReader";
+/* WAVE 114 · FINDING 1 (item 8) — the ONE reader of the round's money projection.
+   `rounds.raised_amount`, which this header used to print, has NO WRITER anywhere
+   in the product: every real round rendered "$0 soft-circled", a false statement
+   about money (R6). The three states are derived server-side, arrive preformatted
+   and LABELLED, and when they cannot be determined this screen prints the
+   projection's sentence instead of a number. */
+import {
+  readRoundMoneyOnRecord,
+  progressBarPercent,
+  ROUND_MONEY_SECTION_LABEL,
+} from "@shared/roundMoneyOnRecordView";
+/* WAVE 114 · FINDING 2 (item 31) — the ONE reader of the four governance terms
+   that this panel used to print as flat string literals on every round. */
+import {
+  readGovernanceTerms,
+  GOVERNANCE_TERM_NOT_RECORDED_DETAIL,
+} from "@shared/roundGovernanceTerms";
 
 type UseOfProceedsRow = { category: string; percent: number; amount: number };
 type ChecklistRow = { item: string; done: boolean; owner: string };
@@ -428,6 +453,27 @@ export default function RoundDetail() {
      { companyId: activeCompanyId, roundId: id, actorId: me.data?.id ?? "founder", actorRole: "founder" });
  }
 
+ /* WAVE 118 · FINDING 2 — THE ROUND-SUMMARY DERIVATION, HOISTED OUT OF THE JSX.
+    Wave 114 replaced three static sibling `div`s in the round-summary panel with a
+    single in-JSX ternary. Nothing was lost on screen, but `npm run guard` keys a
+    panel body's children POSITIONALLY, so the panel read as having lost `div#3`
+    and `div#4` and its `childorder` stopped containing the baseline sequence as a
+    subsequence - three of the five reported panel drops, one cause. Wave 116 hit
+    the identical problem on founder/Dashboard.tsx and founder/Welcome.tsx and
+    fixed it the right way round (W116_TESTS.md 3.1): hoist the derivation into a
+    `useMemo` above the JSX and keep the ORIGINAL static child shape, with the
+    determined/refused choice made INSIDE each child. This is that same fix. It is
+    a shape change only - the same figures, the same test ids and the same refusal
+    sentence render, which is what the render tests in w118 and w114 assert.
+    The memo sits above the early returns because it is a hook: `round.data` is
+    undefined on the loading and error paths and `readRoundMoneyOnRecord` already
+    answers `canPrintFigures: false` for a non-record, so hook order is fixed for
+    every render of this component. */
+ const roundMoney = useMemo(() => {
+   const view = readRoundMoneyOnRecord((round.data as { moneyOnRecord?: unknown } | undefined)?.moneyOnRecord);
+   return { view, barPct: progressBarPercent(view.money?.progressBp?.subscribed) };
+ }, [round.data]);
+
  if (round.isError) return (
  <PageBody>
    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-6 text-center">
@@ -447,7 +493,13 @@ export default function RoundDetail() {
  </PageBody>
  );
  const r = round.data;
- const pct = r.targetAmount > 0 ? (r.raisedAmount / r.targetAmount) * 100 : 0;
+ /* WAVE 114 · FINDING 1 — `pct` USED TO BE `r.raisedAmount / r.targetAmount`, i.e.
+    a permanent 0% on every real round, because nothing writes `raised_amount`.
+    The ratio now comes from the server projection in basis points (so the browser
+    never divides money) and is `null` when there is nothing honest to draw. */
+ const moneyView = roundMoney.view;
+ const subscribedBarPct = roundMoney.barPct;
+ const governance = readGovernanceTerms(r as Record<string, unknown>);
 
  return (
  <>
@@ -493,12 +545,72 @@ export default function RoundDetail() {
  </div>
  </div>
  )}
- <div className="flex items-baseline justify-between mb-2">
- <div><span className="text-2xl font-semibold">{fmtUSD(r.raisedAmount)}</span> <span className="text-muted-foreground text-sm">soft-circled of {fmtUSD(r.targetAmount)}</span></div>
- <div className="text-sm text-muted-foreground">{fmtPct(pct, 0)} of target</div>
+ {/* WAVE 114 - FINDING 1 (item 8): THE HEADLINE MONEY FIGURE, NAMED.
+     This block used to read `{fmtUSD(r.raisedAmount)} soft-circled of ...`.
+     `rounds.raised_amount` has no writer in the entire product, so that
+     sentence said "$0 soft-circled" on every real round however much had
+     actually been committed - and a printed $0 that means "unknown" is a false
+     statement about money (R6). It now prints the SUBSCRIBED total (committed +
+     funded) with the word "subscribed" attached, breaks it into the three
+     distinct states underneath, and when the server could not determine the
+     figures it prints the server's sentence INSTEAD OF ANY NUMBER. */}
+ {/* WAVE 118 - FINDING 2: THE SHAPE THIS PANEL HAD AT BASELINE, RESTORED.
+     Wave 114's version made this one `{moneyView.canPrintFigures ? ... : ...}`
+     expression child where the baseline had three static `div` siblings, which
+     the drop gate reads as `child=div#3` and `child=div#4` gone. Same figures,
+     same test ids, same refusal sentence - the determined/refused choice is now
+     made INSIDE the figure slot and the state slot instead of by swapping
+     siblings, so the panel is `div | {expr} | div | div | div` again. */}
+ <div
+   className={moneyView.canPrintFigures ? "flex items-baseline justify-between mb-2" : "rounded-md border border-amber-500/40 bg-amber-500/5 p-3"}
+   data-testid="slot-round-money-figure"
+ >
+ {moneyView.canPrintFigures ? (
+ <>
+ <div data-testid="text-round-subscribed">
+   <span className="text-2xl font-semibold">{moneyView.money?.subscribedDisplay}</span>{" "}
+   <span className="text-muted-foreground text-sm">subscribed (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
  </div>
+ {subscribedBarPct === null ? (
+ <div className="text-sm text-muted-foreground" data-testid="text-round-progress-unavailable">{moneyView.money?.progressBp?.targetNote ?? "No target recorded"}</div>
+ ) : (
+ <div className="text-sm text-muted-foreground" data-testid="text-round-progress">{fmtPct(subscribedBarPct, 0)} of target subscribed</div>
+ )}
+ </>
+ ) : (
+ <div data-testid="text-round-money-not-recorded">
+   <div className="text-sm font-medium">{moneyView.statement}</div>
+   <div className="text-xs text-muted-foreground mt-1">Target {fmtUSD(r.targetAmount)}. No raised figure is shown because none could be determined from this round's records — this is not the same as zero.</div>
+ </div>
+ )}
+ </div>
+ <div data-testid="slot-round-money-states">
+ {moneyView.canPrintFigures && (
+ <>
+ {subscribedBarPct !== null && (
  <div className="h-2.5 bg-secondary rounded-full overflow-hidden">
- <div className="h-full bg-gradient-to-r from-emerald-700 to-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />{/* WAVE 101 - progress toward target repainted off the negative anchor */}
+   <div className="h-full bg-gradient-to-r from-emerald-700 to-emerald-700" style={{ width: `${subscribedBarPct}%` }} />{/* WAVE 101 - progress toward target repainted off the negative anchor */}
+ </div>
+ )}
+ <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4" data-testid="group-round-money-states">
+ {moneyView.buckets.map((b) => (
+ <div key={b.key} className="rounded-md border border-border p-3" data-testid={`card-round-money-${b.key}`}>
+   <div className="text-xs text-muted-foreground flex items-center gap-1">
+     {b.label} <HelpTip>{b.meaning}</HelpTip>
+   </div>
+   <div className="font-semibold" data-testid={`text-round-money-${b.key}`}>{b.display}</div>
+   <div className="text-xs text-muted-foreground">{b.count === 1 ? "1 investor" : `${b.count} investors`}</div>
+ </div>
+ ))}
+ </div>
+ <div className="text-xs text-muted-foreground mt-2">
+   {ROUND_MONEY_SECTION_LABEL}. A soft circle is not a commitment and a commitment is not cash received; only "Funded" is money that has arrived.
+   {moneyView.money && !moneyView.money.ledgerFunded.agreesWithBook && (
+   <span className="block text-amber-700 dark:text-amber-500 mt-1" data-testid="text-round-money-disagreement">{moneyView.money.ledgerFunded.note}</span>
+   )}
+ </div>
+ </>
+ )}
  </div>
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-4 border-t border-border text-sm">
  <div><div className="text-xs text-muted-foreground flex items-center gap-1">Pre-money <HelpTip>The agreed value of your company BEFORE this round closes. Pre-money + new money = post-money.</HelpTip></div><div className="font-medium">{fmtUSD(r.preMoney, { compact: true })}</div></div>
@@ -510,7 +622,7 @@ export default function RoundDetail() {
  </Card>
 
  {/* Sprint 5 — Round lifecycle progress indicator (NVCA flow: terms → invitation → soft-circle → docs → signing → funded → closed) */}
- <RoundLifecycleProgress state={r.state} />
+ <RoundLifecycleProgress state={r.state} pipeline={(r as unknown as { pipeline?: LifecyclePipelineRow[] }).pipeline} />
 
  {/* v23.9 C5 — read-only pipeline funnel sourced from GET /api/rounds/:id
  `pipeline`. Visibility only: it summarises invitation + soft-circle counts
@@ -855,11 +967,125 @@ export default function RoundDetail() {
  <p>{r.termsSummary}</p>
  <div className="grid md:grid-cols-2 gap-4 pt-3 border-t border-border">
  {([
- ["Liquidation preference", "1x non-participating preferred"],
- ["Anti-dilution", "Broad-based weighted average"],
- ["Pro-rata", "Pro-rata for $250k+ investors"],
- ["Board composition", "1 founder, 1 investor, 1 mutual"],
- ["Information rights", "Quarterly financials + KPI dashboard"],
+ /* ═════════════════════════════════════════════════════════════════════
+    WAVE 107 · FINDING 2 — THE ROUND'S OWN LIQUIDATION PREFERENCE, READ FROM
+    STORAGE INSTEAD OF ASSERTED.
+    ═════════════════════════════════════════════════════════════════════
+    WAS: the literal `1x non-participating preferred`, printed on EVERY round
+    on the platform - participating or not, Draft or Active. A founder who
+    negotiated 1x PARTICIPATING with a 3x participation cap, chose it in the
+    wizard and saw "1x participating" confirmed on Edit terms, read the
+    OPPOSITE term on the round's own Terms tab. Participation is the single
+    biggest determinant of who gets what in an exit after the preference is
+    paid, so the two screens disagreed about money.
+
+    WHICH SCREEN WAS WRONG: this one. Edit terms reads `liquidationPreference`
+    from the round (`Rounds.tsx:427-440`); the value the founder chose is what
+    is stored, verified end-to-end over HTTP this wave -
+    `liquidationPreference: "1x participating"`, `capParticipation: 3`, which
+    `server/lib/roundStoredTerms.ts` (the single reader of negotiated terms)
+    parses to `participatingPreferred: true`,
+    `liquidationPreferenceMultiple: 1`, `participationCapMultiple: 3`.
+
+    BOTH SCREENS NOW READ THE SAME TWO STORED FIELDS, so they cannot disagree
+    by construction rather than by coincidence.
+
+    THE PARTICIPATION CAP IS SURFACED HERE FOR THE FIRST TIME. It was stored
+    and validated (`validateParticipationCapStored`) and rendered by NO
+    component - a negotiated ceiling on participation that no founder could
+    read back. It is shown wherever the preference is shown, and only where the
+    preference is participating, because a cap on non-participating preferred
+    is not a term.
+
+    ABSENT MEANS ABSENT (R6): a round with nothing recorded says so by name.
+    THE EXIT WATERFALL IS NOT TOUCHED - this is a read of stored text. */
+ /* ══════════════════════════════════════════════════════════════════
+    WAVE 111 — ONE READER. THIS ROW NO LONGER INTERPRETS ANYTHING ITSELF.
+    ══════════════════════════════════════════════════════════════════
+    WAVE 107 removed a hardcoded "1x non-participating preferred" from this row and
+    surfaced the participation cap for the first time. The disagreement did not go
+    away — IT MOVED ONE FIELD OVER. The row read `capParticipation` and NOTHING
+    ELSE, while the exit waterfall reads that key AND the free-text
+    `liquidationPreference`, and refuses with HTTP 422 when the two disagree, when
+    a recorded cap cannot be read, or when a cap sits below the preference it caps.
+    MEASURED over 16 ordinary term shapes
+    (`server/__tests__/w111_before_disagreement_probe.test.ts`, table in
+    `build_log/wave111/W111_TESTS.md`): this row disagreed with the calculation on
+    EIGHT of them, including the two a reviewer reported — it printed
+    "participation capped at 3×" for a round the engine REFUSES
+    (`participation_cap_conflict`, cap key 3 against "capped at 2x" in the
+    wording), and "no participation cap recorded" for a round where the engine
+    APPLIES 2.5× ("1x participating, capped at 2.5x", no cap key).
+
+    A founder reading "capped at 3×" while the calculation refuses, or "no cap"
+    while it applies 2.5×, is being shown a false statement about their own money.
+
+    THE FIX IS NOT A BETTER PARSE HERE — IT IS NO PARSE HERE. Both fields are read
+    by `shared/liquidationTermsReader`, the single interpreter, which is also what
+    `server/lib/roundStoredTerms.ts` and therefore the exit waterfall reads, and
+    what the term sheet reads. This row prints that decision's own sentence. Where
+    the terms cannot be determined it says so in plain English and prints NEITHER a
+    multiple NOR a cap, which is what the calculation does.
+
+    THE ENGINE'S ARITHMETIC AND ITS REFUSAL CONDITIONS ARE UNTOUCHED. This screen
+    was made to agree with them, not the other way round. */
+ ["Liquidation preference", describeLiquidationTerms(readLiquidationTerms({
+   liquidationPreference: (r as unknown as Record<string, unknown>).liquidationPreference,
+   capParticipation: (r as unknown as Record<string, unknown>).capParticipation,
+ }))],
+ /* WAVE 107 · FINDING 2, SAME DEFECT, SAME ROW BLOCK. The literal
+    `Broad-based weighted average` printed on every round while the Edit-terms
+    select for the very same field showed "Not recorded". This is a DISPLAY fix
+    only and deliberately nothing more: it reads the stored token and names its
+    absence. No writer is added, no validator is changed and the wizard's
+    vocabulary is NOT touched - the `broad_based_wa` / `broad_based` mismatch is
+    reported in `build_log/wave107/W107_PREFLIGHT.md` and left to the wave that
+    owns the term-sheet lane, because converging it needs files outside this
+    area. Anti-dilution stays UNWIRED end-to-end. */
+ ["Anti-dilution", (() => {
+   const raw = (r as unknown as Record<string, unknown>).antiDilutionType;
+   const stored = raw === null || raw === undefined ? "" : String(raw).trim();
+   if (stored === "") {
+     return "Not recorded on this round — a down round will refuse to project until it is";
+   }
+   if (stored === "none") return "None — this class negotiated no anti-dilution protection";
+   if (stored === "broad_based") return "Broad-based weighted average";
+   if (stored === "narrow_based") return "Narrow-based weighted average";
+   if (stored === "full_ratchet") return "Full ratchet — the whole class re-prices";
+   return `Stored method cannot be read — Capavate will not guess what it meant and has not changed it. Correct it on Edit terms.`;
+ })()],
+ /* WAVE 107 · FINDING 2, THIRD ROW OF THE SAME HARDCODED BLOCK. WAS the literal
+    `Pro-rata for $250k+ investors` - a specific dollar threshold asserted on
+    every round, including rounds whose founder never agreed to one. `proRata` IS
+    a stored, patchable term (`UPDATE_EXTRAS_WHITELIST`, `server/roundsStore.ts`),
+    so this row is a read like the two above. The THRESHOLD, however, is not
+    stored anywhere, so no threshold is printed: inventing "$250k" was the defect,
+    and replacing it with a different invented number would be the same defect. */
+ ["Pro-rata", (() => {
+   const raw = (r as unknown as Record<string, unknown>).proRata;
+   if (raw === null || raw === undefined || String(raw).trim() === "") {
+     return "Not recorded on this round";
+   }
+   if (raw === true || String(raw).trim().toLowerCase() === "true") {
+     return "Yes — pro-rata rights granted. Capavate stores no eligibility threshold, so none is quoted.";
+   }
+   if (raw === false || String(raw).trim().toLowerCase() === "false") {
+     return "No — no pro-rata rights granted on this round";
+   }
+   return String(raw).trim();
+ })()],
+ /* WAVE 114 - FINDING 2 (item 31): TWO OF THE FOUR INVENTED ROWS.
+    WERE the flat literals "1 founder, 1 investor, 1 mutual" and "Quarterly
+    financials + KPI dashboard", printed on EVERY round in the platform because
+    no storage existed for either term. Wave 31 converged the liquidation-
+    preference readers and reported these four as still hardcoded. A board seat
+    and a reporting obligation asserted on a round whose founder never agreed to
+    them is a legal statement Capavate cannot support.
+    NOW read through the ONE reader in `shared/roundGovernanceTerms.ts`, the same
+    module that fences every writer of them, and a term with no stored value
+    STATES that it is not recorded instead of printing one (R6). */
+ [governance[0].label, governance[0].recorded ? governance[0].text : governance[0].statement],
+ [governance[1].label, governance[1].recorded ? governance[1].text : governance[1].statement],
  /* ═════════════════════════════════════════════════════════════
     WAVE 58b · DEFECT 4 (R21) — THE USER-VISIBLE HARDCODED 10%.
     ═════════════════════════════════════════════════════════════
@@ -915,15 +1141,34 @@ export default function RoundDetail() {
    }
    return `${dd.bothForms}${dd.conversionArithmetic ? ` Conversion price at this round's price per share: ${dd.conversionArithmetic}.` : " This round stores no price per share, so no conversion price is quoted."}${dd.marketNormNote ? ` ${dd.marketNormNote}` : ""}`;
  })()],
- ["Drag-along", "Yes — majority of preferred + majority of common"],
- ["ROFR / Co-Sale", "Yes — standard NVCA form"],
+ /* WAVE 114 - FINDING 2 (item 31): THE OTHER TWO. WERE the flat literals
+    "Yes - majority of preferred + majority of common" and "Yes - standard NVCA
+    form". Both asserted a YES, with a specific threshold and a specific form, on
+    every round in the platform - including rounds that granted neither. Same one
+    reader, same rule: unstored is stated as unstored, never as "Yes". */
+ [governance[2].label, governance[2].recorded ? governance[2].text : governance[2].statement],
+ [governance[3].label, governance[3].recorded ? governance[3].text : governance[3].statement],
  ["Region / formula pack", `${r.region ?? "US"} · ${r.currency ?? "USD"}`],
  ] as const).map(([k, v]) => (
- <div key={k} className="flex justify-between border-b border-border/60 py-2">
+ /* WAVE 107 · FINDING 2 — an addressable id per row, so a test can assert that
+    THIS row and the Edit-terms control show the same stored string rather than
+    string-matching the whole panel. Test ids are not customer-facing copy; the
+    label the founder reads is `k`, unchanged. */
+ <div key={k} data-testid={`terms-row-${k.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`} className="flex justify-between border-b border-border/60 py-2">
  <span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span>
  </div>
  ))}
  </div>
+ {/* WAVE 114 - FINDING 2 (item 31): what "Not recorded on this round" means,
+     said once, under the rows that can say it. Four governance terms became
+     storable in this wave but have no control on the Edit-terms dialog yet
+     (OQ-W114-3), so the founder is told where the value can come from instead of
+     being shown a row that looks negotiated. */}
+ {governance.some((g) => !g.recorded) && (
+ <div className="text-xs text-muted-foreground pt-3" data-testid="text-governance-not-recorded-note">
+ {GOVERNANCE_TERM_NOT_RECORDED_DETAIL} These terms are recorded through the rounds API in this release; a control on Edit terms is not yet provided.
+ </div>
+ )}
  <div className="text-xs text-muted-foreground pt-3">
  Editing terms is permitted in <span className="font-mono">draft</span> state; terms lock once the terms are set, with an audit-log entry. Currently: <Badge variant="outline" className="text-[10px] capitalize">{r.state.replace(/_/g, " ")}</Badge>
  {/* WAVE 58b · DEFECT 2 — THE CAPTION ABOVE PROMISED AN EDITABILITY THIS PANEL
@@ -1564,47 +1809,135 @@ function SideTable({ title, rows, totalShares, testid, highlight }: { title: str
 /* ----- Sprint 5 institutional-grade components ----- */
 
 const LIFECYCLE_STAGES: { id: string; label: string; states: string[] }[] = [
- { id: "draft", label: "Draft / Terms", states: ["draft"] },
- { id: "terms_set", label: "Terms set", states: ["terms_set"] },
- { id: "invitation", label: "Invitations", states: ["invitation_open"] },
- { id: "soft_circle", label: "Soft circles", states: ["soft_circle_open"] },
- { id: "signing", label: "Signing / Docs", states: ["signing_open"] },
- { id: "funded", label: "Funded", states: ["funded"] },
- { id: "closed", label: "Closed", states: ["closed"] },
+  { id: "draft", label: "Draft / Terms", states: ["draft"] },
+  { id: "terms_set", label: "Terms set", states: ["terms_set"] },
+  { id: "invitation", label: "Invitations", states: ["invitation_open"] },
+  { id: "soft_circle", label: "Soft circles", states: ["soft_circle_open"] },
+  { id: "signing", label: "Signing / Docs", states: ["signing_open"] },
+  { id: "funded", label: "Funded", states: ["funded"] },
+  { id: "closed", label: "Closed", states: ["closed"] },
 ];
 
-function RoundLifecycleProgress({ state }: { state: string }) {
- // Resolve current stage index. soft_circle_open → 3, etc.
- const orderedStateMap: Record<string, number> = {
- draft: 0, terms_set: 1, invitation_open: 2, soft_circle_open: 3, signing_open: 4, funded: 5, closed: 6,
- };
- const currentIdx = orderedStateMap[state] ?? 0;
- return (
- <Card className="mb-6">
- <CardContent className="p-4">
- <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wide">
- <Sparkles className="h-3.5 w-3.5" /> Round lifecycle <HelpTip>NVCA-flow round progression. Each stage is recorded permanently when it is entered. Click a future stage to preview the founder action required.</HelpTip>
- </div>
- <div className="flex items-center gap-1 overflow-x-auto pb-2">
- {LIFECYCLE_STAGES.map((s, i) => {
- const done = i < currentIdx;
- const active = i === currentIdx;
- return (
- <div key={s.id} className="flex items-center gap-1 shrink-0" data-testid={`lifecycle-${s.id}`}>
- <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] ${active ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/10 text-foreground font-medium" : done ? "border-emerald-300/60 bg-emerald-50 text-emerald-700 " : "border-border text-muted-foreground"}`}>
- <div className={`h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-bold ${active ? "bg-[hsl(0_100%_40%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
- {done ? <Check className="h-2.5 w-2.5" /> : i + 1}
- </div>
- {s.label}
- </div>
- {i < LIFECYCLE_STAGES.length - 1 && <div className={`h-px w-3 ${i < currentIdx ? "bg-emerald-400" : "bg-border"}`} />}
- </div>
- );
- })}
- </div>
- </CardContent>
- </Card>
- );
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 107 · FINDING 4 — THE STEPPER STOPS CLAIMING "DRAFT" FOR EVERY STATE IT
+   DOES NOT RECOGNISE.
+   ═══════════════════════════════════════════════════════════════════════════
+   WHAT WAS WRONG, and it was two things, not one:
+
+     1. `orderedStateMap[state] ?? 0` — a SILENT FALLBACK. `ROUND_STATES`
+        (`shared/schema.ts:917-923`) holds five values, but the server also emits
+        `active`, `live`, `open`, `funded` and `cancelled`, which
+        `ROUND_STATE_LABELS` (`shared/schema.ts:945-951`) declares explicitly.
+        Four of those five were absent from the map, so `?? 0` pinned an ACTIVE
+        round with an investor already invited onto stage 1, "Draft / Terms" —
+        the exact symptom reported. A default of zero is not a default; it is an
+        assertion that the round has not started.
+     2. `invitation_open` is a stage in the list above and a key in the map, but
+        it is not a member of `ROUND_STATES` — a stage no state could select.
+
+   WHAT IS TRACKED AND WHAT IS NOT, stated rather than papered over. `rounds`
+   (`shared/schema.ts:185-209`) has a `state` column and NO stage column and NO
+   stage-transition log, so the card's tooltip promise that "each stage is
+   recorded permanently when it is entered" is not something storage can
+   currently honour. Recording it properly needs a `round_stage_events` table,
+   i.e. migration `0193` plus its rollback note. That is NOT done in this wave
+   and is reported in `build_log/wave107/W107_PREFLIGHT.md`.
+
+   WHAT IS DONE INSTEAD — evidence, not inference from a word. `active`, `live`
+   and `open` are coarse statuses that genuinely do not encode a position on the
+   NVCA ladder, so no stage is read off them. The stepper is advanced from FACTS
+   ALREADY ON THE RECORD and already served with the round: the `pipeline`
+   projection from `GET /api/rounds/:id` (invited / joined / soft-circled /
+   validated counts, built in `server/routes.ts:2910-2924`). An invited investor
+   advances the stepper because THE INVITATION IS STORED, not because the round
+   is labelled "active". When neither the state nor the record places the round,
+   no stage is marked current and the card says so by name. */
+type LifecyclePipelineRow = { stage: string; label: string; count: number };
+
+/** Stages that a stored `state` genuinely identifies. No `?? 0` fallback. */
+const LIFECYCLE_STATE_INDEX: Record<string, number> = {
+  draft: 0,
+  terms_set: 1,
+  invitation_open: 2,
+  soft_circle_open: 3,
+  signing_open: 4,
+  funded: 5,
+  closed: 6,
+};
+
+/**
+ * The furthest stage the round's OWN RECORD proves it has reached, from the
+ * invitation and soft-circle counts. `null` when nothing is recorded.
+ */
+function lifecycleEvidenceIndex(pipeline: LifecyclePipelineRow[]): number | null {
+  const countFor = (stage: string): number => {
+    const row = pipeline.find((p) => p.stage === stage);
+    return row && Number.isFinite(row.count) ? row.count : 0;
+  };
+  if (countFor("validated") > 0 || countFor("soft_circled") > 0) return 3;
+  if (countFor("redeemed") > 0 || countFor("invited") > 0) return 2;
+  return null;
+}
+
+function RoundLifecycleProgress({ state, pipeline }: { state: string; pipeline?: LifecyclePipelineRow[] }) {
+  const rows: LifecyclePipelineRow[] = Array.isArray(pipeline) ? pipeline : [];
+  const fromState: number | null =
+    Object.prototype.hasOwnProperty.call(LIFECYCLE_STATE_INDEX, state) ? LIFECYCLE_STATE_INDEX[state] : null;
+  const fromRecord = lifecycleEvidenceIndex(rows);
+  /* The furthest of the two. A round whose state says `draft` but which has
+     invitations on the record HAS reached the invitation stage; the record is
+     evidence and the stepper stops contradicting it. */
+  const resolved: number | null =
+    fromState === null && fromRecord === null
+      ? null
+      : Math.max(fromState ?? -1, fromRecord ?? -1);
+  const cancelled = state === "cancelled";
+  const stateLabel = ROUND_STATE_LABELS[state] ?? null;
+  return (
+    <Card className="mb-6" data-testid="lifecycle-progress">
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wide">
+          <Sparkles className="h-3.5 w-3.5" /> Round lifecycle <HelpTip>NVCA-flow round progression. Capavate marks the furthest stage the round&apos;s own record proves it has reached — its recorded state, plus its invitations and soft circles. Where neither places the round on this ladder, no stage is marked rather than defaulting to the first.</HelpTip>
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto pb-2">
+          {LIFECYCLE_STAGES.map((s, i) => {
+            const done = resolved !== null && !cancelled && i < resolved;
+            const active = resolved !== null && !cancelled && i === resolved;
+            return (
+              <div key={s.id} className="flex items-center gap-1 shrink-0" data-testid={`lifecycle-${s.id}`}>
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] ${active ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/10 text-foreground font-medium" : done ? "border-emerald-300/60 bg-emerald-50 text-emerald-700 " : "border-border text-muted-foreground"}`}>
+                  <div className={`h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-bold ${active ? "bg-[hsl(0_100%_40%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
+                    {done ? <Check className="h-2.5 w-2.5" /> : i + 1}
+                  </div>
+                  {s.label}
+                </div>
+                {i < LIFECYCLE_STAGES.length - 1 && <div className={`h-px w-3 ${resolved !== null && !cancelled && i < resolved ? "bg-emerald-400" : "bg-border"}`} />}
+              </div>
+            );
+          })}
+        </div>
+        {cancelled && (
+          <p className="text-[11px] text-muted-foreground" data-testid="lifecycle-cancelled">
+            This round is cancelled, so it holds no position on the lifecycle above.
+          </p>
+        )}
+        {!cancelled && fromState === null && resolved !== null && (
+          <p className="text-[11px] text-muted-foreground" data-testid="lifecycle-derived-from-record">
+            {stateLabel === null
+              ? "The stage above is taken from this round's own record — its invitations and soft circles — because its recorded status does not identify a stage on this ladder."
+              : `This round's recorded status is “${stateLabel}”, which does not identify a stage on this ladder. The stage marked above is taken from the round's own record instead: its invitations and soft circles.`}
+          </p>
+        )}
+        {!cancelled && resolved === null && (
+          <p className="text-[11px] text-muted-foreground" data-testid="lifecycle-unresolved">
+            {stateLabel === null
+              ? "Capavate cannot place this round on the lifecycle above: its recorded status does not identify a stage, and no invitation or soft circle is on the record yet. No stage is marked rather than guessing one."
+              : `Capavate cannot place this round on the lifecycle above. Its recorded status is “${stateLabel}”, which does not identify a stage, and no invitation or soft circle is on the record yet. No stage is marked rather than guessing one.`}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles: SoftCircle[] }) {

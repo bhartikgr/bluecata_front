@@ -48,6 +48,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RoleProvider } from "@/lib/role";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { fmtPct } from "@/lib/format";
+import { OWNERSHIP_PERCENT_DECIMALS } from "@/lib/captable/ownershipPercent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -196,8 +197,22 @@ describe("W61a · R47 / L-5 — ownership is displayed at ONE precision: two dec
     expect(dash).toContain("const ownershipPctDisplay = ownershipPctRaw == null ? null : Number(ownershipPctRaw) * 100;");
 
     const journey = read("client/src/components/CapitalizationJourney.tsx");
-    expect(journey).toContain("fmtPct(kpis.founderPct, 2)");
+    /* WAVE 116 · FINDING 3 — THIS ASSERTION WAS UPDATED, AND WHY.
+       Wave 61a pinned `fmtPct(kpis.founderPct, 2)` to stop this tile drifting
+       onto fmtPct's shared default precision. Wave 116 converged the tile onto
+       `client/src/lib/captable/ownershipPercent.ts` — the platform's one
+       null-aware ownership renderer — because the old `kpis.founderPct` was a
+       ninth private re-division of the engine's own share totals and fabricated
+       `0` for `0 ÷ 0`. The tile therefore no longer calls fmtPct at all.
+
+       Wave 61a's guarantee is asserted on the converged path instead, and it is
+       now structural rather than textual: the renderer is used, and its single
+       precision constant is still 2. A change to that constant fails here, which
+       is exactly what Wave 61a was protecting. */
+    expect(journey).toContain("ownershipPercentCellText(");
     expect(journey).not.toContain("fmtPct(kpis.founderPct, 1)");
+    expect(journey).not.toContain("fmtPct(kpis.founderPct)");
+    expect(OWNERSHIP_PERCENT_DECIMALS).toBe(2);
 
     const crm = read("client/src/pages/founder/CRM.tsx");
     expect(crm).toContain("fmtPct(c.ownership.pct * 100, 2)");

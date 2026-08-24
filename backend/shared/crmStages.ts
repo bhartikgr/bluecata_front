@@ -31,8 +31,70 @@ export type CollectiveDecisionState =
   | "pending" | "viewed" | "accepted" | "soft_circled" | "confirmed"
   | "signed" | "funded" | "declined" | "expired" | "revoked";
 
-/** Map Collective state → Founder CRM stage. */
-export function mapCollectiveStateToCRMStage(state: CollectiveDecisionState): FounderCRMStage {
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 122 · FINDING 3 — THREE TERMINAL OUTCOMES STOP BEING FILED AS A LIVE
+ * PROSPECT. READ UNDER OWNER RULING R91 (LADDER ORDER IS NOT REFACTORABLE).
+ *
+ * THE DEFECT. `mapCollectiveStateToCRMStage` returned `"prospect"` for
+ * `declined`, `expired` AND `revoked` (crmStages.ts:45-47), and
+ * `mapCollectiveStateToPCRMStage` returned `"lead"` for the same three
+ * (:61-63). Three different endings — the investor said no, the window ran out,
+ * the founder pulled the invitation — arrived in the CRM as the same thing, and
+ * that thing was the TOP OF A LIVE PIPELINE. A founder chasing "prospects" was
+ * being handed people who had already declined and people whose invitation the
+ * founder had itself revoked, with nothing on the card to say so.
+ *
+ * WHY NOTHING IS ADDED TO ANY STAGE ARRAY. R91: the ladders in this file are
+ * ORDERED and their positions are consumed as positions — `PARTNER_CLIENT_STAGES`
+ * is iterated to lay out the kanban columns (`client/src/pages/partner/
+ * PartnerClients.tsx`, `PartnerClientDetail.tsx`) and validated server-side
+ * (`server/partnerClientCrmRoutes.ts`), `PARTNER_PIPELINE_STAGES` is iterated
+ * for the partner pipeline board, and both are pinned by index in existing
+ * tests. Inserting a terminal stage into `FOUNDER_CRM_STAGES` or
+ * `INVESTOR_PCRM_STAGES` — or reordering either — would move a stage's index
+ * under screens and gates this change has no business moving. R91 forbids it and
+ * the enumeration is written out in build_log/wave122/W122_PREFLIGHT.md.
+ *
+ * SO THE FOUR STAGE ARRAYS ABOVE AND BELOW ARE UNTOUCHED, BYTE FOR BYTE.
+ * A terminal outcome is not a rung on the ladder; it is the fact that the
+ * candidate LEFT the ladder. It therefore gets its OWN closed vocabulary, and
+ * the mappers return `stage | outcome`. A consumer that only understands stages
+ * cannot silently mistake one for `prospect`: it has to look.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** The three ways a Collective decision ENDS without an investment. Each is its
+ *  own value; none of them is a pipeline stage and none of them is each other. */
+export const CRM_TERMINAL_OUTCOMES = [
+  "declined", "expired", "revoked",
+] as const;
+export type CRMTerminalOutcome = (typeof CRM_TERMINAL_OUTCOMES)[number];
+
+/** What a CRM card shows instead of a stage. The words say WHO ended it. */
+export const CRM_TERMINAL_OUTCOME_LABELS: Record<CRMTerminalOutcome, string> = {
+  declined: "Declined",
+  expired: "Expired",
+  revoked: "Revoked",
+};
+
+/** One sentence each, so no screen has to guess what the difference is. */
+export const CRM_TERMINAL_OUTCOME_MEANINGS: Record<CRMTerminalOutcome, string> = {
+  declined: "The investor considered this and said no. Nobody is waiting on a reply.",
+  expired: "The invitation's window ran out before the investor answered. The investor never said no.",
+  revoked: "The company withdrew this invitation. The investor's access was ended by the company, not by the investor.",
+};
+
+/** True for a mapper result that is an ENDING rather than a live stage. A board
+ *  must not place these in a working column. */
+export function isCRMTerminalOutcome(v: unknown): v is CRMTerminalOutcome {
+  return typeof v === "string" && (CRM_TERMINAL_OUTCOMES as readonly string[]).includes(v);
+}
+
+/** Map Collective state → Founder CRM stage, or the terminal outcome that ended
+ *  it. WAVE 122 · FINDING 3: `declined` / `expired` / `revoked` used to all
+ *  return `"prospect"` and are now returned as themselves. */
+export function mapCollectiveStateToCRMStage(
+  state: CollectiveDecisionState,
+): FounderCRMStage | CRMTerminalOutcome {
   switch (state) {
     /* v25.48.3 Q-K1 — "lead" renamed to "prospect". */
     case "pending":      return "prospect";
@@ -42,14 +104,25 @@ export function mapCollectiveStateToCRMStage(state: CollectiveDecisionState): Fo
     case "confirmed":    return "committed";
     case "signed":       return "signing";
     case "funded":       return "invested";
-    case "declined":     return "prospect";  // back to top of pipeline
-    case "expired":      return "prospect";
-    case "revoked":      return "prospect";
+    /* WAVE 122 · FINDING 3 — WAS `return "prospect"` for all three, with the
+     * comment "back to top of pipeline". A declined investor is not at the top
+     * of the pipeline; an expired invitation is not a fresh prospect; and a
+     * revocation is the COMPANY'S OWN act, which the company was then shown as
+     * a lead to chase. Each is returned as itself. No stage array changed and no
+     * stage moved position (R91). */
+    case "declined":     return "declined";
+    case "expired":      return "expired";
+    case "revoked":      return "revoked";
   }
 }
 
-/** Map Collective state → Investor PCRM stage. */
-export function mapCollectiveStateToPCRMStage(state: CollectiveDecisionState): InvestorPCRMStage {
+/** Map Collective state → Investor PCRM stage, or the terminal outcome that
+ *  ended it. WAVE 122 · FINDING 3: the same defect lived here one function down,
+ *  collapsing the same three endings onto `"lead"` — the FIRST stage of the
+ *  investor's own pipeline. */
+export function mapCollectiveStateToPCRMStage(
+  state: CollectiveDecisionState,
+): InvestorPCRMStage | CRMTerminalOutcome {
   switch (state) {
     case "pending":      return "lead";
     case "viewed":       return "met";
@@ -58,9 +131,13 @@ export function mapCollectiveStateToPCRMStage(state: CollectiveDecisionState): I
     case "confirmed":    return "signing";
     case "signed":       return "signing";
     case "funded":       return "invested";
-    case "declined":     return "lead";
-    case "expired":      return "lead";
-    case "revoked":      return "lead";
+    /* WAVE 122 · FINDING 3 — WAS `return "lead"` for all three. `lead` is index
+     * 0 of INVESTOR_PCRM_STAGES, so a deal the investor had declined, a deal
+     * whose window expired and a deal the company revoked all reappeared at the
+     * front of the investor's own pipeline as live leads. */
+    case "declined":     return "declined";
+    case "expired":      return "expired";
+    case "revoked":      return "revoked";
   }
 }
 

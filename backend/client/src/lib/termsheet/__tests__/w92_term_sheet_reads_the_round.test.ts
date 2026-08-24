@@ -33,14 +33,24 @@ import {
 import { getTemplate } from "../templates";
 import type { TermSheetData } from "../types";
 
-/* ── THE SERVER READER'S OWN RULES, TRANSCRIBED FROM ITS SOURCE ──────────────
+/* ── THE ONE READER'S OWN RULES, TRANSCRIBED FROM ITS SOURCE ─────────────────
    Not paraphrased and not remembered: the two regular expressions below are read
-   OUT OF `server/lib/roundStoredTerms.ts` at test time, so this comparison cannot
-   silently drift from the file it is comparing against. If the server's expression
-   changes shape and the extraction stops matching, the extraction assertion fails
-   first and says so. */
+   OUT OF the reader's source at test time, so this comparison cannot silently drift
+   from the file it is comparing against. If the expression changes shape and the
+   extraction stops matching, the extraction assertion fails first and says so.
+
+   WAVE 111 — THE PATH MOVED, AND THAT IS THE POINT. The rules used to live in
+   `server/lib/roundStoredTerms.ts` and were MIRRORED by
+   `client/src/lib/termsheet/roundNegotiatedTerms.ts`, which this test compared
+   against them. The mirror then drifted in the one place this test never looked —
+   the participation CAP — and the term sheet printed "with no cap on participation
+   recorded" for rounds where the exit waterfall refuses. Both files now IMPORT
+   `shared/liquidationTermsReader.ts`; `roundStoredTerms` re-exports it. This test
+   stays as the fence on the multiple and the participation flag, and
+   `server/__tests__/w111_one_term_reader_agreement.test.ts` is the fence on the
+   whole decision, cap included. */
 const SERVER_READER = path.resolve(
-  __dirname, "../../../../../server/lib/roundStoredTerms.ts",
+  __dirname, "../../../../../shared/liquidationTermsReader.ts",
 );
 
 function serverRules(): { multiple: RegExp; nonPart: RegExp; part: RegExp } {

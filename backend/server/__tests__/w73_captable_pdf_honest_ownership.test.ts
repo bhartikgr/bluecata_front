@@ -139,6 +139,24 @@ describe("WAVE 73 · ITEM 9 — a zero-share cap-table PDF refuses instead of pr
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
     expect(routes).not.toContain("totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : 0");
-    expect(routes).toContain("totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : null");
+    /* WAVE 116 · FINDING 3 — THIS ASSERTION WAS UPDATED, AND WHY.
+       Wave 73 pinned the literal repaired expression
+
+           totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : null
+
+       because at the time the repair WAS that expression: the `: 0` had to
+       become `: null`. Wave 116 converged this site onto the one shared
+       committed-ledger computation, so the inline division no longer exists at
+       all — `computeCommittedOwnership` performs it once, in one file, and
+       returns `null` for a zero or unknown denominator (owner ruling D18).
+       Pinning the deleted expression would now REQUIRE the duplicate back.
+
+       What Wave 73 actually owned is asserted instead, and more strictly: the
+       fabricated `: 0` is still forbidden, the PDF pct comes from the shared
+       computation, and that computation's own refusal is proved by this file's
+       render tests above (`is undefined — it is NOT zero`) plus
+       `w116_company_money_and_denominators.test.ts`. */
+    expect(routes).not.toContain("(v.shares / totalSharesNum) * 100");
+    expect(routes).toContain("const pct = computeCommittedOwnership(v.shares, totalSharesNum).pct;");
   });
 });

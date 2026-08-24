@@ -37,6 +37,10 @@ import {
   currentInvestor,
 } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+/* WAVE 111 — the ONE interpreter of liquidation preference, participation and the
+   participation cap. The exit waterfall, the round Terms tab, the term sheet and this
+   route's Edit-terms warning all read it, so no two of them can disagree. */
+import { readLiquidationTermFacts } from "../shared/liquidationTermsReader";
 import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 exponent, never a hardcoded *100 */
 /* WAVE 35 F6/F7/F8/F9 — the ONE shared decision for every cap-table sink that
    authorises with a `capTablePositions.some(...)` equality check. An SPV is a
@@ -111,7 +115,7 @@ import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
 import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
-import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForCompany } from "./dataroomStore"; // v25.48 DATA-2 (V-4)
+import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForCompany, listFilesVisibleTo as dataroomStoreListVisibleTo } from "./dataroomStore"; // v25.48 DATA-2 (V-4); WAVE 113 FINDING 2 — the permission-filtered reader
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
 // uploads so the founder Company-profile form no longer carries multi-MB
 // base64 data URLs in form state.
@@ -330,6 +334,14 @@ import { decimalStringToMinor } from "./lib/money";
 import { isDiscoverableForInvestor, projectDiscoverRound } from "./lib/investorDiscoverProjection";
 /* W-FIX1a (A1/A2) — cap-table DISPLAY resolver (read-only; sacred files only CALLED). */
 import { resolveHolderDisplay, resolveRoundName, computeOwnershipPct } from "./lib/captableDisplayResolver";
+/* WAVE 116 · FINDING 3 — the ownership read now carries the NAME of its
+   denominator alongside the number. Import only; nothing else in this file moves. */
+import {
+  computeCommittedOwnership,
+  COMMITTED_LEDGER_BASIS,
+  COMMITTED_LEDGER_BASIS_LABEL,
+  COMMITTED_LEDGER_BASIS_SENTENCE,
+} from "./lib/captableDisplayResolver";
 import { exerciseWarrant, computeExercise, type ExerciseMode } from "./lib/warrantExercise";
 /* W-FIX1a (A2) — central activity/entity label resolver (read-only). */
 import { resolveActorLabel, resolveEntityLabel } from "./lib/activityLabelResolver";
@@ -397,6 +409,23 @@ import {
   validateParticipationCapStored,
   optionPoolPostPercentWithinCeiling,
 } from "./lib/roundStoredTerms";
+/* WAVE 114 · FINDING 1 (item 8) — the ONE derivation of a round's raised total.
+   `rounds.raised_amount` has no writer anywhere in the product, so it is not
+   read as money here; the three labelled states are derived from the round's
+   soft-circle book and cross-checked against the hash-chained cap-table ledger.
+   See build_log/wave114/W114_PREFLIGHT.md §1 and server/lib/roundRaisedTotals.ts. */
+import {
+  roundMoneyOnRecord,
+  type RoundMoneyRowInput,
+} from "./lib/roundRaisedTotals";
+/* WAVE 114 · FINDING 2 (item 31) — the ONE reader AND write fence for the four
+   governance terms that were printed as string literals on every round. Imported,
+   never restated, so the writers here and the founder terms panel that renders
+   them back cannot disagree about what is stored or what "not recorded" means. */
+import {
+  GOVERNANCE_TERM_KEYS,
+  validateGovernanceTermStored,
+} from "@shared/roundGovernanceTerms";
 import { registerTrack4Routes, setSoftCircleSource } from "./track4Routes";
 import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
 // Avi 22-May Issue 2 — PPS derivation helper routes.
@@ -2329,7 +2358,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // arrays (which are empty on live). Dataroom from dataroomStore; soft-circles
     // from softCircleStore.listForCompany. Previously these filtered the mock
     // `dataroomFiles` / `softCircles` arrays and silently returned [] in prod.
-    const dataroomForCompany = dataroomStoreListForCompany(String(req.params.id));
+    /* WAVE 113 · FINDING 2 (B-37, PATH P1b) — the SECOND unfiltered listing. This
+       endpoint embeds the data room in the company payload, gated only on the
+       company-level `canSeeDataroom`, so it leaked exactly what `/api/dataroom`
+       leaked. Same predicate, same fail-closed behaviour. */
+    const dataroomForCompany = dataroomStoreListVisibleTo(String(req.params.id), {
+      userId: ctx?.userId ?? null,
+      isAdmin: !!ctx?.isAdmin,
+      isFounderOfCompany: role === "founder",
+    });
     const softCirclesForCompany = softCircleListForCompany(String(req.params.id));
 
     res.json({
@@ -2674,7 +2711,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
     }
     type InterimKind = "committed" | "funded" | "soft_circle";
-    type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null;
+    type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; ownershipBasis?: string; ownershipBasisLabel?: string; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null;
       /* WAVE 43 · OWNER RULING R7 — "a late commitment is labelled as
        * accepted-after-close everywhere it appears … and on the cap table."
        * DERIVED at projection time from the append-only late-acceptance ledger.
@@ -2722,9 +2759,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     } catch { /* fail-open */ }
     // W-FIX1a A1 — committed ownership %: holder committed shares ÷ total committed shares.
+    /* WAVE 116 · FINDING 3 — was `computeOwnershipPct(...)`, which returned a bare
+       number the client rendered as a bare `%`. Same arithmetic, but the basis
+       label now travels with each row so no renderer can print the percentage
+       without naming what it divides by. */
     try {
       const totalCommittedShares = committed.reduce((a, r) => a + (Number.isFinite(r.shares) ? r.shares : 0), 0);
-      for (const r of committed) r.ownershipPct = computeOwnershipPct(r.shares, totalCommittedShares);
+      for (const r of committed) {
+        const own = computeCommittedOwnership(r.shares, totalCommittedShares);
+        r.ownershipPct = own.pct;
+        r.ownershipBasis = own.basis;
+        r.ownershipBasisLabel = own.basisLabel;
+      }
     } catch { /* fail-open */ }
     try {
       for (const e of captableGetFundedQueue().filter((e: any) => e.companyId === cid) as any[]) {
@@ -2842,6 +2888,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         funded: subtotal(scopedFunded),
         soft_circle: subtotal(scopedSoftCircle),
       },
+      /* WAVE 116 · FINDING 3 — the denominator, named once at the top level so a
+         header, a footnote or an export can all print the same words. */
+      ownershipBasis: COMMITTED_LEDGER_BASIS,
+      ownershipBasisLabel: COMMITTED_LEDGER_BASIS_LABEL,
+      ownershipBasisSentence: COMMITTED_LEDGER_BASIS_SENTENCE,
     });
   });
 
@@ -2849,6 +2900,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
      Reuses the same in-memory demo `securities` reader + commit-store readers;
      performs ZERO writes (sacred money core untouched, sha 32ba97cbcdf97750). */
   registerCaptableSnapshotsRoutes(app, () => securities);
+
+  /* ====================================================================
+   * WAVE 114 · FINDING 1 (ALL_OPEN_WAVES item 8) — THE ROUND'S MONEY,
+   * DERIVED AND LABELLED, PROJECTED ONTO THE TWO FOUNDER ROUND READS.
+   *
+   * `rounds.raised_amount` has NO WRITER (see
+   * build_log/wave114/W114_PREFLIGHT.md §1.1), so every real round printed
+   * "$0 soft-circled". Rather than invent a writer for a second copy of a
+   * fact that already exists, the total is DERIVED from the authoritative
+   * rows on read. The projection is ADDITIVE: `raisedAmount` is still on the
+   * payload untouched for every other reader in the tree.
+   *
+   * The book is merged EXACTLY as `GET /api/rounds/:id/soft-circles` merges
+   * it — live DB rows unioned with legacy seed rows — so the header total and
+   * the soft-circle book listed underneath it cannot disagree.
+   *
+   * Fail-open: on any read failure this returns null and the client falls back
+   * to stating that the figure is not recorded. It never fabricates a zero.
+   * ==================================================================== */
+  function roundMoneyOnRecordForRound(
+    roundId: string,
+    fallbackCurrency: unknown,
+    ledger?: ReadonlyArray<{ roundId?: unknown; amount?: unknown; currency?: unknown; state?: unknown }>,
+    /* WAVE 114 · FINDING 1 — the round's recorded target, so the projection can
+       carry `progressBp` and no browser ever divides a money figure. Omitted =>
+       `progressBp: null`, which the founder screens read as "draw no bar"
+       rather than as 0%. */
+    targetAmount?: unknown,
+  ): ReturnType<typeof roundMoneyOnRecord> | null {
+    try {
+      const live = softCircleListForRound(roundId);
+      const seed = softCircles.filter((s) => s.roundId === roundId);
+      const liveIds = new Set(live.map((s) => s.id));
+      const merged = [...seed.filter((s) => !liveIds.has(s.id)), ...live];
+      return roundMoneyOnRecord({
+        roundId,
+        rows: merged as unknown as ReadonlyArray<RoundMoneyRowInput>,
+        ledger,
+        fallbackCurrency: typeof fallbackCurrency === "string" && fallbackCurrency ? fallbackCurrency : "USD",
+        targetAmount,
+      });
+    } catch (err) {
+      log.warn(`[roundMoneyOnRecordForRound] derivation failed for ${roundId}:`, (err as Error).message);
+      return null;
+    }
+  }
 
   // PATCH v3: Filter rounds by companyId (required for founder surface); coerce pricePerShare to number.
   // v13 (Avi's Issue 3): also merges DB-hydrated rounds (from roundsStore)
@@ -2873,6 +2970,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json([]);
       }
     }
+    /* WAVE 114 · FINDING 1 — the hash-chained cap-table ledger is read ONCE for
+       the whole list, not once per round. Fail-open: without it the funded
+       cross-check reports itself unavailable rather than pretending to agree. */
+    let ledgerForMoney: ReadonlyArray<{ roundId?: unknown; amount?: unknown; currency?: unknown; state?: unknown }> | undefined;
+    try { ledgerForMoney = getLedger(); } catch { ledgerForMoney = undefined; }
     const enriched = filtered.map(r => ({
       ...r,
       // PATCH v3 Bug 4a: coerce pricePerShare to number (never string) to prevent .toFixed crash
@@ -2881,6 +2983,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // v25.54 G0-2 read-path: surface DB-authoritative archived state so the
       // client can render archived rounds as greyed/inert.
       archivedAt: resolveArchivedAt(r.id, r.archivedAt),
+      /* WAVE 114 · FINDING 1 — ADDITIVE. The three distinct, LABELLED money
+         states, derived from the round's book and cross-checked against the
+         ledger. `raisedAmount` above is left exactly as it was for every other
+         reader; this is what the founder surfaces now print. */
+      moneyOnRecord: roundMoneyOnRecordForRound(String(r.id), (r as { currency?: unknown }).currency, ledgerForMoney, (r as { targetAmount?: unknown }).targetAmount),
     }));
     res.json(enriched);
   });
@@ -2922,8 +3029,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { stage: "validated", label: "Validated", count: validatedCount },
       ];
     } catch { /* pipeline is best-effort; never block the round read */ }
+    /* WAVE 114 · FINDING 1 — ADDITIVE, same projection as the list endpoint so
+       the two founder surfaces cannot print different totals. */
+    let ledgerForDetail: ReadonlyArray<{ roundId?: unknown; amount?: unknown; currency?: unknown; state?: unknown }> | undefined;
+    try { ledgerForDetail = getLedger(); } catch { ledgerForDetail = undefined; }
+    const moneyOnRecord = roundMoneyOnRecordForRound(String(r.id), (r as { currency?: unknown }).currency, ledgerForDetail, (r as { targetAmount?: unknown }).targetAmount);
     // PATCH v3 Bug 4a: coerce pricePerShare to number
-    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name, archivedAt: resolveArchivedAt(r.id, r.archivedAt), pipeline });
+    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name, archivedAt: resolveArchivedAt(r.id, r.archivedAt), pipeline, moneyOnRecord });
   });
 
   /* Sprint 18 T5.1 — Edit Terms (active rounds only) — requireAuth */
@@ -2946,21 +3058,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const termWarnings: string[] = [];
     /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
        and never silent: the founder gets the same sentence here that both client
-       writers show inline, on the channel that cannot block a save. */
-    {
-      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
-      if (pastClose) termWarnings.push(pastClose);
-    }
-    /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
-       and never silent: the founder gets the same sentence here that both client
-       writers show inline, on the channel that cannot block a save. */
-    {
-      const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
-      if (pastClose) termWarnings.push(pastClose);
-    }
-    /* WAVE 83 · ITEM 2.2 — writer 4 of 4. A past target close date is accepted
-       and never silent: the founder gets the same sentence here that both client
-       writers show inline, on the channel that cannot block a save. */
+       writers show inline, on the channel that cannot block a save.
+
+       WAVE 121 · FINDING 4 — emitted ONCE. This exact block was present THREE
+       times, so one save pushed the identical sentence into `termWarnings` three
+       times and the founder was toasted the same warning three times
+       (`client/src/pages/founder/Rounds.tsx` renders every entry). R92 is
+       unchanged: the date is still accepted, still never silent, and the sentence
+       is still the shared rule's own text from
+       `shared/roundTargetCloseRule.ts` — not reworded, just not repeated. */
     {
       const pastClose = pastTargetCloseNotice((body as Record<string, unknown>).closeDate as string | null | undefined);
       if (pastClose) termWarnings.push(pastClose);
@@ -3014,6 +3120,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (numericTerm("minTicket")) return;
     if (typeof body.closeDate === "string" && body.closeDate.length > 0) updates.closeDate = body.closeDate;
     if (typeof body.termsSummary === "string") updates.termsSummary = body.termsSummary;
+    /* WAVE 107 - F1-B. The wizard's two narrative fields, given the edit surface
+       they never had. Mirrors the `termsSummary` line above exactly: a string is
+       taken as written, anything else is ignored rather than coerced, and an
+       empty string is a legitimate value (the founder clearing the paragraph).
+       Both live in `extras_json` and both are whitelisted in
+       `roundsStore.UPDATE_EXTRAS_WHITELIST`; no column and no migration. */
+    if (typeof body.notes === "string") updates.notes = body.notes;
+    if (typeof body.useOfProceeds === "string") updates.useOfProceeds = body.useOfProceeds;
     // v24.4 BUG 049 — allow editing the round name after creation. Reject an
     // explicit empty/blank name (400); a name absent from the body is left
     // untouched. Trimmed before persisting so accidental whitespace is dropped.
@@ -3247,10 +3361,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
            refusal it is meant to prevent. `roundStoredTerms` reads the STORED round,
            so the text is parsed here directly by the identical rules, quoted in the
            declaration block of that module. */
-        const lpLower = lpText.toLowerCase();
-        const mult = /(^|[^0-9.])([0-9]+(?:\.[0-9]+)?)\s*x\b/.exec(lpLower);
-        const multOk = Boolean(mult) && Number(mult![2]) > 0 && Number(mult![2]) <= 10;
-        const partOk = /participating/.test(lpLower);
+        /* WAVE 111 — THE RESTATED REGEXES ARE GONE. They were a THIRD copy of the
+           multiple and participation rules, sitting in the very route a founder uses
+           to correct the term, and "identical rules" was a comment rather than a
+           guarantee. Both are now read by `shared/liquidationTermsReader`, the one
+           interpreter, which is also what `roundStoredTerms` and therefore the exit
+           waterfall reads — so this warning cannot disagree with the refusal it
+           exists to prevent. The WORDING below is unchanged. */
+        const lpFacts = readLiquidationTermFacts({ liquidationPreference: lpText });
+        const multOk = lpFacts.multiple !== null;
+        const partOk = lpFacts.participating !== null;
         if (!multOk || !partOk) {
           termWarnings.push(
             `Saved the liquidation preference as “${lpText}”. The exit waterfall still cannot use it: ` +
@@ -3546,6 +3666,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       updates.useOfProceeds = uv.value;
     }
 
+    /* ═════════════════════════════════════════════════════════════════════════
+       WAVE 114 · FINDING 2 (item 31) — THE FOUR GOVERNANCE TERMS BECOME STORABLE.
+       ═════════════════════════════════════════════════════════════════════════
+       Board composition, Information rights, Drag-along and ROFR/Co-Sale were
+       printed on every round's terms panel as flat string literals because no
+       storage existed for them. They now round-trip through `extras_json` (they
+       joined `roundsStore.UPDATE_EXTRAS_WHITELIST` in this same wave) and the panel
+       reads them back through the SAME file that validates them here, so a value
+       that is not stored is stated as not recorded rather than asserted.
+
+       THREE STATES, identical to every other term on this route: absent is
+       untouched, `null` / `""` is explicit removal, text is validated then stored. */
+    for (const gk of GOVERNANCE_TERM_KEYS) {
+      const bag = body as Record<string, unknown>;
+      if (bag[gk] === undefined) continue;
+      const gv = validateGovernanceTermStored(gk, bag[gk]);
+      if (!gv.ok) {
+        return res.status(400).json({ error: gv.error, field: gv.field, message: gv.message });
+      }
+      updates[gk] = gv.value; // null = explicit removal
+    }
+
     // v25.45 Bug C (Ozan QA wave) — PERSISTENCE FIX.
     //
     // Previously this route did `Object.assign(r, updates)` and returned — it
@@ -3623,9 +3765,75 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch { /* non-fatal — a bridge failure must never fail the mutation */ }
     emitMutation({ aggregate: "round", id: persisted.id, change: "update" });
+
+    /* ═════════════════════════════════════════════════════════════════════════
+       WAVE 114 · FINDING 4 (item 40) — THE SAVE CONFIRMATION MUST NAME WHAT WAS
+       STORED, AND NAME WHAT WAS NOT, AT THE MOMENT IT WAS NOT.
+       ═════════════════════════════════════════════════════════════════════════
+       "Terms saved" named nothing, and the client summary could only describe the
+       PERSISTED round — so a field the server never took was simply absent from the
+       sentence and read as though it had been saved. This platform has been found
+       silently discarding typed values in at least NINE fields, so a confirmation
+       that cannot detect a drop is itself the defect.
+
+       The diff is computed HERE, on the server, because only the server knows both
+       halves: what arrived in the body, and what the canonical re-read holds after
+       the write. Three additive arrays, computed from data that already exists:
+
+         savedFields      — keys that were submitted AND are now on the persisted
+                            round with the value the writer accepted.
+         removedFields    — keys deliberately cleared (the `null` / `""` third state).
+                            Named separately so "removed" never reads as "saved".
+         notStoredFields  — keys that were SUBMITTED and are NOT on the persisted
+                            round. This is the set that used to disappear silently.
+
+       No money value is parsed or reformatted here: values are compared by their
+       own string form, so no `Number()` / `parseFloat` touches an amount. */
+    const submittedKeys = Object.keys((body ?? {}) as Record<string, unknown>);
+    const persistedBag = persisted as unknown as Record<string, unknown>;
+    const sameStoredValue = (a: unknown, b: unknown): boolean => {
+      if (a === b) return true;
+      if (a === null || a === undefined || b === null || b === undefined) return false;
+      /* Compared as written. `"2"` and `2` are the same stored cap; a money string
+         is never re-parsed into a float to be compared. */
+      return String(a).trim() === String(b).trim();
+    };
+    const savedFields: string[] = [];
+    const removedFields: string[] = [];
+    const notStoredFields: string[] = [];
+    for (const k of submittedKeys) {
+      if (k === "id" || k === "companyId") continue;
+      const sent = (body as Record<string, unknown>)[k];
+      const wasRemoval = Object.prototype.hasOwnProperty.call(updates, k) && updates[k] === null;
+      const held = persistedBag[k];
+      if (wasRemoval) {
+        if (held === null || held === undefined || held === "") removedFields.push(k);
+        else notStoredFields.push(k);
+        continue;
+      }
+      if (held === undefined || held === null) { notStoredFields.push(k); continue; }
+      /* A key the route deliberately transformed (a validated cap normalised to a
+         number, a boolean recorded as "Yes") counts as SAVED when the persisted
+         value matches what the writer decided to store, not the raw submission. */
+      const decided = Object.prototype.hasOwnProperty.call(updates, k) ? updates[k] : sent;
+      if (sameStoredValue(decided, held)) savedFields.push(k);
+      else notStoredFields.push(k);
+    }
+
     /* WAVE 58e · D2 — market-norm disclosure on the SUCCESS response (R30.5:
        warn outside 10–20%, do not block). Omitted entirely when empty. */
-    res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated", ...(termWarnings.length ? { termWarnings } : {}) });
+    res.json({
+      ok: true,
+      round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name },
+      eventType: "round.terms_updated",
+      /* WAVE 114 · FINDING 4 — ADDITIVE. Always present, even when empty, so the
+         client can distinguish "nothing was dropped" from "the server is too old
+         to tell me". */
+      savedFields,
+      removedFields,
+      notStoredFields,
+      ...(termWarnings.length ? { termWarnings } : {}),
+    });
   });
 
   /* W-INVEST BUG B (2026-07-17) — "Active" investor roster flag. Additive,
@@ -3852,7 +4060,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!access.ok) return;
     // v25.48 DATA-2 (V-4) — read the canonical DB-hydrated dataroom store, not the
     // mockData `dataroomFiles` array (empty on live).
-    const files = dataroomStoreListForCompany(companyId);
+    /* WAVE 113 · FINDING 2 (B-37, PATH P1) — THE LISTING IS NOW PERMISSION-FILTERED.
+       `requireCanAccessCompany` answers "may this person see THIS COMPANY", which is
+       not the same question as "may this person see THIS FOLDER's documents". Every
+       file the company owned was returned to any investor who cleared the company
+       gate, including one whose data-room access had been switched off — so the whole
+       document inventory leaked before a single file was opened. `listFilesVisibleTo`
+       requires a `view: true` folder grant per file for an investor, and still returns
+       everything to the company's own founder and to an admin. */
+    const dctx = req.userContext ?? getUserContext(req);
+    const files = dataroomStoreListVisibleTo(companyId, {
+      userId: dctx?.userId ?? null,
+      isAdmin: !!dctx?.isAdmin,
+      isFounderOfCompany: dctx?.founder?.companies?.some((c) => c.companyId === companyId) ?? false,
+    });
     res.json(files);
   });
 
@@ -4038,7 +4259,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         closeDate: (round?.closeDate ?? null) as string | null,
         roundState: (round?.state ?? null) as string | null,
         targetAmount: round?.targetAmount ?? 0,
-        raisedAmount: round?.raisedAmount ?? 0,
+        /* ══════════════════════════════════════════════════════════════════
+         * WAVE 122 · FINDING 1 — THE COLUMN WITH NO WRITER STOPS BEING
+         * PUBLISHED TO INVESTORS AS A NUMBER.
+         *
+         * WAS: `raisedAmount: round?.raisedAmount ?? 0`.
+         *
+         * `rounds.raised_amount` is `NOT NULL DEFAULT 0`, is inserted as the
+         * literal `0` (`server/roundsStore.ts:278,326`) and is EXCLUDED from
+         * the accepted patch keys of the terms route (`server/routes.ts:7773`,
+         * `k !== "raisedAmount"`), so no founder action can ever set it. It is
+         * structurally frozen at zero. Publishing it made this card read
+         * "$0 soft-circled of $5M · 0%" with an empty bar on EVERY real round,
+         * on the two screens a prospective investor reads immediately before
+         * deciding whether to wire money.
+         *
+         * The same object literal already establishes the answer two fields
+         * below: `minTicket` and `preMoney` were changed from `?? 0` to
+         * `?? null` under owner ruling R6, with the reasoning written out —
+         * "a valuation that was never entered must not be published as $0".
+         * `raisedAmount ?? 0` was left directly above it. R6 is applied here
+         * now, so the honest absence travels instead of a fabricated zero.
+         *
+         * The field is KEPT (nothing is removed from the wire) and the figure
+         * an investor actually reads comes from `moneyOnRecord` below — Wave
+         * 114's ONE derivation, reused, not reinvented.
+         *
+         * WHY `?? null` ALONE WAS NOT ENOUGH, WHICH THE TEST CAUGHT: the column
+         * is `NOT NULL DEFAULT 0`, so the stored value is the NUMBER 0, not
+         * null, and `?? null` still published a fabricated zero. A zero in a
+         * column no code path can write is not a measurement of anything, so it
+         * is reported as ABSENT. A non-zero value — only reachable through a
+         * hand-edit of the database — is passed through untouched rather than
+         * suppressed, because that WOULD be a figure somebody deliberately
+         * recorded, and hiding it would be its own silent drop. */
+        raisedAmount: (typeof round?.raisedAmount === "number" && round.raisedAmount !== 0
+          ? round.raisedAmount
+          : null) as number | null,
+        /* WAVE 122 · FINDING 1 — THE DERIVED, LABELLED, THREE-STATE FIGURE,
+         * the same projection `GET /api/rounds` has carried to the founder
+         * surfaces since Wave 114 (`server/lib/roundRaisedTotals.ts` via
+         * `roundMoneyOnRecordForRound` above). Soft-circled, committed and
+         * funded are separate buckets with their own labels; when the total
+         * cannot be derived it carries `determined: false`, a named refusal
+         * (`no_rows_on_record` / `mixed_currency`) and a SENTENCE the screen
+         * prints instead of a number — and `progressBp: null`, which the
+         * client reads as "draw no bar" rather than as 0%.
+         *
+         * The cap-table ledger is deliberately NOT passed: the cross-check
+         * exists to expose founder-side disagreement and is not part of what
+         * this screen shows an invited investor. Its absence is reported by the
+         * projection itself rather than assumed to agree. */
+        moneyOnRecord: roundMoneyOnRecordForRound(
+          String(inv.roundId),
+          (round as { currency?: unknown } | undefined)?.currency,
+          undefined,
+          (round as { targetAmount?: unknown } | undefined)?.targetAmount,
+        ),
         /* WAVE 42 · OWNER RULING R6 — "no surface may render 0 when it means
          * 'we do not know'." Owner, 2026-08-13: "Apply it everywhere as this
          * seems to be an investor grade best practice globally."
@@ -4147,7 +4424,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        * left where it is), so only the round's lifecycle state is added here. */
       roundState: (round?.state ?? null) as string | null,
       targetAmount: round?.targetAmount ?? 0,
-      raisedAmount: round?.raisedAmount ?? 0,
+      /* WAVE 122 · FINDING 1 — the SECOND publication of the writer-less
+       * column, on the page that carries the "Submit soft-circle" button. The
+       * full reasoning is on the LIST handler above; `?? 0` -> absent under R6
+       * (a structurally-unwritable 0 is not a measurement), and the figure the
+       * screen prints now comes from `moneyOnRecord`. */
+      raisedAmount: (typeof round?.raisedAmount === "number" && round.raisedAmount !== 0
+        ? round.raisedAmount
+        : null) as number | null,
+      /* WAVE 122 · FINDING 1 — Wave 114's derivation, reused. Three labelled
+       * states, a refusal sentence instead of a number when it cannot be
+       * derived, and `progressBp: null` rather than 0% when there is no honest
+       * bar to draw. Ledger omitted for the same reason as the LIST handler. */
+      moneyOnRecord: roundMoneyOnRecordForRound(
+        String(modern.roundId),
+        (round as { currency?: unknown } | undefined)?.currency,
+        undefined,
+        (round as { targetAmount?: unknown } | undefined)?.targetAmount,
+      ),
       /* WAVE 42 · R6 / live-audit F-4 — see the identical change in the LIST
        * handler above for the full reasoning. `?? 0` -> `?? null`: a valuation
        * that was never entered must not be published as "$0". A deliberate 0
@@ -4170,7 +4464,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
          v25.8 Bug 2 fix surfaced the field; this v25.25 fix surfaces it
          honestly when unset. */
       pricePerShare: (round?.pricePerShare ?? null) as number | null,
-      currency: round?.currency ?? "USD",
+      /* WAVE 122 · FINDING 2 — WAS `round?.currency ?? "USD"`.
+       *
+       * A round with no recorded currency was published to the investor as a US
+       * dollar round. That is a guess about the denomination of someone else's
+       * money, and R5 states plainly that international is a first-class
+       * requirement, not an edge case. The honest absence now travels and the
+       * screen refuses to denominate rather than inventing a symbol — the same
+       * policy Wave 114's derivation already applies to `mixed_currency`. A
+       * genuinely recorded currency (including USD) travels unchanged. */
+      currency: (round?.currency ?? null) as string | null,
       instrument: round?.instrument ?? "preferred",
       closeDate: round?.closeDate ?? null,
       openDate: round?.openDate ?? null,
@@ -5665,6 +5968,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       streamTermSheetPdf(res, {
         roundId: round.id,
         companyName,
+        /* WAVE 117 · FINDING 4 — passed so the DOWNLOAD can be named after the
+           company instead of `termsheet_<roundId>.pdf`. Nothing about the
+           document body changes here. */
+        companyId: round.companyId ?? null,
+        /* WAVE 117 · FINDING 3 — the round's STORED liquidation terms, handed over
+           RAW. This route does not interpret them and must not: the generator asks
+           `shared/liquidationTermsReader.ts`, the same module the exit waterfall in
+           `server/track1Routes.ts` consults, so the term sheet an investor keeps
+           cannot state a preference the engine would refuse. */
+        liquidationPreference: (round as unknown as Record<string, unknown>)["liquidationPreference"],
+        capParticipation: (round as unknown as Record<string, unknown>)["capParticipation"],
         instrument: String(round.instrument ?? round.type ?? ""),
         currency: String(round.currency ?? "USD"),
         pricePerShare: round.pricePerShare ?? null,
@@ -5790,7 +6104,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
            note explaining that the ratio is undefined and NOT zero. Nothing else
            in this loop changed: share counts, invested amounts, the privacy
            label resolution and the sort are untouched. */
-        const pct = totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : null;
+        /* WAVE 116 · FINDING 3 — the arithmetic is unchanged and still refuses,
+           but it is no longer a NINTH inline division: it is the shared
+           `computeCommittedOwnership`, which is the same committed-ledger basis
+           the interim cap-table read uses. Routing both through one function is
+           what stops the two surfaces drifting apart, and the basis label it
+           returns is what `streamCapTablePdf` prints in the `%` column header. */
+        const pct = computeCommittedOwnership(v.shares, totalSharesNum).pct;
         const isCoMember = viewerForPdf
           ? areCoMembersOnAnyCapTable(investorId, viewerForPdf)
           : false;
@@ -5818,6 +6138,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           totalInvested,
           holderCount: entries.length,
         },
+        /* WAVE 116 · FINDING 3 — "a PDF that does not say which is worse, because
+           it travels." The basis name goes into the document itself. */
+        ownershipBasisLabel: COMMITTED_LEDGER_BASIS_LABEL,
+        ownershipBasisSentence: COMMITTED_LEDGER_BASIS_SENTENCE,
         generatedAt: new Date().toISOString(),
       });
     } catch (err) {
@@ -7486,6 +7810,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
         if (cv.value === "") delete (body as Record<string, unknown>).capParticipation;
         else (body as Record<string, unknown>).capParticipation = Number(cv.value);
+      }
+
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 114 · FINDING 2 (item 31) — THE GOVERNANCE-TERM FENCE, CREATION WRITER.
+         ═══════════════════════════════════════════════════════════════════════
+         `KNOWN_COLS` below sweeps every unrecognised body key into `extras_json`,
+         so this writer could already store any shape at all under these four keys.
+         Now that the founder terms panel READS them, an unvalidated value becomes a
+         governance term printed on screen — so the fence ships in the same wave as
+         the storage, not a wave later (the Wave 76 mistake).
+
+         SAME IMPORTED VALIDATOR as the terms PATCH and the same file the panel
+         reads through (`shared/roundGovernanceTerms.ts`), so writer and reader
+         cannot drift. ABSENT STAYS ABSENT (R6): `undefined` is untouched, and
+         `null` / `""` remove the key rather than storing an unreadable blank that
+         the panel would have to interpret. */
+      for (const gk of GOVERNANCE_TERM_KEYS) {
+        const bag = body as Record<string, unknown>;
+        if (bag[gk] === undefined) continue;
+        const gv = validateGovernanceTermStored(gk, bag[gk]);
+        if (!gv.ok) {
+          return res.status(400).json({ ok: false, error: gv.error, field: gv.field, message: gv.message });
+        }
+        if (gv.value === null) delete bag[gk];
+        else bag[gk] = gv.value;
       }
     }
 

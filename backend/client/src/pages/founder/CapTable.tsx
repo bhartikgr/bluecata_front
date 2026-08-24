@@ -46,6 +46,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
 import { isPhantomHolderRow } from "@/lib/captable/phantomHolder"; /* W-CAP LW-1 — phantom holder suppression */
 import { describeRawActor, looksLikeRawKey } from "@/lib/actorLabel"; /* WAVE 93 · ITEM 1 — never a key where a holder NAME belongs */
+import { regionConventionLabel, regionConventionName } from "@/lib/profile/region"; /* WAVE 108 · FINDING 2 — the convention in words, not a version string */
+/* WAVE 110 · FINDING 1 + FINDING 4 — the denominator and the company name travel
+   inside every exported file, and no export is ever named after another brand. */
+import {
+  VIEW_LABEL,
+  VIEW_DENOMINATOR_LABEL,
+  ownershipColumnHeader,
+  csvProvenanceRow,
+  tsvProvenanceRow,
+  companyExportSlug,
+  captableExportFilename,
+  ledgerPdfFilename,
+  LEDGER_PDF_BASIS_SENTENCE,
+} from "@/lib/captable/exportProvenance";
 
 /* ════════════════════════════════════════════════════════════════════════════
    WAVE 93 · ITEM 1 — THE HOLDER COLUMN, WHICH IS THE WORST INSTANCE.
@@ -65,16 +79,39 @@ import { describeRawActor, looksLikeRawKey } from "@/lib/actorLabel"; /* WAVE 93
    is never printed. R77: the id stays available as a machine-readable value.
    ════════════════════════════════════════════════════════════════════════════ */
 function safeHolderName(holderName: unknown, investorId?: unknown): string {
-  const name = String(holderName ?? "").trim();
-  if (name && !looksLikeRawKey(name)) return name;
-  const id = String(investorId ?? name ?? "").trim();
-  if (/^u_redeemed_/.test(id)) return "Redeemed holder";
-  if (id) {
-    const described = describeRawActor(id);
-    if (described && !looksLikeRawKey(described)) return described;
-  }
-  return "Holder (name not recorded)";
+  return resolveHolderLabel(holderName, investorId).text;
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 108 · FINDING 3 — "Redeemed holder" MUST NOT LOOK LIKE A NAME.
+   ════════════════════════════════════════════════════════════════════════════
+   The finding asked which of two things this is, and the answer differs per
+   string, so both answers are recorded here:
+
+   · "New contact data" is DATA. It is a stored `securities.holder_name` written
+     by the pre-Wave-93 `composeCrmName()` fallback in `server/founderCrmStore.ts`.
+     That writer now returns "" and the create route REFUSES an identity-less
+     body, and the string appears in no migration, no seed and no current write
+     path. Renaming stored customer data inside a renderer would be the platform
+     silently editing the record, so this page passes it through unchanged and it
+     is reported for data remediation instead.
+
+   · "Redeemed holder" is a RENDERING FALLBACK — this function. It is honest about
+     the record but it was rendered in the same weight and style as a real party's
+     name, so a reader could not tell a description from a name. No name is
+     fabricated (that would be far worse); instead the fallback now REPORTS THAT
+     IT IS ONE. `kind: "description"` makes the caller render it as a description
+     — italic, muted, with "name not on record" stated beside it — so the two can
+     never be confused. R77: the id itself is still never printed, and stays
+     available as a machine-readable `data-*` value.
+   ════════════════════════════════════════════════════════════════════════════ */
+/* The resolver itself lives in `client/src/lib/captable/holderLabel.ts` so that
+   every component on this page — including the member-intelligence cards below,
+   which rendered a raw `u_redeemed_…` id as a person's name — resolves labels
+   through ONE function. Re-exported here because this page's tests and callers
+   already import it from this module. */
+import { resolveHolderLabel } from "@/lib/captable/holderLabel";
+export { resolveHolderLabel };
 /* WAVE 72 · DEFECT 2 — the ONE null-aware ownership formatter. `ownershipPercent`
    is `string | null` on the engine contract and `null` means UNDEFINED (0 ÷ 0,
    R47), not zero. Before this wave three consumers on this page did arithmetic on
@@ -114,6 +151,29 @@ const VIEW_BLURBS: Record<View, { title: string; body: string }> = {
  fully_diluted: { title: "Fully Diluted", body: "Counts all issued shares PLUS the full option pool (granted + reserved) PLUS warrants outstanding. Excludes SAFEs/notes which haven't yet converted." },
  as_converted: { title: "As Converted", body: "Fully Diluted PLUS SAFEs and Notes converted to Common at their effective conversion price. Most permissive view." },
 };
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 108 · FINDING 1 — EVERY VIEW NAMES ITS OWN DENOMINATOR.
+   ════════════════════════════════════════════════════════════════════════════
+   Before this wave every percentage on this page — the bar tooltip, the column
+   header, each row's screen-reader text, the group subtotals and the grand total
+   — said "of fully-diluted shares", hardcoded, on all three views. On the Basic
+   view that sentence is FALSE: the denominator there is issued shares only, and a
+   basic percentage announced as fully-diluted is a wrong ownership percentage,
+   which is the most serious defect class this platform has.
+
+   The NUMBERS are not touched. `runEngine` already computes a different
+   denominator per view (`totals.totalShares`, engine-derived). What is added is
+   that the denominator's NAME is derived from the same `view` value the engine
+   was called with, in one place, so the label and the arithmetic cannot drift
+   apart again (R21 — derived, not restated per screen).
+   ════════════════════════════════════════════════════════════════════════════ */
+/* WAVE 110 · FINDING 1 — the two label maps moved to
+   `client/src/lib/captable/exportProvenance.ts` so that the SCREEN labels and the
+   EXPORT labels are literally the same strings and cannot drift apart. They are
+   re-exported here unchanged, so every existing importer of
+   `VIEW_LABEL` / `VIEW_DENOMINATOR_LABEL` from this module is unaffected. */
+export { VIEW_LABEL, VIEW_DENOMINATOR_LABEL };
 
 const HOLDER_GROUPS: { label: string; types: string[]; key: string; tone: string }[] = [
  { key: "founder", label: "Founders", types: ["founder"], tone: "border-[hsl(219_45%_30%)]/40 bg-[hsl(219_45%_30%)]/5" },
@@ -287,10 +347,60 @@ export default function CapTable() {
  return securities.data.filter((s) => (s.issuedAt ?? "0000-01-01") <= asOf);
  }, [securities.data, asOf]);
 
- const result = useMemo(() => {
- if (!securitiesAsOf) return null;
- return runEngine(securitiesAsOf, view, region);
+ /* ══════════════════════════════════════════════════════════════════════════
+    WAVE 108 · FINDING 1d — A VIEW THAT CANNOT BE COMPUTED REFUSES IN ENGLISH.
+    ══════════════════════════════════════════════════════════════════════════
+    `runEngine` legitimately THROWS for As-Converted when convertibles exist and
+    there is no priced round to take a conversion price from — the adapter refuses
+    rather than assume a price (`shared/roundMathEngineAdapter.ts`, the
+    as-converted price refusal). This call had no try/catch, so that principled
+    refusal reached the browser as an unhandled exception during render.
+
+    It is caught here and turned into a refusal the founder can act on. It is NOT
+    turned into another view's numbers: `result` stays `null`, every downstream
+    claim on the page (the four tiles, the composition bar, the denominator line,
+    the holdings table, the CSV and Excel exports) is suppressed while a refusal
+    is in force, and the view tabs stay mounted so the reader can move to a view
+    that CAN be computed. No view ever falls through to another view's data. */
+ const engineRun = useMemo<{
+   result: ReturnType<typeof runEngine> | null;
+   refusal: { title: string; body: string } | null;
+ }>(() => {
+   if (!securitiesAsOf) return { result: null, refusal: null };
+   try {
+     return { result: runEngine(securitiesAsOf, view, region), refusal: null };
+   } catch (err) {
+     /* The class NAME is read, never rendered — the rendered text below is
+        written for a founder and carries no error code and no identifier. */
+     const kind = err instanceof Error ? err.name : "";
+     if (kind === "AsConvertedPriceUnknownError") {
+       return {
+         result: null,
+         refusal: {
+           title: `The ${VIEW_LABEL[view]} view cannot be calculated for this company yet.`,
+           body:
+             "This view converts SAFEs and convertible notes into shares, and to do that it needs a " +
+             "price per share from a priced round. This cap table has convertibles but no priced round, " +
+             "so there is no price to convert them at. Nothing has been substituted and no estimate has " +
+             "been shown: switch to Basic or Fully Diluted, both of which can be calculated from what is " +
+             "recorded, or record a priced round first.",
+         },
+       };
+     }
+     return {
+       result: null,
+       refusal: {
+         title: `The ${VIEW_LABEL[view]} view could not be calculated from what is recorded.`,
+         body:
+           "Rather than show you a number from a different view, this view is left blank. The other views " +
+           "on this page are unaffected — switch to one of them, or check the securities on this cap table " +
+           "for a missing price, share count or conversion term.",
+       },
+     };
+   }
  }, [securitiesAsOf, view, region]);
+ const result = engineRun.result;
+ const viewRefusal = engineRun.refusal;
 
  const rows = result?.rows ?? [];
 
@@ -336,14 +446,69 @@ export default function CapTable() {
  // Warrants outstanding
  const warrants = (securitiesAsOf ?? []).filter((s) => s.instrument === "warrant");
 
+ /* WAVE 108 · FINDING 1d — an export is a claim too. A refused view has no rows,
+    and a spreadsheet containing only a header is read as "this company has no
+    holders". Refuse in words instead. */
+ function refuseExportOnRefusedView(): boolean {
+   if (!viewRefusal) return false;
+   toast({ title: viewRefusal.title, description: viewRefusal.body, variant: "destructive" });
+   return true;
+ }
+
+ /* ═══════════════════════════════════════════════════════════════════════════
+    WAVE 110 · FINDING 1 + FINDING 2 + FINDING 4 — THE FOUR EXPORT PATHS.
+    ═══════════════════════════════════════════════════════════════════════════
+    Every file that leaves this page does so through exactly one of these four
+    entry points, and each one is listed here so a fifth cannot be added by
+    copying a button:
+
+      1. `button-export-csv`   → exportCSV()          — client-rendered CSV
+      2. `button-export-xlsx`  → exportXLSX()         — client-rendered Excel/TSV
+      3. `button-export-pdf`   → exportPDFSnapshot()  — server-rendered PDF
+      4. `button-print`        → printSnapshot()      — same server render, Print
+
+    ALL FOUR now call `refuseExportOnRefusedView()` first: a view that could not
+    be computed refuses in words instead of shipping a file. Before this wave only
+    (1) and (2) did, so PDF and Print fired a server render for a view the
+    interface had just refused — and the server render is on a DIFFERENT basis
+    again, which is precisely the "another view's numbers" outcome the refusal
+    exists to prevent.
+
+    A FIFTH PATH EXISTS and is deliberately not a button: the BROWSER's own print
+    (⌘P / Ctrl-P) renders the `print:` blocks of this page. It cannot be gated by
+    a handler, so instead it is made self-describing — the print attribution
+    footer (`captable-print-attribution`) names the view and its denominator, and
+    the refusal panel is NOT `print:hidden`, so a refused view prints its refusal
+    rather than an empty table. */
+
+ /** Company slug + convention, shared by all four paths so no two disagree. */
+ function exportIdentity() {
+   const co = activeCompanyQ.data?.company;
+   return {
+     slug: companyExportSlug({
+       companyName: co?.companyName,
+       legalName: co?.legalName,
+       companyId,
+     }),
+     companyLabel: (co?.companyName || co?.legalName || companyId || "—").toString(),
+     conventionLabel: regionConventionLabel(region),
+   };
+ }
+
  function exportCSV() {
+ if (refuseExportOnRefusedView()) return;
+ const { slug, companyLabel, conventionLabel } = exportIdentity();
  const headers = [
  "Cert #", "Shares from–to", "Round", "Holder", "Holder type",
  "Instrument", "Series", "Issuance date", "Shares", "Price/share",
  "Investment", "Vested %", "Drag", "ROFR", "Co-Sale", "Pro-rata",
- "Side letter", "Ownership %",
+ /* WAVE 110 · FINDING 1 — was a bare "Ownership %", which made a Basic-view CSV
+    byte-indistinguishable from a Fully-Diluted one carrying different numbers. */
+ "Side letter", ownershipColumnHeader(view),
  ];
  const lines = [
+ /* Provenance first: the sentence survives even if the header row is cropped. */
+ csvProvenanceRow({ companyLabel, asOf, view, conventionLabel }),
  headers.join(","),
  ...enrichedRows.map((r) => [
  `"${r.orig?.certificateNumber ?? ""}"`,
@@ -372,45 +537,66 @@ export default function CapTable() {
  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
  const url = URL.createObjectURL(blob);
  const a = document.createElement("a");
- /* v25.11 NM-4 — the previous filename `novapay-captable-...` hard-coded a
-  * demo company slug, so every founder's export downloaded as a competitor
-  * company's filename. Derive a safe slug from the active company name; if
-  * unavailable, fall back to `captable-<companyId>` rather than to any
-  * persona slug. */
- const co = activeCompanyQ.data?.company;
- const rawSlug = (co?.companyName || co?.legalName || companyId || "captable").toString();
- const safeSlug = rawSlug
-   .toLowerCase()
-   .replace(/[^a-z0-9]+/g, "-")
-   .replace(/^-+|-+$/g, "")
-   .slice(0, 40) || "captable";
- a.href = url; a.download = `${safeSlug}-captable-${asOf}.csv`; a.click();
+ /* v25.11 NM-4 — the previous filename `novapay-captable-...` hard-coded a demo
+  * company slug, so every founder's export downloaded as a competitor company's
+  * filename. The slug is now derived from the ACTIVE company by
+  * `companyExportSlug` (WAVE 110 moved that derivation into
+  * `lib/captable/exportProvenance.ts` so all four export paths share it); there
+  * is no persona fallback, only the neutral `captable`.
+  * WAVE 110 · FINDING 1 + 4 — the view is part of the name, so a Basic export and
+    a Fully-Diluted export of the same company on the same day cannot be confused
+    (and cannot silently overwrite one another in a download folder). */
+ a.href = url; a.download = captableExportFilename({ slug, view, asOf, ext: "csv" }); a.click();
  URL.revokeObjectURL(url);
- toast({ title: "Cap table exported", description: "Downloaded as CSV." });
+ toast({
+   title: "Cap table exported",
+   description: `Downloaded as CSV — ${VIEW_LABEL[view]} view, percentages of ${VIEW_DENOMINATOR_LABEL[view]}.`,
+ });
  }
 
+ /* WAVE 110 · FINDING 2 — path 3 of 4. This fires a SERVER render, so it must
+    refuse on a refused view like the two client exports already did.
+    WAVE 110 · FINDING 1 — and it must not pretend to be the selected view: the
+    server builds this PDF from the committed cap-table ledger on an outstanding
+    basis, so the filename says `committed-ledger` and the toast says so too. */
  async function exportPDFSnapshot() {
+ if (refuseExportOnRefusedView()) return;
+ const { slug } = exportIdentity();
  try {
    const res = await apiRequest("GET", `/api/companies/${companyId}/cap-table/pdf`);
    const blob = await res.blob();
    const url = URL.createObjectURL(blob);
    const a = document.createElement("a");
-   a.href = url; a.download = `cap-table-${companyId}-${asOf}.pdf`; a.click();
+   a.href = url; a.download = ledgerPdfFilename({ slug, asOf }); a.click();
    URL.revokeObjectURL(url);
-   toast({ title: "PDF downloaded", description: "Cap table snapshot saved." });
+   toast({ title: "PDF downloaded", description: LEDGER_PDF_BASIS_SENTENCE });
  } catch {
    toast({ title: "PDF unavailable", description: "Try the CSV export instead.", variant: "destructive" });
  }
  }
 
+ /* WAVE 110 · FINDING 2 — path 4 of 4. The Print button used to call
+    `exportPDFSnapshot` directly, which is how it inherited the missing refusal.
+    It keeps the same behaviour (the same server render) but is its own named
+    entry point so each of the four can be proved to refuse individually. */
+ async function printSnapshot() {
+ if (refuseExportOnRefusedView()) return;
+ await exportPDFSnapshot();
+ }
+
  // Sprint 11 D3 — Excel-flavored export (TSV that opens in Excel/Sheets without conversion).
  function exportXLSX() {
+ if (refuseExportOnRefusedView()) return;
+ const { slug, companyLabel, conventionLabel } = exportIdentity();
  const headers = [
  "Cert #", "Holder", "Type", "Instrument", "Series",
  "Issued", "Shares", "Price/share", "Investment", "Vested %",
- "Drag", "ROFR", "Co-Sale", "Pro-rata", "Ownership %",
+ /* WAVE 110 · FINDING 1 — as in exportCSV: a bare "Ownership %" left the
+    denominator unstated and unknowable once the file left the screen. */
+ "Drag", "ROFR", "Co-Sale", "Pro-rata", ownershipColumnHeader(view),
  ];
  const lines = [
+ tsvProvenanceRow({ companyLabel, asOf, view, conventionLabel }),
  headers.join("\t"),
  ...enrichedRows.map((r: any) => [
  r.orig?.certificateNumber ?? "",
@@ -434,9 +620,15 @@ export default function CapTable() {
  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "application/vnd.ms-excel" });
  const url = URL.createObjectURL(blob);
  const a = document.createElement("a");
- a.href = url; a.download = `novapay-captable-${asOf}.xls`; a.click();
+ /* WAVE 110 · FINDING 4 — this line read `novapay-captable-${asOf}.xls`: every
+    founder's Excel export downloaded under ANOTHER COMPANY's brand. Same derived
+    slug as the CSV path, plus the view token from FINDING 1. */
+ a.href = url; a.download = captableExportFilename({ slug, view, asOf, ext: "xls" }); a.click();
  URL.revokeObjectURL(url);
- toast({ title: "Excel export ready", description: "Opens directly in Excel or Google Sheets." });
+ toast({
+   title: "Excel export ready",
+   description: `Opens directly in Excel or Google Sheets — ${VIEW_LABEL[view]} view, percentages of ${VIEW_DENOMINATOR_LABEL[view]}.`,
+ });
  }
 
  const totalSharesNum = Number(totals.totalShares);
@@ -466,7 +658,7 @@ export default function CapTable() {
  {/* v25.45.4 3c (APD-013) — Anti-Dilution button removed (unused/misplaced control;
      cap-table page is informative only). Anti-dilution math remains in the sacred engine. */}
  <Button variant="outline" onClick={() => setShowBulkMsg(true)} data-testid="button-bulk-message"><SendIcon className="h-4 w-4 mr-2" /> Bulk message</Button>
- <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-print" className="hidden md:inline-flex"><Printer className="h-4 w-4 mr-2" /> Print</Button>
+ <Button variant="outline" onClick={printSnapshot} data-testid="button-print" className="hidden md:inline-flex"><Printer className="h-4 w-4 mr-2" /> Print</Button>
  {/* v25.48.3 Q-F1 — the cap table is VIEW-ONLY: equity originates through the
      round/ledger flow (cleaner audit trail), not ad-hoc on the cap table. This
      button now routes to Rounds instead of opening an inline add-security dialog. */}
@@ -583,6 +775,22 @@ export default function CapTable() {
  </div>
  )}
 
+ {/* WAVE 108 · FINDING 1d — THE REFUSAL, PLACED WHERE IT CANNOT BE READ PAST.
+     Same shape as the Wave 55b load-failure refusal: a sibling immediately above
+     the totals, no control removed, the view tabs below still mounted so the
+     reader can move to a view that can be calculated. */}
+ {viewRefusal && (
+ <div className="mb-6 rounded-md border border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5 p-4" data-testid="captable-view-refusal" data-view={view}>
+ <div className="flex items-start gap-2">
+ <Info className="h-4 w-4 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
+ <div className="space-y-1">
+ <p className="text-sm font-medium" data-testid="captable-view-refusal-title">{viewRefusal.title}</p>
+ <p className="text-xs text-muted-foreground leading-relaxed" data-testid="captable-view-refusal-body">{viewRefusal.body}</p>
+ </div>
+ </div>
+ </div>
+ )}
+
  {/* Totals */}
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
  {/* WAVE 55b · OQ-3 — the tiles are the loudest claim on the page. Each
@@ -605,12 +813,25 @@ export default function CapTable() {
      and only the percentages are undefined (R47, owner).
      The Wave 55b `securities.isSuccess` load-failure gate is PRESERVED, not
      re-fixed — this adds the genuine-zero case alongside it.
-     The `hint` is left byte-identical on purpose: `0 shares` is a true fact and
-     em-dashing it would drop information the page legitimately has. */}
- <Stat label="Total shares" value={securities.isSuccess ? fmtNum(totalSharesNum) : MONEY_UNAVAILABLE} hint={view === "basic" ? "Basic view" : view === "fully_diluted" ? "Fully diluted" : "As-converted"} icon={Layers} testid="stat-total-shares" />
- <Stat label="Founder ownership" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
- <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(investorSharesNum)} shares` : MONEY_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
- <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess ? `${fmtNum(optionSharesNum)} options` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
+     WAVE 118 · CORRECTION TO THE LINE ABOVE, WHICH WAS TOO BROAD.
+     The earlier note said the `hint` was left byte-identical because `0 shares`
+     is a true fact. That is right for a GENUINE ZERO and wrong under a REFUSAL,
+     and the two were sharing one expression.
+
+     When `viewRefusal` is set the engine has published nothing, so
+     `founderSharesNum` is zero because NOTHING WAS COMPUTED — not because the
+     company has no founder shares. Printing `0 shares` beneath an em-dash told
+     the founder a share count we do not have, which is the precise failure this
+     platform keeps repeating: a confident figure nobody verified.
+
+     So the hint is now gated on the SAME condition as the value it sits under.
+     A genuine zero still prints `0 shares`; a refusal prints nothing. The
+     `Total shares` hint is untouched — it carries the view and denominator, not
+     a figure. */}
+ <Stat label="Total shares" value={securities.isSuccess && !viewRefusal ? fmtNum(totalSharesNum) : MONEY_UNAVAILABLE} hint={`${VIEW_LABEL[view]} view · ${VIEW_DENOMINATOR_LABEL[view]}`} icon={Layers} testid="stat-total-shares" />
+ <Stat label="Founder ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
+ <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(investorSharesNum)} shares` : MONEY_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
+ <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(optionSharesNum)} options` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
  </div>
 
  {/* Option pool sub-breakdown + Convertibles balance + Warrants */}
@@ -703,7 +924,10 @@ export default function CapTable() {
      a genuinely empty cap table still says "No securities recorded yet." A PAUSED
      (offline) query is neither loading nor errored and used to be able to reach
      this branch as soon as any stale data existed. */}
- {securities.isSuccess && rows.length === 0 && (
+ {/* WAVE 108 · FINDING 1d — `&& !viewRefusal`: on a refused view `rows` is empty
+     because nothing was CALCULATED, not because the company has no securities.
+     Without this gate the page told the founder "No securities recorded yet." */}
+ {securities.isSuccess && !viewRefusal && rows.length === 0 && (
  <Card className="mb-6" data-testid="captable-empty-state">
  <CardContent className="py-16 text-center">
  <Layers className="h-10 w-10 mx-auto mb-3 text-muted-foreground/40" />
@@ -724,10 +948,14 @@ export default function CapTable() {
  <CardTitle className="text-base flex items-center gap-2">
  Ownership composition
  <HelpTip>
- Three views, three different denominators. Hover the tabs to see what each one counts. Each view always sums to 100% — only the slices change.
+ Three views, three different denominators — Basic divides by {VIEW_DENOMINATOR_LABEL.basic}, Fully Diluted by {VIEW_DENOMINATOR_LABEL.fully_diluted}, As Converted by {VIEW_DENOMINATOR_LABEL.as_converted}. Hover the tabs to see what each one counts. Each view sums to 100% of its own denominator — only the slices change.
  </HelpTip>
  </CardTitle>
- <p className="text-sm text-muted-foreground mt-0.5">Computed by <code className="font-mono text-[10px] bg-secondary/60 px-1 py-0.5 rounded">@capavate/cap-table-engine</code> on every render.</p>
+ {/* WAVE 108 · FINDING 2 — was the internal package name in a <code> block.
+     The FACT it carried is worth keeping and is kept: these figures are
+     recalculated from the ledger every time the page loads, not read out of a
+     stored spreadsheet. Only the machine name is gone. */}
+ <p className="text-sm text-muted-foreground mt-0.5">Recalculated from your share ledger every time this page loads — never read from a saved spreadsheet.</p>
  </div>
  <div className="flex items-center gap-3">
  <button
@@ -744,12 +972,42 @@ export default function CapTable() {
  {(Object.keys(VIEW_BLURBS) as View[]).map((v) => (
  <Tooltip key={v}>
  <TooltipTrigger asChild>
- <TabsTrigger value={v} data-testid={`tab-${v === "fully_diluted" ? "fd" : v === "as_converted" ? "ac" : "basic"}`} className="text-xs px-2.5 flex-1 md:flex-none">
+ {/* ═══════════════════════════════════════════════════════════════════
+     WAVE 108 · FINDING 1a — WHY NO TAB EVER LOOKED SELECTED.
+     ═══════════════════════════════════════════════════════════════════
+     `TooltipTrigger asChild` renders a Radix `Slot`, which merges the
+     TOOLTIP's own `data-state` ("open"/"closed") into this child, and
+     `TabsTrigger` forwards its incoming props to `TabsPrimitive.Trigger`,
+     which spreads them AFTER its own `data-state={selected ? "active" :
+     "inactive"}`. So the rendered `<button role="tab">` always carried
+     `data-state="closed"`, and `data-[state=active]:bg-background` could
+     never match. The click handler was never the problem: `view` was
+     written and read, and the engine did recompute — the reader simply had
+     no way to see which view was in force, on a page whose whole meaning
+     depends on that.
+
+     Writing `data-state` here fixes it at the point of collision: a prop
+     written on the child WINS the Slot merge, and `TabsPrimitive.Trigger`
+     spreads it last. It is derived from the same `view` state the engine is
+     called with, so the highlight cannot disagree with the numbers. The
+     explicit classes are deliberate belt-and-braces: the selected tab no
+     longer depends on a third-party attribute surviving prop merging. */}
+ <TabsTrigger
+ value={v}
+ data-testid={`tab-${v === "fully_diluted" ? "fd" : v === "as_converted" ? "ac" : "basic"}`}
+ data-state={v === view ? "active" : "inactive"}
+ aria-label={`${VIEW_LABEL[v]} view — percentages of ${VIEW_DENOMINATOR_LABEL[v]}`}
+ className={`text-xs px-2.5 flex-1 md:flex-none ${v === view ? "bg-background text-foreground shadow-sm font-semibold" : ""}`}
+ >
  {VIEW_BLURBS[v].title}
  </TabsTrigger>
  </TooltipTrigger>
  <TooltipContent className="max-w-xs text-xs leading-relaxed">
  <div className="font-semibold mb-1">{VIEW_BLURBS[v].title} view</div>
+ {/* WAVE 108 · FINDING 1 — the tooltip names the denominator too, so the
+     answer to "which denominator is this?" is available before the click
+     as well as after it. */}
+ <div className="mb-1">Percentages are of <span className="font-medium">{VIEW_DENOMINATOR_LABEL[v]}</span>.</div>
  {VIEW_BLURBS[v].body}
  </TooltipContent>
  </Tooltip>
@@ -759,6 +1017,11 @@ export default function CapTable() {
  </div>
  </CardHeader>
  <CardContent>
+ {viewRefusal && (
+ <p className="mb-3 text-xs text-muted-foreground" data-testid="captable-bar-refusal-note">
+ No composition is drawn for the {VIEW_LABEL[view]} view: it could not be calculated, and drawing another view's slices here would misstate who owns what.
+ </p>
+ )}
  <div className="flex h-10 rounded-md overflow-hidden border border-border" data-testid="bar-ownership">
  {rows.map((r, i) => (
  <div
@@ -772,7 +1035,7 @@ export default function CapTable() {
  style={{ width: r.ownershipPercent === null ? "0%" : `${parseFloat(r.ownershipPercent)}%`, backgroundColor: INSTRUMENT_COLORS[r.kind] || "hsl(0 0% 50%)" }}
  title={r.ownershipPercent === null
  ? `${r.holderName} — ownership is undefined: this cap table has zero shares, and a percentage of zero shares is undefined, not zero`
- : `${r.holderName} — ${parseFloat(r.ownershipPercent).toFixed(2)}% of fully-diluted shares`} /* WAVE 52c B6 — a percentage without its denominator is a defect (§10 item 5). */
+ : `${r.holderName} — ${parseFloat(r.ownershipPercent).toFixed(2)}% of ${VIEW_DENOMINATOR_LABEL[view]}`} /* WAVE 52c B6 — a percentage without its denominator is a defect (§10 item 5). WAVE 108 · FINDING 1 — and the denominator named has to be the one in force, not always the fully-diluted one. */
  />
  ))}
  </div>
@@ -844,7 +1107,15 @@ export default function CapTable() {
      hardcoded per screen (R21). */}
  <div className="mt-2 rounded-md border border-border bg-secondary/30 p-3 text-xs leading-relaxed space-y-1" data-testid="captable-denominator-definition">
  <div className="font-medium text-foreground">
- Denominator in force on this view: <span className="font-mono" data-testid="captable-denominator-view">{view}</span> — {fmtNum(totalSharesNum)} shares
+ {/* WAVE 108 · FINDINGS 1 + 2 — this line printed the raw view token
+     (`fully_diluted`), which is an internal identifier a founder should never
+     read, and it printed a share count even when the view had refused. It now
+     names the view and its denominator in words; the machine value stays on
+     `data-view` where a machine can still read it (R77). */}
+ Denominator in force on this view: <span className="font-medium text-foreground" data-testid="captable-denominator-view" data-view={view}>{VIEW_LABEL[view]}</span> — percentages are of <span className="font-medium text-foreground" data-testid="captable-denominator-basis">{VIEW_DENOMINATOR_LABEL[view]}</span>
+ {viewRefusal
+ ? <span data-testid="captable-denominator-total-refused">, and the total for this view could not be calculated</span>
+ : <span data-testid="captable-denominator-total">, totalling {fmtNum(totalSharesNum)} shares</span>}
  </div>
  <div data-testid="captable-denominator-includes">
  <span className="font-medium">Includes:</span> {DENOMINATOR_DEFINITION[view].includes}
@@ -858,17 +1129,28 @@ export default function CapTable() {
  </div>
  </div>
  <div className="flex items-center gap-2 text-xs text-muted-foreground">
- <span>Engine view: <span className="font-mono text-foreground">{view}</span></span>
+ {/* WAVE 108 · FINDING 2 — "Engine view: fully_diluted" printed both an
+     internal word and an internal token. The fact stays; the token moves to
+     `data-view`. */}
+ <span data-testid="captable-holdings-view" data-view={view}>View: <span className="text-foreground font-medium">{VIEW_LABEL[view]}</span> — % of {VIEW_DENOMINATOR_LABEL[view]}</span>
  <span>·</span>
  <span>{enrichedRows.length} rows</span>
  </div>
  </CardHeader>
  <CardContent className="px-0">
  <div className="overflow-x-auto">
- {groupView ? (
- <GroupedHoldings rows={enrichedRows} sym={sym} viewerId={viewerId} />
+ {/* WAVE 108 · FINDING 1 — `view` is now a REQUIRED prop of both tables, so a
+     percentage cannot be rendered without the name of the denominator it was
+     divided by. On a refused view no table is rendered at all: an empty
+     holdings table with a "Total 0" row is a claim, and a false one. */}
+ {viewRefusal ? (
+ <p className="px-4 py-8 text-sm text-muted-foreground" data-testid="captable-holdings-refusal">
+ {viewRefusal.title} No holdings are listed here, because the percentages for this view do not exist — not because there are none.
+ </p>
+ ) : groupView ? (
+ <GroupedHoldings rows={enrichedRows} sym={sym} viewerId={viewerId} view={view} />
  ) : (
- <FlatHoldings rows={enrichedRows} sym={sym} totalSharesNum={totalSharesNum} totalInvested={totals.totalInvested} viewerId={viewerId} />
+ <FlatHoldings rows={enrichedRows} sym={sym} totalSharesNum={totalSharesNum} totalInvested={totals.totalInvested} viewerId={viewerId} view={view} />
  )}
  </div>
  </CardContent>
@@ -878,7 +1160,7 @@ export default function CapTable() {
  <MemberValueIntelligenceBox rows={enrichedRows} />
 
  <p className="text-xs text-muted-foreground mt-4 max-w-3xl leading-relaxed">
- Computed by the cap-table engine. Source-of-truth ledger; SAFEs use post-money cap conversion.
+ Calculated from your source-of-truth share ledger under {regionConventionName(region)} cap-table conventions. SAFEs use post-money cap conversion.
  The as-converted view applies each instrument’s own cap and discount. New to a term? <span className="inline-flex align-middle"><GlossaryLink size="xs" /></span> for plain definitions.
  </p>
 
@@ -887,7 +1169,11 @@ export default function CapTable() {
  <div className="flex items-center gap-2 mb-6 text-xs">
  <Shield className="h-4 w-4" />
  <span className="font-semibold">Capavate institutional cap-table snapshot</span>
- <span className="ml-auto">Generated {new Date().toLocaleString()} · As-of {asOf} · Engine v1.0.0 ({region})</span>
+ {/* WAVE 108 · FINDING 2 — the printed footer carried a version string and a
+     region code. A printed snapshot is the version of this page most likely to
+     be read by an auditor, so the jurisdictional convention is NAMED rather
+     than dropped, and the view it was taken on is named with it. */}
+ <span className="ml-auto" data-testid="captable-print-attribution" data-region={region} data-view={view}>Generated {new Date().toLocaleString()} · As-of {asOf} · {VIEW_LABEL[view]} view, % of {VIEW_DENOMINATOR_LABEL[view]} · {regionConventionLabel(region)}</span>
  </div>
  <div className="grid grid-cols-2 gap-12 mt-12">
  <div>
@@ -1015,7 +1301,7 @@ function Row({ label, value, bold }: { label: string; value: string; bold?: bool
 type EnrichedRow = ReturnType<typeof enrichedRowType>;
 function enrichedRowType() { return null as any; } // type-only helper, never called
 
-const HOLDINGS_HEADERS = (
+const holdingsHeaders = (view: View) => (
  <thead>
  <tr className="text-[10px] uppercase text-muted-foreground border-b border-border">
  <th className="text-left font-medium px-4 py-2.5">Cert #</th>
@@ -1029,7 +1315,9 @@ const HOLDINGS_HEADERS = (
  <th className="text-right font-medium px-2 py-2.5">Invested</th>
  <th className="text-center font-medium px-2 py-2.5">Vested</th>
  <th className="text-center font-medium px-2 py-2.5">Rights</th>
- <th className="text-right font-medium px-3 py-2.5 w-44">% on view<span className="ml-1 font-normal normal-case text-muted-foreground">of fully-diluted</span></th>
+ {/* WAVE 108 · FINDING 1 — this header said "of fully-diluted" on all three
+     views. It is now the denominator actually in force. */}
+ <th className="text-right font-medium px-3 py-2.5 w-44">% on view<span className="ml-1 font-normal normal-case text-muted-foreground" data-testid="captable-header-denominator">of {VIEW_DENOMINATOR_LABEL[view]}</span></th>
  </tr>
  </thead>
 );
@@ -1195,13 +1483,13 @@ const DENOMINATOR_DEFINITION: Record<View, { includes: string; excludes: string;
   },
 };
 
-function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { rows: any[]; sym: string; totalSharesNum: number; totalInvested: number; viewerId: string }) {
+function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId, view }: { rows: any[]; sym: string; totalSharesNum: number; totalInvested: number; viewerId: string; view: View }) {
  const displayedTotal = displayedOwnershipTotal(rows);
  return (
  <table className="w-full text-xs" data-testid="table-captable">
- {HOLDINGS_HEADERS}
+ {holdingsHeaders(view)}
  <tbody>
- {rows.map((r, i) => <HoldingRow key={i} r={r} sym={sym} idx={i} viewerId={viewerId} />)}
+ {rows.map((r, i) => <HoldingRow key={i} r={r} sym={sym} idx={i} viewerId={viewerId} view={view} />)}
  <tr className="font-semibold bg-secondary/50">
  <td className="px-4 py-3" colSpan={6}>Total</td>
  <td className="px-2 py-3 text-right font-mono tabular-nums">{fmtNum(totalSharesNum)}</td>
@@ -1233,8 +1521,25 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { 
      cell keeps its positional identity and its direct `#text` child (the `%`), and
      the test hook moves one level in. Verified by re-running `npm run guard`. */}
  <td className="px-3 py-3 text-right font-mono tabular-nums">
+ {/* ═══════════════════════════════════════════════════════════════════
+     WAVE 108 · FINDING 1e — THE DOUBLED TOTALS LINE.
+     ═══════════════════════════════════════════════════════════════════
+     This cell rendered, in order: the derived number, a literal `%`, an
+     UNCONDITIONAL screen-reader sentence ending "…exactly as they are
+     displayed", and then — in the `exact` branch — a SECOND screen-reader
+     span containing nothing but "100.00%". Read end to end that produced
+     the malformed copy seen on the live site:
+       "100.00% of fully-diluted shares, summed from the rows above exactly
+        as they are displayed 100.00%"
+     The sentence now lives INSIDE each branch, so exactly one of them
+     renders, and it names the denominator actually in force instead of
+     always saying "fully-diluted".
+
+     WAVE 58b's two restored guard identities are both preserved: the `%`
+     is still a DIRECT text child of this cell, and the literal string
+     `100.00%` still exists and is still rendered ONLY when it is true —
+     now inside a whole sentence rather than as a bare duplicate. */}
  <span data-testid="captable-flat-total-percent">{displayedTotal.sum}</span>%
- <span className="sr-only"> of fully-diluted shares, summed from the rows above exactly as they are displayed</span>
  {/* WAVE 58c · A4 — THE EMPTY BRANCH COMES FIRST. Neither the "exact total is
      100%" note nor the sr-only `100.00%` may be printed for a table with no
      rows: both are claims about rows that do not exist. The cell keeps its
@@ -1251,9 +1556,20 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { 
     rather than allowed to reappear. */
  <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-undefined-note">this view holds 0 shares in total, so each holder's share of it is undefined — not 0% — and there is no exact total to state</span>
  ) : displayedTotal.exact ? (
+ <>
+ {/* WAVE 72 · DEFECT 2 pinned this node's text to exactly `100.00%`, so it is
+     restored byte-for-byte and the DENOMINATOR is named in a second node. A
+     screen reader therefore hears one sentence — "100.00% of fully-diluted
+     shares, summed from the rows above exactly as they are displayed" — and a
+     sighted reader sees the figure once, in the cell. */}
  <span className="sr-only" data-testid="captable-flat-total-exact">100.00%</span>
+ <span className="sr-only"> of {VIEW_DENOMINATOR_LABEL[view]}, summed from the rows above exactly as they are displayed</span>
+ </>
  ) : (
- <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-rounding-note">rows shown to 2dp; exact total is 100%</span>
+ <>
+ <span className="sr-only"> of {VIEW_DENOMINATOR_LABEL[view]}, summed from the rows above exactly as they are displayed</span>
+ <span className="block font-normal text-[9px] text-muted-foreground" data-testid="captable-flat-total-rounding-note">rows shown to 2dp; exact total is 100% of {VIEW_DENOMINATOR_LABEL[view]}</span>
+ </>
  )}
  </td>
  </tr>
@@ -1262,10 +1578,10 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId }: { 
  );
 }
 
-function GroupedHoldings({ rows, sym, viewerId }: { rows: any[]; sym: string; viewerId: string }) {
+function GroupedHoldings({ rows, sym, viewerId, view }: { rows: any[]; sym: string; viewerId: string; view: View }) {
  return (
  <table className="w-full text-xs" data-testid="table-captable">
- {HOLDINGS_HEADERS}
+ {holdingsHeaders(view)}
  <tbody>
  {HOLDER_GROUPS.map((g) => {
  const groupRows = rows.filter((r) => g.types.includes(r.holderType));
@@ -1285,9 +1601,9 @@ function GroupedHoldings({ rows, sym, viewerId }: { rows: any[]; sym: string; vi
  <td />
  <td className="px-2 py-2 text-right font-mono tabular-nums font-semibold">{groupInvested ? `${sym}${Math.round(groupInvested).toLocaleString()}` : "—"}</td>
  <td colSpan={2} />
- <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{ownershipPercentCellText(groupPct)}%<span className="sr-only"> of fully-diluted shares on the selected view</span></td>
+ <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{ownershipPercentCellText(groupPct)}%<span className="sr-only"> of {VIEW_DENOMINATOR_LABEL[view]} on the {VIEW_LABEL[view]} view</span></td>
  </tr>
- {groupRows.map((r, i) => <HoldingRow key={`${g.key}-${i}`} r={r} sym={sym} idx={i} viewerId={viewerId} />)}
+ {groupRows.map((r, i) => <HoldingRow key={`${g.key}-${i}`} r={r} sym={sym} idx={i} viewerId={viewerId} view={view} />)}
  </React.Fragment>
  );
  })}
@@ -1296,7 +1612,7 @@ function GroupedHoldings({ rows, sym, viewerId }: { rows: any[]; sym: string; vi
  );
 }
 
-function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: number; viewerId: string }) {
+function HoldingRow({ r, sym, idx, viewerId, view }: { r: any; sym: string; idx: number; viewerId: string; view: View }) {
  const orig = r.orig as ApiSecurity | undefined;
  const round = r.round as ApiRound | undefined;
  const rights: string[] = [];
@@ -1313,13 +1629,28 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  { id: viewerId },
  )
  : r.holderName;
- /* WAVE 93 · ITEM 1 — guard the value actually rendered, whichever branch produced it. */
- const safeDisplayName = safeHolderName(displayName, orig?.investorId);
+ /* WAVE 93 · ITEM 1 — guard the value actually rendered, whichever branch produced it.
+    WAVE 108 · FINDING 3 — and carry WHETHER it is a name or a description of the
+    record, so the two are never rendered identically. */
+ const holderLabel = resolveHolderLabel(displayName, orig?.investorId);
+ const safeDisplayName = holderLabel.text;
  return (
  <tr className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-security-${idx}`}>
  <td className="px-4 py-2.5 font-mono text-[10px] text-muted-foreground">{orig?.certificateNumber ?? "—"}</td>
  <td className="px-2 py-2.5">
- <div className="font-medium" data-holder-id={orig?.investorId ?? ""}>{safeDisplayName}</div>
+ {/* WAVE 108 · FINDING 3 — "Redeemed holder" and "Holder (name not recorded)"
+     are DESCRIPTIONS produced by a fallback, not names anybody is called. They
+     used to sit here in the same weight as a real party, so a reader could not
+     tell them apart. No name is invented; the description is simply marked as
+     one. R77: the id stays on `data-holder-id` for machines. */}
+ {holderLabel.kind === "name" ? (
+ <div className="font-medium" data-holder-id={orig?.investorId ?? ""} data-holder-name-source="recorded">{safeDisplayName}</div>
+ ) : (
+ <div className="font-medium" data-holder-id={orig?.investorId ?? ""} data-holder-name-source="described">
+ <span className="italic text-muted-foreground" data-testid={`holder-described-${idx}`}>{safeDisplayName}</span>
+ <span className="ml-1 text-[10px] font-normal not-italic text-muted-foreground">(name not on record — this describes the record, it is not a name)</span>
+ </div>
+ )}
  <div className="text-[10px] text-muted-foreground capitalize">{r.holderType}{orig?.leadInvestorOfRound ? <span className="ml-1 text-[hsl(0_100%_40%)] font-medium">· LEAD</span> : ""}</div>
  </td>
  <td className="px-2 py-2.5">
@@ -1395,7 +1726,7 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
      `0.00` for a genuine zero. The `%` stays a DIRECT text child of this div and
      the sr-only span stays beside it, so the guard's baselined child shape for
      this cell does not move (the same care RoundDetail's cell took). */}
- <div className="font-mono tabular-nums w-14 text-right">{ownershipPercentCellText(r.ownershipPercent)}%<span className="sr-only"> of fully-diluted shares</span></div>
+ <div className="font-mono tabular-nums w-14 text-right">{ownershipPercentCellText(r.ownershipPercent)}%<span className="sr-only"> of {VIEW_DENOMINATOR_LABEL[view]}</span></div>
  <div className="h-1.5 rounded-full bg-secondary w-24 overflow-hidden">
  <div className="h-full" style={{ width: ownershipPercentBarWidth(r.ownershipPercent), backgroundColor: INSTRUMENT_COLORS[r.kind] }} />
  </div>
@@ -1405,29 +1736,71 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  );
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 108 · FINDING 2 — THE BADGE A FOUNDER READ AS "Computed by HK-default v1.0.0".
+   ════════════════════════════════════════════════════════════════════════════
+   The badge is NOT deleted and must not be. Which jurisdictional convention
+   produced a share count is information an investor and an auditor both need: a
+   Hong Kong option-pool convention and a US one do not yield the same
+   fully-diluted number, and a number whose convention is unstated is exactly the
+   thing cap-table disputes are made of.
+
+   What had to go is the internal FORM of that fact — the region code, the pack
+   name, the version string, the formula ids and the definition hashes, all of
+   which were rendered into the badge and its tooltip. The same information is now
+   stated in words: the jurisdiction by name, and each formula that ran described
+   in English. The machine values stay where machines read them (`data-region`,
+   `data-testid`, CSV export) per R77.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** Turn an internal formula id into words. Derived, so a new formula needs no entry. */
+function humaniseFormulaId(formulaId: string): string {
+  const words = String(formulaId ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[.\-_:\s/]+/)
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .map((w) => {
+      const lower = w.toLowerCase();
+      if (lower === "fd") return "fully-diluted";
+      if (lower === "ac") return "as-converted";
+      if (lower === "pps") return "price per share";
+      if (lower === "safe") return "SAFE";
+      if (lower === "pct") return "percentage";
+      if (lower === "qty") return "quantity";
+      if (/^v\d+$/.test(lower)) return "";
+      return lower;
+    })
+    .filter(Boolean);
+  if (words.length === 0) return "an unnamed calculation";
+  const joined = words.join(" ");
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
 function EngineBadge({ result, region }: { result: ReturnType<typeof runEngine> | null; region: Region }) {
  if (!result) return null;
- const label = `Computed by ${region}-default v1.0.0`;
+ const label = regionConventionLabel(region);
+ /* Two formulas can share a description once ids and versions are stripped; the
+    list is de-duplicated so the reader is not shown the same sentence twice. */
+ const describedFormulas = Array.from(new Set(result.trace.map((t) => humaniseFormulaId(t.formulaId))));
  return (
  <Tooltip>
  <TooltipTrigger asChild>
- <Badge variant="outline" className="gap-1.5 cursor-help bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] " data-testid="badge-engine">
+ <Badge variant="outline" className="gap-1.5 cursor-help bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] " data-testid="badge-engine" data-region={region}>
  <Cpu className="h-3 w-3" /> {label}
  </Badge>
  </TooltipTrigger>
  <TooltipContent className="max-w-md text-xs">
  <div className="font-semibold mb-1">Why this badge matters</div>
- <p className="mb-2 leading-relaxed">Every number on this page is computed live by a versioned, audited formula registry — not a copy-pasted spreadsheet. The badge tells you exactly which engine version, region pack, and formulas ran. If your auditor or an investor asks "how did you arrive at 6.82%?", the trace below is the answer.</p>
- <div className="font-semibold mb-1 mt-3">Engine trace</div>
- <ul className="space-y-0.5 max-h-48 overflow-y-auto">
- {result.trace.map((t, i) => (
- <li key={i} className="font-mono text-[10px]">
- <span className="text-emerald-400">{t.formulaId}</span> v{t.formulaVersion} · {t.region} · #{t.defHash.slice(0, 8)}
- </li>
+ <p className="mb-2 leading-relaxed">Computed by the cap-table engine: every number on this page is calculated live from your share ledger by an audited set of formulas — not copied out of a spreadsheet. The badge names the jurisdiction whose cap-table conventions were applied ({regionConventionName(region)}), because the same securities can produce different fully-diluted figures under different conventions. If an investor or an auditor asks how a percentage was arrived at, the calculations below are the answer.</p>
+ <div className="font-semibold mb-1 mt-3">Calculations applied</div>
+ <ul className="space-y-0.5 max-h-48 overflow-y-auto" data-testid="engine-trace-list">
+ {describedFormulas.map((description, i) => (
+ <li key={i} className="text-[11px] leading-relaxed">{description}</li>
  ))}
  </ul>
  <div className="mt-2 text-[10px] text-muted-foreground">
- {result.formulaIdsUsed.length} formulas · {result.trace.length} trace steps
+ {describedFormulas.length} distinct calculation{describedFormulas.length === 1 ? "" : "s"} · {result.trace.length} step{result.trace.length === 1 ? "" : "s"} · {regionConventionName(region)} conventions
  </div>
  </TooltipContent>
  </Tooltip>

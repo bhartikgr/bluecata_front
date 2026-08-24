@@ -60,6 +60,64 @@ import {
   rounds as roundsTable,
   investorNominations as investorNominationsTable,
 } from "@shared/schema";
+/* WAVE 121 · FINDING 2 — the ONE definition of "today" and of a target close
+   date, taken from the ratified rule itself (WAVE 83 / Shadie V6 1a) instead of
+   this file inventing a second one out of a UTC timestamp. See the sweeper's
+   `timeExpired`. */
+import { todayDateOnly, targetCloseDateOnly } from "@shared/roundTargetCloseRule";
+/* WAVE 114 · FINDING 1 (item 8) — THE SWEEPER'S "FULLY SUBSCRIBED" TEST USED A
+   FIGURE THAT IS PERMANENTLY ZERO, SO A ROUND COULD NEVER CONCLUDE ON ITS OWN.
+
+   `rounds.raised_amount` has NO WRITER anywhere in the product (verified in
+   build_log/wave114/W114_PREFLIGHT.md §1.1: it is initialised to 0 by
+   `createRound`, read in eleven places, and only ever set to a non-zero value by
+   the demo seed and by tests). `targetMet` below compared that zero with the
+   target, so it could not become true on any real round.
+
+   ⚠ THE PARAGRAPH THAT STOOD HERE IS WITHDRAWN BY RULING R93 (2026-08-22).
+   It described wave 114's fix as DERIVING the funded total and OR-ing it into
+   `targetMet`, and argued that "the new disjunct can only ever close MORE rounds,
+   never fewer". **That sentence was the problem, not the reassurance it read as.**
+   Closing more rounds is not a safe direction of travel for an UNATTENDED job
+   that lapses investors' outstanding offers and notifies them. The disjunct has
+   been removed; the full reasoning is at the `targetMet` assignment below.
+
+   What remains true and worth keeping from that note: `rounds.raised_amount` is
+   never written on a real round, so `storedTargetMet` cannot fire in production
+   and `timeExpired` is in practice the only automatic trigger — which is the
+   behaviour that shipped in every prior version and is therefore the behaviour
+   preserved here. `server/__tests__/roundClose.test.ts` fabricates `raisedAmount`
+   through `updateRound`, so it still exercises both a close and a non-close.
+
+   This file is NOT sacred: proven empirically before editing (append a byte,
+   `npm run sacred` still 48/48, revert, diff byte-identical) and it appears in no
+   manifest, no ADDED_* list and no KNOWN_DRIFT row. It IS, however, covered by
+   the preflight's `check-formula-bytes` gate, which is what caught wave 114's
+   change — correctly, and it is the reason this ruling exists. */
+/* R93 — NOTHING from `./roundRaisedTotals` is imported here, and that is
+   deliberate. The sweeper must never close a round on the strength of a derived
+   total; see the ruling at the `targetMet` assignment.
+
+   WAVE 121 · FINDING 3 — this used to import `roundMoneyOnRecord` and two row
+   types, and the header claimed "the sweeper reads the money rows (they feed the
+   reconciliation warning below)". It did not: after R93 withdrew the action there
+   were ZERO call sites for `roundMoneyOnRecord` in this file, and the two reads
+   that fed it — every `soft_circles` row and every `captable_commits` row, both
+   cross-tenant and unbounded — were executed on EVERY sweep tick and then
+   discarded. `server/__tests__/w114_round_money_states.test.ts` "proved the
+   observation survived" by asserting the IMPORT SPECIFIER, so a test passed on
+   dead code.
+
+   OPTION (b) WAS TAKEN — the import and both scans are removed. Reasoning, in
+   full, in build_log/wave121/W121_PREFLIGHT.md §3. In short: (i) the observation
+   had no consumer, no reader and no requirement — R93 removed the only thing that
+   ever used it; (ii) the same reconciliation is computed, and SHOWN, on the
+   round's own money surfaces from `./roundRaisedTotals`, which is untouched, so
+   nothing is lost by not recomputing it in a background job; (iii) an unattended
+   job is the worst possible place to keep two unbounded cross-tenant table scans
+   alive for observation only — it pays them once a minute, for every tenant, to
+   throw the result away. The reconciliation is not deleted from the product; only
+   this dead copy of it is. */
 import { appendAdminAudit } from "../adminPlatformStore";
 import { emitNotification, type NotificationKind } from "../notificationsStore";
 import { emitMutation } from "./eventBus";
@@ -392,7 +450,15 @@ export function sweepClosedRounds(): {
   closed: number;
   totalOffersLapsed: number;
 } {
-  const now = new Date().toISOString();
+  /* WAVE 121 · FINDING 2 — `now` is the local-calendar DATE (`YYYY-MM-DD`), from
+     the ratified rule's own boundary, NOT a UTC timestamp. `close_date` is a
+     date-only column (`shared/schema.ts`), so comparing it against
+     `new Date().toISOString()` made `"2026-08-22" < "2026-08-22T20:13:00Z"` TRUE
+     and swept a round whose target close is TODAY — a day early, against
+     `shared/roundTargetCloseRule.ts` (WAVE 83 / Shadie V6 1a), on an unattended
+     job that lapses investors' outstanding offers and notifies them. The
+     comparison below is unchanged; what it compares is now like with like. */
+  const now = todayDateOnly();
   let scanned = 0;
   let closed = 0;
   let totalOffersLapsed = 0;
@@ -409,32 +475,96 @@ export function sweepClosedRounds(): {
       .where(
         and(
           isNull((roundsTable as any).deletedAt),
-          // state != 'closed' — Drizzle has no `ne`; use OR-of-not-equals
-          // for the common states, OR fallback to filtering in JS below.
-          // We do an open-ended select and filter in JS to keep the SQL
+          // state != 'closed' — Drizzle has no `ne`; the state test is applied in
+          // JS below. We do an open-ended select and filter in JS to keep the SQL
           // dialect minimal (SQLite + Postgres compat).
-          or(
-            // raised_amount >= target_amount handled in JS (float compare)
-            // close_date < now handled here for index usage
-            lt((roundsTable as any).closeDate, now),
-            // include rows where close_date IS NULL so we can JS-filter for
-            // raised >= target.
-            isNull((roundsTable as any).closeDate),
-          ),
+          //
+          // WAVE 114 · FINDING 1 — the candidate filter USED to be
+          //   or(lt(closeDate, now), isNull(closeDate))
+          // which excluded every round with a FUTURE close date from the
+          // target-met branch. That is the normal shape of a live round, so even
+          // once the subscription total was derived correctly, a fully funded
+          // round with a close date still ahead of it would never have been
+          // examined. The filter is therefore WIDENED to every non-deleted round
+          // and both tests (time-expiry and target-met) are applied in JS below.
+          //
+          // This can only ever consider MORE rounds, never fewer, and the two
+          // close conditions themselves are unchanged in meaning — so no round
+          // that the sweeper used to leave open for a REASON is closed now. The
+          // time-expiry comparison against `now` still happens in JS exactly as
+          // before, using the same `now` string. `lt` and `or` remain imported
+          // for `closeRoundCascade`'s own queries.
         ),
       )
       .all() as any[];
+
+    /* WAVE 121 · FINDING 3 — the two whole-table reads WAVE 114 added here
+       (`allCircles` from `soft_circles`, `allLedger` from `captable_commits`,
+       both cross-tenant and unbounded) are GONE. Nothing consumed either of them
+       after R93 withdrew the automatic close: they were executed on every tick of
+       an unattended job and discarded. Removing them changes no decision this
+       function makes — the only inputs to `timeExpired` and `targetMet` are the
+       round row's own `close_date`, `raised_amount` and `target_amount`. */
 
     for (const r of candidates) {
       scanned += 1;
       if (r.state === "closed") continue;
 
-      const closeDate = r.close_date ?? r.closeDate ?? null;
+      /* Date-only in, date-only out — a stored timestamp is reduced to its day
+         by the shared rule, never by timestamp arithmetic here. */
+      const closeDate = targetCloseDateOnly(r.close_date ?? r.closeDate ?? null);
       const raised = Number(r.raised_amount ?? r.raisedAmount ?? 0);
       const target = Number(r.target_amount ?? r.targetAmount ?? 0);
 
       const timeExpired = !!closeDate && closeDate < now;
-      const targetMet = target > 0 && raised >= target;
+      /* The pre-wave-114 test, kept verbatim so no existing expectation moves.
+         On a real round `raised` is always 0, so this alone never fires. */
+      const storedTargetMet = target > 0 && raised >= target;
+
+      /* ═══════════════════════════════════════════════════════════════════════
+         RULING R93 — THE SWEEPER DOES NOT CLOSE A ROUND BECAUSE IT REACHED ITS
+         TARGET. Lead developer, under delegation, 2026-08-22.
+
+         Wave 114 added `derivedTargetMet = fundedMeetsTarget(money, target)` here
+         and OR-ed it into `targetMet`, reasoning that a fully funded round should
+         be able to conclude. The arithmetic was right and the reasoning about
+         FUNDED cash being the only defensible basis was right. **Acting on it
+         from this function was not.**
+
+         WHAT THIS FUNCTION IS. `sweepClosedRounds` is an UNATTENDED periodic job
+         (`server/jobs/roundSweeper.ts`). When it decides `targetMet` it calls
+         `closeRoundCascade(...)` as `system:round_sweeper`, which CLOSES THE
+         ROUND, LAPSES EVERY OUTSTANDING OFFER on it (`offersLapsed`) and then
+         fires `notifyCascadeSideEffects`, notifying investors.
+
+         WHY THE CHANGE WAS DANGEROUS. Before it, `raised` was the permanently
+         zero `rounds.raised_amount` column, so `storedTargetMet` could never fire
+         and the ONLY automatic trigger was `timeExpired`. The change therefore did
+         not improve a working path — it ACTIVATED A DORMANT ONE, giving a
+         background job a new power over live fundraises with no human in the loop.
+
+         AND REACHING TARGET IS NOT A REASON TO CLOSE. In real fundraising a
+         founder who hits his target routinely keeps the round open — to
+         oversubscribe, to extend, to hold allocation for a strategic investor.
+         Auto-closing on the first fully funded sweep would lapse other investors'
+         live offers and tell them the round had closed, on the platform's own
+         initiative. That is investor-visible, hard to undo, and not ours to decide.
+
+         The owner's standing instruction is "Do not break anything or dramatically
+         make assumptions to change things." Enabling unattended round closure is
+         exactly that, so it is removed and `targetMet` is restored to the stored
+         comparison alone. The derivation helpers in `./roundRaisedTotals` are
+         UNTOUCHED and still used by every honest money tile — only this automatic
+         ACTION is withdrawn. WAVE 121 · FINDING 3 — and nothing from that module is
+         imported here any more: the revert left the import and two unbounded
+         cross-tenant reads behind with no call site, so they were removed too.
+
+         THE UNDERLYING NEED IS REAL AND IS NOT LOST. A fully funded round should be
+         concludable — BY A HUMAN, from the round screen, with the derived total
+         shown as the basis. That is recorded as an open wave; it is a
+         human-triggered path, not a sweep.
+         ═══════════════════════════════════════════════════════════════════════ */
+      const targetMet = storedTargetMet;
 
       if (!timeExpired && !targetMet) continue;
 

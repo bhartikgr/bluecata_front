@@ -27,6 +27,11 @@ import {
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 116 · FINDING 1 — see the block comment at the "Total committed" KPI below. */
+import {
+  readCompanyMoneyOnRecord,
+  COMPANY_MONEY_SUBSCRIBED_LABEL,
+} from "@/lib/money/companyMoneyOnRecord";
 import { useActiveCompany } from "@/lib/useActiveCompany";
 import { PageSkeleton } from "@/components/ui/PageSkeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
@@ -137,7 +142,12 @@ export default function FounderWelcome() {
    * All queries gate on a real companyId so a fresh signup still sees zeros
    * naturally without showing fake activity. */
   const companyId = active.data?.activeCompanyId ?? "";
-  type _Round = { id: string; companyId: string; state: string; raisedAmount: number };
+  /* WAVE 116 · FINDING 1 — `moneyOnRecord` is Wave 114's derived, labelled money
+     projection and `GET /api/rounds` (the very query below) already carries it
+     per round. The type is widened to `unknown` on purpose: the only permitted
+     way to read it is `readRoundMoneyOnRecord`, which refuses anything that is
+     not a complete determined projection. */
+  type _Round = { id: string; companyId: string; state: string; raisedAmount: number; archivedAt?: string | null; targetAmount?: number; currency?: string | null; moneyOnRecord?: unknown };
   const roundsForKpiQ = useQuery<_Round[]>({
     queryKey: ["/api/rounds", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/rounds?companyId=${encodeURIComponent(companyId)}`)).json(),
@@ -151,15 +161,28 @@ export default function FounderWelcome() {
   });
   const _roundsArr: _Round[] = Array.isArray(roundsForKpiQ.data) ? roundsForKpiQ.data : [];
   const _activeRoundsCount = _roundsArr.filter(r => r.state !== "closed").length;
-  const _committedSum = _roundsArr.reduce((s, r) => s + (Number(r.raisedAmount) || 0), 0);
-  const _committedDisplay = _committedSum > 0
-    ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(_committedSum)
-    : "$0";
+  /* WAVE 116 · FINDING 1 — this tile used to read
+       _committedSum = _roundsArr.reduce((s, r) => s + (Number(r.raisedAmount) || 0), 0)
+       _committedDisplay = _committedSum > 0 ? Intl…format(_committedSum) : "$0"
+     which is three defects in three lines: it summed `rounds.raised_amount`, a
+     `NOT NULL DEFAULT 0` column with no writer anywhere in the tree (Wave 114),
+     so the sum was structurally always 0; it ran `Number()` over money, which is
+     forbidden because money is exact decimal text; and its else-branch printed the
+     literal string `"$0"` — the exact fabrication owner ruling R6 forbids, written
+     out by hand, on the first screen a new founder ever sees.
+
+     It now reads the derived, already-labelled figure through the shared reader
+     and prints A SENTENCE with no figure when the platform cannot determine one.
+     The three money states are shown distinctly beneath it, because "soft +
+     signed" was collapsing two states the platform keeps apart. */
+  const _companyMoney = readCompanyMoneyOnRecord(_roundsArr);
   const _crmCount = Array.isArray(crmCountQ.data) ? crmCountQ.data.length : 0;
   const kpis = [
     { key: "companies", label: "Companies",        value: active.data?.activeCompanyId ? 1 : 0, icon: Building2, hint: "in your workspace" },
     { key: "rounds",    label: "Rounds in progress", value: _activeRoundsCount,                 icon: Briefcase, hint: "live or planned" },
-    { key: "committed", label: "Total committed",   value: _committedDisplay,                   icon: PieChart,  hint: "soft + signed" },
+    _companyMoney.determined
+      ? { key: "committed", label: COMPANY_MONEY_SUBSCRIBED_LABEL, value: _companyMoney.subscribedDisplay, icon: PieChart, hint: _companyMoney.basisLabel, states: _companyMoney.buckets.map(b => `${b.label}: ${b.display}`) }
+      : { key: "committed", label: COMPANY_MONEY_SUBSCRIBED_LABEL, value: _companyMoney.statement,         icon: PieChart, hint: "",                        unavailable: true },
     { key: "invited",   label: "Investors invited", value: _crmCount,                           icon: Users,     hint: "cap-table reach" },
   ];
 
@@ -236,6 +259,8 @@ export default function FounderWelcome() {
         {/* 2-5) KPI TILES — col-span-1 each */}
         {kpis.map(k => {
           const Icon = k.icon;
+          const unavailable = Boolean((k as { unavailable?: boolean }).unavailable);
+          const states = (k as { states?: string[] }).states ?? [];
           return (
             <Card
               key={k.key}
@@ -248,8 +273,33 @@ export default function FounderWelcome() {
                   <div className="text-xs uppercase tracking-wide text-muted-foreground">{k.label}</div>
                   <Icon className="h-4 w-4 text-[hsl(0_100%_40%)]" />
                 </div>
-                <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{k.value}</div>
-                <div className="text-xs text-muted-foreground mt-1">{k.hint}</div>
+                {/* WAVE 116 · FINDING 1 — a refusal is a sentence, so it is set at
+                    body size rather than in the 2xl figure slot. It is never a `$0`.
+
+                    WAVE 116 FOLLOW-UP — the branch is INSIDE this one div rather
+                    than choosing between two sibling divs. `npm run guard` counts
+                    the direct children of a panel body, and a ternary that yields
+                    one of two divs reads as a lost child even though the tile still
+                    renders: it flagged `div#2` and `div#3` here. The tile keeps its
+                    three-child shape, so the structural drop is restored rather
+                    than allowlisted, and the figure slot still refuses to hold a
+                    sentence at 2xl. */}
+                <div
+                  className={unavailable ? "text-sm text-muted-foreground mt-2" : "text-2xl font-semibold tracking-tight mt-2 tabular-nums"}
+                  data-testid={unavailable ? `kpi-unavailable-${k.key}` : `kpi-figure-${k.key}`}
+                >
+                  {k.value}
+                </div>
+                <div>
+                  {k.hint ? <div className="text-xs text-muted-foreground mt-1">{k.hint}</div> : null}
+                  {states.length > 0 ? (
+                    <div className="mt-1 space-y-0.5" data-testid={`kpi-states-${k.key}`}>
+                      {states.map(s => (
+                        <div key={s} className="text-[11px] text-muted-foreground">{s}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </CardContent>
             </Card>
           );

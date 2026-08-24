@@ -46,6 +46,10 @@ import {
   DENOM_LABEL_SHORT,
   DENOM_LABEL_TEXT,
   formatPct,
+  /* WAVE 107 - F3. Type-only, so the meaningful-total set below cannot drift
+     from the denominator vocabulary it keys on: adding a `DenomLabel` without
+     deciding whether its column can be totalled is a type error here. */
+  type DenomLabel,
 } from "@/lib/roundMath";
 /* WAVE 58b · DEFECT 3 — the ONE base resolver, shared with the server round-math
    route and derived from the engine's own fully-diluted total. */
@@ -74,6 +78,22 @@ import { pastTargetCloseNotice } from "@shared/roundTargetCloseRule";
    replaced with a generic string by `queryClient.ts:63` for anything ≥ 240 chars,
    and every R50 refusal is 424-543. */
 import { serverRefusalMessage } from "@/lib/serverRefusalMessage";
+
+/* WAVE 107 - F3: THE DENOMINATORS WHOSE COLUMNS CAN HONESTLY BE TOTALLED.
+
+   A column total is a share of the whole only when the denominator CONTAINS
+   every row being summed. The two post-money denominators do; `outstanding`,
+   `FD_PRE` and `FD_PRE_INCL_POOL` do not, because all three are measured on the
+   company BEFORE this round's new shares exist. Summing those columns is what
+   printed "Total 125.000% FD pre-money (pre-pool)" on the Review step.
+
+   This is a PRESENTATION rule and nothing else: no percentage is recomputed,
+   rescaled or rounded differently anywhere in this wave. */
+const W107_TOTAL_IS_MEANINGFUL: ReadonlySet<DenomLabel> = new Set<DenomLabel>([
+  "FD_POST",
+  "FD_POST_EX_POOL",
+]);
+
 
 // Patch v11 B-V11-10 — map the wizard's instrument value to the carry-forward
 // engine's coarser roundType taxonomy. Returns null for instruments the engine
@@ -1578,6 +1598,37 @@ export default function RoundNew() {
  if (!m) return true;
  return m[1].length !== 4;
  };
+ /* WAVE 118 - FINDING 3: THE PAST-DATE GUARD ON THE CREATE SCREEN, RESTORED.
+    Wave 115 found that a target close date before today is accepted here with
+    nothing but an amber note, and the source lock
+    client/src/pages/founder/__tests__/v25_53_round_mgmt_client.test.ts has been
+    asserting `const dayInPast` in this file since v25.53. Both are now honoured
+    by the code rather than by editing the lock.
+    SCOPE, DELIBERATELY NARROW: this refuses only on the round-CREATE wizard. A
+    round being created is a round being opened, and a round cannot be opened
+    with its close already behind it. Recording an already-closed historical
+    round - the use Shadie V6 1a and shared/roundTargetCloseRule.ts protect -
+    stays possible through the Edit-terms writer on founder/Rounds.tsx and the
+    terms API, which keep warning and never block. See W118_PREFLIGHT.md for the
+    two rulings side by side and for every other writer where this guard is
+    still absent; that tension is the owner's to settle, not mine.
+    STRING COMPARISON, NOT Date ARITHMETIC: `YYYY-MM-DD` orders correctly
+    lexicographically and never crosses a timezone, which is the defect that
+    made a 21 July date render as 20 July. Same technique as
+    shared/roundTargetCloseRule.ts. */
+ /* R92/R93 FOLLOW-UP — THIS NOW DELEGATES TO THE ONE SHARED RULE INSTEAD OF
+    RE-DERIVING TODAY'S DATE. Wave 118 wrote its own `new Date()` +
+    `getFullYear()/getMonth()/getDate()` here, which duplicated
+    `shared/roundTargetCloseRule.ts` and tripped the preflight's `date-only`
+    fence — a fence that exists precisely because a date-only value pushed
+    through `Date` part-getters is how a 21 July date came to render as 20 July.
+
+    Delegating removes the duplicate AND removes the disagreement risk: the
+    boundary ("is today in the past?" — no) is now decided in exactly one place
+    for the wizard, the Edit-terms modal, the create route and the terms route.
+    The name `dayInPast` is retained because the v25.53 source lock asserts it. */
+ const dayInPast = (iso: string): boolean => pastTargetCloseNotice(iso) !== null;
+ const closeDateInPast = dayInPast(form.closeDate);
  const openDateMalformed = badYear(form.openDate);
  const closeDateMalformed = badYear(form.closeDate);
  // W3 Shadie 1a (Ozan spec) — BOTH Open date and Target close date are now
@@ -1587,6 +1638,16 @@ export default function RoundNew() {
  const closeDateMissing = !(form.closeDate ?? "").trim();
  const scheduleInvalid =
  dateRangeInvalid || openDateMalformed || closeDateMalformed || openDateMissing || closeDateMissing;
+ // WAVE 118 CORRECTION (lead developer, under delegation, 2026-08-22) —
+ // `closeDateInPast` was ADDED to this list and is now REMOVED from it again.
+ // It contradicted `shared/roundTargetCloseRule.ts`, the ratified WAVE 83 /
+ // Shadie V6 1a rule: a past target close is ACCEPTED AND NEVER SILENT. The
+ // server was changed at that time to stop rejecting past dates precisely so a
+ // founder could record a round that has already closed. Blocking it here
+ // removed that legitimate use, and the replacement advice — enter a future
+ // date, then correct it in Edit terms — asked a founder to save a date he
+ // knew to be wrong. `closeDateInPast` is retained below because the notice
+ // needs it; it must NOT gate Continue or Create. See ruling R92.
 
  // v25.53 1a / N2 / N3 — per-vehicle required-field validation for Step 2
  // (Terms). Previously Continue advanced with empty price/shares and the step
@@ -1699,6 +1760,51 @@ export default function RoundNew() {
  if (usesField("discount")) {
   const dv = validateDiscountPercentAsWritten(form.discount);
   if (!dv.ok) e.discount = dv.message;
+ }
+ /* WAVE 107 - F1-A: A POOL THAT CANNOT BE SIZED IS NO LONGER DROPPED IN SILENCE.
+
+    WHAT WAS WRONG, reproduced rather than inferred. `optionPoolPostPercent`
+    (below, in the create payload) and `optionPoolMode` are gated on
+    `poolDerivation.ok` / `poolExpressed`. `poolDerivation` is a PROJECTION: to
+    size the pool it needs a reconciled fully-diluted base from `wizardBase`,
+    and `resolveFdPreMoneyBase` refuses with `fd_base_divergence` when the
+    round's DECLARED count disagrees with the cap-table ledger. That refusal is
+    correct. What was not correct is that the two payload lines then posted
+    `null` for both keys - so a founder who ticked the box, typed 10% and chose
+    PRE-money placement had all three discarded on submit, and the round
+    re-opened with the pool switched off. The RECORD OF WHAT WAS AGREED was
+    coupled to the ABILITY TO PROJECT IT.
+
+    Reproduced with a ledger of 6,000,000 against a declared 8,000,000: the POST
+    body carried `optionPoolPostPercent: null`, `optionPoolMode: null` and
+    `pricePerShare: "0.25"` - the price derived from the declared count with no
+    pool in the denominator, which is the same $0.25 the live round quoted.
+
+    WHY THIS IS A REFUSAL AND NOT A BACK-FILL. Sending the typed percentage
+    anyway would store a 10% pre-money pool beside a price quoted WITHOUT a pool.
+    Those two stored facts imply two different ownership tables, and the create
+    path has no price-vs-pool contradiction guard to catch it. That is money
+    invented after the fact. So the wizard refuses the create instead, using the
+    derivation's own named reason, and the founder reconciles the field it names.
+
+    NARROWLY CONDITIONED, so no existing entry path becomes unusable: this fires
+    only when the pool is ON **and** the percentage is INDEPENDENTLY VALID
+    (`poolPercentCheck.ok`) **and** the derivation still cannot size it. A blank
+    or half-typed percentage behaves exactly as it did before.
+
+    `derivePoolTopUpFromPercent` and `resolveFdPreMoneyBase` are NOT modified.
+    The existing circular-dependency refusal on the common-share path
+    (`investment_missing_for_pool`: the notional raise is price x new shares and
+    the price is what the pool is about to change) still fires with its own
+    message - it now BINDS instead of being discarded. */
+ if (addonPool && poolPercentCheck && poolPercentCheck.ok && poolDerivation && !poolDerivation.ok) {
+  e.addonPool =
+   "This round records an option pool of " + addonPoolDraft.poolPercent.trim() + "% " +
+   (addonPoolDraft.poolMode === "post_money" ? "post-money" : "pre-money") +
+   ", and Capavate cannot size it yet: " + poolDerivation.reason + " " +
+   "Capavate will not create the round with the pool silently removed, and it will not " +
+   "quote a price that ignores a pool you have recorded. Reconcile the field named above, " +
+   "or switch the pool off here and record it as its own option-pool round.";
  }
  return e;
  })();
@@ -2331,10 +2437,10 @@ export default function RoundNew() {
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
  <div><Label className="flex items-center gap-1">Open date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(openDateMalformed || openDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p> : openDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-required">Open date is required.</p> : null}</div>
- <div><Label className="flex items-center gap-1">Target close date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed || closeDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p> : closeDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-required">Target close date is required.</p> : null}
+ <div><Label className="flex items-center gap-1">Target close date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed || closeDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : closeDateInPast ? "border-amber-500 focus-visible:ring-amber-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p> : closeDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-required">Target close date is required.</p> : null}
 {/* WAVE 83 · ITEM 2.2 — THE ONE RULE, WARN AND NEVER BLOCK. Appended as the
     LAST child of this field's own <div>, so no container ordinal moves. */}
-{pastTargetCloseNotice(form.closeDate) ? <p className="text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="close-date-past-warning">{pastTargetCloseNotice(form.closeDate)}</p> : null}</div>
+{closeDateInPast && pastTargetCloseNotice(form.closeDate) ? <p className="text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="close-date-past-warning">{pastTargetCloseNotice(form.closeDate)}</p> : null}</div>
  {dateRangeInvalid && (
  <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
  )}
@@ -2777,7 +2883,40 @@ export default function RoundNew() {
  <tr data-testid="w52-preview-total">
  <td className="font-semibold">Total</td>
  <td className="font-semibold">{w52Preview.preview.rows.reduce((a, r) => a + Number(r.shares), 0).toLocaleString()}</td>
- <td>{w52Preview.preview.displayedTotals.map((pc) => formatPct(pc)).join(" · ")}</td>
+ {/* WAVE 107 - F3: A TOTAL IS ONLY PRINTED WHERE A TOTAL MEANS SOMETHING.
+
+     WHAT WAS WRONG. This cell summed EVERY column, including the pre-money ones,
+     and so printed "Total 125.000% FD pre-money (pre-pool)" - reproduced locally
+     at 125.000% and, on a second shape, 128.571%. The arithmetic was never
+     wrong: 100% of the pre-money base for the existing holders plus 25% for this
+     round's investors IS 125% of that base. The DEFECT IS THE WORD "Total". A
+     column total is only a share of the whole when the denominator CONTAINS
+     every row being summed, and both pre-money denominators exclude this round's
+     new shares by definition - so this round's investors are a RELATIVE SIZE
+     against the old company, not a slice of it, and adding the two is a category
+     error dressed as a sum.
+
+     NOT ONE PERCENTAGE IS CHANGED by this wave; `displayedTotals` is still the
+     exact total rounded once, computed by the same code. The two post-money
+     columns keep their totals. The two pre-money columns, and `outstanding`,
+     print a named non-answer instead of a number.
+
+     DENOMINATORS, stated (see `DENOM_LABEL_TEXT` in `client/src/lib/roundMath.ts`):
+       outstanding                  - issued and outstanding only; excludes this round -> NO TOTAL
+       FD pre-money (pre-pool)      - FD before this round and before its pool  -> NO TOTAL
+       FD pre-money (incl. pool)    - the pricing denominator; still pre-money  -> NO TOTAL
+       FD post-money                - pricing denominator + this round's new shares -> total printed
+       FD post-money ex-pool        - as above, unallocated pool excluded       -> total printed
+
+     `FD post-money` can total below 100% because the unallocated pool sits in
+     that denominator without being a holder row. That is a true statement about
+     the round and the rounding note below already covers it; it never exceeds
+     100%. */}
+ <td>{w52Preview.preview.displayedTotals.map((pc) => (
+  W107_TOTAL_IS_MEANINGFUL.has(pc.denominator)
+   ? formatPct(pc)
+   : `no meaningful total ${DENOM_LABEL_SHORT[pc.denominator]} — this denominator excludes this round's new shares, so the rows above cannot be added`
+ )).join(" · ")}</td>
  </tr>
  </tbody>
  </table>
@@ -3054,6 +3193,17 @@ export default function RoundNew() {
  <div className="font-medium">The pool share count cannot be derived yet</div>
  <p className="mt-1">{poolDerivation.reason}</p>
  <p className="mt-1 text-[10px] text-muted-foreground">Nothing has been changed and no share count has been guessed. Correct the field named above and this clears itself.</p>
+ </div>
+ )}
+ {step2Errors.addonPool && (
+ /* WAVE 107 - F1-A. The BINDING half of the refusal above. Before this wave the
+    amber box explained that the pool could not be sized and the wizard then
+    created the round anyway with the pool stripped out of the payload. This
+    sentence says the create is blocked, and `step2Errors.addonPool` is what
+    disables both Continue and Create. */
+ <div className="rounded-md border border-rose-300/60 bg-rose-50/60 dark:bg-rose-950/20 p-3 text-xs" data-testid="err-addonPool">
+ <div className="font-medium text-rose-700 dark:text-rose-300">This round cannot be created until the pool is reconciled</div>
+ <p className="mt-1">{step2Errors.addonPool}</p>
  </div>
  )}
  {addonPool && poolDerivation && poolDerivation.ok && (

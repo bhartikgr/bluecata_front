@@ -8,6 +8,12 @@ import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole, tierAtLeast } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
+/* WAVE 115 · FINDING 1 — `partnerPipelineStageLabel`, `quotaEnforcementLabel`
+   and `planTierLabel` join `activityTypeLabel` from the same module. The stage
+   accessor delegates to PARTNER_PIPELINE_STAGE_LABELS (shared/crmStages.ts:130),
+   the map that already governs these six keys on PartnerPipeline.tsx — no second
+   vocabulary is introduced here. */
+import { activityTypeLabel, partnerPipelineStageLabel, quotaEnforcementLabel, planTierLabel } from "@/lib/partnerDisplay";
 import { formatMinor } from "@/lib/currency"; /* v25.40 FIX-12 currency sweep */
 // v25.46 BLOCKER FIX #4 (Tier 9 #73) — dashboard cards now use the canonical
 // AppCard primitive instead of shadcn Card. Widgets/data-testids unchanged.
@@ -62,7 +68,14 @@ interface PartnerMeResp {
 }
 
 interface DashboardSnapshot {
-  portfolio: { attributedCompanies: number; totalSpvCommittedMinor: number; totalFundCommittedMinor: number };
+  /* WAVE 115 · FINDING 7 — `null` means the authoritative committed figure could
+     not be read. It is NOT zero and must never be formatted as $0.00. */
+  portfolio: {
+    attributedCompanies: number;
+    totalSpvCommittedMinor: number | null;
+    totalFundCommittedMinor: number | null;
+    committedFigureSource?: string;
+  };
   pipeline: { byStage: Record<string, number>; topDeals: Array<{ id: string; dealName: string; estCheckSizeMinor: number | null; currency: string | null }> };
   recentActivity: Array<{ id: string; activityType: string; body: string; occurredAt: string }>;
   team: { activeSeats: number; pendingInvitations: number; seatLimit: number };
@@ -152,12 +165,42 @@ export default function PartnerDashboard() {
                  multi-currency rollup is tracked separately), so we default to
                  "USD" — matching the prior hardcoded label. */}
               <div className="text-xs mt-3 text-[var(--cv-color-text-secondary)]" data-testid="kpi-spv">
-                SPVs committed: {formatMinor(data.portfolio.totalSpvCommittedMinor, "USD", { locale: "en-US" })}{" "}
-                <span className="text-[var(--cv-color-text-faint)]">USD</span>
+                {/* ═══════════════════════════════════════════════════════════
+                    WAVE 115 · FINDING 7 — THIS TILE PRINTED "$0.00 USD" WHILE A
+                    REAL $10,000 LP COMMITMENT EXISTED ON PLATFORM.
+
+                    The server figure is now derived from the canonical SPV
+                    engine through WAVE 112's one shared predicate
+                    (`canonicalCommittedMinorForSpv`, spvEngineStore.ts:3731)
+                    instead of from a RAM denorm with no live writer
+                    (`server/partnerWorkspaceStore.ts` — full chain documented at
+                    its dashboard return statement).
+
+                    AND IT CAN NOW BE `null`. A printed $0.00 that means "we
+                    could not read this" is a false statement about money on the
+                    owner's front page. When the figure is unavailable this tile
+                    says so, in words, and does not format a number.
+                    ═══════════════════════════════════════════════════════════ */}
+                SPVs committed:{" "}
+                {data.portfolio.totalSpvCommittedMinor == null ? (
+                  <span data-testid="kpi-spv-unavailable">not available right now — we could not read the committed total</span>
+                ) : (
+                  <>
+                    {formatMinor(data.portfolio.totalSpvCommittedMinor, "USD", { locale: "en-US" })}{" "}
+                    <span className="text-[var(--cv-color-text-faint)]">USD</span>
+                  </>
+                )}
               </div>
               <div className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="kpi-fund">
-                Funds committed: {formatMinor(data.portfolio.totalFundCommittedMinor, "USD", { locale: "en-US" })}{" "}
-                <span className="text-[var(--cv-color-text-faint)]">USD</span>
+                Funds committed:{" "}
+                {data.portfolio.totalFundCommittedMinor == null ? (
+                  <span data-testid="kpi-fund-unavailable">not available right now — we could not read the committed total</span>
+                ) : (
+                  <>
+                    {formatMinor(data.portfolio.totalFundCommittedMinor, "USD", { locale: "en-US" })}{" "}
+                    <span className="text-[var(--cv-color-text-faint)]">USD</span>
+                  </>
+                )}
               </div>
             </div>
           </AppCard>
@@ -166,7 +209,7 @@ export default function PartnerDashboard() {
             <div>
               <ul className="text-xs space-y-1">
                 {Object.entries(data.pipeline.byStage).map(([s, n]) => (
-                  <li key={s} className="flex justify-between"><span className="text-[var(--cv-color-text-muted)]">{s}</span><span className="font-medium">{n}</span></li>
+                  <li key={s} className="flex justify-between"><span className="text-[var(--cv-color-text-muted)]" data-testid={`pipeline-stage-${s}`}>{partnerPipelineStageLabel(s)}</span><span className="font-medium">{n}</span></li>
                 ))}
               </ul>
             </div>
@@ -206,7 +249,7 @@ export default function PartnerDashboard() {
                     )}
                     {/* GROUP F3 — DISPLAY-only quota enforcement mode (report|warn). */}
                     <span data-testid="quota-enforcement-mode" className="text-[var(--cv-color-text-faint)]">
-                      {" · "}{planQ.data.effectivePlan.quotaProgress.enforcement}
+                      {" · "}{quotaEnforcementLabel(planQ.data.effectivePlan.quotaProgress.enforcement)}
                     </span>
                   </div>
                   <div className="text-3xl font-bold" data-testid="kpi-quota-registered">
@@ -307,7 +350,7 @@ export default function PartnerDashboard() {
                 {planQ.data.effectivePlanError.message}
               </p>
               <p className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="plan-unavailable-tier">
-                Tier on file: {planQ.data.effectivePlanError.tier}
+                Tier on file: {planTierLabel(planQ.data.effectivePlanError.tier)}
               </p>
             </AppCard>
           )}
@@ -318,7 +361,10 @@ export default function PartnerDashboard() {
               <ul className="text-xs space-y-2">
                 {data.recentActivity.map((a) => (
                   <li key={a.id} className="border-b pb-1">
-                    <span className="text-[var(--cv-color-text-muted)] mr-2">{a.activityType}</span>
+                    {/* WAVE 106 - FINDING 4.5: this printed the raw event code
+                        (`stage_change`) as the row's primary text. Same rows,
+                        same order, human wording. */}
+                    <span className="text-[var(--cv-color-text-muted)] mr-2">{activityTypeLabel(a.activityType)}</span>
                     <span>{a.body}</span>
                   </li>
                 ))}

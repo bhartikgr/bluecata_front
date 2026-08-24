@@ -1685,7 +1685,13 @@ export const spvEngineStore = {
    *  distribution (fail-closed on state, not mere row existence). */
   committedRegister(partnerId: string, spvId: string): Array<{ investorId: string; commitmentMinor: number; ownershipPct: number }> {
     if (!this.getSpv(partnerId, spvId)) return [];
-    const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status === "committed");
+    /* WAVE 112 · FINDING 1 — this method used to carry its own inline copy of
+       the `status === "committed"` predicate. It now calls the module's single
+       derivation, so the money gates below, the distribution allocator, the
+       capital accounts AND the legacy plural read all answer "how much has this
+       vehicle been committed?" from one place rather than from copies kept in
+       step by hand. See `committedSubscriptionsForSpv`. */
+    const subs = committedSubscriptionsForSpv(spvId);
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
     return subs.map((x) => ({
       investorId: x.investorId,
@@ -3652,8 +3658,123 @@ export function engineListLegacyPositions(spvId: string): SpvPositionRow[] {
 }
 
 /** Wave B Stage 2 — reconcile adapter. Returns BigInt SpvReconciliation. */
+/* ═════════════════════════════════════════════════════════════════════════
+ * WAVE 112 · FINDING 1 + FINDING 2 — ONE COMMITTED FIGURE, TWO ROUTE FAMILIES.
+ *
+ * THE DEFECT. Two live route families answered the same money question from two
+ * independent registers, and they disagreed in BOTH directions:
+ *
+ *   ENGINE (singular /api/partner/me/spv/...) — subscriptions in the terminal
+ *     `committed` state. This is the register that gates deployment
+ *     (INSUFFICIENT_COMMITTED_CAPITAL, _assertDeploymentReadiness) and that
+ *     allocates distributions per LP. It is the authority by construction: it is
+ *     what the platform will actually honour when money moves.
+ *
+ *   LEGACY (plural GET /api/partner/me/spvs/:id/detail) — `spv_commitments` rows
+ *     with status `signed` or `funded`, summed by spvFundStore.reconcile.
+ *
+ * MEASURED, over the wire, BEFORE this change
+ * (server/__tests__/w112_spv_committed_convergence.test.ts):
+ *
+ *   · POST /spv/:id/lp-commit $10,000  -> engine 1000000, legacy 0
+ *       the legacy read UNDER-reported a real commitment by its whole value.
+ *       This is OPEN_ITEMS B-42: `projectLpCommitted` seats the subscription and
+ *       does NOT shadow-write the legacy register, so the legacy reader saw
+ *       nothing. A partner reading that route saw committedMinor 0 on a funded
+ *       vehicle.
+ *
+ *   · spvEngineStore.subscribe $5,000  -> engine 0, legacy 500000
+ *       the legacy read OVER-reported. `subscribe()` lands a subscription in
+ *       `review` and shadow-writes a legacy row as `signed`, which reconcile
+ *       counts — so the legacy figure advertised capital that no money gate in
+ *       this store would honour. That direction is the more dangerous of the two,
+ *       and the audit's "the legacy path loses money" wording does not describe
+ *       it at all.
+ *
+ * THE FIX, AND WHY IT IS NOT A SECOND WRITE. B-42's obvious repair is to add the
+ * missing `shadowCommitmentFromLegacyStrict` write to `projectLpCommitted`. A
+ * previous agent declined, correctly: that helper's idempotency key is
+ * (spvId, lpUserId, amountMinor), so an AMENDED amount does not match and
+ * `addCommitment` inserts a SECOND hash-chained row into a money register — the
+ * rollup then counts $10,000 + $25,000 = $35,000 for one $25,000 commitment.
+ * That reasoning is RESPECTED, not overturned.
+ *
+ * So the READER is repaired instead: the committed figure is derived from the
+ * same source the correct path uses. No new write touches `spv_commitments`, so
+ * the double-counting key is never newly exercised and a double-count is
+ * unreachable by construction rather than merely guarded. Amended amount,
+ * repeated submit and two concurrent submits are each pinned by a test.
+ *
+ * MONEY TYPES. The derivation sums in `bigint`. `commitmentMinor` is a `number`
+ * on the subscription DTO (a pre-existing shape this wave does not change), and
+ * `BigInt(x)` on an integer minor-unit count is a widening, not a parse — no
+ * `Number()`, `parseInt` or `parseFloat` is applied to money anywhere below.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** The ONE spelling of the terminal state in which a subscription is real
+ *  capital. Review / soft-circled / founder-confirmed / wired-but-uncommitted
+ *  subscriptions are NOT committed capital. */
+export const COMMITTED_SUBSCRIPTION_STATUS = "committed" as const;
+
+/** The ONE predicate for "which subscriptions count as committed capital".
+ *  `committedRegister` and `canonicalCommittedMinorForSpv` both call this, so
+ *  there is no second copy of the status test in the committed path. */
+export function committedSubscriptionsForSpv(spvId: string): SpvSubscriptionDTO[] {
+  return (subsBySpv.get(spvId) ?? []).filter((x) => x.status === COMMITTED_SUBSCRIPTION_STATUS);
+}
+
+/** The ONE authoritative committed figure for a vehicle, in minor units.
+ *  Deliberately partner-agnostic: every caller has already resolved ownership
+ *  (the legacy adapter through `loadOwnedSpvOr404`, the engine routes through
+ *  `getSpv`), and a second, differently-shaped ownership check here is the kind
+ *  of near-duplicate that let the two families drift apart to begin with. */
+export function canonicalCommittedMinorForSpv(spvId: string): bigint {
+  let total = BigInt(0);
+  for (const sub of committedSubscriptionsForSpv(spvId)) total += BigInt(sub.commitmentMinor);
+  return total;
+}
+
+/** The committed figure the LEGACY register would report on its own, exposed for
+ *  DISCLOSURE only. Nothing gates on it, and no money path reads it. It exists
+ *  so that a commitment created through the legacy-only routes (POST
+ *  /spvs/:id/commitments then PATCH to `signed`, which create no engine
+ *  subscription) is VISIBLY absent from the canonical figure rather than
+ *  silently dropped by this convergence. */
+export function legacyRegisterCommittedMinorForSpv(spvId: string): bigint {
+  return spvFundStore.reconcile(spvId).committedMinor;
+}
+
+/**
+ * Wave B Stage 2 adapter, WAVE 112 — the legacy plural read now TRANSLATES the
+ * canonical committed figure instead of computing a rival one. The legacy route
+ * keeps its response shape (bigint-to-string at the boundary, a translation) and
+ * computes no committed figure of its own.
+ *
+ * WHAT STILL COMES FROM THE LEGACY TABLES, AND WHY. `calledMinor`,
+ * `distributedMinor` and `totalBasisMinor` keep their legacy sources: the engine
+ * family has NO capital-call route at all (the plural family is the product's
+ * only capital-call writer) and no rival legacy-position register, so there is
+ * nothing authoritative to delegate them to, and inventing one would be a second
+ * implementation — the very defect. `uncalledMinor` and `netInvestedMinor` are
+ * re-derived here so they stay arithmetically consistent with the committed
+ * figure actually reported; an `uncalledMinor` computed from a different
+ * `committedMinor` than the one in the same response object is its own small lie.
+ *
+ * `spvFundStore.reconcile` itself is intentionally NOT changed. It is a pure
+ * aggregate over the legacy tables, its only other reference is the
+ * never-registered `registerSpvFundRoutes`, and server/__tests__/spvFundDb.test.ts
+ * legitimately pins its own arithmetic. The convergence is applied at the single
+ * LIVE consumer instead.
+ */
 export function engineReconcileLegacySpv(spvId: string): SpvReconciliation {
-  return spvFundStore.reconcile(spvId);
+  const legacy = spvFundStore.reconcile(spvId);
+  const committedMinor = canonicalCommittedMinorForSpv(spvId);
+  return {
+    ...legacy,
+    committedMinor,
+    uncalledMinor: committedMinor - legacy.calledMinor,
+    netInvestedMinor: legacy.calledMinor - legacy.distributedMinor,
+  };
 }
 
 /** Wave B Stage 2 — getLegacySpvById adapter (RAM-cache header read).

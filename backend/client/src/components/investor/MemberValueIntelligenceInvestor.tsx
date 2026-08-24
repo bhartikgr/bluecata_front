@@ -39,8 +39,19 @@ type CoMember = {
   /** Sprint 22 Wave 1: platform userId for DM (DEF-014 fix). Only present when allowDM:true. */
   userId?: string;
   displayLabel: string;
+  /** WAVE 115 · FINDING 2 (F2-b) — set when `displayLabel` is not a real name. */
+  displayLabelUnavailable?: boolean;
+  /** WAVE 115 · FINDING 2 (F2-b) — the internal reference behind such a label. */
+  reference?: string;
   areaOfExpertise: string[];
-  investorExperienceTier: string;
+  /**
+   * WAVE 115 · FINDING 2 (F2-a) — OPTIONAL, and absent means the platform holds
+   * no experience tier for this member. `server/sprint21Routes.ts` used to
+   * hardcode `"Angel"` for every ledger-derived holder of every real company, and
+   * this column — headed "Experience" — rendered it as a coloured badge, i.e. as
+   * a measured fact. Absent now renders "Not recorded". It is NEVER estimated.
+   */
+  investorExperienceTier?: string;
   chapter?: string;
   screenNameOnly: boolean;
   allowDM: boolean;
@@ -180,7 +191,20 @@ export function MemberValueIntelligenceInvestor() {
                   <Skeleton key={i} className="h-10 w-full" />
                 ))}
               </div>
-            ) : coMembersQ.isSuccess && members.length === 0 ? (
+            ) : !coMembersQ.isSuccess ? (
+              /* WAVE 115 · FINDING 2 (F2-g) — THE FAILURE BRANCH USED TO FALL
+                 THROUGH TO THE TABLE. Because the ternary's last arm had no
+                 condition, an errored or paused query rendered the empty table
+                 shell AND the "Post to … cap-table channel" CTA directly beneath
+                 the wave-60 refusal. A refusal that still offers an action reads
+                 as "there is nothing here", which is the exact empty-vs-failed
+                 confusion the refusal exists to prevent.
+                 DECLARED FOR RATIFICATION (silent-drop rule): on the error path
+                 only, the co-member table and that one CTA are no longer
+                 rendered. Nothing is removed on any success path — see
+                 build_log/wave115/W115_TESTS.md. */
+              null
+            ) : members.length === 0 ? (
               <div className="text-sm text-muted-foreground py-4 text-center">
                 No co-members found for {activePosition?.company ?? "this company"}.
               </div>
@@ -205,7 +229,12 @@ export function MemberValueIntelligenceInvestor() {
                   </thead>
                   <tbody>
                     {members.map((m) => {
-                      const tierCls = TIER_COLOR[m.investorExperienceTier] ?? "bg-secondary text-muted-foreground";
+                      /* WAVE 115 · FINDING 2 (F2-a) — a tier is shown only when
+                         one was actually recorded. No default, no proxy. */
+                      const tier = typeof m.investorExperienceTier === "string" && m.investorExperienceTier.trim()
+                        ? m.investorExperienceTier.trim()
+                        : null;
+                      const tierCls = (tier && TIER_COLOR[tier]) || "bg-secondary text-muted-foreground";
                       return (
                         <tr
                           key={m.memberId}
@@ -218,6 +247,16 @@ export function MemberValueIntelligenceInvestor() {
                             >
                               {m.displayLabel}
                             </span>
+                            {/* WAVE 115 · FINDING 2 (F2-b) — when the platform
+                                holds no name, say so plainly and put the internal
+                                reference under a label. Never print a bare id in
+                                a column headed "Member". */}
+                            {m.displayLabelUnavailable && (
+                              <div className="text-[11px] text-muted-foreground" data-testid={`w115-comember-name-unavailable-${m.memberId}`}>
+                                Name not recorded on this platform
+                                {m.reference ? ` (reference ${m.reference})` : ""}
+                              </div>
+                            )}
                             {m.chapter && (
                               <div className="text-[11px] text-muted-foreground">
                                 {m.chapter}
@@ -234,14 +273,43 @@ export function MemberValueIntelligenceInvestor() {
                                   {tag}
                                 </span>
                               ))}
+                              {/* WAVE 115 · FINDING 2 (F2-c) — an empty list from
+                                  the ledger-derived path means NEVER RECORDED, not
+                                  "none declared". The two were indistinguishable. */}
+                              {m.areaOfExpertise.length === 0 && (
+                                <span className="text-[11px] text-muted-foreground" data-testid={`w115-comember-expertise-unavailable-${m.memberId}`}>
+                                  Not recorded
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="py-2.5 pr-3">
+                            {/* WAVE 115 · FINDING 2 — the tier is now honest AND the
+                                Badge is UNCONDITIONAL.
+
+                                The first draft of this fix rendered a plain span
+                                instead of the Badge when no tier was recorded, and
+                                the silent-drop guard correctly flagged it: a
+                                customer-visible element had disappeared from this
+                                cell. Rather than ask for a waiver, the element
+                                stays and its CONTENT tells the truth. A badge
+                                reading "Not recorded" is not a fabrication; a
+                                badge reading "Emerging" for someone this platform
+                                has never assessed is.
+
+                                No default tier is invented, no styling implies a
+                                grade, and the testid still distinguishes the two
+                                states for the test and for support. */}
                             <Badge
                               variant="outline"
-                              className={`text-[10px] ${tierCls}`}
+                              className={`text-[10px] ${tier ? tierCls : "text-muted-foreground"}`}
+                              data-testid={
+                                tier
+                                  ? `w115-comember-tier-${m.memberId}`
+                                  : `w115-comember-tier-unavailable-${m.memberId}`
+                              }
                             >
-                              {m.investorExperienceTier}
+                              {tier ?? "Not recorded"}
                             </Badge>
                           </td>
                           <td className="py-2.5 text-right">

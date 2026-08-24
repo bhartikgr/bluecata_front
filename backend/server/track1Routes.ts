@@ -8,6 +8,8 @@
  *   A3  POST /api/founder/crm/import
  *   A4  POST /api/founder/data-room/files
  *       POST /api/founder/data-room/grants
+ *       GET  /api/founder/data-room/grants?fileId=            (WAVE 120)
+ *       POST /api/founder/data-room/grants/:grantId/revoke    (WAVE 120)
  *       GET  /api/founder/data-room/files/:fileId
  *   A5  POST /api/investor/invitations/:token/kyc
  *   A6  POST /api/investor/documents/:id/sign
@@ -39,6 +41,33 @@ import { addContact } from "./crmStore";
 import { insertContactForImport } from "./founderCrmStore";
 import { emitNotification } from "./notificationsStore";
 import { listForRound as softCircleListForRound } from "./softCircleStore";
+/* ── WAVE 123 · FINDING 1 — THE SECOND TERM-SHEET GENERATOR'S READERS ────────
+   Every import below already exists and is already the platform's single reader
+   for the thing it reads. Wave 111 spent an entire wave deleting duplicated
+   interpretations of a liquidation preference (8 of 16 term shapes disagreed);
+   this generator is not allowed to become the sixteenth. Nothing here parses a
+   term, an instrument or a state on its own. */
+import { readFileSync } from "node:fs";
+import nodePath from "node:path";
+import { getCompanyNameById } from "./multiCompanyStore";
+/* WAVE 124 · FINDING 3 — the SAME slug helper the wave-117 PDF generator and the
+   wave-123 client download already use. `server/lib/pdfGenerators.ts:31` imports
+   it from this exact path, so a server file reading the shared export library is
+   the established pattern here, not a new one. One derivation, three surfaces. */
+import { companyExportSlug } from "../client/src/lib/captable/exportProvenance";
+import {
+  readLiquidationTerms,
+  describeLiquidationTerms,
+} from "../shared/liquidationTermsReader";
+import {
+  readGovernanceTerms,
+  GOVERNANCE_TERM_NOT_RECORDED,
+} from "../shared/roundGovernanceTerms";
+import {
+  instrumentLongLabel,
+  roundStateLabel,
+  humaniseToken,
+} from "../shared/investorDisplayLabels";
 
 // Helper to emit bridge events with our new event types (using cast to bypass strict type)
 function emitBridge(eventType: string, aggregateId: string, aggregateKind: "company" | "investor" | "round" | "platform", payload: Record<string, unknown>): void {
@@ -1671,7 +1700,19 @@ async function handleWaterfall(req: Request, res: Response): Promise<void> {
         `4,000,000 pays the founders $25,000,000 and a real count of 8,000,000 pays them ` +
         `$33,333,333.33. This route used to set the common count EQUAL to the total preferred ` +
         `count, with its own comment describing that as "simplified". It no longer guesses. ` +
-        `Record the founders' common shares on the cap table.`,
+        /* WAVE 117 · FINDING 2 — THE SENTENCE, AND ONLY THE SENTENCE.
+           Was: "Record the founders' common shares on the cap table." The refusal
+           itself was reviewed and found CORRECT and is untouched — the condition,
+           the `refusal`/`refusalName`/`error` values and the position of this
+           branch in the gate are byte-identical. What was wrong was the
+           INSTRUCTION: it told the reader to record FOUNDERS' shares, and a
+           company whose common (ordinary) shares are held by outside investors —
+           routine across Europe and Asia, where "ordinary shares" is the ordinary
+           name for the same class — would read this as "you have nothing to do
+           here" and stay permanently refused. The class is what has to be on
+           record; who holds it is not this route's business. */
+        `Record the company's common (ordinary) shares on the cap table, whoever holds them — ` +
+        `founders, employees or outside investors.`,
     });
     return;
   }
@@ -3252,35 +3293,231 @@ async function handleWaterfall(req: Request, res: Response): Promise<void> {
 //      GET  /api/founder/term-sheets/:id/download
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildTermSheetMarkdown(round: ReturnType<typeof getRoundById>): string {
-  if (!round) return "# Term Sheet\n\n_Round not found._\n";
-  const terms = (round as unknown as { terms?: Record<string, unknown> }).terms ?? {};
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 123 · FINDING 1 — THE SECOND TERM-SHEET GENERATOR. IT NAMED A SECURITY
+                          THE ROUND DOES NOT USE.
+   ═══════════════════════════════════════════════════════════════════════════
+   WHAT SHIPPED HERE, AND WHY IT IS THE MOST SERIOUS DEFECT ON TODAY'S LIST.
+   Wave 117 hardened `server/lib/pdfGenerators.ts` and never touched this file,
+   so a SECOND generator has been emitting an unreviewed legal document from
+   `POST /api/founder/term-sheets/generate` and `GET
+   /api/founder/term-sheets/:id/download`. Reviewer C measured five defects; the
+   first of them is not a formatting problem:
+
+     · `**Instrument:** ${round.instrument ?? "SAFE"}` — when the round records
+       no instrument the document CALLED IT A SAFE. A term sheet is what counsel
+       and investors rely on, and naming an instrument the round does not use is
+       a FALSE STATEMENT ABOUT A SECURITY. There is no defensible default: a
+       priced preferred round and a post-money SAFE are different instruments
+       with different economics, and `round.type` ("seed", "foundation") is a
+       ROUND type, not an instrument, so it is not a fallback either.
+     · `**Company ID:** co_novapay` and the company's NAME nowhere in the
+       document — an internal primary key where the party belongs.
+     · pre-money and price per share printed as BARE NUMBERS, one line under a
+       figure that carried a currency. A price per share of `2` has no meaning.
+     · `Object.entries(terms)` dumped raw DB keys as the TERM LABELS of a term
+       sheet, so counsel read `liqPrefMultiple` and `capParticipation`, and the
+       round's stored liquidation wording was never interpreted at all — this
+       document could assert a term the exit waterfall REFUSES.
+     · a hardcoded `v25.0` footer on a v26.21.0 tree.
+
+   THE RULE THIS FUNCTION NOW FOLLOWS. It either produces a document in which
+   every stated fact is on record, or it REFUSES and produces nothing. That is
+   not a new pattern invented here: it is what the exit waterfall in this same
+   file already does, and what `shared/liquidationTermsReader.ts` was built for.
+   An unstored term reads "Not recorded on this round" — Wave 114's own words,
+   imported rather than retyped — and never a fabricated default (R6).
+
+   NOTHING IS INTERPRETED LOCALLY. The liquidation preference comes from the ONE
+   reader (Wave 111), the four governance terms from theirs (Wave 114), the
+   instrument, round state and round type from the shared label tables, the
+   company name from `multiCompanyStore`, and the version from `package.json` —
+   the single version authority (`server/__tests__/w90_version_single_source.test.ts`).
+   There is no regex, no second parse, and no third generator.
+
+   MONEY. `targetAmount`, `preMoney` and `pricePerShare` arrive from
+   `roundsStore` already typed as numbers; they are GROUPED for reading and never
+   re-parsed. `Number()`, `parseInt` and `parseFloat` are applied to no amount in
+   this block. A currency is never invented: where `rounds.currency` is null —
+   which is the ordinary case on this tree, the column being nullable with no
+   default — the figure is printed with an explicit statement that the currency
+   is not on record, so no reader can mistake it for US dollars.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The one sentence this document uses for anything not on the round. Imported
+ *  from Wave 114 so the term sheet, the round's Terms panel and the API refusal
+ *  cannot word it differently. */
+const TERM_SHEET_NOT_RECORDED = GOVERNANCE_TERM_NOT_RECORDED;
+
+/** Resolved at runtime, never typed into this file. Same priority order and same
+ *  mechanism as the health route's resolver in `server/routes.ts`: `APP_VERSION`
+ *  wins so a deploy can guarantee the shipped version, then the shipped
+ *  `package.json`, then an honest "unknown" rather than a plausible lie. */
+function platformVersionForDocument(): string {
+  if (process.env.APP_VERSION) return String(process.env.APP_VERSION);
+  const candidates = [
+    nodePath.resolve(__dirname, "..", "package.json"),
+    nodePath.resolve(__dirname, "package.json"),
+    nodePath.resolve(process.cwd(), "package.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf8")) as { version?: unknown };
+      if (typeof pkg.version === "string" && pkg.version.trim() !== "") return pkg.version;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  log.warn("[track1/term-sheet] version unresolved — APP_VERSION unset and package.json not found");
+  return "unknown";
+}
+
+/** ISO 4217 code as stored, or `null` when the round records no currency. A
+ *  currency is NEVER defaulted: `?? "USD"` on a CAD or EUR round is how a reader
+ *  ends up off by an exchange rate. */
+function recordedCurrency(round: NonNullable<ReturnType<typeof getRoundById>>): string | null {
+  const raw = typeof round.currency === "string" ? round.currency.trim() : "";
+  return raw === "" ? null : raw.toUpperCase();
+}
+
+/**
+ * ONE money renderer for this document. Three outcomes and no fourth:
+ *   · not on record            -> "Not recorded on this round"
+ *   · on record, currency known -> "USD 8,000,000"   (currency ALWAYS present)
+ *   · on record, currency not  -> "8,000,000 — currency not recorded on this round"
+ * The third case states the gap in words rather than assuming dollars, which is
+ * what the defect did.
+ */
+function termSheetMoney(amount: number | null | undefined, currency: string | null): string {
+  if (amount === null || amount === undefined || !Number.isFinite(amount)) {
+    return TERM_SHEET_NOT_RECORDED;
+  }
+  const grouped = amount.toLocaleString("en-US", { maximumFractionDigits: 6 });
+  return currency === null
+    ? `${grouped} — currency not recorded on this round`
+    : `${currency} ${grouped}`;
+}
+
+export type TermSheetRefusal = "ROUND_NOT_FOUND" | "INSTRUMENT_NOT_ON_RECORD";
+
+export type TermSheetDocument =
+  | { readonly ok: true; readonly markdown: string }
+  | { readonly ok: false; readonly refusal: TermSheetRefusal; readonly message: string };
+
+/**
+ * THE GENERATOR. Returns a document or a refusal — it never returns a document
+ * containing a fact that is not on the round.
+ *
+ * Exported so the wave's tests read the same function the route serves; the
+ * route is the only production caller.
+ */
+export function buildTermSheetDocument(round: ReturnType<typeof getRoundById>): TermSheetDocument {
+  if (!round) {
+    return {
+      ok: false,
+      refusal: "ROUND_NOT_FOUND",
+      message:
+        "Capavate cannot produce a term sheet for a round it cannot find. No document was generated.",
+    };
+  }
+
+  /* ── THE REFUSAL THAT MATTERS ──────────────────────────────────────────────
+     The instrument IS the security. `round.type` is deliberately not consulted:
+     "seed" is not an instrument, and mapping it to one would be the same
+     invention in a different place. */
+  const instrumentRaw = typeof round.instrument === "string" ? round.instrument.trim() : "";
+  if (instrumentRaw === "") {
+    return {
+      ok: false,
+      refusal: "INSTRUMENT_NOT_ON_RECORD",
+      message:
+        "This round does not record an investment instrument, so Capavate will not produce a term " +
+        "sheet for it. The instrument is the security itself — naming one the round does not use " +
+        "would be a false statement about a security to the investor and to counsel who rely on " +
+        "this document. Record the instrument on the round, then generate the term sheet again.",
+    };
+  }
+
+  /* The party, by name. The internal company id is printed NOWHERE. A resolved
+     name that is merely the id back again (the `companyName ?? companyId`
+     seeding hazard) is treated as no name at all rather than leaked. */
+  const resolvedName = getCompanyNameById(round.companyId);
+  const companyName =
+    typeof resolvedName === "string" &&
+    resolvedName.trim() !== "" &&
+    resolvedName.trim() !== round.companyId
+      ? resolvedName.trim()
+      : null;
+
+  const currency = recordedCurrency(round);
+
+  /* The liquidation preference as the EXIT WATERFALL reads it — same module, so
+     this document cannot state a term the calculation would refuse. */
+  const liquidation = readLiquidationTerms({
+    liquidationPreference: (round as unknown as Record<string, unknown>)["liquidationPreference"],
+    capParticipation: (round as unknown as Record<string, unknown>)["capParticipation"],
+  });
+
+  const governance = readGovernanceTerms(round);
+
+  /* Anything else the round stores under `terms` is NOT dumped as a term label —
+     that was the defect. It is not silently dropped either: the document names
+     the keys' COUNT and says where a human can read them, so nothing disappears
+     and no machine key is presented to counsel as a negotiated term. */
+  const storedTerms = (round as unknown as { terms?: Record<string, unknown> }).terms ?? {};
+  const storedTermCount = Object.keys(storedTerms).length;
+
+  const summary =
+    typeof round.termsSummary === "string" && round.termsSummary.trim() !== ""
+      ? round.termsSummary.trim()
+      : TERM_SHEET_NOT_RECORDED;
+
   const lines = [
     `# Term Sheet — ${round.name}`,
     ``,
-    `**Company ID:** ${round.companyId}`,
-    `**Round Type:** ${round.type}`,
-    `**State:** ${round.state}`,
-    `**Target Amount:** ${round.targetAmount?.toLocaleString() ?? "N/A"} ${round.currency ?? "USD"}`,
-    `**Pre-Money Valuation:** ${round.preMoney?.toLocaleString() ?? "N/A"}`,
-    `**Price Per Share:** ${round.pricePerShare ?? "N/A"}`,
-    `**Close Date:** ${round.closeDate ?? "TBD"}`,
-    `**Instrument:** ${round.instrument ?? "SAFE"}`,
+    `**Company:** ${companyName ?? TERM_SHEET_NOT_RECORDED}`,
+    `**Round:** ${round.name}`,
+    `**Round Type:** ${humaniseToken(String(round.type ?? ""))}`,
+    `**Round Status:** ${roundStateLabel(round.state)}`,
+    `**Instrument:** ${instrumentLongLabel(instrumentRaw)}`,
+    `**Currency:** ${currency ?? TERM_SHEET_NOT_RECORDED}`,
+    `**Target Amount:** ${termSheetMoney(round.targetAmount, currency)}`,
+    `**Pre-Money Valuation:** ${termSheetMoney(round.preMoney, currency)}`,
+    `**Price Per Share:** ${termSheetMoney(round.pricePerShare, currency)}`,
+    `**Close Date:** ${
+      typeof round.closeDate === "string" && round.closeDate.trim() !== ""
+        ? round.closeDate
+        : TERM_SHEET_NOT_RECORDED
+    }`,
     ``,
     `## Terms`,
     ``,
-    ...(Object.keys(terms).length > 0
-      ? Object.entries(terms).map(([k, v]) => `- **${k}:** ${v}`)
-      : ["_No terms defined on this round._"]),
+    `- **Liquidation preference:** ${describeLiquidationTerms(liquidation)}`,
+    ...governance.map(
+      (g) => `- **${g.label}:** ${g.recorded ? g.text : g.statement}`,
+    ),
     ``,
+    ...(storedTermCount > 0
+      ? [
+          `_This round also stores ${storedTermCount} further value${storedTermCount === 1 ? "" : "s"} ` +
+            `that Capavate does not print here, because it has no counsel-facing label for them. They ` +
+            `are readable on the round's Terms tab. Nothing in this section is inferred from them._`,
+          ``,
+        ]
+      : []),
     `## Summary`,
     ``,
-    round.termsSummary ?? "_No summary available._",
+    summary,
     ``,
     `---`,
-    `*Generated by Capavate v25.0 at ${nowIso()}*`,
+    `*This term sheet states only what is recorded on this round. Any line reading ` +
+      `"${TERM_SHEET_NOT_RECORDED}" is not a nil value: it means Capavate holds no value for that ` +
+      `term, and the executed documents remain the only source. Capavate is not a law firm and this ` +
+      `document is not legal advice.*`,
+    ``,
+    `*Generated by Capavate v${platformVersionForDocument()} at ${nowIso()}*`,
   ];
-  return lines.join("\n");
+  return { ok: true, markdown: lines.join("\n") };
 }
 
 function handleTermSheetGenerate(req: Request, res: Response): void {
@@ -3299,7 +3536,23 @@ function handleTermSheetGenerate(req: Request, res: Response): void {
   if (!ownsCompany(ctx, round.companyId)) { res.status(403).json({ ok: false, error: "FORBIDDEN" }); return; }
 
   const resolvedFormat = (format as "markdown" | "pdf") ?? "markdown";
-  const contentMd = buildTermSheetMarkdown(round);
+  /* WAVE 123 · FINDING 1 — THE REFUSAL REACHES THE CALLER, AND NOTHING IS
+     STORED. The generator answers with a document or with a named refusal; a
+     round with no instrument on record produces no row in `term_sheets`, so an
+     unreviewable document cannot outlive the request. 422 is the status this
+     route already uses for "the request is well formed but the round cannot
+     support it", and it is what the exit waterfall returns for the same reason. */
+  const built = buildTermSheetDocument(round);
+  if (!built.ok) {
+    res.status(422).json({
+      ok: false,
+      error: "TERM_SHEET_REFUSED",
+      refusal: built.refusal,
+      message: built.message,
+    });
+    return;
+  }
+  const contentMd = built.markdown;
   const docId = newId("ts");
   const createdAt = nowIso();
 
@@ -3345,14 +3598,44 @@ function handleTermSheetDownload(req: Request, res: Response): void {
     res.status(403).json({ ok: false, error: "FORBIDDEN" }); return;
   }
 
+  /* ── WAVE 124 · FINDING 3 — THESE FILES TRAVEL BY EMAIL ────────────────────
+     Was: `term-sheet-<docId>.pdf` / `.md`. `docId` is a `ts_…` primary key, so
+     every term sheet this route served landed on an investor's or a lawyer's
+     disk carrying one of our database keys in its name, and two term sheets for
+     the same company sorted nowhere near each other. Wave 117 fixed the FIRST
+     generator's filename (`server/lib/pdfGenerators.ts:156`) and wave 123 fixed
+     the CLIENT-side download (`founder/TermSheet.tsx:636`); this route is the
+     third surface and was still on the old scheme, so the same document could
+     reach a counterparty under two different names.
+     The company name is resolved through `getCompanyNameById`, the same reader
+     the markdown builder above uses, with the same guard: a "name" that is just
+     the company id echoed back is treated as NO name rather than leaked into a
+     filename. `companyId` is deliberately NOT passed to `companyExportSlug` —
+     mirroring wave 123 — because that argument is the helper's last-resort
+     fallback and would put the id straight back into the name it is here to
+     remove. With no name on record the slug degrades to the neutral `captable`.
+     The date is the document's own creation date, so two generations for one
+     company are distinguishable. The docId stays in the URL and in the payload,
+     where machines read it. */
+  const round = getRoundById(row.round_id);
+  const resolvedCompanyName = round ? getCompanyNameById(round.companyId) : null;
+  const companyNameForFile =
+    typeof resolvedCompanyName === "string" &&
+    resolvedCompanyName.trim() !== "" &&
+    resolvedCompanyName.trim() !== (round ? round.companyId : "")
+      ? resolvedCompanyName.trim()
+      : null;
+  const slug = companyExportSlug({ companyName: companyNameForFile });
+  const asOf = String(row.created_at ?? "").slice(0, 10).replace(/[^0-9A-Za-z-]/g, "") || "undated";
+
   if (row.format === "pdf") {
     const pdfBuf = markdownToPdf(row.content_md);
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="term-sheet-${id}.pdf"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${slug}-term-sheet-${asOf}.pdf"`);
     res.send(pdfBuf);
   } else {
     res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="term-sheet-${id}.md"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${slug}-term-sheet-${asOf}.md"`);
     res.send(row.content_md);
   }
 }
@@ -3526,6 +3809,70 @@ function handleDataRoomUpload(req: Request, res: Response): void {
   res.status(201).json({ ok: true, fileId, uploadedAt });
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 120 · FINDING 1 — A SIGNED DATA-ROOM LINK IS BOUND TO ITS GRANTEE AND
+   CAN BE WITHDRAWN. (Reviewer A D6, re-verified: build_log/wave120/W120_PREFLIGHT.md §1)
+   ════════════════════════════════════════════════════════════════════════════
+   WHAT WAS WRONG. `handleDataRoomFileGet`'s grant path checked two things: that
+   the token matched a row, and that `expires_at` had not passed. `investor_id`
+   was SELECTed and never compared to anybody, and `data_room_grants` had an
+   INSERT and a SELECT in the entire tree and nothing else — no revoke route, no
+   `revoked_at`, no DELETE. TTLs run to 30 days. So a link issued to ONE investor
+   served the document to ANYONE holding it, and could not be withdrawn for its
+   whole lifetime, on documents a company shares with investors during a raise.
+
+   IS THE LINK MEANT TO BE SHAREABLE? NO, and the code is unambiguous about it:
+   the grantee is MANDATORY (422 MISSING_INVESTOR_ID below), it is persisted as
+   its own column, and the link is delivered by an IN-APP notification addressed
+   to `userId: investorId` — a channel only that signed-in identity can read.
+   There is no issuing screen anywhere in the client (`grep` for these paths in
+   `client/src` returns nothing), so no surface states or could state that the
+   link is forwardable. A shareable link was never a design decision here; it was
+   an omission. The link is therefore bound to the investor named on the grant.
+
+   WHAT R90 FORBIDS, AND WHY THIS IS NOT THAT. Nothing below changes how a
+   session is established, how identity is resolved, any cookie, or any portal
+   guard. It calls the SAME `getUserContext(req)` this file already calls at every
+   other handler and compares the answer to a row the route already reads. That is
+   an authorisation check on a token-bearing route.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** WAVE 120 — the revocation columns, ensured without touching SACRED
+ *  `server/db/connection.ts` (WAIVER-6), which creates this table inline for
+ *  dev/test. Migration `0193_wave120_data_room_grant_revocation.sql` covers the
+ *  numbered-runner/production path; this is the self-heal companion, the same
+ *  pattern migration 0188 documents. `PRAGMA table_info` is checked FIRST, so it
+ *  is idempotent without relying on the runner swallowing a duplicate-column
+ *  error, and it never drops or rewrites anything. */
+let dataRoomGrantRevocationColumnsChecked = false;
+function ensureDataRoomGrantRevocationColumn(): void {
+  if (dataRoomGrantRevocationColumnsChecked) return;
+  try {
+    const db = rawDb();
+    const cols = db.prepare(`PRAGMA table_info(data_room_grants)`).all() as Array<{ name?: string }>;
+    if (cols.length === 0) return; // table not created yet; nothing to widen
+    const have = new Set(cols.map((c) => String(c.name ?? "")));
+    if (!have.has("revoked_at")) db.exec(`ALTER TABLE data_room_grants ADD COLUMN revoked_at TEXT`);
+    if (!have.has("revoked_by")) db.exec(`ALTER TABLE data_room_grants ADD COLUMN revoked_by TEXT`);
+    dataRoomGrantRevocationColumnsChecked = true;
+  } catch (err) {
+    log.warn("[track1/data-room-grant] revocation column check failed:", (err as Error).message);
+  }
+}
+
+/** WAVE 120 — the ONE spelling of "this grant is no longer live", used by the
+ *  read path and by the listing so the two cannot disagree. A grant is dead when
+ *  it has been revoked OR when it has expired, and the caller is told WHICH. */
+export type DataRoomGrantState = "live" | "revoked" | "expired";
+export function dataRoomGrantState(
+  grant: { expires_at?: string | null; revoked_at?: string | null },
+  now: Date = new Date(),
+): DataRoomGrantState {
+  if (grant.revoked_at) return "revoked";
+  if (!grant.expires_at || new Date(grant.expires_at) < now) return "expired";
+  return "live";
+}
+
 function handleDataRoomGrant(req: Request, res: Response): void {
   const ctx = getUserContext(req);
   if (!ctx?.isAuthed) { res.status(401).json({ ok: false, error: "UNAUTHORIZED" }); return; }
@@ -3557,6 +3904,8 @@ function handleDataRoomGrant(req: Request, res: Response): void {
 
   if (!ownsCompany(ctx, round.companyId)) { res.status(403).json({ ok: false, error: "FORBIDDEN" }); return; }
 
+  ensureDataRoomGrantRevocationColumn();
+
   const token = randomBytes(32).toString("hex");
   const grantId = newId("drg");
   const expiresAt = new Date(Date.now() + ttl * 60 * 1000).toISOString();
@@ -3581,34 +3930,251 @@ function handleDataRoomGrant(req: Request, res: Response): void {
       userId: investorId,
       kind: "dataroom.access_granted",
       title: "Data room access granted",
-      body: `You have been granted access to a document. Token expires at ${expiresAt}.`,
+      body: `You have been granted access to a document. This link is issued to you and works only while you are signed in as yourself; it can be withdrawn at any time. Access expires at ${expiresAt}.`,
       link: `/api/public/data-room/files/${fileId}?grant=${token}`,
     });
   } catch { /* best-effort */ }
 
-  res.status(201).json({ ok: true, grantToken: token, expiresAt });
+  /* WAVE 120 — the issuing response now STATES the terms of the link it just
+     minted, in words, so whatever screen eventually calls this route cannot
+     present it as a shareable link by accident. `grantId` is returned because a
+     link that cannot be named cannot be withdrawn. Additive: `ok`, `grantToken`
+     and `expiresAt` keep their names, shapes and meanings. */
+  res.status(201).json({
+    ok: true,
+    grantId,
+    grantToken: token,
+    expiresAt,
+    grantee: investorId,
+    shareable: false,
+    accessStatement:
+      "This link is issued to one named investor. It serves the document only to that investor " +
+      "(or to a founder of the company that owns the file) and is refused for anyone else, including " +
+      "anyone the link is forwarded to. It can be withdrawn at any time and stops working immediately.",
+    revokeWith: `POST /api/founder/data-room/grants/${grantId}/revoke`,
+  });
+}
+
+/** WAVE 120 · FINDING 1 — resolve a grant to the round that owns its file, so
+ *  both the revoke path and the listing can check ownership the same way. */
+function loadDataRoomGrantForFounder(grantId: string): {
+  grant: { id: string; file_id: string; investor_id: string; expires_at: string; revoked_at: string | null; revoked_by: string | null } | undefined;
+  companyId: string | null;
+} {
+  ensureDataRoomGrantRevocationColumn();
+  let grant: { id: string; file_id: string; investor_id: string; expires_at: string; revoked_at: string | null; revoked_by: string | null } | undefined;
+  try {
+    const db = rawDb();
+    grant = db.prepare(`SELECT * FROM data_room_grants WHERE id = ?`).get(grantId) as typeof grant;
+  } catch (err) {
+    log.warn("[track1/data-room-grant-revoke] DB read failed:", (err as Error).message);
+  }
+  if (!grant) return { grant: undefined, companyId: null };
+  let fileRow: { round_id: string } | undefined;
+  try {
+    const db = rawDb();
+    fileRow = db.prepare(`SELECT round_id FROM data_room_files WHERE id = ?`).get(grant.file_id) as typeof fileRow;
+  } catch (err) {
+    log.warn("[track1/data-room-grant-revoke] DB read failed:", (err as Error).message);
+  }
+  const round = fileRow ? getRoundById(fileRow.round_id) : null;
+  return { grant, companyId: round ? round.companyId : null };
+}
+
+/** WAVE 120 · FINDING 1 — WITHDRAW A SIGNED LINK.
+ *
+ *  The half of the hole that no route existed for at all. Stamping `revoked_at`
+ *  is enough to stop the link IMMEDIATELY because `handleDataRoomFileGet` reads
+ *  the row on every single request — there is no cached decision and no TTL to
+ *  outlive. Idempotent: revoking an already-revoked grant returns 200 and KEEPS
+ *  the first `revoked_at`/`revoked_by`, because an audit trail is not overwritten
+ *  by a repeat click. Nothing is deleted: the grant row survives, revoked, so the
+ *  fact that access was once given remains on record. */
+function handleDataRoomGrantRevoke(req: Request, res: Response): void {
+  const ctx = getUserContext(req);
+  if (!ctx?.isAuthed) { res.status(401).json({ ok: false, error: "UNAUTHORIZED" }); return; }
+
+  const grantId = String(req.params.grantId ?? "");
+  if (!grantId) { res.status(422).json({ ok: false, error: "MISSING_GRANT_ID" }); return; }
+
+  const { grant, companyId } = loadDataRoomGrantForFounder(grantId);
+  if (!grant) { res.status(404).json({ ok: false, error: "GRANT_NOT_FOUND" }); return; }
+  if (!companyId) { res.status(404).json({ ok: false, error: "ROUND_NOT_FOUND" }); return; }
+  if (!ownsCompany(ctx, companyId)) { res.status(403).json({ ok: false, error: "FORBIDDEN" }); return; }
+
+  if (grant.revoked_at) {
+    res.status(200).json({
+      ok: true, grantId, alreadyRevoked: true, revokedAt: grant.revoked_at, revokedBy: grant.revoked_by,
+      statement: "This link was already withdrawn and has not served the document since.",
+    });
+    return;
+  }
+
+  const revokedAt = nowIso();
+  try {
+    const db = rawDb();
+    db.prepare(`UPDATE data_room_grants SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
+      .run(revokedAt, ctx.userId, grantId);
+  } catch (err) {
+    log.error("[track1/data-room-grant-revoke] DB update failed:", (err as Error).message);
+    res.status(500).json({ ok: false, error: "DB_ERROR" }); return;
+  }
+
+  emitBridge("dataRoom.grant.revoked", grant.file_id, "round", {
+    grantId, fileId: grant.file_id, investorId: grant.investor_id, revokedAt, revokedBy: ctx.userId,
+  });
+
+  /* WAVE 120 — WHY THE GRANTEE IS NOT NOTIFIED HERE, STATED RATHER THAN LEFT AS
+     AN OMISSION. Telling the investor their access was withdrawn would need a
+     `dataroom.access_revoked` member of `NotificationKind`, and that union lives
+     in `server/notificationsStore.ts`, which is SACRED and is not touched by this
+     wave. Reusing `dataroom.access_granted` for a REVOCATION would put a false
+     label on a real event, which is worse than sending nothing. The withdrawal is
+     recorded on the row (`revoked_at`/`revoked_by`) and emitted on the outbound
+     bridge above, so it is auditable; the investor-facing notice is left for the
+     wave that owns that union. */
+
+  res.status(200).json({
+    ok: true, grantId, alreadyRevoked: false, revokedAt, revokedBy: ctx.userId,
+    statement: "This link has been withdrawn. It stops serving the document on the very next request.",
+  });
+}
+
+/** WAVE 120 · FINDING 1 — WHAT LINKS ARE OUTSTANDING ON A FILE.
+ *  A founder cannot withdraw what they cannot see. Tokens are NEVER returned
+ *  here (that would turn a management screen into a second copy of every bearer
+ *  link); each row carries its id, its grantee, its expiry and its live state. */
+function handleDataRoomGrantList(req: Request, res: Response): void {
+  const ctx = getUserContext(req);
+  if (!ctx?.isAuthed) { res.status(401).json({ ok: false, error: "UNAUTHORIZED" }); return; }
+
+  const fileId = typeof req.query["fileId"] === "string" ? req.query["fileId"] : "";
+  if (!fileId) { res.status(422).json({ ok: false, error: "MISSING_FILE_ID" }); return; }
+
+  ensureDataRoomGrantRevocationColumn();
+
+  let fileRow: { round_id: string } | undefined;
+  try {
+    const db = rawDb();
+    fileRow = db.prepare(`SELECT round_id FROM data_room_files WHERE id = ?`).get(fileId) as typeof fileRow;
+  } catch (err) {
+    log.warn("[track1/data-room-grant-list] DB read failed:", (err as Error).message);
+  }
+  if (!fileRow) { res.status(404).json({ ok: false, error: "FILE_NOT_FOUND" }); return; }
+  const round = getRoundById(fileRow.round_id);
+  if (!round) { res.status(404).json({ ok: false, error: "ROUND_NOT_FOUND" }); return; }
+  if (!ownsCompany(ctx, round.companyId)) { res.status(403).json({ ok: false, error: "FORBIDDEN" }); return; }
+
+  let rows: Array<{ id: string; investor_id: string; expires_at: string; created_at: string; revoked_at: string | null; revoked_by: string | null }> = [];
+  try {
+    const db = rawDb();
+    rows = db.prepare(
+      `SELECT id, investor_id, expires_at, created_at, revoked_at, revoked_by
+         FROM data_room_grants WHERE file_id = ? ORDER BY created_at ASC`
+    ).all(fileId) as typeof rows;
+  } catch (err) {
+    log.warn("[track1/data-room-grant-list] DB read failed:", (err as Error).message);
+  }
+
+  res.status(200).json({
+    ok: true,
+    fileId,
+    shareable: false,
+    accessStatement:
+      "Every link below is issued to one named investor and is refused for anyone else, including " +
+      "anyone it is forwarded to. Withdrawing a link stops it immediately.",
+    grants: rows.map((r) => ({
+      grantId: r.id,
+      grantee: r.investor_id,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      revokedAt: r.revoked_at,
+      revokedBy: r.revoked_by,
+      state: dataRoomGrantState(r),
+    })),
+  });
 }
 
 function handleDataRoomFileGet(req: Request, res: Response): void {
   const { fileId } = req.params;
   const grantToken = req.query["grant"] as string | undefined;
 
-  // Check grant token path (no auth session required for this path)
+  // Check grant token path (the token NAMES the grant; it is not by itself the credential)
   if (grantToken) {
-    let grant: { file_id: string; investor_id: string; expires_at: string } | undefined;
-    let fileRow: { filename: string; content_base64: string; mime_type: string } | undefined;
+    ensureDataRoomGrantRevocationColumn();
+    let grant: { id: string; file_id: string; investor_id: string; expires_at: string; revoked_at: string | null } | undefined;
+    let fileRow: { round_id: string; filename: string; content_base64: string; mime_type: string } | undefined;
     try {
       const db = rawDb();
       grant = db.prepare(`SELECT * FROM data_room_grants WHERE token = ? AND file_id = ?`).get(grantToken, fileId) as typeof grant;
       if (grant) {
-        fileRow = db.prepare(`SELECT filename, content_base64, mime_type FROM data_room_files WHERE id = ?`).get(fileId) as typeof fileRow;
+        fileRow = db.prepare(`SELECT round_id, filename, content_base64, mime_type FROM data_room_files WHERE id = ?`).get(fileId) as typeof fileRow;
       }
     } catch (err) {
       log.warn("[track1/data-room-get] DB read failed:", (err as Error).message);
     }
 
     if (!grant) { res.status(403).json({ ok: false, error: "INVALID_GRANT" }); return; }
-    if (new Date(grant.expires_at) < new Date()) { res.status(403).json({ ok: false, error: "GRANT_EXPIRED" }); return; }
+
+    /* WAVE 120 · FINDING 1 — THE ORDER OF REFUSALS IS LOAD-BEARING, and this is
+       the whole of it. `state` is read from the ROW on EVERY request, so a link
+       withdrawn one second ago is dead on the next call: there is no cached
+       decision, and the 30-day TTL is irrelevant to a revocation.
+
+         revoked  → refused even for the rightful grantee (a withdrawal is not a
+                    suggestion), and it is refused BEFORE expiry so the caller is
+                    told the accurate reason;
+         expired  → refused even for the rightful grantee (unchanged behaviour,
+                    now stated after revocation rather than first). */
+    const state = dataRoomGrantState(grant);
+    if (state === "revoked") {
+      res.status(403).json({
+        ok: false, error: "GRANT_REVOKED",
+        message: "This link has been withdrawn by the company that shared the document.",
+      });
+      return;
+    }
+    if (state === "expired") {
+      res.status(403).json({
+        ok: false, error: "GRANT_EXPIRED",
+        message: "This link has expired. Ask the company to issue a new one.",
+      });
+      return;
+    }
+
+    /* WAVE 120 · FINDING 1 — THE TOKEN IS BOUND TO ITS GRANTEE.
+       `grant.investor_id` was read out of the database and then compared to
+       nothing at all, which made every issued link a bearer token: it served the
+       document to whoever held it, including anyone it was forwarded to. It is
+       now compared to the caller.
+
+       WHO MAY OPEN IT: the investor the grant NAMES, or a founder/admin of the
+       company that owns the file — the latter through this file's existing
+       `ownsCompany` helper, so the person who ISSUED the link can still open it
+       and no legitimate existing use is taken away.
+
+       R90: the caller is read with the same `getUserContext(req)` every other
+       handler in this file uses. Nothing here establishes a session, resolves an
+       identity differently, reads or writes a cookie, or touches a portal guard. */
+    const ctxForGrant = getUserContext(req);
+    if (!ctxForGrant?.isAuthed) {
+      res.status(401).json({
+        ok: false, error: "GRANT_REQUIRES_SIGN_IN",
+        message: "This document was shared with one named investor. Sign in as that investor to open it.",
+      });
+      return;
+    }
+    const round = fileRow ? getRoundById(fileRow.round_id) : null;
+    const isGrantee = ctxForGrant.userId === grant.investor_id;
+    const isIssuer = round ? ownsCompany(ctxForGrant, round.companyId) : false;
+    if (!isGrantee && !isIssuer) {
+      res.status(403).json({
+        ok: false, error: "GRANT_NOT_YOURS",
+        message: "This link was issued to a different investor. It does not grant you access to this document.",
+      });
+      return;
+    }
+
     if (!fileRow) { res.status(404).json({ ok: false, error: "FILE_NOT_FOUND" }); return; }
 
     const buf = Buffer.from(fileRow.content_base64, "base64");
@@ -4113,7 +4679,18 @@ export function registerTrack1Routes(
   // A4 — data room
   app.post("/api/founder/data-room/files", requireAuth, rateLimitMiddleware, handleDataRoomUpload);
   app.post("/api/founder/data-room/grants", requireAuth, rateLimitMiddleware, handleDataRoomGrant);
-  // GET with grant token — registered under /api/public/ to bypass global requireAuth (token IS the credential)
+  /* WAVE 120 · FINDING 1 — a founder can now SEE and WITHDRAW an issued link.
+     Before this wave `data_room_grants` had an INSERT and a SELECT in the whole
+     tree and nothing else, so an issued link could not be taken back at all. */
+  app.get("/api/founder/data-room/grants", requireAuth, handleDataRoomGrantList);
+  app.post("/api/founder/data-room/grants/:grantId/revoke", requireAuth, rateLimitMiddleware, handleDataRoomGrantRevoke);
+  /* GET with a grant token — registered under /api/public/ so it bypasses the
+     GLOBAL requireAuth, because the handler itself decides who may open the
+     link. WAVE 120 corrected the comment that used to sit here: the token is
+     NOT the credential. It names ONE grant; the handler then checks that the
+     grant is neither revoked nor expired AND that the caller is the investor the
+     grant was issued to (or a founder of the owning company). Before Wave 120 it
+     really was a bearer token, honoured for anyone who held it. */
   app.get("/api/public/data-room/files/:fileId", handleDataRoomFileGet);
   // GET for owners (full auth) — registered under founder path too
   app.get("/api/founder/data-room/files/:fileId", requireAuth, handleDataRoomFileGet);

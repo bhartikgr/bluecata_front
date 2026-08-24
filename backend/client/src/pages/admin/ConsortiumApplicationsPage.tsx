@@ -310,9 +310,21 @@ export default function AdminConsortiumApplicationsPage() {
             eyebrow: "Partner onboarding",
             title: "Inbound consortium-partner queue",
             description:
-              "Each submission via /apply/consortium lands here under status='submitted'. Review the org, contact, AUM range and thesis, then approve or reject. Approval auto-provisions a partner_organizations row + tenant + magic-link invite. The action is hash-chained into the admin audit log and emitted on the SSE 'consortium-apply' topic.",
+              /* WAVE 117 · FINDING 4 — was "Approval auto-provisions a
+                 partner_organizations row + tenant + magic-link invite ... emitted
+                 on the SSE 'consortium-apply' topic": a storage table, a tenanting
+                 term and a transport topic, all named to a human. Every CONSEQUENCE
+                 of approving is kept — the partner organisation is created, it gets
+                 its own workspace, an invitation goes out, and the decision is
+                 recorded in the tamper-evident audit log. */
+              "Each submission from the public consortium application form lands here as a new application. Review the org, contact, AUM range and thesis, then approve or reject. Approving creates the partner organisation and its own isolated workspace, and emails the contact a single-use sign-in link. The decision is written into the tamper-evident admin audit log and appears on other admins' screens without a refresh.",
             warning:
-              "Public submissions are rate-limited 5/hr/IP via the 'public:apply' bucket. If a legitimate applicant gets blocked they can retry after 60 minutes — there is NO admin override (rate-limit bypass would violate the SOC 2 brute-force control).",
+              /* WAVE 117 · FINDING 4 — was "...via the 'public:apply' bucket": the
+                 internal name of a rate-limit bucket, which is deployment
+                 configuration and means nothing to the admin reading it. The LIMIT,
+                 the wait and the no-override rule are unchanged, because those are
+                 what the admin has to act on. */
+              "Public submissions are rate-limited to 5 per hour from one IP address. If a legitimate applicant gets blocked they can retry after 60 minutes — there is NO admin override (rate-limit bypass would violate the SOC 2 brute-force control).",
             positive:
               "Promotion moderation (pending collective deal-room deals) is also surfaced below so the chapter admin has one inbox. Approvals here gate deal visibility for non-partner LPs.",
           }}

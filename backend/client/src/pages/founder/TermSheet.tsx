@@ -45,6 +45,12 @@ import {
 } from "@/lib/termsheet/templates";
 import type { TermSheetData, Region, InstrumentValue, ClauseDescription } from "@/lib/termsheet/types";
 import { readNegotiatedTerms } from "@/lib/termsheet/roundNegotiatedTerms"; /* WAVE 92 · ITEM 3 */
+/* WAVE 111 — the one reader's own plain-English sentence, shared with the round's
+   Terms tab, the Edit-terms readback and the exit waterfall's refusal. */
+import { describeLiquidationTerms } from "@shared/liquidationTermsReader";
+/* WAVE 123 · FINDING 2 — the ONE export-filename helper (Wave 110), the same one
+   `server/lib/pdfGenerators.ts` builds its `Content-Disposition` from. */
+import { companyExportSlug } from "@/lib/captable/exportProvenance";
 import { useTermSheetStore, type SectionDraft, type TermSheetRecord } from "@/lib/termsheet/store";
 import { CONSORTIUM_PARTNERS, partnersByRegion, type Region as PartnerRegion } from "@/lib/partners";
 import { CAPAVATE_LOGO_URL } from "@/components/CapavateLogo";
@@ -140,6 +146,11 @@ function inferData(r: Round): TermSheetData {
    participating: t.participating,
    capParticipation: t.capParticipation,
    liquidationPreferenceRaw: t.liquidationPreferenceRaw,
+   /* WAVE 111 — where the ONE reader cannot determine the terms, the document
+      states ITS reason, in its words, so this term sheet, the round's Terms tab
+      and the exit waterfall's refusal cannot describe the same round
+      differently. Absent when the terms read cleanly. */
+   ...(t.decision.determined ? {} : { liquidationTermsNotice: describeLiquidationTerms(t.decision) }),
   };
  })(),
  antiDilutionVariant: "broad_based_wa",
@@ -611,7 +622,19 @@ export default function TermSheet() {
    const blob = await res.blob();
    const url = URL.createObjectURL(blob);
    const a = document.createElement("a");
-   a.href = url; a.download = `term-sheet-${id}.pdf`; a.click();
+   /* WAVE 123 · FINDING 2 — THIS LINE USED TO UNDO WAVE 117'S FILENAME FIX.
+      It named the download after the ROUND ID, so the server's remediated
+      `Content-Disposition` — built from `companyExportSlug()` — was overridden
+      and the file reached disk carrying that internal round identifier, then
+      travelled by email to investors and counsel under that name. The name is
+      now built from the SAME Wave 110 helper the server uses, off the company
+      NAME this page already displays, so the two agree and no internal
+      identifier appears. `companyExportSlug` is passed no `companyId`: its own
+      last resort is the neutral `captable`, never a key. */
+   const exportDate = new Date().toISOString().slice(0, 10);
+   a.href = url;
+   a.download = `${companyExportSlug({ companyName: r.company })}-term-sheet-${exportDate}.pdf`;
+   a.click();
    URL.revokeObjectURL(url);
  } catch {
    toast({ title: "PDF export unavailable", description: "Use browser print (Ctrl+P) as fallback.", variant: "destructive" });

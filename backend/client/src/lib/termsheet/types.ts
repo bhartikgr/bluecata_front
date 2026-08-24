@@ -52,6 +52,13 @@ export interface TermSheetData {
    *  reading a blank term is shown what IS stored and why it was not enough,
    *  rather than being told only that something is missing. */
   liquidationPreferenceRaw: string | null;
+  /** WAVE 111 — the ONE decided interpretation's own sentence, from
+   *  `describeLiquidationTerms` in `shared/liquidationTermsReader.ts`. Present when
+   *  the terms CANNOT be determined, and printed verbatim by the clause so the
+   *  document, the round's Terms tab and the exit waterfall's 422 all give a
+   *  founder the same reason. Optional and additive: an older caller that does not
+   *  set it still gets the general "not on record" wording. */
+  liquidationTermsNotice?: string;
   antiDilutionVariant: string; // e.g. "Broad-Based Weighted-Average"
   valuationCap: number;
   discount: number;            // percent

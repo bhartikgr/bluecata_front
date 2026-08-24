@@ -35,8 +35,32 @@
  * 88, 91 and 94 established for the waterfall: **a wrong number is worse than "we
  * cannot tell you", and it is far worse in a document than on a screen.**
  *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 111 — THE MIRROR IS GONE. THIS FILE NOW IMPORTS THE ONE READER.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * Everything from here to the end of this header describes what this file USED to
+ * do, and it is kept because it names the exact risk that then materialised.
+ *
+ * The mirror drifted, in the one place it was never compared: the CAP. The Wave 92
+ * fence below only ever compared the MULTIPLE and the PARTICIPATION FLAG, so the
+ * cap rules diverged silently — this file recognised "capped at 2x", "cap of 2x"
+ * and "participation cap of 2x" while the server also recognised "cap to 2x", and
+ * this file had NO concept of a cap that is on record and unreadable. Where the
+ * exit waterfall refuses (`participation_cap_conflict`,
+ * `participation_cap_not_readable`), the term sheet printed *"with no cap on
+ * participation recorded"* — a confident sentence, in a document sent to an
+ * investor, about a term the calculation would not model. Measured over 16 term
+ * shapes in `server/__tests__/w111_before_disagreement_probe.test.ts`: this file
+ * disagreed with the engine on 5 of them.
+ *
+ * The rules now live in `shared/liquidationTermsReader.ts`, which the browser
+ * bundle CAN import because it touches no database, and both this file and
+ * `server/lib/roundStoredTerms.ts` consume it. `OQ-W92-2` — "publish the parsed
+ * terms and read them here" — is answered by a shared module rather than an
+ * endpoint: same single interpretation, no new server surface.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
- * WHY THIS MIRRORS THE SERVER READER RATHER THAN IMPORTING IT, AND HOW R21 IS KEPT
+ * WHY THIS USED TO MIRROR THE SERVER READER RATHER THAN IMPORT IT (HISTORICAL)
  * ─────────────────────────────────────────────────────────────────────────────
  * The authority for what a stored liquidation preference MEANS is
  * `server/lib/roundStoredTerms.ts` (`roundStoredTerms`, lines ~360-480) — the one
@@ -65,14 +89,11 @@
  * the terms of ONE round; the order between rounds belongs to the exit waterfall.
  */
 
-/** The domain of a liquidation preference multiple, from the server reader:
- *  `(0, 10]`. A value outside it is a typing error, not a term, and becomes
- *  absent — the server reader's own words. */
-const LP_MULTIPLE_MAX = 10;
-
-/** The domain of a participation cap multiple, `PARTICIPATION_CAP_MAX` in
- *  `server/lib/roundStoredTerms.ts`: `(0, 10]`, fractions allowed. */
-const PARTICIPATION_CAP_MAX = 10;
+import {
+  readLiquidationTermFacts,
+  readLiquidationTerms,
+  type LiquidationTermDecision,
+} from "@shared/liquidationTermsReader";
 
 /** A round as the client holds it. Only the two fields this module reads are
  *  named; everything else on the round is irrelevant here. */
@@ -99,6 +120,12 @@ export type NegotiatedTerms = {
   /** The stored wording, verbatim, so a founder reading a blank clause can be
    *  shown what IS on the round and told why it was not enough. */
   liquidationPreferenceRaw: string | null;
+  /** WAVE 111 — THE ONE DECIDED INTERPRETATION, from `shared/liquidationTermsReader`.
+   *  When it is not `determined` the document must state that the term cannot be
+   *  read and print NO multiple, NO participation word and NO cap: the exit
+   *  waterfall refuses on exactly these inputs, and a term sheet that asserts a
+   *  term the calculation will not model is the defect this wave removes. */
+  decision: LiquidationTermDecision;
 };
 
 function text(v: unknown): string | null {
@@ -118,17 +145,7 @@ function text(v: unknown): string | null {
  * the FIRST such token, which is the preference.
  */
 export function readLiqPrefMultiple(liquidationPreference: unknown): number | null {
-  const raw = text(liquidationPreference);
-  if (raw === null) return null;
-  const m = /(^|[^0-9.])([0-9]+(?:\.[0-9]+)?)\s*x\b/.exec(raw.toLowerCase());
-  if (!m) return null;
-  const n = Number(m[2]);
-  /* NOT MONEY. R72's no-`Number()` rule is about MONEY, which is exact decimal
-     text; a liquidation multiple is a small negotiated ratio the server itself
-     carries as a JSON `number` and compares with `Number.isFinite`. Parsing it the
-     same way the server does is what keeps the two in agreement. */
-  if (!Number.isFinite(n) || n <= 0 || n > LP_MULTIPLE_MAX) return null;
-  return n;
+  return readLiquidationTermFacts({ liquidationPreference }).multiple;
 }
 
 /**
@@ -138,39 +155,7 @@ export function readLiqPrefMultiple(liquidationPreference: unknown): number | nu
  * blank rather than assuming either answer.
  */
 export function readParticipating(liquidationPreference: unknown): boolean | null {
-  const raw = text(liquidationPreference);
-  if (raw === null) return null;
-  const lp = raw.toLowerCase();
-  if (/non[-\s]?participating/.test(lp)) return false;
-  if (/participating/.test(lp)) return true;
-  return null;
-}
-
-/** The cap multiple from the round's own cap key. A trailing "x" is accepted,
- *  matching `validateParticipationCapStored`. */
-function readCapFromKey(capParticipation: unknown): number | null {
-  const raw = text(capParticipation);
-  if (raw === null) return null;
-  const stripped = /^[0-9]+(\.[0-9]+)?\s*x?$/i.test(raw) ? raw.replace(/\s*x$/i, "") : null;
-  if (stripped === null) return null;
-  const n = Number(stripped);
-  if (!Number.isFinite(n) || n <= 0 || n > PARTICIPATION_CAP_MAX) return null;
-  return n;
-}
-
-/** The cap written into the free-text wording — "capped at 2x", "2x cap",
- *  "participation cap of 2x". The phrases the server reader recognises. */
-function readCapFromText(liquidationPreference: unknown): number | null {
-  const raw = text(liquidationPreference);
-  if (raw === null) return null;
-  const lp = raw.toLowerCase();
-  const m =
-    /(?:capped\s+at|cap\s+of|participation\s+cap\s+of)\s*([0-9]+(?:\.[0-9]+)?)\s*x\b/.exec(lp) ??
-    /([0-9]+(?:\.[0-9]+)?)\s*x\s*(?:participation\s*)?cap\b/.exec(lp);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0 || n > PARTICIPATION_CAP_MAX) return null;
-  return n;
+  return readLiquidationTermFacts({ liquidationPreference }).participating;
 }
 
 /**
@@ -182,22 +167,28 @@ function readCapFromText(liquidationPreference: unknown): number | null {
  * winner where the calculation refuses to.
  */
 export function readNegotiatedTerms(round: NegotiatedTermsSource): NegotiatedTerms {
-  const raw = text(round.liquidationPreference);
-  const fromKey = readCapFromKey(round.capParticipation);
-  const fromText = readCapFromText(round.liquidationPreference);
-  let cap: number | null = null;
-  let capSource: NegotiatedTerms["capSource"] = null;
-  if (fromKey !== null && fromText !== null) {
-    if (fromKey === fromText) { cap = fromKey; capSource = "capParticipation"; }
-    /* else: two caps on record that disagree — absent, and the clause says so. */
-  } else if (fromKey !== null) { cap = fromKey; capSource = "capParticipation"; }
-  else if (fromText !== null) { cap = fromText; capSource = "liquidationPreference"; }
-
+  const facts = readLiquidationTermFacts(round);
+  const decision = readLiquidationTerms(round);
+  /* WAVE 111 — WHERE THE DECISION REFUSES, THE THREE TERMS ARE ABSENT. The
+     template checks `decision` first, and these three are held to the same rule
+     anyway so that no later caller can pick a term out of a round the platform has
+     said it cannot read. */
+  if (!decision.determined) {
+    return {
+      liqPrefMultiple: null,
+      participating: null,
+      capParticipation: "",
+      capSource: null,
+      liquidationPreferenceRaw: facts.raw,
+      decision,
+    };
+  }
   return {
-    liqPrefMultiple: readLiqPrefMultiple(round.liquidationPreference),
-    participating: readParticipating(round.liquidationPreference),
-    capParticipation: cap === null ? "" : String(cap),
-    capSource,
-    liquidationPreferenceRaw: raw,
+    liqPrefMultiple: decision.multiple,
+    participating: decision.participating,
+    capParticipation: decision.capMultiple === null ? "" : String(decision.capMultiple),
+    capSource: decision.capSource,
+    liquidationPreferenceRaw: facts.raw,
+    decision,
   };
 }

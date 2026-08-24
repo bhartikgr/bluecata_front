@@ -108,6 +108,25 @@ function rowToRound(row: any): Round {
     type: row.type,
     state: row.state,
     targetAmount: Number(row.target_amount ?? row.targetAmount ?? 0),
+    /* WAVE 114 · FINDING 1 (item 8) — READ THIS FIELD KNOWING WHAT IT IS.
+       `rounds.raised_amount` HAS NO WRITER anywhere in the product: it is
+       initialised to 0 by `createRound` below, and the only non-zero values in
+       the tree come from the demo seed in `server/mockData.ts` and from tests
+       that patch it deliberately. On any real round this is PERMANENTLY 0, and a
+       printed $0 that means "unknown" is a false statement about money (R6).
+
+       It is NOT removed and NOT written here — deleting a column that eleven
+       readers still consume would be a wider change than this wave, and writing
+       it would create a second copy of a total that can disagree with the rows.
+       The AUTHORITATIVE, DERIVED figures live in
+       `server/lib/roundRaisedTotals.ts` and reach the founder screens as the
+       additive `moneyOnRecord` projection on `GET /api/rounds` and
+       `GET /api/rounds/:id`. Reasoning: build_log/wave114/W114_PREFLIGHT.md §1.
+
+       Still-wrong readers of this field, recorded rather than silently left:
+       `server/lib/adminKpiDbReads.ts` ("Total funded") — OQ-W114-1 — and
+       `client/src/components/CapitalizationJourney.tsx:212` — OQ-W114-2. Both
+       are outside this wave's ownership. */
     raisedAmount: Number(row.raised_amount ?? row.raisedAmount ?? 0),
     preMoney: row.pre_money ?? row.preMoney ?? null,
     postMoney: row.post_money ?? row.postMoney ?? null,
@@ -636,6 +655,24 @@ const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
   "liquidationPreference",
   "antiDilutionType",
   "useOfProceeds",
+  /* WAVE 107 - F1-B: THE WIZARD'S ROUND NARRATIVE, EDITABLE AFTER CREATION.
+
+     `notes` is written by the round wizard ("Round narrative for investors",
+     `RoundNew.tsx` `input-notes`), stashed into `extras_json` by
+     `POST /api/rounds` and rendered on Round Detail. It was NOT on this list, so
+     `PATCH /api/rounds/:id/terms` rejected it as UNKNOWN_FIELD and the founder
+     had no way to correct the paragraph investors read first.
+
+     The reported symptom - "the use-of-proceeds narrative comes back as an empty
+     textarea" - was NOT this key being dropped: the wizard's text persists and
+     re-renders correctly. The Edit-terms box the founder was looking at is
+     `termsSummary`, a DIFFERENT and real column (`rounds.terms_summary`) that the
+     wizard never writes. The genuine gap was the reverse one, fixed here: the
+     wizard's own two narrative fields had no edit surface at all.
+
+     ADDITIVE, and NO MIGRATION - `extras_json` already carries it and
+     `rowToRound` already re-spreads it. Migrations stay at 173, highest 0192. */
+  "notes",
   "cap",
   /* WAVE 70 · D5 — THE SAFE CAP CONVENTION, MADE STORABLE. ADDITIVE, NO MIGRATION.
      `shared/roundMathEngineAdapter.ts:892` hardcoded `type: "post_money_cap"` for
@@ -697,6 +734,38 @@ const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
      Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught by
      it; Wave 81 refused to repeat that, and neither does this. */
   "capParticipation",
+  /* WAVE 114 · FINDING 2 (item 31) — THE FOUR GOVERNANCE TERMS. ADDITIVE, NO MIGRATION.
+     `boardComposition`, `informationRights`, `dragAlong` and `rofrCoSale` were
+     printed on every round's terms panel in `RoundDetail.tsx` as FLAT STRING
+     LITERALS, identical on every round in the platform, because no storage
+     existed for them. A term sheet that asserts a drag-along nobody agreed is a
+     legal statement this platform cannot support.
+
+     They live in `extras_json`, which `POST /api/rounds` already stashes for any
+     non-column field and which `rowToRound` already re-spreads on hydrate, so
+     listing them here is only what lets `PATCH /api/rounds/:id/terms` round-trip
+     them instead of rejecting them as UNKNOWN_FIELD — the same additive path
+     `optionPoolPostPercent` (Wave 58b), `safeType` (Wave 70), `seniority`
+     (Wave 81) and `capParticipation` (Wave 94) all took. Migrations stay at
+     canonical 173, highest `0192`.
+
+     EVERY WRITER THAT CAN NOW REACH THEM VALIDATES THEM, in this same wave, with
+     ONE imported fence declared once in `shared/roundGovernanceTerms.ts`
+     (`validateGovernanceTermStored`) — the same file the founder terms panel
+     reads them back through, so writer and reader cannot drift. Adding these
+     keys makes them reachable through `updateRound` from
+     `PATCH /api/founder/rounds/:id` as well as from `PATCH /api/rounds/:id/terms`.
+     Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught
+     by it; Wave 81 refused to repeat that, and neither does this.
+
+     THEY ARE API-ONLY THIS WAVE. There is no control for them on the Edit-terms
+     dialog — exactly where `seniority` was left by Wave 81 — and the terms panel
+     STATES that the value is not recorded rather than printing one. Carried as
+     OQ-W114-3 in build_log/wave114/W114_TESTS.md. */
+  "boardComposition",
+  "informationRights",
+  "dragAlong",
+  "rofrCoSale",
 ]);
 
 /* Exported so the route layer can pre-filter a terms patch into core-column

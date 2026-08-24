@@ -29,7 +29,34 @@ type MembershipStatus = {
   expiresAt: string | null;
   lapsed: boolean;
   reason: string;
-  capTablePositions: Array<{ companyId: string; companyName: string; ownershipPct: number }>;
+  /* WAVE 116 · FINDING 3 (Wave 113 ownership site #8) — `ownershipPct` HERE IS A
+     SENTINEL, NOT A MEASUREMENT, AND IT NOW SAYS SO.
+
+     `ownershipPct` cannot be widened to `number | null`: the shape is copied into
+     `CapTablePosition` in the SACRED `server/lib/userContext.ts` (`:157`, copied
+     at `:417`), which declares it `number`. Editing a sacred file to fix a label
+     is not available to this wave, so the fix is ADDITIVE: the number stays, and
+     two fields beside it state whether it means anything.
+
+     `ownershipPctKnown: false` + `ownershipBasis: null` is the honest description
+     of the ledger-derived rows: the commit ledger records WHICH companies a user
+     holds in, never a percentage, so the `0` is "not recorded", not "zero
+     percent". Ruling R6 forbids RENDERING never-entered data as `0`, and no
+     client renders this field (verified: it is only type-referenced at
+     `client/src/components/CapCollectiveToggle.tsx:31` and
+     `client/src/collective/widgets/useMe.ts:25`) — the gates read
+     presence/absence only. `ownershipPctKnown` is what a future renderer must
+     check before printing anything. */
+  capTablePositions: Array<{
+    companyId: string;
+    companyName: string;
+    /** Meaningful ONLY when `ownershipPctKnown` is true. See the note above. */
+    ownershipPct: number;
+    /** `false` = the `0`/`0.01` above is a placeholder, not a measurement. */
+    ownershipPctKnown?: boolean;
+    /** The denominator `ownershipPct` divides by, or `null` when there is none. */
+    ownershipBasis?: string | null;
+  }>;
   canApplyToCollective: boolean;
 };
 
@@ -44,8 +71,11 @@ const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = DEMO_SEED_ENABLED ? {
     lapsed: false,
     reason: "Active member on cap table for 2 companies.",
     capTablePositions: [
-      { companyId: "co_novapay",  companyName: "NovaPay AI",     ownershipPct: 0.041 },
-      { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012 },
+      /* WAVE 116 · FINDING 3 — demo seed figures ARE entered values, so they are
+         flagged known, which is what distinguishes them from the ledger-derived
+         `0` sentinel below. */
+      { companyId: "co_novapay",  companyName: "NovaPay AI",     ownershipPct: 0.041, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
+      { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
     ],
     canApplyToCollective: true,
   },
@@ -57,7 +87,7 @@ const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = DEMO_SEED_ENABLED ? {
     lapsed: true,
     reason: "Membership renewal lapsed; Collective access removed but cap-table comms remain.",
     capTablePositions: [
-      { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018 },
+      { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
     ],
     canApplyToCollective: false,
   },
@@ -87,25 +117,35 @@ const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = DEMO_SEED_ENABLED ? {
  * reads getLedger() and projects committed entries.
  */
 let _ledgerIndexLen = -1;
-let _ledgerIndex: Map<string, Map<string, { companyId: string; ownershipPct: number; companyName: string }>> = new Map();
+type LedgerPosition = { companyId: string; ownershipPct: number; ownershipPctKnown: boolean; ownershipBasis: string | null; companyName: string };
+let _ledgerIndex: Map<string, Map<string, LedgerPosition>> = new Map();
 
 function rebuildLedgerIndexIfStale(): void {
   const ledger = getLedger();
   if (ledger.length === _ledgerIndexLen) return;
-  const idx = new Map<string, Map<string, { companyId: string; ownershipPct: number; companyName: string }>>();
+  const idx = new Map<string, Map<string, LedgerPosition>>();
   for (const e of ledger) {
     if (e.state !== "committed") continue;
     let perUser = idx.get(e.investorId);
     if (!perUser) { perUser = new Map(); idx.set(e.investorId, perUser); }
-    // ownershipPct is unknown from ledger alone; use 0 as a sentinel — gates only
-    // care about presence/absence. UI surfaces should compute pct from the engine.
-    perUser.set(e.companyId, { companyId: e.companyId, ownershipPct: 0, companyName: e.companyId });
+    /* WAVE 116 · FINDING 3 — the sentinel is unchanged (it cannot become `null`;
+       see the note on `capTablePositions`) but it is now LABELLED as unknown, so
+       a consumer that reads it cannot mistake a placeholder for a holding of
+       zero percent. Ownership percentages come from the cap-table engine, which
+       is the only thing on this platform that owns a denominator. */
+    perUser.set(e.companyId, {
+      companyId: e.companyId,
+      ownershipPct: 0,
+      ownershipPctKnown: false,
+      ownershipBasis: null,
+      companyName: e.companyId,
+    });
   }
   _ledgerIndex = idx;
   _ledgerIndexLen = ledger.length;
 }
 
-function derivedPositionsFor(userId: string): Array<{ companyId: string; companyName: string; ownershipPct: number }> {
+function derivedPositionsFor(userId: string): Array<{ companyId: string; companyName: string; ownershipPct: number; ownershipPctKnown: boolean; ownershipBasis: string | null }> {
   rebuildLedgerIndexIfStale();
   const per = _ledgerIndex.get(userId);
   if (!per) return [];
@@ -113,6 +153,11 @@ function derivedPositionsFor(userId: string): Array<{ companyId: string; company
     companyId: p.companyId,
     companyName: p.companyName,
     ownershipPct: p.ownershipPct,
+    /* WAVE 116 · FINDING 3 — the "is this a real figure?" flag travels with the
+       figure. Dropping it here would have re-anonymised the sentinel one hop
+       later, which is exactly how the platform ended up with eight of these. */
+    ownershipPctKnown: p.ownershipPctKnown,
+    ownershipBasis: p.ownershipBasis,
   }));
 }
 
@@ -240,10 +285,17 @@ export function upsertCapTablePositionForTests(
   opts?: { companyName?: string; ownershipPct?: number },
 ): MembershipStatus {
   const existing = MOCK_MEMBERSHIP[userId];
+  /* WAVE 116 · FINDING 3 — the `?? 0.01` default is a made-up 1% holding. It is
+     LEFT IN PLACE because this is a demo/test seeding helper whose callers'
+     expectations are not this wave's to change, but it is now flagged as not
+     known, so nothing downstream can quote it as a measured figure. Recorded as
+     a found-not-fixed item in `build_log/wave116/W116_TESTS.md`. */
   const pos = {
     companyId,
     companyName: opts?.companyName ?? companyId,
     ownershipPct: opts?.ownershipPct ?? 0.01,
+    ownershipPctKnown: opts?.ownershipPct != null,
+    ownershipBasis: null,
   };
   const next: MembershipStatus = existing
     ? {

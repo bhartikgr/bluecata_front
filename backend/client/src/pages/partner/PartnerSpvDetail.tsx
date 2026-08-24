@@ -16,6 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay } from "@shared/spvEngine";
+/* WAVE 115 · FINDING 1 (L7) — the SPV lifecycle status reached the page title
+   and the Status field raw, so a partner could read `wound_down`. Also (L12) the
+   three money placeholders asked a human for "minor units"; they now follow the
+   WAVE 106 precedent at components/partner/SpvOperationsPanels.tsx:298 and name
+   the real unit in the partner's own currency. No arithmetic changed: the value
+   posted for a given keystroke sequence is byte-identical. */
+import { spvStatusLabel } from "@/lib/partnerDisplay";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
@@ -350,7 +357,7 @@ export default function PartnerSpvDetail() {
   const s = data.spv;
 
   return (
-    <PartnerShell title={`${s.name} · ${jurisdictionLabel(s)} · ${s.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+    <PartnerShell title={`${s.name} · ${jurisdictionLabel(s)} · ${spvStatusLabel(s.status)}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-spv-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -369,7 +376,7 @@ export default function PartnerSpvDetail() {
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Status</div>
-            <div>{s.status}</div>
+            <div data-testid="partner-spv-status">{spvStatusLabel(s.status)}</div>
           </div>
         </div>
       </Card>
@@ -385,7 +392,7 @@ export default function PartnerSpvDetail() {
               type="number"
               inputMode="numeric"
               min="1"
-              placeholder={`Amount in minor units (${s.currency})`}
+              placeholder={`Amount in ${s.currency} cents, not whole ${s.currency}`}
               value={callAmount}
               onChange={(e) => setCallAmount(e.target.value)}
               data-testid="partner-spv-capital-call-amount"
@@ -460,7 +467,7 @@ export default function PartnerSpvDetail() {
               type="number"
               inputMode="numeric"
               min="1"
-              placeholder={`Gross proceeds in minor units (${s.currency})`}
+              placeholder={`Gross proceeds in ${s.currency} cents, not whole ${s.currency}`}
               value={distAmount}
               onChange={(e) => setDistAmount(e.target.value)}
               data-testid="partner-spv-distribution-amount"
@@ -471,7 +478,7 @@ export default function PartnerSpvDetail() {
               type="number"
               inputMode="numeric"
               min="0"
-              placeholder={`Cost basis in minor units (${s.currency})`}
+              placeholder={`Cost basis in ${s.currency} cents, not whole ${s.currency}`}
               value={distCostBasis}
               onChange={(e) => setDistCostBasis(e.target.value)}
               data-testid="partner-spv-distribution-cost-basis"

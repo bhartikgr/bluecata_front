@@ -251,9 +251,16 @@ describe("CRM stage mapping (10→7)", () => {
     expect(mapCollectiveStateToCRMStage("confirmed")).toBe("committed");
     expect(mapCollectiveStateToCRMStage("signed")).toBe("signing");
     expect(mapCollectiveStateToCRMStage("funded")).toBe("invested");
-    expect(mapCollectiveStateToCRMStage("declined")).toBe("prospect");
-    expect(mapCollectiveStateToCRMStage("expired")).toBe("prospect");
-    expect(mapCollectiveStateToCRMStage("revoked")).toBe("prospect");
+    /* WAVE 122 · FINDING 3 — THESE THREE ASSERTIONS PINNED THE DEFECT.
+     * They required `declined`, `expired` and `revoked` to all come back as
+     * `"prospect"`, i.e. as a live top-of-pipeline lead. Reviewer C reported the
+     * mapping as a data-honesty defect and the mapper now returns each ending as
+     * itself. The three expectations are updated to the truthful contract; the
+     * distinctness and the unchanged ladder ORDER (R91) are proven in
+     * server/__tests__/w122_crm_terminal_outcomes.test.ts. */
+    expect(mapCollectiveStateToCRMStage("declined")).toBe("declined");
+    expect(mapCollectiveStateToCRMStage("expired")).toBe("expired");
+    expect(mapCollectiveStateToCRMStage("revoked")).toBe("revoked");
     expect(mapCollectiveStateToCRMStage("accepted")).toBe("engaged");
   });
 

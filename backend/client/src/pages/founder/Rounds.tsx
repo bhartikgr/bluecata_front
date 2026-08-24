@@ -99,11 +99,124 @@ function savedTermsSummary(round: unknown): string {
   return `Stored: ${parts.join(" · ")}. The list below now shows what Capavate stored, not what was typed.`;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 114 · FINDING 4 (ALL_OPEN_WAVES item 40) — THE CONFIRMATION NAMES WHAT WAS
+   SAVED **AND WHAT WAS NOT, AT THE MOMENT IT WAS NOT.**
+   ══════════════════════════════════════════════════════════════════════════════
+   `savedTermsSummary` above (Wave 83) was already an improvement on the old
+   contentless "Terms saved": it describes the PERSISTED round. But it can only
+   describe what IS there, so a field the server refused to store simply never
+   appeared in the sentence — and an absent clause reads as a saved value. This
+   platform has been found silently discarding typed values in AT LEAST NINE
+   fields, so a confirmation that cannot detect a drop is itself the defect.
+
+   `PATCH /api/rounds/:id/terms` now returns three additive arrays computed on the
+   server, which is the only place that knows both what was submitted and what the
+   canonical re-read holds afterwards: `savedFields`, `removedFields` and
+   `notStoredFields`. This function turns them into a sentence and, when anything
+   was NOT stored, makes the toast say so instead of a clean green "Terms saved".
+
+   A response with no arrays at all (an older server) produces `null` here and the
+   caller falls back to the Wave 83 sentence alone. It does NOT claim success it
+   cannot verify, and it does not invent a warning either. */
+const SAVE_FIELD_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  targetAmount: "target amount",
+  preMoney: "pre-money valuation",
+  postMoney: "post-money valuation",
+  pricePerShare: "price per share",
+  minTicket: "minimum ticket",
+  closeDate: "target close date",
+  termsSummary: "terms summary",
+  valuationCap: "valuation cap",
+  discount: "discount",
+  interestRate: "interest rate",
+  maturityMonths: "maturity",
+  strikePrice: "strike price",
+  expiryYears: "expiry",
+  liquidationPreference: "liquidation preference",
+  antiDilutionType: "anti-dilution",
+  proRata: "pro-rata rights",
+  seniority: "seniority rank",
+  capParticipation: "participation cap",
+  optionPoolPostPercent: "option pool (% of post-money fully-diluted)",
+  optionPoolMode: "option-pool placement",
+  useOfProceeds: "use of proceeds",
+  notes: "round narrative",
+  sharesAuthorized: "shares authorised",
+  poolSize: "pool size",
+  safeType: "SAFE cap convention",
+  boardComposition: "board composition",
+  informationRights: "information rights",
+  dragAlong: "drag-along",
+  rofrCoSale: "ROFR / co-sale",
+});
+
+/** A field name a founder can read. Falls back to spacing the camelCase key
+ *  rather than printing an internal identifier at them (R77). */
+function saveFieldLabel(key: string): string {
+  const known = SAVE_FIELD_LABELS[key];
+  if (known) return known;
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+}
+
+export type SaveOutcome = {
+  /** True when the server reported at least one submitted field it did not store. */
+  someNotStored: boolean;
+  /** The sentence(s) to append to the confirmation. Never empty when non-null. */
+  sentence: string;
+};
+
+/** Reads the terms-PATCH response. Returns null when the response carries none of
+ *  the three arrays, so the caller keeps the Wave 83 behaviour unchanged. */
+export function describeSaveOutcome(response: unknown): SaveOutcome | null {
+  const r = (response ?? {}) as Record<string, unknown>;
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
+  const hasAny = ["savedFields", "removedFields", "notStoredFields"].some((k) => Array.isArray(r[k]));
+  if (!hasAny) return null;
+  const saved = list(r.savedFields).map(saveFieldLabel);
+  const removed = list(r.removedFields).map(saveFieldLabel);
+  const notStored = list(r.notStoredFields).map(saveFieldLabel);
+  const sentences: string[] = [];
+  if (saved.length > 0) sentences.push(`Saved ${saved.join(", ")}.`);
+  if (removed.length > 0) sentences.push(`Cleared ${removed.join(", ")} — now recorded as not set.`);
+  if (notStored.length > 0) {
+    /* THE POINT OF THE WHOLE FINDING. Named here, now, rather than left for the
+       founder to discover on a term sheet weeks later. */
+    sentences.push(
+      `NOT STORED: ${notStored.join(", ")}. Capavate did not keep ${notStored.length === 1 ? "this value" : "these values"}, so ${notStored.length === 1 ? "it is" : "they are"} unchanged on the round.`,
+    );
+  }
+  if (sentences.length === 0) {
+    sentences.push("No changed values were submitted, so nothing was stored.");
+  }
+  return { someNotStored: notStored.length > 0, sentence: sentences.join(" ") };
+}
+
 /* WAVE 69 · R58 — `ApiError.message` is capped at 240 chars by queryClient.ts:63
    and replaced with a generic sentence; the real refusal (424-543 chars) lives on
    `ApiError.payload.message`. See the module header. */
 import { serverRefusalMessage } from "@/lib/serverRefusalMessage";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+/* WAVE 111 — the ONE interpreter of liquidation preference, participation and the
+   participation cap, shared with the exit waterfall and the term sheet. */
+/* WAVE 114 · FINDING 1 (item 8) — the ONE reader of the round's money projection,
+   shared with the round-detail header so the two founder surfaces cannot print
+   different totals or different labels for the same figure. */
+import {
+  readRoundMoneyOnRecord,
+  progressBarPercent,
+} from "@shared/roundMoneyOnRecordView";
+import {
+  readLiquidationTerms,
+  describeLiquidationTerms,
+  /* WAVE 114 · FINDING 3 (item 52) — the cap control below validates through the
+     SAME reader that interprets the term everywhere else (the round's Terms tab,
+     the term sheet and the exit waterfall). Imported, never duplicated: Wave 111
+     spent a wave deleting a second copy of exactly this logic. */
+  parseCapMultiple,
+  PARTICIPATION_CAP_MAX,
+} from "@shared/liquidationTermsReader";
 
 type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null; createdAt?: string | null };
 
@@ -259,7 +372,14 @@ export default function Rounds() {
                 return String(b.id).localeCompare(String(a.id));
               })
               .map(r => {
-              const pct = r.targetAmount > 0 ? (r.raisedAmount / r.targetAmount) * 100 : 0;
+              /* WAVE 114 · FINDING 1 (item 8) — `pct` USED TO BE
+                 `r.raisedAmount / r.targetAmount`, i.e. a permanent 0% on every
+                 real round, because `rounds.raised_amount` has NO WRITER anywhere
+                 in the product. The ratio arrives from the server in basis points
+                 (so no browser divides money) and is `null` when there is nothing
+                 honest to draw — never 0 standing in for unknown (R6). */
+              const moneyView = readRoundMoneyOnRecord((r as unknown as Record<string, unknown>).moneyOnRecord);
+              const barPct = progressBarPercent(moneyView.money?.progressBp?.subscribed);
               const isArchived = Boolean(r.archivedAt);
               return (
                 <Card key={r.id} data-testid={`card-round-${r.id}`} style={isArchived ? { opacity: 0.6, borderColor: "var(--cv-color-border)" } : undefined}>
@@ -285,19 +405,50 @@ export default function Rounds() {
                           <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5" /> Min ticket {fmtUSD(r.minTicket ?? 0, { compact: true })}</span>
                         </div>
 
+                        {/* WAVE 114 - FINDING 1 (item 8): THE MONEY ON THIS CARD, NAMED.
+                            This block used to print `{fmtUSD(r.raisedAmount)} soft-circled
+                            of ...` - "$0 soft-circled" on every real round, whatever had
+                            been committed, because nothing writes that column. A printed
+                            $0 that means "unknown" is a false statement about money (R6).
+                            It now prints the SUBSCRIBED total (committed + funded) with
+                            the word attached, the three states underneath, and the
+                            server's sentence INSTEAD OF A NUMBER when the figures could
+                            not be determined. */}
                         <div className="mt-4">
-                          <div className="flex items-baseline justify-between text-sm mb-1">
-                            <div>
-                              <span className="font-semibold text-base">{fmtUSD(r.raisedAmount)}</span>{" "}
-                              <span className="text-muted-foreground">soft-circled of {fmtUSD(r.targetAmount)}</span>
-                            </div>
-                            <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)} of target</div>
-                          </div>
-                          <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                            {/* WAVE 101 - progress toward the round target is an achievement bar, not a
+                          {moneyView.canPrintFigures ? (
+                            <>
+                              <div className="flex items-baseline justify-between text-sm mb-1">
+                                <div data-testid={`round-subscribed-${r.id}`}>
+                                  <span className="font-semibold text-base">{moneyView.money?.subscribedDisplay}</span>{" "}
+                                  <span className="text-muted-foreground">subscribed (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
+                                </div>
+                                {barPct === null ? (
+                                  <div className="text-xs text-muted-foreground" data-testid={`round-progress-unavailable-${r.id}`}>{moneyView.money?.progressBp?.targetNote ?? "No target recorded"}</div>
+                                ) : (
+                                  <div className="text-xs text-muted-foreground">{fmtPct(barPct, 0)} of target subscribed</div>
+                                )}
+                              </div>
+                              {barPct !== null && (
+                                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                                  {/* WAVE 101 - progress toward the round target is an achievement bar, not a
    fault indicator; it was painted the negative anchor. */}
-                            <div className="h-full bg-emerald-700" style={{ width: `${Math.min(100, pct)}%` }} />
-                          </div>
+                                  <div className="h-full bg-emerald-700" style={{ width: `${barPct}%` }} />
+                                </div>
+                              )}
+                              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid={`round-money-states-${r.id}`}>
+                                {moneyView.buckets.map((b) => (
+                                  <span key={b.key} data-testid={`round-money-${b.key}-${r.id}`}>
+                                    <span className="font-medium text-foreground">{b.display}</span> {b.label}
+                                  </span>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs" data-testid={`round-money-not-recorded-${r.id}`}>
+                              <div className="font-medium">{moneyView.statement}</div>
+                              <div className="text-muted-foreground mt-0.5">Target {fmtUSD(r.targetAmount)}. No raised figure is shown because none could be determined - that is not the same as zero.</div>
+                            </div>
+                          )}
                         </div>
 
                         <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
@@ -382,6 +533,24 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
   const [minTicket, setMinTicket] = useState(round.minTicket ?? 0);
   const [closeDate, setCloseDate] = useState(round.closeDate);
   const [termsSummary, setTermsSummary] = useState(round.termsSummary ?? "");
+  /* WAVE 107 - F1-B: THE WIZARD'S TWO NARRATIVE FIELDS, EDITABLE FOR THE FIRST
+     TIME. `notes` and `useOfProceeds` are written by the round wizard, persist in
+     `extras_json` and render on Round Detail - but no screen could change them
+     after creation, and the box above ("Terms summary") writes a different
+     column, which is what made them look lost. `useOfProceeds` is a string here
+     only; a round whose value is the structured row array is left untouched and
+     its control is not offered, because flattening a table into a paragraph
+     would destroy data. */
+  const [roundNotes, setRoundNotes] = useState(
+    typeof (round as unknown as Record<string, unknown>).notes === "string"
+      ? String((round as unknown as Record<string, unknown>).notes)
+      : "",
+  );
+  const roundUseOfProceedsRaw = (round as unknown as Record<string, unknown>).useOfProceeds;
+  const useOfProceedsIsText = roundUseOfProceedsRaw === null || roundUseOfProceedsRaw === undefined || typeof roundUseOfProceedsRaw === "string";
+  const [useOfProceeds, setUseOfProceeds] = useState(
+    typeof roundUseOfProceedsRaw === "string" ? roundUseOfProceedsRaw : "",
+  );
   // Instrument extras (SAFE / note / warrant).
   const [valuationCap, setValuationCap] = useState(round.valuationCap ?? 0);
   const [discount, setDiscount] = useState(round.discount ?? 0);
@@ -490,6 +659,39 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
       ? ""
       : String((round as unknown as Record<string, unknown>).safeType),
   );
+  /* ═════════════════════════════════════════════════════════════════════════
+     WAVE 114 · FINDING 3 (ALL_OPEN_WAVES item 52) — THE PARTICIPATION CAP,
+     RECORDABLE FOR THE FIRST TIME ON AN EXISTING ROUND.
+     ═════════════════════════════════════════════════════════════════════════
+     A participation cap changes EVERY exit payout of the class that carries it:
+     "1x participating, capped at 2x" pays a materially different cheque from "1x
+     participating". Wave 94 made the server read `capParticipation` and the exit
+     waterfall honour it, and Wave 111 made this dialog DISPLAY the round's stored
+     cap in the liquidation-preference readback — but there was still no way to
+     RECORD OR AMEND it through the interface. The round wizard has a control; a
+     round already created had none, and the PATCH route's validator
+     (`validateParticipationCapStored`) was reachable only by hand-written HTTP.
+     R58: a server rule no screen can reach is not a user-visible feature.
+
+     Seeded from the round's own stored value so the box shows what is on record.
+     THREE STATES ON THE WIRE, identical to the preference and the pool above:
+     blank sends `null` (explicit removal → the class is UNCAPPED, which is a real
+     and different term from "not recorded"), a filled box sends the number.
+     Validated against `parseCapMultiple` — the SAME reader the Terms tab, the term
+     sheet and the exit waterfall interpret the value with — so this control cannot
+     accept a value the exit calculation would then refuse to read. */
+  const [capParticipation, setCapParticipation] = useState<string>(
+    (round as unknown as Record<string, unknown>).capParticipation == null
+      ? ""
+      : String((round as unknown as Record<string, unknown>).capParticipation),
+  );
+  /* The cap as the ONE reader reads it, or null when the box is blank/unreadable.
+     `capEntered` distinguishes "blank" (a deliberate removal) from "typed
+     something the reader refuses" (which must block the save, not be silently
+     dropped — silent dropping in nine fields is what Finding 4 is about). */
+  const capEntered = capParticipation.trim() !== "";
+  const capReadable = capEntered ? parseCapMultiple(capParticipation.trim()) : null;
+  const capInvalid = capEntered && capReadable === null;
   /* DEFECT 3 — the LEDGER's own fully-diluted count, from the same endpoint the
      engine and the cap-table page read. It is fetched, not assumed, so the
      reconciliation below compares two real numbers. */
@@ -610,7 +812,13 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
       // performs a retroactive migration of other rounds.
       // v24.4 BUG 049 — include the (trimmed) round name. The server rejects an
       // empty name with 400, so guard client-side too.
-      const common = { name: name.trim(), targetAmount, minTicket, closeDate, termsSummary };
+      /* WAVE 107 - F1-B. `notes` is sent on every save so the founder can also
+         CLEAR the paragraph; an empty string is a real edit, not an absence.
+         `useOfProceeds` is sent only when this round's stored value is text, so a
+         round holding the structured row array is never overwritten with a
+         flattened paragraph. */
+      const common: Record<string, unknown> = { name: name.trim(), targetAmount, minTicket, closeDate, termsSummary, notes: roundNotes };
+      if (useOfProceedsIsText) common.useOfProceeds = useOfProceeds;
       /* ═════════════════════════════════════════════════════════════
          WAVE 61b · R50 — DO NOT SEND A ZERO NOBODY TYPED.
          ═════════════════════════════════════════════════════════════
@@ -661,6 +869,13 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                  i.e. "not on record"), a chosen token sends that token verbatim. It
                  is never omitted, so clearing the control really clears the term. */
               antiDilutionType: antiDilutionType === "" ? null : antiDilutionType,
+              /* WAVE 114 · FINDING 3 (item 52) — the cap on the wire. Three states,
+                 the same contract as the preference above: blank sends `null`
+                 (explicit removal → uncapped), a filled box sends the NUMBER the
+                 shared reader read, so what is stored is exactly what every other
+                 surface will interpret. Never omitted, so clearing the box really
+                 clears the cap. */
+              capParticipation: capEntered ? capReadable : null,
               ...poolFields,
             }
           : family === "warrant"
@@ -713,6 +928,19 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           if (!iv.ok) throw new Error(iv.message);
         }
       }
+      /* WAVE 114 · FINDING 3 (item 52) — BELT AND BRACES ON THE CAP, the same
+         pattern the price contradiction and the term ranges above use. The Save
+         button is disabled while the box holds something the shared reader cannot
+         read, and the rule is re-checked here so a programmatic click cannot post
+         a cap the exit calculation would then refuse to interpret. The sentence is
+         the founder's, and it names the permitted range. */
+      if (capInvalid) {
+        throw new Error(
+          `The participation cap “${capParticipation.trim()}” cannot be read. Enter it as a multiple of the ` +
+            `investment — for example “2” or “2x” — greater than 0 and at most ${PARTICIPATION_CAP_MAX}x. ` +
+            `Leave it blank to record this class as UNCAPPED.`,
+        );
+      }
       const res = await apiRequest("PATCH", `/api/rounds/${round.id}/terms`, {
         ...common,
         ...byFamily,
@@ -736,7 +964,19 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
         }
         /* WAVE 83 · ITEM 4 — the confirmation now NAMES WHAT WAS STORED, read
            back off the server's response. No event name, no internal identifier. */
-        toast({ title: "Terms saved", description: savedTermsSummary(data?.round) });
+        /* WAVE 114 · FINDING 4 (item 40) — AND WHAT WAS *NOT* SAVED, SAID NOW.
+           The Wave 83 sentence describes the persisted round; the server's diff
+           names any submitted field it did not keep. When something was dropped
+           the toast is DESTRUCTIVE and its title says so, because a green
+           "Terms saved" over a silently discarded value is the misleading
+           confirmation this finding is about. */
+        const outcome = describeSaveOutcome(data);
+        const savedSentence = savedTermsSummary(data?.round);
+        toast({
+          title: outcome?.someNotStored ? "Saved — but some values were NOT stored" : "Terms saved",
+          description: outcome ? `${outcome.sentence} ${savedSentence}` : savedSentence,
+          ...(outcome?.someNotStored ? { variant: "destructive" as const } : {}),
+        });
         /* WAVE 69 · V-2 (R58 row 5) — the server's `termWarnings` channel had ZERO
            client consumers, so R56's approved warning was invisible. It is a
            SECOND toast, not a replacement: `TOAST_LIMIT` is 5, so it stacks
@@ -1053,6 +1293,67 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
                     The exit waterfall needs a multiple written as “1x”, “1.5x” or “2x” AND the word
                     “participating” or “non-participating”. Leaving this blank removes the term.
                   </p>
+                  {/* WAVE 111 — THE READBACK. What the founder is typing, as the ONE
+                      reader in `shared/liquidationTermsReader.ts` will read it — the
+                      same reader the round's Terms tab, the term sheet and the exit
+                      waterfall use. This is where the cap in the wording meets the
+                      round's own cap field: type “capped at 2x” against a stored cap of
+                      3 and this line says the terms conflict, BEFORE saving, instead of
+                      the Terms tab claiming 3× while the exit calculation refuses.
+                      The round's stored cap is read here because this dialog has no cap
+                      control of its own. */}
+                  <p
+                    className="text-[10px] mt-1 text-muted-foreground"
+                    data-testid="edit-liquidation-preference-readback"
+                  >
+                    {/* WAVE 114 - FINDING 3: the readback now reads the cap BEING
+                        TYPED in the control below, not the round's stored value.
+                        Wave 111 had to read the stored one because this dialog had
+                        no cap control; it does now, and reading the stored value
+                        would describe terms the founder is in the middle of
+                        changing. */}
+                    Read as: {describeLiquidationTerms(readLiquidationTerms({
+                      liquidationPreference: liqPref,
+                      capParticipation: capEntered ? capParticipation.trim() : null,
+                    }))}
+                  </p>
+                </div>
+                {/* WAVE 114 - FINDING 3 (item 52): THE PARTICIPATION CAP CONTROL.
+                    A cap changes every exit payout of this class and there was no
+                    way to record or amend it on an existing round: the wizard has a
+                    control, the server has a validator, the exit waterfall honours
+                    the value - and no post-creation screen could set it. Validated
+                    against the SAME shared reader that interprets the term on the
+                    Terms tab, the term sheet and the waterfall, so this box cannot
+                    store a value those surfaces would refuse to read. */}
+                <div>
+                  <Label className="text-xs">Participation cap (multiple of investment)</Label>
+                  <Input
+                    type="text"
+                    className="mt-1 font-mono"
+                    value={capParticipation}
+                    onChange={e => setCapParticipation(e.target.value)}
+                    data-testid="edit-participation-cap"
+                    placeholder="e.g. 2x — blank means uncapped"
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    The most this class can take in TOTAL at an exit, as a multiple of what it invested — the
+                    “capped at 2x” half of “1x participating, capped at 2x”. Greater than 0 and at most {PARTICIPATION_CAP_MAX}x.
+                    Leaving it blank records the class as UNCAPPED, which is a real term and a different one from a cap
+                    nobody has entered. It only bites on a participating preference.
+                  </p>
+                  {capInvalid ? (
+                    <p className="text-[10px] mt-1 text-destructive" data-testid="edit-participation-cap-refusal">
+                      Capavate cannot read “{capParticipation.trim()}” as a multiple, so it will not be saved and Save is
+                      disabled. Enter it as “2” or “2x”.
+                    </p>
+                  ) : (
+                    <p className="text-[10px] mt-1 text-muted-foreground" data-testid="edit-participation-cap-readback">
+                      {capReadable === null
+                        ? "No cap will be recorded: this class is treated as uncapped at an exit."
+                        : `Read as ${capReadable}x — the exit waterfall will stop paying this class above ${capReadable}x its investment.`}
+                    </p>
+                  )}
                 </div>
                 {/* WAVE 76 · R60 — THE ANTI-DILUTION METHOD, REACHABLE FOR THE FIRST
                     TIME. The projection refuses a DOWN ROUND for a preferred class
@@ -1301,9 +1602,31 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             ) : null}
           </div>
           <div className="col-span-2">
-            <Label>Terms summary</Label>
-            <Textarea rows={3} value={termsSummary} onChange={e => setTermsSummary(e.target.value)} className="mt-1" data-testid="textarea-terms-summary" />
+            {/* WAVE 107 - F1-B. RELABELLED, not rewired. This control has always
+                written `rounds.terms_summary`, a one-line headline shown under the
+                round name; it was labelled "Terms summary", which reads like the
+                wizard's narrative, so a founder who typed a use-of-proceeds
+                paragraph in the wizard opened this box, found it empty and
+                reasonably concluded the platform had dropped the text. The text
+                was never lost - it is in the two fields below, which until this
+                wave had no edit surface at all. The column, the value and the
+                test id are unchanged. */}
+            <Label>Term-sheet headline</Label>
+            <Textarea rows={2} value={termsSummary} onChange={e => setTermsSummary(e.target.value)} className="mt-1" data-testid="textarea-terms-summary" />
+            <p className="text-[10px] text-muted-foreground mt-1">One line, shown beneath the round name. The longer narrative investors read is the next field.</p>
           </div>
+          <div className="col-span-2">
+            <Label>Round narrative for investors</Label>
+            <Textarea rows={4} value={roundNotes} onChange={e => setRoundNotes(e.target.value)} className="mt-1" data-testid="textarea-round-notes" />
+            <p className="text-[10px] text-muted-foreground mt-1">The paragraph entered in the round wizard, shown on the round&apos;s own page. Line breaks and punctuation are stored exactly as typed.</p>
+          </div>
+          {useOfProceedsIsText && (
+            <div className="col-span-2">
+              <Label>Use of proceeds</Label>
+              <Textarea rows={3} value={useOfProceeds} onChange={e => setUseOfProceeds(e.target.value)} className="mt-1" data-testid="textarea-use-of-proceeds" />
+              <p className="text-[10px] text-muted-foreground mt-1">What this round&apos;s money is for. Stored exactly as typed.</p>
+            </div>
+          )}
         </div>
         {/* WAVE 58c · A1 — A DISABLED BUTTON MUST NEVER BE SILENT. The reason is
             rendered beside it, naming the refusal and the way out. */}
@@ -1341,7 +1664,9 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            disabled={saveMut.isPending || editPriceContradicted || editTermsOutOfRange}
+            /* WAVE 114 · FINDING 3 — an unreadable participation cap blocks the
+               save rather than being quietly dropped on a 200. */
+            disabled={saveMut.isPending || editPriceContradicted || editTermsOutOfRange || capInvalid}
             onClick={() => saveMut.mutate()}
             className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             data-testid="button-save-terms"

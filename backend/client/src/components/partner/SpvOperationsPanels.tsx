@@ -48,6 +48,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor } from "@/lib/currency";
+import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -55,6 +56,75 @@ import { Label } from "@/components/ui/label";
 function money(minor: number | null | undefined, currency: string): string {
   if (minor == null || !Number.isFinite(Number(minor))) return "—";
   return formatMinor(Number(minor), currency, { locale: "en-US" });
+}
+
+
+/* ==========================================================================
+ * WAVE 106 - FINDING 2: the fee breakdown was rendered as a raw object dump.
+ *
+ * `Object.entries(bd)` printed the STORAGE KEY as the label and `String(v)` as
+ * the value, so a partner read `managementCarryPct: 0.2` - a fraction, under a
+ * field name from this codebase - immediately below the same carry rendered
+ * correctly as 20% elsewhere on the page. Two renderings of one number, one of
+ * them a hundredfold out from how this product states every other percentage,
+ * sitting next to money.
+ *
+ * PRESENTATION ONLY. No stored value changes, no arithmetic changes, and no
+ * field is dropped: every key the server sends is still shown, under a human
+ * label, with money already formatted and carry rendered the way the rest of
+ * the product renders it (formatFractionAsPercent: 0.2 -> 20%). An UNMAPPED key
+ * still renders, humanised rather than as raw camelCase, so a field added on
+ * the server can never silently vanish from this panel.
+ * ========================================================================== */
+
+const FEE_FIELD_LABELS: Record<string, string> = {
+  commitmentMinor: "Commitment modelled",
+  managementFeeMinor: "Management fee",
+  platformFeeMinor: "Platform fee",
+  netDeployedMinor: "Net deployed to the company",
+  currency: "Currency",
+  managementCarryPct: "Management carry",
+  platformCarryPct: "Platform carry",
+  feesUnknown: "Fee schedule",
+};
+
+/** Humanise an unmapped key rather than printing a code. */
+function humaniseFeeKey(key: string): string {
+  const words = key
+    .replace(/Minor$/, "")
+    .replace(/Pct$/, " percentage")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .trim()
+    .toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Detail";
+}
+
+export function feeFieldLabel(key: string): string {
+  return FEE_FIELD_LABELS[key] ?? humaniseFeeKey(key);
+}
+
+/**
+ * The partner-facing value for one breakdown field.
+ *
+ * Money: already formatted, in the row's own currency. Carry: a stored FRACTION
+ * rendered as a percentage by the shared formatter - the conversion happens
+ * here and nowhere else, so it cannot be applied twice. `feesUnknown` is a
+ * predicate, not a figure, so it is stated as a sentence rather than as false.
+ */
+export function feeFieldValue(key: string, value: unknown, currency: string): string {
+  if (key === "feesUnknown") {
+    return value === true ? "Could not be read" : "Read successfully";
+  }
+  if (value == null) return "—";
+  if (/Minor$/.test(key)) {
+    return typeof value === "number" ? money(value, currency) : String(value);
+  }
+  if (/Pct$/.test(key)) {
+    return typeof value === "number" ? formatFractionAsPercent(value) : "—";
+  }
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
 }
 
 /** Human copy for the server codes these endpoints can return. Never render a
@@ -215,15 +285,35 @@ export function SpvFeeLedgerPanel({
       hint="Authoritative fee figures, read live from the SPV fee engine. Amounts and carry percentages come from the admin-configured fee schedule — nothing here is entered by hand."
     >
       <div className="flex items-end gap-2 mb-2">
+        {/* WAVE 106 - FINDING 3: this field asked a human for "minor units".
+            Typing 100000 modelled $1,000.00 and nothing on screen said so - a
+            hundredfold misreading with no feedback. The INPUT CONTRACT is
+            deliberately unchanged: the value posted for a given keystroke is
+            byte-identical to before, so no arithmetic downstream can have
+            moved. Instead the field now says which unit it wants, in which
+            currency, and echoes the amount it will actually model back to the
+            operator before they read anything off the breakdown. */}
         <div className="flex-1">
-          <Label htmlFor={`fee-bd-${spvId}`} className="text-xs">Model a commitment (minor units)</Label>
+          <Label htmlFor={`fee-bd-${spvId}`} className="text-xs">
+            Model a commitment - enter the amount in {currency} cents, not whole {currency}
+          </Label>
           <Input
             id={`fee-bd-${spvId}`}
             value={commitmentMinor}
             onChange={(e) => setCommitmentMinor(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="e.g. 5000000"
+            placeholder="e.g. 5000000 for five million cents"
+            aria-describedby={`fee-bd-echo-${spvId}`}
             data-testid="spv-fee-breakdown-input"
           />
+          <div
+            id={`fee-bd-echo-${spvId}`}
+            className="text-xs mt-1 text-[var(--cv-color-text-faint)]"
+            data-testid="spv-fee-breakdown-input-echo"
+          >
+            {commitmentMinor === ""
+              ? `Enter the amount in the smallest unit of ${currency}. The amount being modelled appears here as you type.`
+              : `Modelling ${money(Number(commitmentMinor), currency)} - check this is the amount you meant before reading the figures below.`}
+          </div>
         </div>
       </div>
 
@@ -249,10 +339,8 @@ export function SpvFeeLedgerPanel({
         {bd
           ? Object.entries(bd).map(([k, v]) => (
               <div key={k} className="grid grid-cols-2 gap-2 py-0.5" data-testid={`spv-fee-breakdown-${k}`}>
-                <div className="text-[var(--cv-color-text-faint)]">{k}</div>
-                <div className="font-mono">
-                  {typeof v === "number" && /Minor$/.test(k) ? money(v, currency) : String(v ?? "—")}
-                </div>
+                <div className="text-[var(--cv-color-text-faint)]">{feeFieldLabel(k)}</div>
+                <div className="font-mono">{feeFieldValue(k, v, currency)}</div>
               </div>
             ))
           : null}

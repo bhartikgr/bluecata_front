@@ -1,5 +1,35 @@
 import { asArray } from "@/lib/safeArray";
 import { isActiveLiveRoundState } from "@shared/schema";
+/* WAVE 116 · FINDING 1 — the founder's own front page printed
+   `RAISED THIS YEAR · $0 · of $53.7M target`. Both figures were false, for two
+   DIFFERENT reasons, and neither of them was `rounds.raised_amount`:
+
+     - the `$0` came from `company.kpi.raisedThisYearUsd`, a field with NO WRITER
+       anywhere in the tree (`grep -rn "raisedThisYearUsd\\s*="` returns nothing).
+       It is a literal `0` on every real-company path and non-zero only in three
+       demo seeds, so every real founder saw `$0` whatever his book held;
+     - the `$53.7M` came from `companyRounds.reduce((s, r) => s + r.targetAmount, 0)`
+       over EVERY round row the company ever had — drafts never opened, rounds
+       already closed, rounds the founder archived — added across whatever
+       currencies those rounds were denominated in, with no currency check.
+
+   Both now read derived figures. The derivation is Wave 114's, in
+   `server/lib/roundRaisedTotals.ts`, arriving as `round.moneyOnRecord` and read
+   through `shared/roundMoneyOnRecordView.ts`; the company-level sum is
+   `client/src/lib/money/companyMoneyOnRecord.ts`, which only ADDS figures the
+   server already derived and already labelled. No second derivation is written.
+
+   The words "this year" are gone and are not coming back on this data:
+   `moneyOnRecord` carries no per-row dates, so no calendar-period figure is
+   derivable from it, and filtering rounds by close-date year would be a proxy
+   for a fact the wire does not hold. R6: where the figure cannot be derived the
+   tile prints a SENTENCE and no number, never `$0`. */
+import {
+  readCompanyMoneyOnRecord,
+  readCompanyTargetOnRecord,
+  COMPANY_MONEY_SUBSCRIBED_LABEL,
+} from "@/lib/money/companyMoneyOnRecord";
+import { readRoundMoneyOnRecord, progressBarPercent } from "@shared/roundMoneyOnRecordView";
 /**
  * Sprint 11 Phase 2 — Founder Dashboard v2 rebuild.
  *
@@ -43,6 +73,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useActiveCompany } from "@/lib/useActiveCompany";
 import { CheckCircle2, TrendingUp as TrendUp } from "lucide-react";
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — the platform's existing display library. Nothing new is written; `partnerDisplay` is not partner-only, it is the tree's one place for turning a storage key into something a person can read, and it is already imported by 17 files. */
+import { describeActivityAction } from "@/lib/activity/activityActionDescription"; /* WAVE 108 · FINDING 2 — the dashboard printed raw audit event codes (`founder_global_search`, `round.initial_shareholders.set`) to the founder. 167 literal codes and 37 template families were enumerated in build_log/wave108/w108_event_codes.json, so a lookup of the observed two would not have closed it. The raw code stays on data-action for machines (R77). */
 
 /* ============================================================
  * ProfileCompletionCard — Wave C-1
@@ -323,8 +355,38 @@ export default function FounderDashboard() {
   // active/live/open/signing_open/soft_circle_open) via the shared helper so the
   // founder dashboard no longer shows "No active round" when a round is active.
   const activeRound = companyRounds.find(r => isActiveLiveRoundState(r.state));
-  const totalRaised = companyRounds.reduce((s, r) => s + r.raisedAmount, 0);
-  const totalTarget = companyRounds.reduce((s, r) => s + r.targetAmount, 0);
+  /* WAVE 116 · FINDING 1 — `totalRaised` used to be
+       companyRounds.reduce((s, r) => s + r.raisedAmount, 0)
+     and was DEAD CODE: declared here and read nowhere in the file, a live sum of
+     the writer-less `raised_amount` column waiting for the next agent to render
+     it. It is deleted rather than repaired. `totalTarget` used to sum every
+     round's target regardless of state, archive flag or currency; both figures
+     now come from the one company reader, which refuses instead of guessing. */
+  const companyMoney = useMemo(() => readCompanyMoneyOnRecord(companyRounds), [companyRounds]);
+  const companyTarget = useMemo(() => readCompanyTargetOnRecord(companyRounds), [companyRounds]);
+
+  /* WAVE 116 FOLLOW-UP — the active-raise panel used to compute this inside an
+     IIFE in its own JSX. That made the panel body a single `{expr}` child, and
+     `npm run guard` correctly read the four divs it used to have as dropped. The
+     derivation is hoisted here so the panel can keep four static children.
+     Nothing is derived twice: `readRoundMoneyOnRecord` is Wave 114's shared
+     reader over the projection the server already attached, and the ratio arrives
+     as integer basis points, so no money is divided in this browser. */
+  const activeRaise = useMemo(() => {
+    if (!activeRound) return null;
+    /* `companyRounds` comes from an untyped `useQuery`, so its rows are `{}` to
+       the checker and every field read on them is a pre-existing error in this
+       file. Narrowing ONCE here keeps this panel from adding more of them. */
+    const ar = activeRound as unknown as { id: string; closeDate: string; targetAmount: number; moneyOnRecord?: unknown };
+    const view = readRoundMoneyOnRecord(ar.moneyOnRecord);
+    const determined = view.canPrintFigures && Boolean(view.money);
+    return {
+      ar,
+      view,
+      determined,
+      barPct: determined ? progressBarPercent(view.money?.progressBp?.subscribed) : null,
+    };
+  }, [activeRound]);
 
   /* v25.11 NL-2 — the prior funnel computed `seed = Math.max(8, Math.round(20 * 1))`
    * which always evaluated to 20, so every founder saw `[20, 17, 11, 8, 5, 4]`
@@ -497,15 +559,50 @@ export default function FounderDashboard() {
             </CardContent>
           </Card>
 
-          {/* KPI tile 3 — Raised this year */}
+          {/* KPI tile 3 — money on record across this company's rounds.
+              WAVE 116 · FINDING 1. Was "Raised this year · $0 · of $53.7M target":
+              a writer-less KPI field over an all-rounds-all-currencies target. */}
           <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-kpi-raised">
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">Raised this year</div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">{COMPANY_MONEY_SUBSCRIBED_LABEL}</div>
                 <TrendingUp className="h-4 w-4 text-emerald-600" />
               </div>
-              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtUSD(company?.kpi?.raisedThisYearUsd ?? 0, { compact: true })}</div>
-              <div className="text-xs text-muted-foreground mt-1">of {fmtUSD(totalTarget, { compact: true })} target</div>
+              {/* WAVE 116 FOLLOW-UP — the determined/refused branch lives INSIDE
+                  these two divs instead of swapping whole siblings. `npm run guard`
+                  identifies a panel body's children positionally, so a ternary at
+                  this level dropped `div#2` and `div#3` of this tile even though
+                  the tile still renders three children. Keeping the shape restores
+                  the structural items rather than asking for them to be waived. */}
+              <div className="mt-2">
+                {companyMoney.determined ? (
+                  <div className="text-2xl font-semibold tracking-tight tabular-nums" data-testid="kpi-money-subscribed">{companyMoney.subscribedDisplay}</div>
+                ) : (
+                  <div className="text-sm text-muted-foreground" data-testid="kpi-money-unavailable">{companyMoney.statement}</div>
+                )}
+              </div>
+              <div>
+                {companyMoney.determined ? (
+                  <div className="text-xs text-muted-foreground mt-1" data-testid="kpi-money-target">
+                    {companyTarget.determined
+                      ? `of ${companyTarget.display} ${companyTarget.basisLabel}`
+                      : companyTarget.statement}
+                  </div>
+                ) : null}
+                {companyMoney.determined ? (
+                  <div className="mt-2 space-y-0.5" data-testid="kpi-money-states">
+                    {companyMoney.buckets.map(b => (
+                      <div key={b.key} className="flex items-baseline justify-between gap-2 text-[11px]" data-testid={`kpi-money-${b.key}`}>
+                        <span className="text-muted-foreground truncate">{b.label}</span>
+                        <span className="font-mono tabular-nums">{b.display}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {companyMoney.determined ? (
+                  <div className="text-[11px] text-muted-foreground mt-1" data-testid="kpi-money-basis">{companyMoney.basisLabel}</div>
+                ) : null}
+              </div>
             </CardContent>
           </Card>
 
@@ -532,7 +629,7 @@ export default function FounderDashboard() {
                   <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
                     <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
-                      <span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.targetLabel || a.target}</span>
+                      <span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{a.targetLabel || a.target}</span>
                     </div>
                     <span className="text-[11px] text-muted-foreground shrink-0"><Clock className="inline h-3 w-3 mr-0.5" />{timeAgo(a.ts)}</span>
                   </li>
@@ -584,7 +681,21 @@ export default function FounderDashboard() {
               two renders of one quantity cannot disagree again. */}
           <Stat label="Founder ownership" value={fmtPct(ownershipPctDisplay, 2)} hint="of fully-diluted" icon={ShieldCheck} testid="stat-ownership" />
           <Stat label="Cap-table holders" value={company?.kpi?.capTableHolders ?? 0} hint="fully-diluted" icon={Users} testid="stat-holders" />
-          <Stat label="Raised this year" value={fmtUSD(company?.kpi?.raisedThisYearUsd ?? 0, { compact: true })} hint={`of ${fmtUSD(totalTarget, { compact: true })} target`} icon={TrendingUp} trend="up" testid="stat-raised" />
+          {/* WAVE 116 · FINDING 1 — the SAME quantity as the bento tile above, from
+              the SAME one reader, so the two renders of one figure cannot disagree
+              (the pattern W73 established for founder ownership). Was
+              `fmtUSD(company?.kpi?.raisedThisYearUsd ?? 0)` over `totalTarget`. */}
+          <Stat
+            label={COMPANY_MONEY_SUBSCRIBED_LABEL}
+            value={companyMoney.determined
+              ? <span data-testid="stat-raised-figure">{companyMoney.subscribedDisplay}</span>
+              : <span className="text-sm font-normal text-muted-foreground" data-testid="stat-raised-unavailable">{companyMoney.statement}</span>}
+            hint={companyMoney.determined
+              ? (companyTarget.determined ? `of ${companyTarget.display} ${companyTarget.basisLabel}` : companyTarget.statement)
+              : undefined}
+            icon={TrendingUp}
+            testid="stat-raised"
+          />
           <Stat label="Dataroom views" value={engagement.data?.topDocs.reduce((s, d) => s + d.totalViews, 0) ?? 0} hint={`${engagement.data?.investors.length ?? 0} unique viewers`} icon={Eye} testid="stat-dataroom" />
         </div>
 
@@ -610,7 +721,28 @@ export default function FounderDashboard() {
                         <span className="font-medium text-sm">{r.name}</span>
                         <StateBadge state={r.state} />
                       </div>
-                      <div className="text-xs text-muted-foreground mt-1">{fmtUSD(r.raisedAmount, { compact: true })} of {fmtUSD(r.targetAmount, { compact: true })} · {r.type}</div>
+                      {/* WAVE 116 · FINDING 1 — was `fmtUSD(r.raisedAmount)`, the
+                          writer-less column, printed as a bare figure with no state
+                          word. Now the derived subscribed total with its state
+                          labels, or a sentence and no figure. */}
+                      {(() => {
+                        const rr = r as unknown as { id: string; type: string; targetAmount: number; moneyOnRecord?: unknown };
+                        const view = readRoundMoneyOnRecord(rr.moneyOnRecord);
+                        if (!view.canPrintFigures || !view.money) {
+                          /* WAVE 124 · FINDING 1 — the round TYPE was printed as its
+                             storage key (`priced_equity`, `safe_note`) beside the money
+                             statement. Humanised through the platform's own helper; the
+                             vocabulary is NOT remapped or merged with any other ladder
+                             (R91), only sentence-cased. */
+                          return <div className="text-xs text-muted-foreground mt-1" data-testid={`round-card-money-unavailable-${rr.id}`}>{view.statement} · {humanizeMachineKey(rr.type)}</div>;
+                        }
+                        return (
+                          <div className="text-xs text-muted-foreground mt-1" data-testid={`round-card-money-${rr.id}`}>
+                            <span>{view.money.subscribedDisplay} subscribed (committed + funded) of {fmtUSD(rr.targetAmount, { compact: true })} target · {humanizeMachineKey(rr.type)}</span>
+                            <span className="block">{view.buckets.map(b => `${b.label}: ${b.display}`).join(" · ")}</span>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </Link>
                 ))}
@@ -650,7 +782,15 @@ export default function FounderDashboard() {
                   <div key={m.id} className="border border-border rounded-md p-3" data-testid={`row-ma-${m.id}`}>
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="border-[hsl(333_75%_35%)]/40 text-[hsl(333_75%_35%)]">M&amp;A</Badge>
-                      <span className="text-xs text-muted-foreground">from {m.investorUserId}</span>
+                      {/* WAVE 124 · FINDING 1 — "from usr_…" IN PROSE ON THE FOUNDER'S
+                          OWN DASHBOARD. `MaInitiative` (:276) carries no name field for
+                          the proposing investor, so there is no name to print and none is
+                          invented. The id is presented as what it is, through wave 115's
+                          `partyReferenceLabel`, which keeps it unique per row so two
+                          inbound initiatives are still told apart. The `Discuss` button
+                          below still routes on the raw id — a query parameter is
+                          machine-readable and is deliberately left alone. */}
+                      <span className="text-xs text-muted-foreground">from {partyReferenceLabel(m.investorUserId)}</span>
                     </div>
                     <div className="text-sm font-medium mt-1.5">{m.topic}</div>
                     {m.buyerShortlist && m.buyerShortlist.length > 0 && (
@@ -785,21 +925,61 @@ export default function FounderDashboard() {
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
               <div>
                 <CardTitle className="text-base">Active raise</CardTitle>
-                <p className="text-sm text-muted-foreground mt-0.5">Soft-circle progress for your live round</p>
+                <p className="text-sm text-muted-foreground mt-0.5">What is on record for your live round, by state</p>
               </div>
               <StateBadge state={activeRound.state} />
             </CardHeader>
             <CardContent>
+              {/* WAVE 116 · FINDING 1 — this block held FOUR false statements about
+                  one quantity: the writer-less `raised_amount` column rendered as
+                  money, the word "soft-circled" asserted over it, a progress bar
+                  filled by DIVIDING MONEY IN THE BROWSER, and the same division
+                  relabelled "committed" — three different state words on one figure
+                  that was none of them. The ratio now arrives from the server as
+                  integer basis points (Wave 114 `progressBp`), so no money is
+                  divided here, and when it cannot be computed NO BAR IS DRAWN.
+
+                  The four divs below are deliberately static: see `activeRaise`. */}
               <div className="flex items-baseline gap-2 mb-3">
-                <div className="text-2xl font-semibold">{fmtUSD(activeRound.raisedAmount)}</div>
-                <div className="text-sm text-muted-foreground">soft-circled of {fmtUSD(activeRound.targetAmount)} target</div>
+                {activeRaise?.determined && activeRaise.view.money ? (
+                  <>
+                    <div className="text-2xl font-semibold" data-testid="active-raise-subscribed">{activeRaise.view.money.subscribedDisplay}</div>
+                    <div className="text-sm text-muted-foreground">subscribed (committed + funded) of {fmtUSD(activeRaise.ar.targetAmount)} target</div>
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground" data-testid="active-raise-money-unavailable">
+                    {activeRaise?.view.statement}
+                  </div>
+                )}
               </div>
-              <div className="h-3 rounded-full bg-secondary overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, (activeRound.raisedAmount / activeRound.targetAmount) * 100)}%` }} />
+              <div className="space-y-0.5 mb-3" data-testid={activeRaise?.determined ? "active-raise-money-states" : "active-raise-money-states-empty"}>
+                {activeRaise?.determined
+                  ? activeRaise.view.buckets.map(b => (
+                      <div key={b.key} className="flex items-baseline justify-between gap-2 text-xs" data-testid={`active-raise-money-${b.key}`}>
+                        <span className="text-muted-foreground">{b.label}</span>
+                        <span className="font-mono tabular-nums">{b.display}</span>
+                      </div>
+                    ))
+                  : null}
               </div>
-              <div className="flex justify-between text-xs text-muted-foreground mt-2">
-                <span>{fmtPct((activeRound.raisedAmount / activeRound.targetAmount) * 100, 0)} committed</span>
-                <span>Close target: {activeRound.closeDate}</span>
+              <div>
+                {activeRaise?.determined && activeRaise.barPct !== null ? (
+                  <>
+                    <div className="h-3 rounded-full bg-secondary overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${activeRaise.barPct}%` }} />
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground mt-2">
+                      <span data-testid="active-raise-progress">{fmtPct(activeRaise.barPct, 0)} of target subscribed (committed + funded)</span>
+                      <span>Close target: {activeRaise.ar.closeDate}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-muted-foreground" data-testid="active-raise-progress-unavailable">
+                    {activeRaise?.determined
+                      ? (activeRaise.view.money?.progressBp?.targetNote ?? "No progress shown: there is no target to measure against.")
+                      : `Close target: ${activeRaise?.ar.closeDate ?? ""}`}
+                  </div>
+                )}
               </div>
               <div className="mt-4">
                 <Button variant="outline" data-testid="button-view-round" asChild>
@@ -842,7 +1022,7 @@ export default function FounderDashboard() {
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
                   <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)]" />
                   <div className="flex-1 min-w-0">
-                    <div><span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.targetLabel || a.target}</span></div>
+                    <div><span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{a.targetLabel || a.target}</span></div>
                     <div className="text-[11px] text-muted-foreground"><Clock className="inline h-3 w-3 mr-1" />{timeAgo(a.ts)}</div>
                   </div>
                 </li>

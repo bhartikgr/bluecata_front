@@ -633,7 +633,11 @@ function CollectiveTab() {
       {/* Section B — NEW Cap Table Investor Membership Subscription tiers. */}
       <TierTableSection
         title="Cap Table Investor Membership Subscription"
-        helper="Recurring membership tiers for cap-table investors in the Collective. Add, edit, or remove tiers — each is stored as a platform_fees row (collective.member_subscription.*)."
+        /* WAVE 117 · FINDING 4 — was "...each is stored as a platform_fees row
+           (collective.member_subscription.*)": a storage table and an event key
+           named to a human. Both are internal deployment detail; what the admin
+           needs is that a tier here is the fee schedule itself. */
+        helper="Recurring membership tiers for cap-table investors in the Collective. Add, edit, or remove tiers — each tier you save here becomes a published platform fee that members are billed against."
         baseEndpoint="/api/admin/collective/member-subscription-tiers"
         testid="collective-member-subscription-tiers"
       />
@@ -662,7 +666,8 @@ function ConsortiumTab() {
       {/* Section A — NEW Partner Subscription Tiers. */}
       <TierTableSection
         title="Partner Subscription Tiers"
-        helper="Recurring subscription tiers for Consortium Partners. Add, edit, or remove tiers — each is stored as a platform_fees row (consortium.subscription.*)."
+        /* WAVE 117 · FINDING 4 — same correction as the Collective section above. */
+        helper="Recurring subscription tiers for Consortium Partners. Add, edit, or remove tiers — each tier you save here becomes a published platform fee that partners are billed against."
         baseEndpoint="/api/admin/consortium/subscription-tiers"
         testid="consortium-subscription-tiers"
       />

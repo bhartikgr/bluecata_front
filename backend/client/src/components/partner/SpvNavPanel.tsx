@@ -20,6 +20,8 @@
  * `null` prints the unavailable marker, so an unknown NAV cannot appear as zero.
  */
 import { useMemo, useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -211,7 +213,7 @@ export function SpvNavPanel({ spvId, canWrite }: { spvId: string; canWrite: bool
             <tbody>
               {nav.holdings.map((h) => (
                 <tr key={h.deploymentId} className="border-t" data-testid={`spv-nav-holding-${h.deploymentId}`}>
-                  <td className="py-1">{h.companyId}</td>
+                  <td className="py-1">{partyReferenceLabel(h.companyId)}</td>
                   <td>{h.shares ?? "—"}</td>
                   <td>{h.pricePerShare === null ? "—" : h.pricePerShare}</td>
                   <td><MarkBadge badge={h.markBadge} />{h.valuationDate ? <span className="ml-1 text-[var(--cv-color-text-muted)]">{h.valuationDate}</span> : null}</td>
@@ -253,7 +255,7 @@ export function SpvNavPanel({ spvId, canWrite }: { spvId: string; canWrite: bool
             <tbody>
               {lpShares.map((s) => (
                 <tr key={s.investorId} className="border-t" data-testid={`spv-nav-lp-${s.investorId}`}>
-                  <td className="py-1">{s.investorId}</td>
+                  <td className="py-1">{partyReferenceLabel(s.investorId)}</td>
                   <td>{formatMinorOrUnavailable(s.commitmentMinor, nav.currency)}</td>
                   <td>{s.navShareMinor === null ? <span title="The vehicle NAV is unknown, so this LP's share of it is unknown.">Not computable</span> : formatMinorOrUnavailable(s.navShareMinor, nav.currency)}</td>
                 </tr>

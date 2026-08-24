@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "26.20.0",
+  "version": "26.22.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -27,7 +27,7 @@
     "drop:restyle:emit": "node scripts/restyle-drop-detector/detect.mjs --emit scripts/restyle-drop-detector/baseline.json",
     "drop:restyle:poles": "node scripts/restyle-drop-detector/prove_poles.mjs",
     "lint:formula-bytes": "tsx scripts/check-formula-bytes.ts",
-    "preflight": "npm run sacred && npm run lint:formula-bytes && npm run lint:money-exponent-fence && npm run lint:percent-denominator-fence && npm run lint:destructive-store-fence && npm run lint:raise-literal-fence && npm run lint:internal-language-fence && npm run lint:date-only-render-fence && npm run guard:snapshot:verify && npm run guard:test && npm run guard && npm run reachability && npm run coverage:ci && npm run docs:verify && npm run drop:restyle",
+    "preflight": "npm run sacred && npm run lint:formula-bytes && npm run lint:money-exponent-fence && npm run lint:percent-denominator-fence && npm run lint:destructive-store-fence && npm run lint:raise-literal-fence && npm run lint:internal-language-fence && npm run lint:date-only-render-fence && npm run guard:snapshot:verify && npm run guard:test && npm run guard && npm run reachability && npm run coverage:ci && npm run docs:verify && npm run drop:restyle:test && npm run drop:restyle",
     "lint:no-button-in-link": "eslint --config eslint.config.js \"client/src/**/*.tsx\"",
     "lint:classification-scope-fence": "tsx scripts/lint/partnerClassificationScopeFence.ts",
     "lint:fund-metrics-fence": "tsx scripts/lint/fundMetricsWinnerFence.ts",
@@ -57,7 +57,8 @@
     "perf:smoke": "tsx scripts/perf_smoke.ts",
     "test:pglite": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/portable-pglite.test.ts",
     "test:hash-replay": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/hash-chain-replay.test.ts",
-    "lint:date-only-render-fence": "tsx scripts/lint/dateOnlyRenderFence.ts"
+    "lint:date-only-render-fence": "tsx scripts/lint/dateOnlyRenderFence.ts",
+    "drop:restyle:test": "vitest run --config scripts/restyle-drop-detector/vitest.restyle.config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",

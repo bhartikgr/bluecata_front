@@ -2,6 +2,7 @@ import { asArray } from "@/lib/safeArray";
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
+import { PortalVersionFooter } from "@/components/PortalVersionFooter"; /* WAVE 115 · FINDING 5 */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -1476,6 +1477,34 @@ export default function Settings() {
             <SettingsMnaPrepTab key={companyId} companyId={companyId} />
           </TabsContent>
         </Tabs>
+
+        {/* ═══════════════════════════════════════════════════════════════════
+            WAVE 115 · FINDING 5 — THE FOUNDER PORTAL SHOWED NO VERSION AT ALL.
+
+            The investor portal (pages/investor/Settings.tsx:441), the partner
+            portal (components/partner/PartnerShell.tsx:200) and the admin
+            dashboard (BuildVersionMarker) each show one; the founder portal
+            showed none, so a founder — or Ozan verifying a deploy — could not
+            tell which build they were looking at. Register item 49 / B-61.
+
+            SAME CONVENTION, SAME SINGLE SOURCE, NO LITERAL. `PortalVersionFooter`
+            reads the version from GET /api/healthz, which the server resolves at
+            boot from the ONE package.json. Nothing is hardcoded here; if the
+            version cannot be resolved the component says "version unavailable"
+            rather than inventing a plausible number.
+
+            `server/__tests__/w90_version_single_source.test.ts` is updated in the
+            same wave so its PORTAL_FOOTERS list knows about this mount.
+            ═══════════════════════════════════════════════════════════════════ */}
+        <div className="pt-6 mt-6 border-t border-border">
+          <div className="text-xs text-muted-foreground flex items-center gap-2">
+            <Settings2 className="h-3.5 w-3.5" />
+            <PortalVersionFooter
+              productName="Capavate Founder Platform"
+              testId="founder-portal-version"
+            />
+          </div>
+        </div>
       </PageBody>
     </>
   );

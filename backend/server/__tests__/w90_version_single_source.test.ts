@@ -204,7 +204,7 @@ describe("W90 · ITEM 2 — one version authority", () => {
     }
   });
 
-  it("ALL THREE PORTALS report a version, and each reads the endpoint (R81)", () => {
+  it("ALL FOUR PORTALS report a version, and each reads the endpoint (R81)", () => {
     /* R81 (owner, 2026-08-21): "It's all one install \u2026 Avi updates the entire
        platform in one go." One correct surface is therefore sufficient evidence \u2014
        BUT ONLY once no portal carries a hardcoded literal. Before Wave 90: admin
@@ -214,6 +214,15 @@ describe("W90 · ITEM 2 — one version authority", () => {
       ["client/src/pages/admin/Dashboard.tsx", "BuildVersionMarker"],
       ["client/src/pages/investor/Settings.tsx", "PortalVersionFooter"],
       ["client/src/components/partner/PartnerShell.tsx", "PortalVersionFooter"],
+      /* WAVE 115 · FINDING 5 — the FOURTH portal. Register item 49 / B-61: the
+         founder portal showed no version string at all while the other three did,
+         so a founder (or Ozan verifying a deploy) could not tell which build they
+         were on. The mount is `client/src/pages/founder/Settings.tsx`, matching
+         where the investor portal puts its own footer; there is no FounderShell.
+         Added here rather than left out, because a portal footer this test does
+         not know about is a portal footer this test cannot protect. No assertion
+         is weakened and no allowlist entry is added. */
+      ["client/src/pages/founder/Settings.tsx", "PortalVersionFooter"],
     ];
     for (const [rel, component] of PORTAL_FOOTERS) {
       const src = fs.readFileSync(path.join(REPO, rel), "utf8");

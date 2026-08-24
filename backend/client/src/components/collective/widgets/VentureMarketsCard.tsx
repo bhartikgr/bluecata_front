@@ -4,6 +4,12 @@
  * Market Value. Sort DESC by marketValue. `Est.` badge for estimated rows.
  * Pending boards render "—" (NO fabricated numbers). Dark-mode + a11y aware.
  * Institutional, data-first styling (per the developer prompt).
+ *
+ * WAVE 105 — copy only. Both empty states are PRESERVED (the WAVE 20 / FE-20
+ * "provider returned nothing" branch and the "no provider selected" branch,
+ * including their test ids); the customer-facing wording no longer implies the
+ * reader must go and edit anything, and it names no deployment or configuration
+ * mechanics. The numbers, provenance line and sort order are untouched.
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -80,7 +86,7 @@ export function VentureMarketsCard() {
           </div>
         ) : notConfigured || records.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-venture-empty">
-            <p className="text-sm">Configure a market data provider to populate venture markets.</p>
+            <p className="text-sm">Live venture market pricing is unavailable until a market data provider is selected.</p>
           </div>
         ) : (
           <TooltipProvider>

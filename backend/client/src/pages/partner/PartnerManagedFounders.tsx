@@ -24,6 +24,10 @@ import { useToast } from "@/hooks/use-toast";
  * write side (major → minor) can never disagree with the read side. */
 import { currencyExponent } from "@/lib/currency";
 
+/* WAVE 115 · FINDING 1 (L11) — `StatusBadge` rendered the raw engagement status
+   (it arrives upper-cased, e.g. `ACTIVE`). The `data-testid` keeps the raw value,
+   which is correct: machine-readable attributes are not customer copy. */
+import { managedFounderStatusLabel, partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 interface Engagement {
   id: string;
   companyId: string;
@@ -184,7 +188,7 @@ function StatusBadge({ status }: { status: string }) {
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium border ${active ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}
       data-testid={`mf-status-badge-${status}`}
     >
-      {status}
+      {managedFounderStatusLabel(status)}
     </span>
   );
 }
@@ -238,7 +242,7 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
 
       <div className="mt-3 bg-white rounded-lg border border-[var(--cv-color-border)] p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-lg font-semibold">{e.companyId}</h2>
+          <h2 className="text-lg font-semibold">{partyReferenceLabel(e.companyId)}</h2>
           <ModeBadge mode={e.mode} />
           <StatusBadge status={e.status} />
         </div>
@@ -327,7 +331,7 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
                 <span className="text-[var(--cv-color-text-muted)]">
                   {ev.createdAt ? new Date(ev.createdAt).toLocaleString() : "—"}
                 </span>
-                <span className="font-medium">{ev.eventType}</span>
+                <span className="font-medium">{humanizeMachineKey(ev.eventType)}</span>
                 {ev.actor && <span className="text-[var(--cv-color-text-muted)]">{ev.actor}</span>}
               </li>
             ))}
@@ -1054,7 +1058,7 @@ export default function PartnerManagedFounders() {
                     )}
                     {filtered.map((e) => (
                       <tr key={e.id} className="border-t" data-testid={`mf-row-${e.id}`}>
-                        <td className="p-3 font-medium">{e.companyId}</td>
+                        <td className="p-3 font-medium">{partyReferenceLabel(e.companyId)}</td>
                         <td className="p-3"><ModeBadge mode={e.mode} /></td>
                         <td className="p-3"><StatusBadge status={e.status} /></td>
                         <td className="p-3 text-[var(--cv-color-text-muted)]">{e.createdAt ? new Date(e.createdAt).toLocaleDateString() : "—"}</td>

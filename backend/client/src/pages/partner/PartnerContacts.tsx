@@ -16,6 +16,8 @@
  * task endpoints (:2133, :2156) are still unwired — noted, not removed.
  */
 import { useEffect, useMemo, useState } from "react";
+/* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — `humanizeMachineKey` added to the import this file ALREADY had. Reviewer C (C-24) measured three treatments of one identifier in one panel; there is now one. */
 import { useCollectiveStream } from "@/lib/sseClient"; /* WAVE 18 / XT-7 */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
@@ -422,7 +424,12 @@ export default function PartnerContacts() {
                       <td className="p-3 font-medium">{r.name}</td>
                       <td className="p-3 text-[var(--cv-color-text-muted)]">{r.email || "—"}</td>
                       <td className="p-3 text-[var(--cv-color-text-muted)]">{r.org || "—"}</td>
-                      <td className="p-3 text-[var(--cv-color-text-muted)]">{r.stage || "—"}</td>
+                      {/* WAVE 124 · FINDING 1 — the contacts table printed the raw CRM
+                          stage key. Sentence-cased through the shared fallback. The
+                          vocabulary is NOT remapped onto any other ladder: per R91 the
+                          partner, founder and investor ladders are genuinely different
+                          and merging them would need an owner ruling. */}
+                      <td className="p-3 text-[var(--cv-color-text-muted)]">{humanizeMachineKey(r.stage, "—")}</td>
                       <td className="p-3 text-right">
                         <button
                           type="button"
@@ -531,7 +538,7 @@ function ConnectionsPanel({ connections }: { connections: CrmConnections }) {
         {c.spvLpMemberships.map((s) => (
           <li key={s.spvId} className="flex justify-between" data-testid={`conn-spv-${s.spvId}`}>
             <span>{s.spvName}</span>
-            <span className="text-[var(--cv-color-text-muted)]">{money(s.amountMinor)} · {s.status}</span>
+            <span className="text-[var(--cv-color-text-muted)]">{money(s.amountMinor)} · {humanizeMachineKey(s.status)}</span>
           </li>
         ))}
       </ConnGroup>
@@ -539,7 +546,7 @@ function ConnectionsPanel({ connections }: { connections: CrmConnections }) {
       <ConnGroup label="Cap-table holdings" count={c.capTableHoldings.length}>
         {c.capTableHoldings.map((h) => (
           <li key={h.companyId} className="flex justify-between" data-testid={`conn-cap-${h.companyId}`}>
-            <span>{h.companyId}</span>
+            <span>{partyReferenceLabel(h.companyId)}</span>
             <span className="text-[var(--cv-color-text-muted)]">{h.ownershipPct.toFixed(2)}%</span>
           </li>
         ))}
@@ -548,8 +555,8 @@ function ConnectionsPanel({ connections }: { connections: CrmConnections }) {
       <ConnGroup label="Portfolio" count={c.portfolio.length}>
         {c.portfolio.map((p) => (
           <li key={p.id} className="flex justify-between" data-testid={`conn-portfolio-${p.companyId}`}>
-            <span>{p.displayName || p.companyId}</span>
-            <span className="text-[var(--cv-color-text-muted)]">{p.stage}</span>
+            <span>{p.displayName || partyReferenceLabel(p.companyId)}</span>
+            <span className="text-[var(--cv-color-text-muted)]">{humanizeMachineKey(p.stage)}</span>
           </li>
         ))}
       </ConnGroup>
@@ -558,7 +565,7 @@ function ConnectionsPanel({ connections }: { connections: CrmConnections }) {
         <div className="text-sm font-medium text-[var(--cv-color-text-secondary)]">Collective</div>
         {c.collectiveMembership ? (
           <div className="text-sm text-[var(--cv-color-text-muted)]">
-            {c.collectiveMembership.role} · {c.collectiveMembership.status}
+            {humanizeMachineKey(c.collectiveMembership.role)} · {humanizeMachineKey(c.collectiveMembership.status)}
           </div>
         ) : (
           <div className="text-sm text-[var(--cv-color-text-faint)]">Not a member</div>
@@ -569,7 +576,7 @@ function ConnectionsPanel({ connections }: { connections: CrmConnections }) {
         <div className="text-sm font-medium text-[var(--cv-color-text-secondary)]">Client</div>
         {c.client ? (
           <div className="text-sm text-[var(--cv-color-text-muted)]">
-            {c.client.companyId} · {c.client.stage}
+            {partyReferenceLabel(c.client.companyId)} · {humanizeMachineKey(c.client.stage)}
           </div>
         ) : (
           <div className="text-sm text-[var(--cv-color-text-faint)]">Not a client</div>

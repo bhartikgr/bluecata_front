@@ -43,6 +43,12 @@ import { Button } from "@/components/ui/button";
 import { PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { FilterChip } from "@/components/ui/filter-chip";
 
+/* WAVE 115 · FINDING 1 (L10) — the integrity-break list printed the row's raw
+   internal id AND the raw break-reason code. The id is dropped from the rendered
+   sentence (it stays the React key and is still available in the payload); the
+   reason becomes a sentence. Also (L12) the fair-value label asked for "minor
+   units of USD". */
+import { reconcileBreakReasonLabel } from "@/lib/partnerDisplay";
 /* ---------------------------------------------------------------------- */
 
 type MetricValue =
@@ -530,7 +536,7 @@ export default function SpvPerformance({
                 <ul className="mt-3 space-y-1 text-sm text-rose-800" data-testid="spv-integrity-breaks">
                   {verifyQ.data.verification.breaks.map((b) => (
                     <li key={b.id}>
-                      seq {b.chainSeq ?? "—"} · {b.id} — {b.reason}
+                      seq {b.chainSeq ?? "—"} — {reconcileBreakReasonLabel(b.reason)}
                     </li>
                   ))}
                 </ul>
@@ -809,7 +815,7 @@ export default function SpvPerformance({
               />
             </label>
             <label className="text-xs text-slate-500">
-              {`Overridden fair value (minor units of ${ccy})`}
+              {`Overridden fair value, in ${ccy} cents, not whole ${ccy}`}
               <input
                 value={ovValue}
                 onChange={(e) => setOvValue(e.target.value)}

@@ -56,8 +56,38 @@ type CoMember = {
   /** Sprint 22 Wave 1: platform userId for DM start (DEF-003 / DEF-004). Only included when allowDM:true. */
   userId?: string;
   displayLabel: string;
+  /**
+   * WAVE 115 · FINDING 2 (F2-b) — TRUE when `displayLabel` is NOT a name the
+   * platform actually holds. The ledger-derived fallback below used to put the
+   * raw investor id (`u_…`) in `displayLabel`, so an internal identifier was
+   * rendered in a column headed "Member" as if it were a person. The label is
+   * now an honest noun phrase and this flag tells the client to present it as a
+   * statement rather than a name.
+   */
+  displayLabelUnavailable?: boolean;
+  /** The internal reference behind an unavailable label — labelled, never bare. */
+  reference?: string;
   areaOfExpertise: string[];
-  investorExperienceTier: "Angel" | "Pre-seed" | "Seed" | "Series A+" | "Multi-stage";
+  /**
+   * WAVE 115 · FINDING 2 (F2-a) — NOW OPTIONAL, AND ABSENT MEANS ABSENT.
+   *
+   * The ledger-derived fallback below hardcoded `"Angel"` for EVERY real holder
+   * of EVERY real company, and the client renders this field as a coloured badge
+   * under a column header titled "Experience"
+   * (client/src/components/investor/MemberValueIntelligenceInvestor.tsx:198-200,
+   * 239-246). Nothing measured it. A constant presented as a measurement is a
+   * fabrication with extra steps, and this platform's most important rule is
+   * that it does not fabricate.
+   *
+   * There is no recorded source for an experience tier on a ledger-derived
+   * holder, so the honest answer is that it is unavailable. It is NOT estimated
+   * from cheque count, ledger size, holding age or any other proxy — every one of
+   * those would be a new invented figure wearing the same costume.
+   *
+   * Still populated (correctly) for members that carry a real declared tier: the
+   * demo seed below, and any profile-backed source added later.
+   */
+  investorExperienceTier?: "Angel" | "Pre-seed" | "Seed" | "Series A+" | "Multi-stage";
   chapter?: string;
   screenNameOnly: boolean;
   allowDM: boolean;
@@ -269,12 +299,24 @@ export function registerSprint21Routes(app: Express): void {
             if (!e.investorId || e.investorId === ctx.userId) continue;
             if (seen.has(e.investorId)) continue;
             seen.add(e.investorId);
+            /* WAVE 115 · FINDING 2 — three fabrications removed from this object.
+               (F2-b) `displayLabel: e.investorId` printed a `u_…` id as a
+               person's name; it is now an honest noun phrase, with the id moved
+               to `reference` so support can still read it, labelled.
+               (F2-a) `investorExperienceTier: "Angel"` was a hardcoded constant
+               asserted about every real holder; it is now ABSENT, and the client
+               says "Not recorded" rather than showing a badge.
+               (F2-c) `areaOfExpertise: []` is retained — the shape requires an
+               array — but `displayLabelUnavailable` now tells the client this row
+               came from the ledger, not from a profile, so an empty list is
+               presented as "not recorded" rather than as "none declared". */
             derived.push({
               memberId: e.investorId,
               userId: e.investorId,
-              displayLabel: e.investorId,
+              displayLabel: "A cap-table holder",
+              displayLabelUnavailable: true,
+              reference: e.investorId,
               areaOfExpertise: [],
-              investorExperienceTier: "Angel",
               screenNameOnly: false,
               allowDM: true,
             });

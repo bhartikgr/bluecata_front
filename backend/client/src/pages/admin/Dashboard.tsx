@@ -84,7 +84,7 @@ const SURFACE_COPY: Record<Surface, {
   introPositive: string;
   kpi1Label: string; kpi1Help: string;
   kpi2Label: string; kpi2Help: string;
-  kpi3Label: string; kpi3Help: string;
+  kpi3Label: string; kpi3Help: string; kpi3Badge: string;
   kpi4Label: string; kpi4Help: string;
   funnelOnboardingTitle: string; funnelOnboardingHelp: string;
   funnelInvestorTitle: string; funnelInvestorHelp: string;
@@ -97,7 +97,21 @@ const SURFACE_COPY: Record<Surface, {
     introPositive: "Top companies and investors are ranked by a composite traction score (frequency × magnitude × recency). Use this to brief partnerships ops on who to engage proactively.",
     kpi1Label: "Companies", kpi1Help: "Total active founder workspaces on Capavate. Includes seed, Series A+, and Pre-Seed tenants regardless of round state. Trailing 30-day net new is shown as the MoM% badge.",
     kpi2Label: "Investors", kpi2Help: "Total invited-or-active investor user accounts. NRR x is the Net Revenue Retention multiple (active investor billing this quarter ÷ active investor billing prior quarter on the same cohort).",
-    kpi3Label: "Soft-circled", kpi3Help: "Sum of every non-binding investor commitment currently outstanding across all active rounds. A high ratio of soft-circled : funded suggests pipeline conversion friction worth investigating.",
+    /* WAVE 123 · FINDING 3 — THE BADGE SAID "Committed" WHILE THE LABEL SAID
+       "Soft-circled", AND THE READER HAD NO WAY TO KNOW WHICH THE NUMBER WAS.
+       ESTABLISHED FROM THE WRITER, NOT FROM THE OTHER PIECE OF COPY:
+       `server/adminPlatformStore.ts` fills this field from
+       `dbTotalCommittedSoftCircle()` in `server/lib/adminKpiDbReads.ts`, which
+       sums `amount` over EVERY non-deleted row of `soft_circles` for every
+       company — the query filters on `deleted_at IS NULL` and nothing else. So
+       the arithmetic is soft-circle INDICATIONS OF INTEREST in every state; it is
+       not committed capital, and it is not a live "currently outstanding"
+       balance. The LABEL was right and the BADGE was wrong, so the badge is
+       corrected to the non-binding wording and one sentence is APPENDED to the
+       help text recording what the sum actually covers. THE ARITHMETIC IS NOT
+       TOUCHED: restricting the sum to open soft-circles changes a published
+       platform number and is its own wave. */
+    kpi3Label: "Soft-circled", kpi3Badge: "Non-binding", kpi3Help: "Sum of every non-binding investor commitment currently outstanding across all active rounds. A high ratio of soft-circled : funded suggests pipeline conversion friction worth investigating. Read the figure as the total of every soft-circle indication on record — the sum includes soft-circles in every state and is filtered only by deletion, so it is an indication of interest and not committed or wired capital.",
     /* WAVE 61a · R51 — the clause "in the last 30 days" was DEMONSTRABLY FALSE and
        is replaced (R44 row 1). server/adminPlatformStore.ts computes
        `churnPct = cancelled / everCount * 100`, where `everCount` is a UNION over
@@ -121,7 +135,7 @@ const SURFACE_COPY: Record<Surface, {
     introPositive: "Member tier composition drives the platform's commercial flywheel: Standard members fund the operations, Lead/Syndicate members drive deal velocity, and Consortium Partners (law firms etc.) drive credibility. Watch the mix.",
     kpi1Label: "Members", kpi1Help: "Total Collective members across all statuses (active, lapsed, suspended, applied, pending). Use this as the top-of-funnel metric; the Active count below is the engaged subset.",
     kpi2Label: "Active members", kpi2Help: "Members with status=active (paid renewal current + KYC current). NRR is computed on this cohort only and reflects upgrades from Standard → Syndicate Lead tier.",
-    kpi3Label: "Committed via syndicates", kpi3Help: "Sum of every member-side commitment to a Collective-syndicated round in the last 12 months. Includes both deployed and pending allocations.",
+    kpi3Label: "Committed via syndicates", kpi3Badge: "Committed", kpi3Help: "Sum of every member-side commitment to a Collective-syndicated round in the last 12 months. Includes both deployed and pending allocations.",
     kpi4Label: "Deployed via syndicates", kpi4Help: "Sum of capital that has actually closed through Collective syndication. Committed÷Deployed gives you the syndication conversion rate — target above 65% for a healthy community.",
     funnelOnboardingTitle: "Application → activation funnel",
     funnelOnboardingHelp: "Started → submitted → KYC completed → activated. KYC is the most common drop-off — partner with the KYC vendor's CSM if completed/submitted ratio falls below 70%.",
@@ -185,10 +199,17 @@ export default function AdminDashboard() {
   const regionDensity = useMemo(() => {
     if (!data) return [];
     // v25.42h round-2 — r.raised is now nullable (collective surface has no
-    // per-region raised aggregate). Treat null as 0 capital for density.
+    // per-region raised aggregate).
+    /* WAVE 123 · FINDING 3, third site — found while enumerating every money
+       figure on this screen, and it is the same defect one step removed: an
+       unknown regional capital was turned into a density of `$0`, which reads on
+       the heatmap as a region with companies and no money rather than a region
+       that is not measured. An unknown density is now `null` and renders as the
+       em-dash `fmtUsdShort` already produces; regions whose density cannot be
+       computed sort last rather than sorting as if they were the weakest. */
     return [...data.regions]
-      .map(r => ({ ...r, density: r.companies > 0 && r.raised != null ? r.raised / r.companies : 0 }))
-      .sort((a, b) => b.density - a.density);
+      .map(r => ({ ...r, density: r.companies > 0 && r.raised != null ? r.raised / r.companies : null }))
+      .sort((a, b) => (b.density ?? -1) - (a.density ?? -1));
   }, [data]);
 
   // Sprint 28 — pull queue keys dynamically so Capavate and Collective both render their own queues.
@@ -303,13 +324,19 @@ export default function AdminDashboard() {
           <Card className="p-4" data-testid="stat-kpi-3">
             <div className="flex items-center justify-between mb-1">
               <DollarSign className="h-4 w-4 text-muted-foreground" />
-              <Badge variant="outline" className="text-[10px] text-emerald-700">Committed</Badge>
+              <Badge variant="outline" className="text-[10px] text-emerald-700">{copy.kpi3Badge}</Badge>
             </div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               {copy.kpi3Label}
               <HelpTip>{copy.kpi3Help}</HelpTip>
             </div>
-            <div className="text-2xl font-semibold mt-1">{fmtUsd(data?.summary.totalCommittedSoftCircle ?? 0)}</div>
+            {/* WAVE 123 · FINDING 3 — `?? 0` turned a deliberate `null` into a
+                confident `$0`. `fmtUsd` already renders `null` as an em-dash;
+                the coalesce was the whole defect. A `$0` that means "unknown" is
+                a false statement about money (R6), and the Collective surface
+                returns a LITERAL `null` for this field, so the tile was reading
+                "no soft-circles" where the truth was "not measured here". */}
+            <div className="text-2xl font-semibold mt-1">{fmtUsd(data?.summary.totalCommittedSoftCircle ?? null)}</div>
           </Card>
           <Card className="p-4" data-testid="stat-kpi-4">
             <div className="flex items-center justify-between mb-1">
@@ -320,7 +347,11 @@ export default function AdminDashboard() {
               {copy.kpi4Label}
               <HelpTip>{copy.kpi4Help}</HelpTip>
             </div>
-            <div className="text-2xl font-semibold mt-1">{fmtUsd(data?.summary.totalFunded ?? 0)}</div>
+            {/* WAVE 123 · FINDING 3 — the same defect on funded capital. Wave 116
+                made `dbTotalFunded()` return `null` when the platform total is
+                not determinable from the money on record; this line converted
+                that refusal straight back into `$0`. */}
+            <div className="text-2xl font-semibold mt-1">{fmtUsd(data?.summary.totalFunded ?? null)}</div>
           </Card>
         </div>
 
@@ -391,7 +422,13 @@ export default function AdminDashboard() {
                 </div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
                   SPV Wired
-                  <HelpTip>Sum of actual wired amounts on SPV subscriptions (wired_minor field), PER CURRENCY. Reflects real deposits, not soft-circles.</HelpTip>
+                  {/* WAVE 117 · FINDING 4 — was "(wired_minor field)": a storage
+                      column named to a human. The two facts that decide how this
+                      figure is read — PER CURRENCY, and real deposits rather than
+                      soft-circles — are kept verbatim. The word "soft-circles" is
+                      left exactly as it stands: owner ruling R91 forbids
+                      harmonising that vocabulary. */}
+                  <HelpTip>Sum of the amounts actually wired against SPV subscriptions, PER CURRENCY. Reflects real deposits, not soft-circles.</HelpTip>
                 </div>
                 <div className="mt-1 space-y-0.5" data-testid="stat-spv-wired-values">
                   {wiredCurrencies.length === 0 ? (

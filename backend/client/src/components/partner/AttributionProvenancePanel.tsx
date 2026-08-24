@@ -18,6 +18,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { attributionSourceLabel, actorDisplay, formatTimestamp } from "@/lib/partnerDisplay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -106,11 +107,22 @@ export default function AttributionProvenancePanel() {
             <ul className="space-y-2" data-testid="attribution-provenance-list">
               {q.data.attributions.map((a) => (
                 <li key={a.id} className="border-t pt-2" data-testid={`attribution-provenance-row-${a.id}`}>
-                  <div className="text-sm font-medium">{a.companyId}</div>
+                  {/* WAVE 106 - FINDING 4.5: this block printed a bare company
+                      code as a heading, a raw synthetic user id as if it were a
+                      person, and a raw ISO timestamp. The identifiers are still
+                      readable for support - now LABELLED as reference codes
+                      rather than passed off as a name or a title. */}
+                  <div className="text-sm font-medium">
+                    Company reference {a.companyId}
+                  </div>
                   <div className="text-xs text-[var(--cv-color-text-muted)]">
-                    {/* Nulls render as an em dash, never as a fabricated value. */}
-                    Source: {a.attributionSource || "—"} · By: {a.attributedBy || "—"} · On:{" "}
-                    {a.attributedAt || "—"}
+                    {/* Nulls are stated, never rendered as a fabricated value. */}
+                    Source: {attributionSourceLabel(a.attributionSource)} · By:{" "}
+                    {actorDisplay(a.attributedBy).text}
+                    {actorDisplay(a.attributedBy).reference
+                      ? ` (reference ${actorDisplay(a.attributedBy).reference})`
+                      : ""}
+                    {" "}· On: {formatTimestamp(a.attributedAt)}
                   </div>
                   <div
                     className="text-xs"
@@ -142,7 +154,7 @@ export default function AttributionProvenancePanel() {
             id="prov-company"
             value={companyId}
             onChange={(e) => setCompanyId(e.target.value)}
-            placeholder="company id"
+            placeholder="Company reference code"
             data-testid="attribution-provenance-company-input"
           />
           <Button

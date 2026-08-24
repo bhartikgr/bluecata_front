@@ -17,6 +17,7 @@ import { useSprint3, runReconciliation, buildDemoComputeOpts } from "@/lib/sprin
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { apiRequest } from "@/lib/queryClient";
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — the same two helpers the round-close panel now uses, so the founder-facing and admin-facing views of ONE divergence read identically. */
 
 /* v25.29 C8 — the hardcoded 3-entry COMPANIES list (co-acme/co-fluxform/
    co-helio) has been removed. We now fetch the real company list from
@@ -268,8 +269,14 @@ function ReconciliationResultPanel({ result }: { result: ReturnType<typeof useSp
  <tbody>
  {result.diffs.map((d) => (
  <tr key={d.key} className="border-t border-rose-200 ">
- <td className="py-1.5 px-2 font-medium">{d.holderId}</td>
- <td className="py-1.5 px-2">{d.kind}</td>
+ {/* WAVE 124 · FINDING 1 — the admin half of the same divergence table.
+     `CloseRoundPanel.tsx` is the founder's view of this identical
+     `HolderDiff` row; both now render the id as a labelled reference and the
+     kind as a sentence, so an admin and a founder reading the same
+     divergence over the phone are reading the same words. No name is
+     invented: `HolderDiff` has no name field. */}
+ <td className="py-1.5 px-2 font-medium">{partyReferenceLabel(d.holderId)}</td>
+ <td className="py-1.5 px-2">{humanizeMachineKey(d.kind)}</td>
  <td className="py-1.5 px-2">{d.series ?? "—"}</td>
  <td className="py-1.5 px-2 text-right font-mono tabular-nums">{d.primaryShares}</td>
  <td className="py-1.5 px-2 text-right font-mono tabular-nums">{d.referenceShares}</td>

@@ -360,9 +360,57 @@ export const BASELINE: BaselineEntry[] = [
        to see. The unlabelled total this entry pins is byte-for-byte the same
        expression, computed the same (still-wrong, still-owned) way. The fence is
        UNCHANGED: no pattern removed, no vocabulary token removed, no directory
-       excluded, nothing newly allowlisted, and the baseline is still exactly TWO. */
+       excluded, nothing newly allowlisted, and the baseline is still exactly TWO.
+
+       WAVE 107 re-pin: 1735 -> 1918. SAME SITE, byte-identical text. It moved
+       DOWN because WAVE 107 rewrote three things ABOVE it in `RoundDetail.tsx`:
+       the "Round terms" panel's liquidation-preference / anti-dilution / pro-rata
+       rows now READ stored fields instead of printing literals (FINDING 2), the
+       "Round lifecycle" stepper now resolves a stage from the round's state AND
+       its own invitation record instead of silently defaulting to the first stage
+       (FINDING 4), and one `data-testid` was added to the terms-row renderer.
+       NONE of those touch this figure or its arithmetic, and none of them render
+       a percentage: the liquidation row renders stored TEXT, the anti-dilution and
+       pro-rata rows render stored tokens or a named absence, and the stepper
+       renders stage labels and sentences with no percent site at all. The fence
+       itself is UNCHANGED - no pattern removed, no vocabulary token removed, no
+       directory excluded, nothing newly allowlisted - and the baseline is still
+       exactly TWO.
+
+       WAVE 111 re-pin: 1918 -> 1939 (and 2002 -> 2023). SAME SITES, byte-identical
+       text, moved down by 21 lines because WAVE 111 replaced the Terms tab's inline
+       liquidation-preference parse in `RoundDetail.tsx` with a call to the ONE
+       reader in `shared/liquidationTermsReader.ts` and documented why in a comment
+       block above it. That edit renders NO percentage: it prints a liquidation
+       multiple, a participation word and a participation cap expressed as a
+       MULTIPLE ("2.5x the invested amount"), never a percent, so it creates no new
+       percent site and changes neither of these two figures nor their arithmetic.
+       The fence itself is UNCHANGED - no pattern removed, no vocabulary token
+       removed, no directory excluded, nothing newly allowlisted - and the baseline
+       is still exactly TWO. */
+    /* WAVE 114 re-pin: 1939 -> 2031. SAME SITE, byte-identical text (which is what
+       made the fence report BASELINE-STALE rather than pass). It moved DOWN because
+       Wave 114 replaced the round header's single `raisedAmount` line with the three
+       LABELLED money states of Finding 1, and read the four governance terms of
+       Finding 2 through their shared reader. Neither touches this figure or its
+       arithmetic: the new percentage this wave renders is the SUBSCRIBED share of
+       the round target and it names its denominator in the sentence next to it
+       ("of target subscribed"). The fence itself is UNCHANGED - no pattern removed,
+       no vocabulary token removed, no directory excluded, nothing newly allowlisted
+       - and the baseline is still exactly TWO. */
+    /* WAVE 118 re-pin: 2031 -> 2068. SAME SITE, byte-identical text - that identity
+       is exactly why the fence said BASELINE-STALE instead of reporting a new site.
+       It moved DOWN 37 lines because Wave 118 Finding 2 restored the round-summary
+       panel to the four-div-plus-one-expression shape it had at baseline (the drop
+       gate keys panel children positionally, so Wave 114's in-JSX ternary read as
+       two lost children) and hoisted the money derivation into a `useMemo` above
+       the early returns. That is a JSX SHAPE change and a hook move: this span,
+       its `data.reduce(...)` sum and every figure it prints are untouched. The
+       fence itself is UNCHANGED - no pattern removed, no vocabulary token removed,
+       no directory excluded, nothing newly allowlisted - and the baseline is still
+       exactly TWO. */
     file: "client/src/pages/founder/RoundDetail.tsx",
-    line: 1735,
+    line: 2068,
     text: "<span className=\"font-mono tabular-nums\">{sym}{total.toLocaleString()} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>",
     owner: "W53 (round surface) — arithmetic, not labelling",
     why:
@@ -388,9 +436,45 @@ export const BASELINE: BaselineEntry[] = [
        use-of-proceeds card and the closing checklist. Appended at the END of their
        container, never inserted at its head, because a head insertion in an ordered
        container reads to the silent-drop guard as a mass removal. Neither panel
-       renders a percentage: both render only text the founder typed. */
+       renders a percentage: both render only text the founder typed.
+
+       WAVE 107 re-pin: 1819 -> 2002. SAME SITE, byte-identical text. It moved
+       DOWN because WAVE 107 rewrote three things ABOVE it in `RoundDetail.tsx`:
+       the "Round terms" panel's liquidation-preference / anti-dilution / pro-rata
+       rows now READ stored fields instead of printing literals (FINDING 2), the
+       "Round lifecycle" stepper now resolves a stage from the round's state AND
+       its own invitation record instead of silently defaulting to the first stage
+       (FINDING 4), and one `data-testid` was added to the terms-row renderer.
+       NONE of those touch this figure or its arithmetic, and none of them render
+       a percentage: the liquidation row renders stored TEXT, the anti-dilution and
+       pro-rata rows render stored tokens or a named absence, and the stepper
+       renders stage labels and sentences with no percent site at all. The fence
+       itself is UNCHANGED - no pattern removed, no vocabulary token removed, no
+       directory excluded, nothing newly allowlisted - and the baseline is still
+       exactly TWO. 
+       WAVE 111 re-pin: 1918 -> 1939 (and 2002 -> 2023). SAME SITES, byte-identical
+       text, moved down by 21 lines because WAVE 111 replaced the Terms tab's inline
+       liquidation-preference parse in `RoundDetail.tsx` with a call to the ONE
+       reader in `shared/liquidationTermsReader.ts` and documented why in a comment
+       block above it. That edit renders NO percentage: it prints a liquidation
+       multiple, a participation word and a participation cap expressed as a
+       MULTIPLE ("2.5x the invested amount"), never a percent, so it creates no new
+       percent site and changes neither of these two figures nor their arithmetic.
+       The fence itself is UNCHANGED - no pattern removed, no vocabulary token
+       removed, no directory excluded, nothing newly allowlisted - and the baseline
+       is still exactly TWO.
+*/
+    /* WAVE 114 re-pin: 2023 -> 2115. SAME SITE, byte-identical text, moved down by
+       the same two Finding 1 / Finding 2 edits described on the entry above. Still
+       the closing-checklist progress figure, still not an ownership share, still
+       unlabelled for the reason recorded below. Baseline remains exactly TWO. */
+    /* WAVE 118 re-pin: 2115 -> 2152. SAME SITE, byte-identical text, moved down 37
+       lines by the same Finding 2 shape restoration described on the entry above.
+       Still the closing-checklist progress figure (`done` of `items.length`), still
+       not an ownership share, still unlabelled for the reason recorded below.
+       Baseline remains exactly TWO. */
     file: "client/src/pages/founder/RoundDetail.tsx",
-    line: 1819,
+    line: 2152,
     text: "<span className=\"font-mono text-xs\">{pct.toFixed(0)}%</span>",
     owner: "W53 (round surface) — fence classification, not a screen edit",
     why:

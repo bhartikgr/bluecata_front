@@ -868,14 +868,11 @@ export const REGISTER: RegisterEntry[] = [
    * `??` fallback DOES render, so the classifier crosses default operators —
    * is preserved as a comment at the classifier, and both poles are pinned in
    * client/src/lib/__tests__/w87_internal_language_fence_bypasses.test.ts. */
-  {
-    file: "client/src/pages/partner/PartnerSpvEngine.tsx",
-    cls: "internal-token",
-    match: "series_a",
-    status: "debt",
-    reason:
-      "DEBT: an internal round-stage token as a placeholder example (`e.g. seed, series_a`). REPLACEMENT: \"e.g. Seed, Series A\" — the same information, written the way the rest of the product writes it.",
-  },
+  /* WAVE 106 - FINDING 4.1: the `series_a` DEBT row that stood here is GONE
+     because the copy it recorded is fixed. PartnerSpvEngine.tsx now reads
+     `placeholder="e.g. Seed, Series A"`, exactly the REPLACEMENT the row
+     prescribed, so keeping a row that matches nothing would make the fence
+     report a phantom on every run. */
 ];
 
 /* ── the rules ───────────────────────────────────────────────────────────── */

@@ -108,7 +108,11 @@ export default function AdminPayments() {
     <>
       <PageHeader
         title="Payments"
-        description="Unified payment ledger across all gateways. Read-only, sourced from the durable payment_ledger table."
+        /* WAVE 117 · FINDING 4 — was "...sourced from the durable payment_ledger
+           table": a storage table named to a human. What the reader needs to know
+           is that these entries are recorded and not recomputed, which is what it
+           now says. */
+        description="Unified payment ledger across all gateways. Read-only — every entry is a durable record of a payment, never a recalculated figure."
         breadcrumbs={[{ label: "Admin" }, { label: "Payments" }]}
       />
       <PageBody>
@@ -205,9 +209,13 @@ export default function AdminPayments() {
                           <Receipt className="h-6 w-6 opacity-40" />
                           <div className="text-sm font-medium">No payments recorded yet</div>
                           <div className="text-xs max-w-md">
-                            Payments appear here once a gateway webhook lands and writes to the durable
-                            <span className="font-mono"> payment_ledger</span> table. If you expected
-                            entries, verify the gateway is configured and webhooks are reaching the server.
+                            {/* WAVE 117 · FINDING 4 — the `payment_ledger` table name is
+                                gone from the empty state; the diagnosis it was there to
+                                support (a gateway that is not reaching us) is kept. */}
+                            Payments appear here once a gateway confirmation lands and is recorded on
+                            <span className="font-medium"> this durable ledger</span>. If you expected
+                            entries, verify the gateway is configured and that its confirmations are
+                            reaching Capavate.
                           </div>
                         </div>
                       )}

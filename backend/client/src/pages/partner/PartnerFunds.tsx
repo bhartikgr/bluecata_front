@@ -18,6 +18,10 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
+/* WAVE 115 · FINDING 1 (L8) — the fund status reached the list raw. The two
+   literal branches stay two literal branches (see the note above them about the
+   guard inventory); only the interpolated expression moved. */
+import { fundStatusLabel } from "@/lib/partnerDisplay";
 /* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of the SC-1 fix applied to
  * PartnerFundDetail.tsx in Wave 2.
  *
@@ -191,10 +195,10 @@ export default function PartnerFunds() {
                           "Vintage" copy string stays in the guard inventory. */}
                       {termsValue(f.terms, "vintage") ? (
                         <>
-                          Vintage {termsValue(f.terms, "vintage")} · {f.status}
+                          Vintage {termsValue(f.terms, "vintage")} · {fundStatusLabel(f.status)}
                         </>
                       ) : (
-                        f.status
+                        fundStatusLabel(f.status)
                       )}
                     </div>
                   </div>

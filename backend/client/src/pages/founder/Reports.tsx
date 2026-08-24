@@ -17,6 +17,7 @@ import { fmtDate, fmtDateTime, fmtPct } from "@/lib/format";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — existing helpers only: a labelled reference for an account key, and the shared humanising fallback. */
 
 type Recipient = { investorId: string; openedAt: string; reads: number };
 type Comment = { id: string; ts: string; actor: string; text: string; reactions: Record<string, number> };
@@ -44,6 +45,21 @@ const CADENCES = [
   { id: "quarterly", label: "Quarterly", cron: "0 9 1 */3 *" },
   { id: "annual", label: "Annual", cron: "0 9 1 1 *" },
 ];
+
+/* WAVE 124 · FINDING 1 — THE LABEL MAP WAS ALREADY IN THIS FILE.
+   The report list printed the raw schedule key (`monthly`) beside the next send
+   date while the schedule dialog 300 lines below rendered `CADENCES[].label` for
+   the same value. This is an accessor over THAT map, so there is one report
+   cadence vocabulary in this file and no second one. `billingCadenceLabel` in
+   `partnerDisplay` is deliberately NOT used: it governs SUBSCRIPTION billing
+   cadence, a different vocabulary, and R91 forbids harmonising vocabularies that
+   are genuinely separate. An unmapped key degrades to the shared humanising
+   fallback and can never render raw again. */
+function reportCadenceLabel(key: string | null | undefined): string {
+  const raw = String(key ?? "").trim();
+  if (!raw) return "Not recorded";
+  return CADENCES.find((c) => c.id === raw)?.label ?? humanizeMachineKey(raw);
+}
 
 export default function Reports() {
   const companyId = useActiveCompanyId();
@@ -106,7 +122,7 @@ export default function Reports() {
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {r.sentAt ? `Sent ${fmtDate(r.sentAt)} to ${r.recipientsCount} recipients` : "Not sent yet"}
-                          {r.schedule?.enabled && <> · Next: {fmtDate(r.schedule.nextSendAt)} ({r.schedule.cadence})</>}
+                          {r.schedule?.enabled && <> · Next: {fmtDate(r.schedule.nextSendAt)} ({reportCadenceLabel(r.schedule.cadence)})</>}
                         </div>
                         {r.status === "sent" && (
                           <div className="flex gap-3 text-xs text-muted-foreground mt-1">
@@ -270,7 +286,10 @@ function PreviewDialog({ report, onClose }: { report: Report; onClose: () => voi
               <div className="space-y-1">
                 {report.readReceipts.map(rr => (
                   <div key={rr.investorId} className="flex justify-between text-xs bg-secondary/30 rounded px-2 py-1" data-testid={`receipt-${rr.investorId}`}>
-                    <span className="font-mono">{rr.investorId}</span>
+                    {/* WAVE 124 · FINDING 1 — the read-receipt list named each investor
+                        by raw account key. `Report.readReceipts` carries no name, so the
+                        key becomes a labelled reference; nothing is invented. */}
+                    <span className="font-mono">{partyReferenceLabel(rr.investorId)}</span>
                     <span className="text-muted-foreground">{rr.reads} read{rr.reads === 1 ? "" : "s"} · last {fmtDateTime(rr.openedAt)}</span>
                   </div>
                 ))}
@@ -371,12 +390,21 @@ function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () =
                     data-testid={`checkbox-recipient-${h.userId}`}
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{h.name || h.email || h.userId}</div>
+                    {/* WAVE 124 · FINDING 1 — THE FALLBACK BRANCH WAS THE LEAK.
+                        `h.name || h.email || h.userId` reads as safe because the
+                        first two branches are human, but a cap-table holder with
+                        neither a name nor an email on record — which the seeded
+                        ledger contains — put a raw `u_…` account key in the
+                        recipient picker for an INVESTOR REPORT that is about to be
+                        emailed. Only the last branch changes; a real name or email
+                        still wins. This family is the one the first scan pass
+                        missed, and scan v2 was extended to catch it. */}
+                    <div className="font-medium truncate">{h.name || h.email || partyReferenceLabel(h.userId)}</div>
                     {/* WAVE 61a · R47 (closes L-5) — ownership at 2 dp. This site
                         relied on fmtPct's DEFAULT digits (1); the digits are now
                         explicit so a future change to the shared default cannot
                         silently move this precision. Display only (R16). */}
-                    <div className="text-xs text-muted-foreground truncate">{h.email || h.userId} · {fmtPct(h.ownershipPct, 2)} ownership</div>
+                    <div className="text-xs text-muted-foreground truncate">{h.email || partyReferenceLabel(h.userId)} · {fmtPct(h.ownershipPct, 2)} ownership</div>
                   </div>
                 </label>
               ))}

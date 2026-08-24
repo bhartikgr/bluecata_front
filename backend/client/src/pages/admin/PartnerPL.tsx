@@ -122,7 +122,12 @@ export default function PartnerPL() {
     <>
       <PageHeader
         title="Partner P&L"
-        description="Profit & loss across all consortium-partner billing entries — referral commissions and SPV deployment fees alike. Every amount is the database commission_minor for that entry. Use “Mark paid” to reconcile a pending entry."
+        /* WAVE 117 · FINDING 4 — was "Every amount is the database commission_minor
+           for that entry": a storage column named to a human. The CLAIM that
+           sentence makes is the one worth keeping — nothing on this page is
+           recomputed, each figure is the recorded amount — so it is stated without
+           the column name. */
+        description="Profit & loss across all consortium-partner billing entries — referral commissions and SPV deployment fees alike. Every amount shown is the commission recorded for that entry, never a recalculated one. Use “Mark paid” to reconcile a pending entry."
       />
       <PageBody>
         {/* Totals cards (DB-computed) */}

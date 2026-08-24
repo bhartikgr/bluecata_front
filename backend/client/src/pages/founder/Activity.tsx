@@ -13,6 +13,7 @@ import { fmtDateTime } from "@/lib/format";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 import { safeActorLabel, safeTargetLabel } from "@/lib/actorLabel";
+import { describeActivityAction } from "@/lib/activity/activityActionDescription"; /* WAVE 108 · FINDING 2 — never the raw event code. `classifyAction` in this file is deliberately NOT touched. */
 
 type ActivityRow = {
   id: string; ts: string; actor: string; action: string; target: string;
@@ -324,13 +325,13 @@ export default function ActivityPage() {
                         {activityLink(x) ? (
                           <Link href={activityLink(x)!} className="text-sm hover:underline">
                             <span className="font-medium" data-testid={`activity-actor-${x.id}`} data-actor-id={x.actor}>{formatActor(x.actor, selfId, selfName, x.actorLabel)}</span>{" "}
-                            <span className="text-muted-foreground">{x.action}</span>{" "}
+                            <span className="text-muted-foreground" data-action={x.action}>{describeActivityAction(x.action)}</span>{" "}
                             <span className="font-medium" data-testid={`activity-target-${x.id}`} data-target-id={x.target}>{formatTarget(x.target, x.targetLabel)}</span>
                           </Link>
                         ) : (
                           <span className="text-sm">
                             <span className="font-medium" data-testid={`activity-actor-${x.id}`} data-actor-id={x.actor}>{formatActor(x.actor, selfId, selfName, x.actorLabel)}</span>{" "}
-                            <span className="text-muted-foreground">{x.action}</span>{" "}
+                            <span className="text-muted-foreground" data-action={x.action}>{describeActivityAction(x.action)}</span>{" "}
                             <span className="font-medium" data-testid={`activity-target-${x.id}`} data-target-id={x.target}>{formatTarget(x.target, x.targetLabel)}</span>
                           </span>
                         )}

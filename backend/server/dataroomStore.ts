@@ -536,6 +536,66 @@ export function listFilesForCompany(companyId: string): DRFile[] {
   })) as DRFile[];
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 113 · FINDING 2 (register B-37, severity S4) — THE ONE PLACE AN INVESTOR'S
+   DATA-ROOM ACCESS IS DECIDED.
+
+   THE DEFECT. `Permission` has carried a `view` flag since it was written
+   (`:112-117`, mirroring `shared/schema.ts:1502-1511`). The founder's permission
+   UI writes it and `GET /api/founder/dataroom/permissions` returns it. Nothing in
+   this file ever READ it. The gate asked only whether a permission row existed, so
+   switching an investor's access off — which stores `view: false` — left them able
+   to open every file in the folder.
+
+   THE PREDICATE. One function, used by every path that can return a document or
+   its metadata, and by the listing. It fails CLOSED: a missing folder id, a
+   missing row, or `view: false` all return `null`. There is no argument it can be
+   called with that grants access to a revoked investor.
+
+   AMBIGUITY, STATED AND RESOLVED CONSERVATIVELY (W113_PREFLIGHT.md §2.1). Does
+   revoking access revoke an ALREADY-ISSUED link? The signed-link system in
+   `server/track1Routes.ts` is a SEPARATE store (`data_room_grants`, keyed by round
+   and file, with no folder reference), so today it cannot consult these
+   permissions at all. The conservative reading — a revocation revokes the PERSON,
+   not merely a URL — is recorded as an open item; it needs a cross-store join that
+   does not exist and is deliberately NOT invented here.
+   ════════════════════════════════════════════════════════════════════════════ */
+export function investorFolderGrant(
+  investorId: string | null | undefined,
+  folderId: string | null | undefined,
+): Permission | null {
+  if (!investorId || !folderId) return null;
+  const p = permissions.find((x) => x.investorId === investorId && x.folderId === folderId);
+  if (!p) return null;
+  if (p.view !== true) return null; // switched off, or stored as anything but an explicit true
+  return p;
+}
+
+/**
+ * WAVE 113 · FINDING 2, PATH P1 — the investor LISTING, filtered.
+ *
+ * `GET /api/dataroom` (`server/routes.ts`) returned every file the company owns to
+ * any caller who passed the company-access gate. "The list is filtered but not the
+ * fetch" was not the shape of this bug: the list was not filtered AT ALL, so a
+ * revoked investor could read the company's entire document inventory — names,
+ * sizes, categories, upload dates — even before trying to open one. Fixing only
+ * the fetch would have left that inventory leak in place, which is why both are
+ * done in this wave.
+ *
+ * A founder of the company, and an admin, still see everything. An investor sees
+ * only files in folders they hold a `view: true` grant for. Anyone else sees
+ * nothing — fail closed, and never an error dressed up as an empty list: the
+ * caller's own company gate has already run.
+ */
+export function listFilesVisibleTo(
+  companyId: string,
+  viewer: { userId?: string | null; isAdmin?: boolean; isFounderOfCompany?: boolean },
+): DRFile[] {
+  const all = listFilesForCompany(companyId);
+  if (viewer.isAdmin || viewer.isFounderOfCompany) return all;
+  return all.filter((f) => investorFolderGrant(viewer.userId, f.folderId) !== null);
+}
+
 export function registerDataroomRoutes(app: Express): void {
   app.get("/api/founder/dataroom/folders", requireAuth, (req, res) => {
     // Avi 22-May Issue 5 — default to active company when query param absent.
@@ -712,22 +772,64 @@ export function registerDataroomRoutes(app: Express): void {
     // Investor with server-resolved grant against this folder?
     const investorId = ctx.userId; // SERVER-DERIVED, not from ?investorId=
     if (investorId) {
-      const p = permissions.find((p) => p.investorId === investorId && p.folderId === f.folderId);
+      /* ── WAVE 113 · FINDING 2 (B-37, S4) — `view` IS NOW READ ───────────────
+
+         WHAT THIS LINE USED TO BE, AND THE HOLE IT LEFT:
+
+           const p = permissions.find((p) => p.investorId === investorId
+                                          && p.folderId   === f.folderId);
+           if (p) return { allow: true, ctx, role: "investor" };
+
+         Allow was granted because a permission ROW EXISTED. `p.view` — stored
+         since the schema was written (`shared/schema.ts:1502-1511`), written by
+         the founder's permission UI, and returned by `GET .../permissions` — was
+         read NOWHERE in this file. So a founder who switched an investor's data
+         room access OFF left a row with `view: false` behind, and that row was
+         itself the pass. The investor kept every file: metadata, bytes, and the
+         in-tab preview.
+
+         `p.download` was already re-checked eleven lines below, which is what
+         proves this was an oversight rather than a design.
+
+         `investorFolderGrant` fails CLOSED on all three of: no row, `view:false`,
+         and no folder id. It is the only way an investor enters this gate, so
+         metadata, download and inline preview are closed by this one change — see
+         `build_log/wave113/W113_PREFLIGHT.md` §2 for the enumeration of every
+         path that reaches it. */
+      const p = investorFolderGrant(investorId, f.folderId);
       if (p) return { allow: true, ctx, role: "investor" };
     }
     res.status(404).json({ error: "not_found" });
     return { allow: false };
   }
 
-  app.get("/api/founder/dataroom/files/:id", requireAuth, (req, res) => {
+  /* WAVE 113 · FINDING 3 (wave 43) — THE ADDRESS THE INVESTOR CLIENT ACTUALLY CALLS.
+
+     DIAGNOSIS, BEFORE ANY FIX. Four investor call sites request
+     `/api/dataroom/files/:id/download` (`client/src/pages/investor/CompanyDetail.tsx:465,469`
+     and `client/src/pages/investor/InvitationDetail.tsx:1181,1184`). Only
+     `/api/founder/dataroom/files/:id/download` was ever registered. `/api/dataroom`
+     existed as a LISTING route alone. So the request fell through to the SPA
+     catch-all, came back as `index.html` with HTTP 200, and `window.open` opened a
+     tab containing the application shell. The `catch { }` around it never even
+     fired, because nothing threw. That silence was the defect — not the viewer,
+     and not the permission check.
+
+     Both investor-facing addresses are registered here, sharing the SAME handler
+     and therefore the SAME hardened gate above, so this surface is born with the
+     `view` check rather than inheriting the hole it was added to close. */
+  const fileMetaHandler = (req: Request, res: Response) => {
     const f = files.find((x) => x.id === req.params.id);
     if (!f) return res.status(404).json({ error: "not_found" });
     const gate = dataroomFileOwnerGate(req, res, f);
     if (!gate.allow) return;
     res.json({ ...f, _buf: undefined });
-  });
+  };
+  for (const p of ["/api/founder/dataroom/files/:id", "/api/dataroom/files/:id"]) {
+    app.get(p, requireAuth, fileMetaHandler);
+  }
 
-  app.get("/api/founder/dataroom/files/:id/download", requireAuth, async (req, res) => {
+  const fileDownloadHandler = async (req: Request, res: Response) => {
     const f = files.find((x) => x.id === req.params.id);
     if (!f) return res.status(404).json({ error: "not_found" });
     const gate = dataroomFileOwnerGate(req, res, f);
@@ -738,8 +840,22 @@ export function registerDataroomRoutes(app: Express): void {
        has a download grant via their authenticated identity. We keep the
        download-permission re-check here for investors as defense-in-depth. */
     if (gate.role === "investor") {
-      const p = permissions.find((p) => p.investorId === ctx.userId && p.folderId === f.folderId);
-      if (!p?.download) return res.status(403).json({ error: "download_denied" });
+      /* WAVE 113 · FINDING 2 — BOTH grants are required here, and NEITHER is
+         relaxed. `investorFolderGrant` re-establishes `view` (so a revoked
+         investor cannot reach the bytes even if the gate above is ever refactored),
+         and `download` is then required exactly as before.
+
+         RECORDED, NOT CHANGED: this makes the INLINE preview require `download`
+         too, because the check sits above the `wantInline` branch. That is
+         stricter than the two-flag permission model implies, and it is left
+         stricter on purpose — loosening it would widen access in the same wave that
+         narrows it, which is not a trade this platform makes. It is written up in
+         `W113_PREFLIGHT.md` §2 so the over-strictness is a known, deliberate
+         position rather than an accident. The refusal reason now names WHICH grant
+         is missing, so the investor is told the truth instead of guessing. */
+      const p = investorFolderGrant(ctx.userId, f.folderId);
+      if (!p) return res.status(403).json({ error: "view_denied", message: "Your access to this data room has been switched off by the company, so this document cannot be opened. Refreshing will not change it — ask the company to restore your access." });
+      if (!p.download) return res.status(403).json({ error: "download_denied", message: "You may see that this document exists, but the company has not granted you permission to open or download it." });
     }
     // v23.4.7 Phase 12 / BUG 027 — "view" icon in the dataroom used to
     // download files. Clients can now pass ?disposition=inline (or
@@ -788,7 +904,10 @@ export function registerDataroomRoutes(app: Express): void {
     res.setHeader("Content-Type", f.mime || "application/octet-stream");
     res.setHeader("Content-Disposition", `${disposition}; filename="${safeAsciiName}"; ${utf8FilenameStar}`);
     return res.send(bytes);
-  });
+  };
+  for (const p of ["/api/founder/dataroom/files/:id/download", "/api/dataroom/files/:id/download"]) {
+    app.get(p, requireAuth, fileDownloadHandler);
+  }
 
   app.get("/api/founder/dataroom/permissions", requireAuth, (req, res) => {
     const { companyId } = resolveCompanyIdParam(req);

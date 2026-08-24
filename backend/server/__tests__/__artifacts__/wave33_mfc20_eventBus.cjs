@@ -10744,7 +10744,25 @@ var init_schema = __esm({
            investor cap table and the round wizard read one source. */
         shortLabel: "Common shares",
         label: "Common Shares",
-        description: "Founder + employee equity. Typically used for Foundation rounds and ESOP issuance.",
+        /* WAVE 107 - F5. WAS: "Founder + employee equity. Typically used for
+               Foundation rounds and ESOP issuance." That sentence asserted a
+               RESTRICTION THAT DOES NOT EXIST anywhere in this codebase, and the owner
+               proved it with a live test: common shares were issuable to every holder
+               type. Verified from the source in this wave, not assumed - there is no
+               CHECK constraint in `migrations/*.sql` pairing `holder_type` with an
+               instrument, no branch in `server/routes.ts` conditioning an accepted
+               `instrument` on a `holderType`, and no holder-type filter on this list in
+               the wizard (`INSTRUMENTS` is filtered by `suggestedFor` / round category
+               only). `HOLDER_TYPE_LABELS` below is display copy. So nothing was removed,
+               because there was nothing to remove: the restriction lived only in this
+               sentence.
+        
+               Issuing common shares to outside investors is ordinary practice across
+               Europe and Asia, so the description now says what the INSTRUMENT IS and
+               stays jurisdiction-neutral. It names no holder class, recommends no
+               structure and expresses no preference between share classes - choosing one
+               is the founder's and their counsel's decision, not this table's. */
+        description: "Ordinary equity with no liquidation preference and no anti-dilution protection. Issuable to any holder - founders, employees or investors - in any jurisdiction.",
         suggestedFor: ["foundation"],
         // Wave C v26.5.0 (Shadie Finding 1a) — for a POST-FORMATION priced common
         // round we need pre-money and fully-diluted pre-money shares to compute
@@ -10763,7 +10781,14 @@ var init_schema = __esm({
            investor cap table and the round wizard read one source. */
         shortLabel: "Preferred shares",
         label: "Preferred Shares (Priced Round)",
-        description: "NVCA-style priced equity with liquidation preference. Standard for Series A+.",
+        /* WAVE 107 - F5. WAS: "NVCA-style priced equity with liquidation preference.
+           Standard for Series A+." Rewritten for the same reason as `common` above:
+           "Standard for Series A+" is a recommendation, and tying the class to a
+           US-centric NVCA template is not jurisdiction-neutral. The description now
+           states what the class carries. `suggestedFor` still drives the wizard's
+           suggestions and the `fields` array still drives which inputs render;
+           neither is a restriction on who may hold the class and neither is changed. */
+        description: "Priced equity carrying a liquidation preference, and optionally participation and anti-dilution terms recorded on the round. Issuable to any holder in any jurisdiction.",
         suggestedFor: ["series_a", "series_b", "series_c"],
         // W-V44 FIX B (Avi #1): the server REQUIRES sharesAuthorized > 0 for a priced
         // `preferred` round (routes.ts priced-round guard, deliberately fail-closed as
@@ -22062,15 +22087,26 @@ var init_money = __esm({
   }
 });
 
+// shared/liquidationTermsReader.ts
+var PARTICIPATION_CAP_MAX;
+var init_liquidationTermsReader = __esm({
+  "shared/liquidationTermsReader.ts"() {
+    "use strict";
+    PARTICIPATION_CAP_MAX = 10;
+  }
+});
+
 // server/lib/roundStoredTerms.ts
-var SENIORITY_RANK_MAX, PARTICIPATION_CAP_MAX, PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE, SENIORITY_NOT_WRITABLE_MESSAGE, OPTION_POOL_POST_PERCENT_MAX, OPTION_POOL_POST_PERCENT_CEILING_MESSAGE;
+var SENIORITY_RANK_MAX, PARTICIPATION_CAP_MAX2, PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE, SENIORITY_NOT_WRITABLE_MESSAGE, OPTION_POOL_POST_PERCENT_MAX, OPTION_POOL_POST_PERCENT_CEILING_MESSAGE;
 var init_roundStoredTerms = __esm({
   "server/lib/roundStoredTerms.ts"() {
     "use strict";
     init_roundsStore();
+    init_liquidationTermsReader();
+    init_liquidationTermsReader();
     SENIORITY_RANK_MAX = 99;
-    PARTICIPATION_CAP_MAX = 10;
-    PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE = `capParticipation is the CEILING on what a participating preference class can take in total at an exit, expressed as a multiple of the money it invested \u2014 "1x participating, capped at 2x" means the class takes its preference and then shares in what is left until its total reaches 2x its investment, and nothing after that. It must be a number greater than 0 and no more than ${PARTICIPATION_CAP_MAX} (a trailing "x" is accepted, so both 2 and "2x" are fine). Fractions are allowed: 1.5x and 2.5x are ordinary terms. Send null or an empty value to remove it, which means the class is UNCAPPED and participates without limit. A cap of 0 is refused rather than read as "no cap": it would pay the class less than the preference it negotiated.`;
+    PARTICIPATION_CAP_MAX2 = PARTICIPATION_CAP_MAX;
+    PARTICIPATION_CAP_NOT_WRITABLE_MESSAGE = `capParticipation is the CEILING on what a participating preference class can take in total at an exit, expressed as a multiple of the money it invested \u2014 "1x participating, capped at 2x" means the class takes its preference and then shares in what is left until its total reaches 2x its investment, and nothing after that. It must be a number greater than 0 and no more than ${PARTICIPATION_CAP_MAX2} (a trailing "x" is accepted, so both 2 and "2x" are fine). Fractions are allowed: 1.5x and 2.5x are ordinary terms. Send null or an empty value to remove it, which means the class is UNCAPPED and participates without limit. A cap of 0 is refused rather than read as "no cap": it would pay the class less than the preference it negotiated.`;
     SENIORITY_NOT_WRITABLE_MESSAGE = `seniority is a preference class's RANK in the exit payment order, recorded as a whole number: 0 is the most senior, then 1, 2, \u2026 up to ${SENIORITY_RANK_MAX}. It must be an integer in [0, ${SENIORITY_RANK_MAX}] \u2014 it is never rounded, and a fraction is a typing error rather than a ranking. Send null to remove it, which returns the class to having no recorded seniority; the exit waterfall then refuses with seniority_not_on_record rather than assuming an order.`;
     OPTION_POOL_POST_PERCENT_MAX = 50;
     OPTION_POOL_POST_PERCENT_CEILING_MESSAGE = `An option pool of ${OPTION_POOL_POST_PERCENT_MAX}% of fully-diluted shares or more is not an employee option plan, and Capavate will not model one. It is percent-as-written : 15 means 15%, and it is never rescaled by how big it looks. The pool top-up is solved as T = (P x (E + u + N) - 100 x u) / (100 - P), so the cost of each extra point of pool rises as P approaches 100: at 15% a pool is worth roughly its own size in dilution, and at 99% the arithmetic is legal but produces a 46-digit share count that is not a cap table. Typical Series A pools are 10-20% (Carta; Cooley GO). If you genuinely need a reserve at or above ${OPTION_POOL_POST_PERCENT_MAX}%, that is a capital-structure decision to record deliberately, not a percentage to type into this field.`;
@@ -22631,6 +22667,24 @@ var init_roundsStore = __esm({
       "liquidationPreference",
       "antiDilutionType",
       "useOfProceeds",
+      /* WAVE 107 - F1-B: THE WIZARD'S ROUND NARRATIVE, EDITABLE AFTER CREATION.
+      
+           `notes` is written by the round wizard ("Round narrative for investors",
+           `RoundNew.tsx` `input-notes`), stashed into `extras_json` by
+           `POST /api/rounds` and rendered on Round Detail. It was NOT on this list, so
+           `PATCH /api/rounds/:id/terms` rejected it as UNKNOWN_FIELD and the founder
+           had no way to correct the paragraph investors read first.
+      
+           The reported symptom - "the use-of-proceeds narrative comes back as an empty
+           textarea" - was NOT this key being dropped: the wizard's text persists and
+           re-renders correctly. The Edit-terms box the founder was looking at is
+           `termsSummary`, a DIFFERENT and real column (`rounds.terms_summary`) that the
+           wizard never writes. The genuine gap was the reverse one, fixed here: the
+           wizard's own two narrative fields had no edit surface at all.
+      
+           ADDITIVE, and NO MIGRATION - `extras_json` already carries it and
+           `rowToRound` already re-spreads it. Migrations stay at 173, highest 0192. */
+      "notes",
       "cap",
       /* WAVE 70 · D5 — THE SAFE CAP CONVENTION, MADE STORABLE. ADDITIVE, NO MIGRATION.
          `shared/roundMathEngineAdapter.ts:892` hardcoded `type: "post_money_cap"` for
@@ -22691,7 +22745,39 @@ var init_roundsStore = __esm({
            store it through the extras sweep with no validation at all, is fenced too.
            Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught by
            it; Wave 81 refused to repeat that, and neither does this. */
-      "capParticipation"
+      "capParticipation",
+      /* WAVE 114 · FINDING 2 (item 31) — THE FOUR GOVERNANCE TERMS. ADDITIVE, NO MIGRATION.
+           `boardComposition`, `informationRights`, `dragAlong` and `rofrCoSale` were
+           printed on every round's terms panel in `RoundDetail.tsx` as FLAT STRING
+           LITERALS, identical on every round in the platform, because no storage
+           existed for them. A term sheet that asserts a drag-along nobody agreed is a
+           legal statement this platform cannot support.
+      
+           They live in `extras_json`, which `POST /api/rounds` already stashes for any
+           non-column field and which `rowToRound` already re-spreads on hydrate, so
+           listing them here is only what lets `PATCH /api/rounds/:id/terms` round-trip
+           them instead of rejecting them as UNKNOWN_FIELD — the same additive path
+           `optionPoolPostPercent` (Wave 58b), `safeType` (Wave 70), `seniority`
+           (Wave 81) and `capParticipation` (Wave 94) all took. Migrations stay at
+           canonical 173, highest `0192`.
+      
+           EVERY WRITER THAT CAN NOW REACH THEM VALIDATES THEM, in this same wave, with
+           ONE imported fence declared once in `shared/roundGovernanceTerms.ts`
+           (`validateGovernanceTermStored`) — the same file the founder terms panel
+           reads them back through, so writer and reader cannot drift. Adding these
+           keys makes them reachable through `updateRound` from
+           `PATCH /api/founder/rounds/:id` as well as from `PATCH /api/rounds/:id/terms`.
+           Wave 76 shipped a whitelist entry a wave ahead of its fence and was caught
+           by it; Wave 81 refused to repeat that, and neither does this.
+      
+           THEY ARE API-ONLY THIS WAVE. There is no control for them on the Edit-terms
+           dialog — exactly where `seniority` was left by Wave 81 — and the terms panel
+           STATES that the value is not recorded rather than printing one. Carried as
+           OQ-W114-3 in build_log/wave114/W114_TESTS.md. */
+      "boardComposition",
+      "informationRights",
+      "dragAlong",
+      "rofrCoSale"
     ]);
     UPDATE_ROUND_EXTRAS_KEYS = Array.from(UPDATE_EXTRAS_WHITELIST);
   }
@@ -22716,6 +22802,48 @@ var init_errors3 = __esm({
   }
 });
 
+// shared/roundMoneyOnRecordView.ts
+var ROUND_MONEY_STATE_LABEL, ROUND_MONEY_STATE_MEANING, ROUND_MONEY_STATE_ORDER;
+var init_roundMoneyOnRecordView = __esm({
+  "shared/roundMoneyOnRecordView.ts"() {
+    "use strict";
+    ROUND_MONEY_STATE_LABEL = Object.freeze({
+      softCircled: "Soft-circled (non-binding)",
+      committed: "Committed (signed, cash not received)",
+      funded: "Funded (cash recorded)"
+    });
+    ROUND_MONEY_STATE_MEANING = Object.freeze({
+      softCircled: "An investor has indicated an amount. Not a contract.",
+      committed: "A signed, binding subscription. No money has arrived yet.",
+      funded: "The wire is recorded, or the position is on the cap table."
+    });
+    ROUND_MONEY_STATE_ORDER = Object.freeze([
+      "softCircled",
+      "committed",
+      "funded"
+    ]);
+  }
+});
+
+// server/lib/roundRaisedTotals.ts
+var B_ZERO2, STATUS_TO_BUCKET;
+var init_roundRaisedTotals = __esm({
+  "server/lib/roundRaisedTotals.ts"() {
+    "use strict";
+    init_roundMoneyOnRecordView();
+    init_currency();
+    init_money();
+    init_roundMoneyOnRecordView();
+    B_ZERO2 = BigInt(0);
+    STATUS_TO_BUCKET = Object.freeze({
+      intent: "softCircled",
+      confirmed: "committed",
+      wired: "funded",
+      committed: "funded"
+    });
+  }
+});
+
 // server/lib/adminKpiDbReads.ts
 var init_adminKpiDbReads = __esm({
   "server/lib/adminKpiDbReads.ts"() {
@@ -22725,6 +22853,7 @@ var init_adminKpiDbReads = __esm({
     init_softCircleStore();
     init_connection();
     init_errors3();
+    init_roundRaisedTotals();
   }
 });
 
@@ -24987,12 +25116,12 @@ var init_feeSettlementAuthority = __esm({
 });
 
 // server/lib/spvSideLetterWaterfall.ts
-var B_ZERO2, B_ONE2, B_TWO2, B_SCALE2;
+var B_ZERO3, B_ONE2, B_TWO2, B_SCALE2;
 var init_spvSideLetterWaterfall = __esm({
   "server/lib/spvSideLetterWaterfall.ts"() {
     "use strict";
     init_money();
-    B_ZERO2 = BigInt(0);
+    B_ZERO3 = BigInt(0);
     B_ONE2 = BigInt(1);
     B_TWO2 = BigInt(2);
     B_SCALE2 = BigInt(CARRY_FRACTION_SCALE);
@@ -25834,6 +25963,7 @@ var init_partnerWorkspaceStore = __esm({
     init_chapterDefaults();
     init_logger2();
     init_partnerFeeResolver();
+    init_spvEngineStore();
     init_storePersistenceShim();
     init_storePersistenceShim();
     require5 = (0, import_node_module6.createRequire)(__importMetaUrl);
@@ -26272,7 +26402,13 @@ function rebuildLedgerIndexIfStale() {
       perUser = /* @__PURE__ */ new Map();
       idx.set(e.investorId, perUser);
     }
-    perUser.set(e.companyId, { companyId: e.companyId, ownershipPct: 0, companyName: e.companyId });
+    perUser.set(e.companyId, {
+      companyId: e.companyId,
+      ownershipPct: 0,
+      ownershipPctKnown: false,
+      ownershipBasis: null,
+      companyName: e.companyId
+    });
   }
   _ledgerIndex = idx;
   _ledgerIndexLen = ledger.length;
@@ -26284,7 +26420,12 @@ function derivedPositionsFor(userId) {
   return Array.from(per.values()).map((p) => ({
     companyId: p.companyId,
     companyName: p.companyName,
-    ownershipPct: p.ownershipPct
+    ownershipPct: p.ownershipPct,
+    /* WAVE 116 · FINDING 3 — the "is this a real figure?" flag travels with the
+       figure. Dropping it here would have re-anonymised the sentinel one hop
+       later, which is exactly how the platform ended up with eight of these. */
+    ownershipPctKnown: p.ownershipPctKnown,
+    ownershipBasis: p.ownershipBasis
   }));
 }
 function mergedMembership(userId) {
@@ -26331,8 +26472,11 @@ var init_membershipStore = __esm({
         lapsed: false,
         reason: "Active member on cap table for 2 companies.",
         capTablePositions: [
-          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.041 },
-          { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012 }
+          /* WAVE 116 · FINDING 3 — demo seed figures ARE entered values, so they are
+             flagged known, which is what distinguishes them from the ledger-derived
+             `0` sentinel below. */
+          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.041, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
+          { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
         ],
         canApplyToCollective: true
       },
@@ -26344,7 +26488,7 @@ var init_membershipStore = __esm({
         lapsed: true,
         reason: "Membership renewal lapsed; Collective access removed but cap-table comms remain.",
         capTablePositions: [
-          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018 }
+          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
         ],
         canApplyToCollective: false
       },
