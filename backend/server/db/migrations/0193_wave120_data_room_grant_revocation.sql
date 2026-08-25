@@ -1,0 +1,57 @@
+-- WAVE 120 · FINDING 1 — MAKE A PUBLIC DATA-ROOM LINK REVOCABLE.
+--
+-- THE DEFECT (Reviewer A D6, re-verified in W120_PREFLIGHT.md §1.1).
+-- `GET /api/public/data-room/files/:fileId?grant=<token>` (registered
+-- UNAUTHENTICATED at server/track1Routes.ts:4129) validated a signed link by
+-- checking two things only: that the token matched a row, and that
+-- `expires_at` had not passed (server/track1Routes.ts:3623-3624). The grantee
+-- recorded on the row was SELECTed and never compared to the caller, and
+--
+--     grep -rn data_room_grants server --include=*.ts   (non-test)
+--
+-- returned exactly two statements in the whole tree — the INSERT at :3580 and
+-- the SELECT at :3614. No UPDATE. No DELETE. No route. So once a link had been
+-- issued for a document a company shares with investors during a fundraise,
+-- it worked for ANYONE holding it, and NOTHING could withdraw it, for a TTL
+-- that runs to 43 200 minutes (30 days, :3553).
+--
+-- WHAT THIS MIGRATION ADDS, AND WHY IT IS TWO COLUMNS AND NOT ONE.
+--   revoked_at  TEXT  — the ISO instant the grant was withdrawn. NULL means
+--                       "live"; the read path refuses the moment it is stamped,
+--                       because it re-reads the row on EVERY request. There is
+--                       no cache to invalidate and no TTL to wait out, which is
+--                       what "immediately" has to mean for a leaked link.
+--   revoked_by  TEXT  — WHO withdrew it. A revocation on a document access path
+--                       is an audit-bearing act; recording the actor is what
+--                       makes it answerable later. Kept as a sibling column
+--                       rather than folded into a JSON blob so it is greppable.
+--
+-- ADDITIVE ONLY. Two `ALTER TABLE … ADD COLUMN`. No column is dropped, no
+-- column is retyped, no existing row is rewritten, and every historical grant
+-- keeps NULL in both columns — which is exactly its current meaning, "never
+-- revoked". A grant issued before this migration therefore behaves identically
+-- until a founder withdraws it.
+--
+-- NO INDEX IS CREATED HERE, DELIBERATELY — the same reasoning migration 0188
+-- records: a plain `CREATE INDEX` that fails is downgraded to a warning by the
+-- runner and leaves the migration UNRECORDED and pending, and
+-- scripts/migration_chain_check.sh counts index warnings as failures. Lookups
+-- reach this table by primary key (`id`, the revoke path) or by the UNIQUE
+-- `token` index that already exists (the read path), so neither new column is
+-- ever a search key.
+--
+-- IDEMPOTENT. SQLite has no `ADD COLUMN IF NOT EXISTS`; re-running raises
+-- "duplicate column name: revoked_at", which the numbered runner
+-- (server/db/migrate.ts :: isIdempotentSqliteError) swallows by design, exactly
+-- as it does for the additive ALTERs in server/db/connection.ts.
+--
+-- WHY connection.ts IS NOT ALSO EDITED. `server/db/connection.ts:5452-5462`
+-- creates `data_room_grants` inline for dev/test, and that file is SACRED under
+-- ratified WAIVER-6. It is NOT touched by this wave. Instead the two grant
+-- handlers in server/track1Routes.ts call a local, PRAGMA table_info-checked
+-- `ensureDataRoomGrantRevocationColumn()` before they read or write the table —
+-- the same self-heal pattern migration 0188 documents for its own WAIVER-6
+-- parity edit, and idempotent without relying on the runner's swallow.
+
+ALTER TABLE data_room_grants ADD COLUMN revoked_at TEXT;
+ALTER TABLE data_room_grants ADD COLUMN revoked_by TEXT;

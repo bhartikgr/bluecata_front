@@ -24,17 +24,15 @@ import { log } from "./lib/logger";
  * VERSIONED so the exact wording that was assented to is provable. If the copy
  * ever changes, bump ATTESTATION_VERSION and add the new text — never mutate a
  * shipped version in place.
+ *
+ * WAVE 138 — the wording is UNCHANGED; it now lives in ONE place
+ * (`shared/spvAttestation.ts`) instead of being copied into the client as well.
+ * The text recorded at `:87` below and the text a partner reads and ticks are
+ * therefore the same bytes by construction, not by two files agreeing. Re-
+ * exported here so every existing importer of this module is unaffected.
  */
-export const ATTESTATION_VERSION = "v1";
-export const ATTESTATION_TEXT_V1 =
-  "I certify that I am authorized to launch this special-purpose vehicle on " +
-  "behalf of this Consortium Partner. I confirm that the information entered " +
-  "— including jurisdiction, legal structure, mandate, fees, carry, and terms " +
-  "— is accurate and complete to the best of my knowledge. I understand this " +
-  "action creates a recorded, timestamped commitment on the Capavate " +
-  "platform, and I consent to the use of my electronic signature as the legal " +
-  "equivalent of a handwritten signature under applicable e-signature law " +
-  "(ESIGN/UETA).";
+export { ATTESTATION_VERSION, ATTESTATION_TEXT_V1 } from "../shared/spvAttestation";
+import { ATTESTATION_VERSION, ATTESTATION_TEXT_V1 } from "../shared/spvAttestation";
 
 export interface SpvLaunchSignoff {
   id: string;

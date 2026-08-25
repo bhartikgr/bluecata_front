@@ -166,7 +166,18 @@ export interface FounderCompany {
   sector: string;
   hq: string;
   lastActiveAt: string;
-  capTableHolders: number;
+  /* WAVE 136 · ITEM 1 (R100) — `capTableHolders: number` WAS DECLARED HERE AND IS
+     GONE. It had NO WRITER anywhere in live code: every producer of
+     `FounderCompanyKpi.capTableHolders` wrote a seed literal or a hard `0`, so
+     this contract promised a maintained holder count and delivered a constant.
+     Wave 125 fixed the five RENDER sites (they now read the derived
+     `capTableHoldersOnRecord`), but the field itself survived, ready for the next
+     reader to assume it means something. Removed from the contract so no future
+     consumer can be misled. The DERIVED count lives on
+     `FounderCompanyKpi.capTableHoldersOnRecord` (`server/multiCompanyStore.ts:119`,
+     written at `:1520` by `computeCapTableHoldersOnRecord`) — that is the field to
+     read. `activeRoundsCount` below is the SAME defect, still unfixed and
+     deliberately not touched here: it is OQ-W136-1 and needs its own grant. */
   activeRoundsCount: number;
 }
 
@@ -306,7 +317,10 @@ function buildFounderCompanies(userId: string): FounderCompany[] {
     sector: c.sector,
     hq: c.hq,
     lastActiveAt: c.lastActiveAt,
-    capTableHolders: c.kpi.capTableHolders,
+    /* WAVE 136 · ITEM 1 (R100) — the writer for the removed `capTableHolders`
+       was here: `capTableHolders: c.kpi.capTableHolders`. The source it copied
+       has no writer of its own, so this line propagated a constant into the
+       user context on every request. */
     activeRoundsCount: c.kpi.activeRoundsCount,
   }));
 }

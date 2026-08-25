@@ -241,18 +241,53 @@ describe("WAVE 4A — the restored writes are reachable from a ROUTED page", () 
     expect(app_).not.toContain('from "@/pages/admin/CollectivePaymentSchedules"');
   });
 
-  it("the sidebar signposts both restored surfaces again, with their original labels", () => {
+  /* WAVE 131 — WHAT WAVE 4A RESTORED IS STILL REACHABLE; THE SIGNPOST MOVED.
+   *
+   * Wave 4A's requirement was that the two restored write surfaces are reachable
+   * from a ROUTED page rather than only existing on disk, and it expressed that
+   * as "there is a sidebar link with the original label". The owner has since
+   * asked, repeatedly, for ONE pricing link: "there are too many links scattered
+   * across the admin area … I want to be able to go to one link where I can
+   * dynamically administer pricing for ALL areas of the platform". Wave 131
+   * collapsed eight pricing links into `/admin/fees` ("Pricing & Payments").
+   *
+   * So the assertion now tests REACHABILITY, which is what wave 4A cared about,
+   * rather than the presence of a second sidebar row, which is what the owner
+   * asked to be removed: both URLs still resolve and each deep-links into the
+   * console tab that mounts its writes. Each retirement is ratified in the
+   * silent-drop allowlist with old→new text and an approver.
+   */
+  it("both restored surfaces are still reachable — the URL resolves into the console tab that carries its writes", () => {
+    const app = readSrc("client/src/App.tsx");
+    for (const [url, tab] of [
+      ["/admin/collective-payment-schedules", "collective-payment-schedules"],
+      ["/admin/partner-fees", "fee-schedules"],
+    ] as const) {
+      const at = app.indexOf(`path="${url}"`);
+      expect(at, `${url} no longer resolves — wave 4A restored it`).toBeGreaterThan(-1);
+      expect(app.slice(at, at + 400)).toContain(`initialTab="${tab}"`);
+    }
     const shell = readSrc("client/src/components/AppShell.tsx");
-    expect(shell).toContain('href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules"');
-    expect(shell).toContain('href: "/admin/partner-fees", label: "Partner Fees"');
+    expect(shell).toContain('{ href: "/admin/fees", label: "Pricing & Payments"');
   });
 
-  it("the deferral register is EMPTY and neither ticket was allowlisted", () => {
+  it("the deferral register is EMPTY and neither ticket was FORGIVEN as a lost route", () => {
     const reg = JSON.parse(readSrc("scripts/silent-drop-guard/deferrals.json"));
     expect(reg.deferrals).toEqual([]);
-    const allow = readSrc("scripts/silent-drop-guard/allowlist.json");
-    expect(allow).not.toContain("/admin/partner-fees");
-    expect(allow).not.toContain("/admin/collective-payment-schedules");
+    /* WAVE 131 — by CLASS, not by substring. A retired sidebar LINK is ratified
+       as `removedNav`, whose id is `href\tlabel`, so a text search for the URL
+       could not distinguish "the route was forgiven" (forbidden) from "the nav
+       link was retired and the route still resolves" (this wave, ratified). */
+    const allow = JSON.parse(readSrc("scripts/silent-drop-guard/allowlist.json")) as Record<
+      string,
+      Array<{ id: string }>
+    >;
+    for (const cls of ["removedRoutes", "removedClientRoutes", "removedRouteTargets", "removedPages"]) {
+      for (const entry of allow[cls] ?? []) {
+        expect(entry.id.split("\t")[0]).not.toBe("/admin/partner-fees");
+        expect(entry.id.split("\t")[0]).not.toBe("/admin/collective-payment-schedules");
+      }
+    }
   });
 });
 

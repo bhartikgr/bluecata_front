@@ -14,31 +14,55 @@
  * pre-v25.46 working state per the founder request (APD-017). Only the original
  * collective_application_fee key remains here.
  *
- * DB is the read source (Tier 3 #27 "zero in-memory, 100% DB-driven"). A 60s
- * read-through cache sits in front of the DB; the DB remains the canonical
- * persisted state (the cache is a pure read accelerator and is invalidated
- * synchronously on every write via setFee()). This satisfies Tier 3 #27: state
- * survives restart because it lives in platform_fees, the cache is rebuilt on
- * first read after restart.
+ * DB is the read source (Tier 3 #27 "zero in-memory, 100% DB-driven").
+ *
+ * WAVE 131 (R95 — pricing must be real-time): the 60-second module-scope
+ * read-through cache that used to sit in front of the DB IS GONE. It was a pure
+ * read accelerator for a table with a handful of rows, and its cost was that an
+ * owner who changed a price could watch the old one keep being served for up to
+ * a minute — with the client's 30-second `staleTime` on top of it. Every read
+ * now goes to `platform_fees`, so an admin write is visible on the NEXT request.
+ * `invalidateFeeCache()` is retained as a no-op for its existing callers (the
+ * admin PUT path and tests) rather than removed, so no caller breaks and the
+ * intent stays greppable.
  */
 import { rawDb } from "./db/connection";
+import {
+  DEFAULT_APPLICATION_FEE_MINOR,
+  DEFAULT_APPLICATION_FEE_CURRENCY,
+} from "./lib/collectiveApplicationFeeResolver";
 
 export const COLLECTIVE_APPLICATION_FEE_KEY = "collective_application_fee";
 
-/** Default used only if the seed row is somehow absent — matches the legacy
- *  $2,500 hardcode so behavior never regresses. */
+/* WAVE 139 · RULINGS R101 + R102 — this fallback used to hardcode 250000
+   ($2,500.00) "so behavior never regresses". The owner ruled on 2026-08-25 that
+   the canonical Collective application fee is $300.00 = 30000 TRUE minor units,
+   so preserving the legacy figure here was preserving a DEFECT: had the seed row
+   ever been absent, this store would have quoted $2,500.00 while the resolver
+   quoted $300.00 — the exact cross-screen disagreement R101 was raised to end.
+
+   It is no longer a literal at all. R95/R102 require ONE authoritative source per
+   price, so the value is imported from the canonical resolver constant rather
+   than re-typed here. A second copy of a price is how these defects are born.
+   Import direction is safe: the resolver imports only `rawDb`, never this store,
+   so there is no cycle. */
 const DEFAULT_FEES: Record<string, { amountMinor: number; currency: string }> = {
-  [COLLECTIVE_APPLICATION_FEE_KEY]: { amountMinor: 250000, currency: "USD" },
+  [COLLECTIVE_APPLICATION_FEE_KEY]: {
+    amountMinor: DEFAULT_APPLICATION_FEE_MINOR,
+    currency: DEFAULT_APPLICATION_FEE_CURRENCY,
+  },
 };
 
-// ── v25.45.4 L-2 — 60s read-through cache (invalidate-on-write) ────────────
-const CACHE_TTL_MS = 60_000;
-let _feeCache: { fees: PlatformFee[]; at: number } | null = null;
+// ── WAVE 131 — NO READ CACHE ───────────────────────────────────────────────
+// There is deliberately no module-scope cache here any more. A price is not a
+// value it is safe to serve stale, and the previous 60-second window meant the
+// number an owner had just typed was NOT the number the platform quoted.
 
-/** Drop the cache so the next read re-pulls from the DB. Called on every write
- *  and exposed for admin invalidate-on-PUT + tests. */
+/** Retained no-op: there is no cache left to drop, and every read is DB-direct.
+ *  Kept exported so the admin PUT path and existing tests keep compiling, and so
+ *  "where is the fee cache invalidated" still has a greppable answer. */
 export function invalidateFeeCache(): void {
-  _feeCache = null;
+  /* intentionally empty — see the WAVE 131 note above */
 }
 
 export interface PlatformFee {
@@ -77,18 +101,11 @@ export function getFee(key: string): PlatformFee {
   };
 }
 
-/** List every configured fee. Served through the 60s read-through cache; the DB
- *  remains the canonical state. */
+/** List every configured fee, DB-direct on every call (WAVE 131). */
 export function listFees(): PlatformFee[] {
-  const now = Date.now();
-  if (_feeCache && now - _feeCache.at < CACHE_TTL_MS) {
-    return _feeCache.fees;
-  }
   try {
     const rows: any[] = rawDb().prepare(`SELECT * FROM platform_fees ORDER BY key`).all();
-    const fees = rows.map(rowToFee);
-    _feeCache = { fees, at: now };
-    return fees;
+    return rows.map(rowToFee);
   } catch {
     return [getFee(COLLECTIVE_APPLICATION_FEE_KEY)];
   }

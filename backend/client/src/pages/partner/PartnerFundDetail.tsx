@@ -14,10 +14,25 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+/* WAVE 135 · FINDING 4 — the shared partner money-entry contract. Imported here
+   even though this form is inert (see the pledge note below), because a field a
+   client can READ is a field a client can be misled by, and because the day this
+   form is re-enabled it must not be re-enabled asking for cents. */
+import { wholeUnitsPlaceholder } from "@/components/partner/partnerMoneyInput";
+import { wholeUnitsToWireMinor, wireMinorNumber } from "@/components/partner/PartnerMoneyEntryNotice";
 /* WAVE 115 · FINDING 1 (L8) — the fund status reached the page title raw. */
 import { fundStatusLabel, partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useToast } from "@/hooks/use-toast"; /* v25.14 NC3 — pledge error toast */
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
+/* WAVE 127 · FINDING 3 — the same stage label and the same named denominator the
+   SPV detail LPs tab uses. Both screens read `investorRegister`; taking the words
+   from one module is what stops them describing the same row differently. */
+import {
+  spvSubscriptionStageLabel,
+  spvRegisterRowIsPreCommitment,
+  SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+  SPV_REGISTER_ALL_STAGES_BASIS,
+} from "@shared/spvCommittedCapital";
 
 /* SC-0 (WAVE 2) — RESPONSE-SHAPE CORRECTION.
  *
@@ -41,10 +56,13 @@ import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITE
  *   - commitment fields    → spvEngineStore.investorRegister(),
  *                            server/spvEngineStore.ts:1156-1165
  */
+/* WAVE 127 · FINDING 3 — `status` added, because this screen was one of the two
+   that rendered an all-stages register row as a bare amount. See the render below. */
 type Commitment = {
   investorId: string;
   commitmentMinor: number;
   ownershipPct: number;
+  status?: string | null;
 };
 
 type FundDetail = {
@@ -98,9 +116,25 @@ export default function PartnerFundDetail() {
     mutationFn: async () => {
       // v25.14 NL7 — client-side numeric validation before submit so the
       // user sees an immediate, sensible error instead of a 400 Zod blob.
-      const amount = parseInt(pledgeForm.amountMinor, 10);
+      /* WAVE 135 · FINDING 4 — `parseInt(pledgeForm.amountMinor, 10)` was here. It
+         broke this wave's absolute rule (no `Number`/`parseInt`/`parseFloat` on a
+         money value) and it read the client's figure as minor units while the
+         field's placeholder asked for them, so a five-million-dollar pledge was a
+         fifty-thousand-dollar pledge. Converted through the ONE shared parser.
+
+         THIS PATH IS CURRENTLY UNREACHABLE and is not being re-enabled here: every
+         control below carries `disabled`, and the endpoint wants
+         `{lpContactId, commitmentMinor, currency}` (server/partnerRoutes.ts:2037)
+         while this handler sends `{lpName, amountMinor}`. Fixing the payload means
+         resolving an LP CONTACT ID, which needs the contact picker the amber note
+         above already tells the client about. The units are corrected anyway,
+         because leaving a known 100× reading in a dormant handler is how a dormant
+         handler ships. `allowZero` is absent — a zero pledge is not a pledge. */
       if (!pledgeForm.lpName.trim()) throw new Error("LP name required.");
-      if (!Number.isFinite(amount) || amount <= 0) throw new Error("Pledge amount must be a positive number.");
+      const amount = wireMinorNumber(
+        wholeUnitsToWireMinor(pledgeForm.amountMinor, data?.fund.currency ?? "USD", "Pledge amount"),
+        "Pledge amount",
+      );
       /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
          guard was unreachable dead code. (The client-side validation throws above
          are intentional and remain.) The thrown ApiError reaches onError unchanged. */
@@ -154,6 +188,15 @@ export default function PartnerFundDetail() {
                 explicit named refusal rather than a dash. `?? 0` claimed this
                 fund targets nothing. A fund that genuinely targets 0 still prints. */}
             <div className="font-mono">{moneyOrNotProvided(f.targetRaiseMinor, f.currency)}</div>
+            {/* WAVE 127 · FINDING 3 — on the live vehicle this read `Target Size
+                $30.00` directly above a `$2,500.00` commitment, and the pairing
+                invited the reading that one is a percentage of the other. It is
+                not. This says what the target is, so the two figures are not
+                silently related. */}
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="partner-fund-target-basis">
+              The fundraising goal recorded for this vehicle. Commitments below are NOT expressed as a percentage of it
+              — they can exceed it, and a listed amount is not necessarily raised.
+            </div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
@@ -166,13 +209,43 @@ export default function PartnerFundDetail() {
         <div className="flex justify-between items-center mb-3">
           <div className="font-medium">Commitments</div>
         </div>
+        {/* WAVE 127 · FINDING 3 — THIS LIST IS NOT A LIST OF COMMITMENTS ONLY, AND
+            IT USED TO CLAIM OTHERWISE.
+
+            It reads `investorRegister` (server/spvEngineStore.ts) via
+            server/partnerRoutes.ts, which returns EVERY non-withdrawn
+            subscription at ANY stage. Under a heading reading "Commitments" each
+            row printed a reference and an amount and nothing else, so a
+            subscription under `review` appeared here as a $2,500.00 commitment
+            while the Close tab, the K-1 tab and the Overview all correctly
+            reported nothing committed — the same one row read as money on this
+            screen and as nothing on those.
+
+            No row is hidden: an all-stages register is the correct content for
+            this screen and dropping a real record would be worse. What changes is
+            that the list states its basis and every row states its own stage. */}
+        <div className="text-[10px] text-[var(--cv-color-text-faint)] mb-2" data-testid="partner-fund-commitments-basis">
+          {SPV_REGISTER_ALL_STAGES_BASIS}
+        </div>
         {commitments.length === 0 ? (
           <div className="text-sm text-[var(--cv-color-text-muted)]">No commitments pledged yet.</div>
         ) : (
           <div className="space-y-2">
             {commitments.map((c) => (
               <div key={c.investorId} className="flex justify-between text-sm border-b pb-2" data-testid={`partner-commitment-${c.investorId}`}>
-                <div>{partyReferenceLabel(c.investorId)}</div>
+                <div>
+                  {partyReferenceLabel(c.investorId)}
+                  {" "}
+                  <span
+                    className={spvRegisterRowIsPreCommitment(c.status) ? "text-amber-900" : "text-emerald-800"}
+                    data-testid={`partner-commitment-stage-${c.investorId}`}
+                  >
+                    [{spvSubscriptionStageLabel(c.status)}]
+                  </span>
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid={`partner-commitment-pct-${c.investorId}`}>
+                    {(c.ownershipPct * 100).toFixed(1)}% — {SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL}
+                  </div>
+                </div>
                 <div className="font-mono">{formatMinor(c.commitmentMinor, f.currency)}</div>
               </div>
             ))}
@@ -191,10 +264,18 @@ export default function PartnerFundDetail() {
         {canPledge && (
           <div className="mt-4 border-t pt-3 space-y-2 opacity-60" data-testid="partner-fund-pledge-disabled">
             <Label>Record New Pledge</Label>
+            {/* WAVE 126 / FINDING 1 — the same operative fact, said as a
+                platform states a rule rather than as an engineer states a bug.
+                What went: "temporarily unavailable", the description of what
+                this form submits versus what the endpoint requires, and "until
+                the contact picker ships". What stays: a commitment is recorded
+                against an LP who is already on the register, which is TRUE and
+                is a perfectly ordinary control, plus exactly where to add them.
+                The client is left knowing what to do, and nothing about us. */}
             <div className="text-xs text-amber-700" data-testid="partner-fund-pledge-disabled-note">
-              Temporarily unavailable. This form submits an LP name, but the commitment
-              endpoint requires an existing LP contact. Seat LPs from the SPV Engine
-              (SPV → LP roster) until the contact picker ships.
+              A commitment cannot be recorded here until the LP is on this fund's
+              register. Add the LP to the register first — SPV Engine → LP roster —
+              and the commitment can then be recorded against them.
             </div>
             <div className="flex gap-2">
               <Input
@@ -205,8 +286,9 @@ export default function PartnerFundDetail() {
                 disabled
               />
               <Input
-                type="number"
-                placeholder="Amount (minor units)"
+                type="text"
+                inputMode="decimal"
+                placeholder={wholeUnitsPlaceholder(data?.fund.currency ?? "USD")}
                 value={pledgeForm.amountMinor}
                 onChange={(e) => setPledgeForm({ ...pledgeForm, amountMinor: e.target.value })}
                 data-testid="partner-pledge-amount"

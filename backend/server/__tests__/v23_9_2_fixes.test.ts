@@ -28,6 +28,18 @@ import express, { type Express } from "express";
 import http from "node:http";
 import { applyRouteGuards } from "../lib/applyRouteGuards";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 let port: number;
@@ -103,7 +115,7 @@ async function createRoundAndInvitation(
   const companyId = `co_v2392_${Date.now()}`;
   const round = await call("POST", "/api/rounds", {
     headers: FOUNDER_HEADERS,
-    body: { companyId, name: "v23.9.2 Seed", type: "seed", targetAmount: 1_000_000 },
+    body: withRoundDates({ companyId, name: "v23.9.2 Seed", type: "seed", targetAmount: 1_000_000 }),
   });
   expect(round.status).toBe(200);
   expect(round.body.ok).toBe(true);

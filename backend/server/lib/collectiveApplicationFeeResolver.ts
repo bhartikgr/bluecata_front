@@ -12,17 +12,23 @@
  * (INSERT OR IGNORE), so a fresh deploy always has a row.
  *
  * Fallback contract: if (and only if) the config row is genuinely missing, the
- * resolver returns the seed default of 2500 (the historical literal) with
- * source="default". When the row exists, it returns the DB value with
- * source="db". There is NO admin write endpoint in this wave — the seed value
- * is settable via SQL or a future wave; the contract is that every caller MUST
- * read via this resolver and NEVER hardcode the amount.
+ * resolver returns DEFAULT_APPLICATION_FEE_MINOR with source="default". When the
+ * row exists, it returns the DB value with source="db". The contract is that
+ * every caller MUST read via this resolver and NEVER hardcode the amount.
  *
- * Unit note: the historical literal was `2_500`, displayed with `fmtUSD(...)`,
- * which renders the number directly (no /100) → "$2,500". The seed stores the
- * same numeric value (2500) so the displayed amount is UNCHANGED. We keep the
- * field name `amountMinor` for API-shape consistency with the partner fee
- * resolver; the displayed value is identical to v25.37 either way.
+ * Unit note — CORRECTED BY WAVE 139 (R101). `amountMinor` and the
+ * `collective_application_fee_config.amount_minor` column hold TRUE MINOR UNITS:
+ * the canonical Collective application fee of $300.00 is stored as 30000, and it
+ * is rendered with `formatMinor(amountMinor, currency)`, which applies the
+ * ISO-4217 exponent. This header previously asserted the whole-unit belief — that
+ * the value was the historical v25.37 literal, rendered directly by a formatter
+ * that applied no division, so the stored number was read as whole dollars. WAVE
+ * 131 and WAVE 137 invalidated that reading: 137 repointed every display onto
+ * `formatMinor` and 131 made the platform-fees mirror-write unscaled. R101 pins
+ * $300 = 30000 as canonical, matching the live database and
+ * DEFAULT_APPLICATION_FEE_MINOR below. The stale 2500 / 250000
+ * MIGRATION SEEDS are corrected forward by
+ * migrations/0196_wave139_application_fee_seed_correction.sql.
  */
 import { rawDb } from "../db/connection";
 
@@ -60,15 +66,18 @@ export function getApplicationFeeMinor(
   //   1. `collective_application_fee_config` (the ACTIVE admin editor at
   //      /admin/application-fee, wired since v25.39). When its row exists it is
   //      AUTHORITATIVE — this is what an admin edits today, so it must win.
-  //   2. Hardcoded historical seed default (2500) with source='default' — the
-  //      documented v25.38/v25.39 contract: when the config row is genuinely
+  //   2. DEFAULT_APPLICATION_FEE_MINOR (30000 = $300.00, true minor units) with
+  //      source='default' — the documented contract: when the config row is genuinely
   //      MISSING the resolver reports source='default' (and the endpoint still
   //      returns a clean 200). This MUST be preserved.
   //
   // L-2 BRIDGE (no resolver change to the source-precedence above): the new
   // /admin/platform-fees PUT path MIRROR-WRITES the collective_application_fee
-  // value (cents ÷ 100) into `collective_application_fee_config` via
-  // updateApplicationFee(). This way an admin edit through the new Platform Fees
+  // value into `collective_application_fee_config` via updateApplicationFee().
+  // The mirror is UNSCALED — both columns are TRUE MINOR UNITS, so there is no
+  // '÷ 100' on this path; WAVE 131 removed the conversion that used to be here
+  // and this comment used to describe (see server/adminPlatformFeesRoutes.ts,
+  // which records why). This way an admin edit through the new Platform Fees
   // panel flows to the founder Billing surface THROUGH the existing
   // config-table resolver (source='db'), WITHOUT inserting platform_fees as a
   // silent fallback here — which would have broken the documented source='default'

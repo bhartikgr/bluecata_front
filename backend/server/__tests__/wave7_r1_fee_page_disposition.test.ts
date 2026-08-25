@@ -182,15 +182,54 @@ describe("R-1 — every one of the thirteen is dispositioned, individually", () 
     );
   });
 
-  it("every restored route has a nav entry — a route with no link is not shipped", () => {
+  /* WAVE 139 / RULING R96, applied per R98 (stale test, not stale code).
+
+     The GUARANTEE this test exists to defend is: "a route with no link is not
+     shipped" — no orphan admin route the owner cannot reach. That guarantee is
+     still enforced below; what changed is HOW reachability is achieved.
+
+     R96 (owner, 2026-08-22) ordered ONE admin console for all pricing and
+     payments, tab-driven. WAVE 131 therefore consolidated 29 pricing surfaces
+     into the single route /admin/fees with 19 tabs, and retired 8 individual
+     sidebar links to 1. The four hrefs below no longer have their own sidebar
+     entries BY OWNER RULING — asserting that they do would now require
+     re-breaking R96.
+
+     Reachability post-R96 is a three-part chain, and this block now pins ALL
+     THREE parts rather than the single sidebar string it pinned before:
+       1. the ONE consolidated console link IS shipped in the shell;
+       2. each retired surface still exists as a TAB in that console;
+       3. each retired URL still resolves, deep-linking to its own tab, so old
+          bookmarks and inbound links do not 404.
+     Assertions: 4 -> 9. Nothing was weakened; the orphan-route fence is
+     strictly stronger than the sidebar-string check it replaces. */
+  it("no orphan pricing route — the consolidated console is linked, and every retired surface is reachable as a tab and by deep link", () => {
     const shell = readFileSync(join(CLIENT, "components", "AppShell.tsx"), "utf8");
-    for (const href of [
-      "/admin/collective-subscriptions",
-      "/admin/commission-rates",
-      "/admin/pricing",
-      "/admin/pricing-models",
-    ]) {
-      expect(shell, `no nav entry for ${href}`).toContain(`href: "${href}"`);
+    const consolidated = readFileSync(join(ADMIN, "AdminFeesConsolidated.tsx"), "utf8");
+
+    // 1 — the single surviving link must be shipped, or the whole console is orphaned.
+    expect(shell, "the consolidated /admin/fees console has no nav entry").toContain(
+      'href: "/admin/fees"',
+    );
+
+    // The retired URL -> console tab key mapping, per WAVE 131.
+    const retired: Array<[string, string]> = [
+      ["/admin/collective-subscriptions", "collective-subscriptions"],
+      ["/admin/commission-rates", "commission-rates"],
+      ["/admin/pricing", "capavate-pricing"],
+      ["/admin/pricing-models", "pricing-models"],
+    ];
+
+    for (const [href, tabKey] of retired) {
+      // 2 — the surface still exists inside the one console.
+      expect(consolidated, `retired surface ${href} has no tab (${tabKey}) in the consolidated console`)
+        .toContain(`key: "${tabKey}"`);
+
+      // 3 — the old URL still resolves and opens on its own tab.
+      expect(APP, `retired URL ${href} no longer routes anywhere`).toContain(`path="${href}"`);
+      expect(APP, `retired URL ${href} does not deep-link to its tab`).toContain(
+        `initialTab="${tabKey}"`,
+      );
     }
   });
 });

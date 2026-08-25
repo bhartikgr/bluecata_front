@@ -87,7 +87,7 @@ describe("emailSender — transporter config (v23.4.2 hardening)", () => {
       SMTP_PORT: "587",
       SMTP_SECURE: "false",
       SMTP_USER: "scale@example.com",
-      SMTP_PASS: "umyejnigbteoazfz",
+      SMTP_PASS: "aaaabbbbccccdddd",
     });
     sendMailMock.mockResolvedValue({ messageId: "<test>" });
     await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
@@ -106,7 +106,7 @@ describe("emailSender — transporter config (v23.4.2 hardening)", () => {
       SMTP_PORT: "465",
       SMTP_SECURE: "true",
       SMTP_USER: "scale@example.com",
-      SMTP_PASS: "umyejnigbteoazfz",
+      SMTP_PASS: "aaaabbbbccccdddd",
     });
     sendMailMock.mockResolvedValue({ messageId: "<test>" });
     await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
@@ -123,12 +123,24 @@ describe("emailSender — transporter config (v23.4.2 hardening)", () => {
       SMTP_PORT: "587",
       SMTP_SECURE: "false",
       SMTP_USER: "scale@example.com",
-      SMTP_PASS: "umye jnig bteo azfz", // exactly Avi's case
+      /* WAVE 139 SECURITY — this line previously hardcoded the REAL live Gmail
+         App Password (confirmed byte-identical to the value in the host .env),
+         with a comment naming whose account it was. It therefore shipped inside
+         every release archive built from this tree, including v26.24.0's first
+         two build attempts and the already-distributed v26.23.0 package.
+
+         Replaced with an obviously-synthetic value of the SAME SHAPE (four
+         space-separated four-character groups), which is all this test needs — it
+         asserts that whitespace is stripped from SMTP_PASS, a property of the
+         formatting, never of the specific secret. The real credential MUST STILL
+         BE ROTATED: removing it here does not un-distribute the archives that
+         already carried it. Tracked as the top item of the Group A security debt. */
+      SMTP_PASS: "aaaa bbbb cccc dddd",
     });
     sendMailMock.mockResolvedValue({ messageId: "<test>" });
     await sendEmail({ to: "x@y.com", subject: "s", text: "t" });
     const auth = createdConfigs[0].auth as { user: string; pass: string };
-    expect(auth.pass).toBe("umyejnigbteoazfz");
+    expect(auth.pass).toBe("aaaabbbbccccdddd");
     expect(auth.pass).not.toContain(" ");
   });
 

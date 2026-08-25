@@ -23,7 +23,51 @@ import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay
    the real unit in the partner's own currency. No arithmetic changed: the value
    posted for a given keystroke sequence is byte-identical. */
 import { spvStatusLabel } from "@/lib/partnerDisplay";
+import { humanizeMachineKey, formatTimestamp } from "@/lib/partnerDisplay";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 128 · FINDING 2 — THREE FIELDS ON THIS PAGE ASKED A PAYING CLIENT FOR
+   CENTS, AND A FOURTH DID NOT BUT LOOKED IDENTICAL TO THE THREE.
+   ════════════════════════════════════════════════════════════════════════════
+   The capital-call amount, the distribution gross proceeds and the distribution
+   cost basis were labelled "in USD cents, not whole USD" and posted the typed
+   integer straight to the wire. A managing partner recording a $250,000 capital
+   call typed 250000 and recorded $2,500.00.
+
+   WHAT EACH FIELD POSTS, AND IN WHAT UNIT — verified end to end this wave,
+   because Wave 127 changed the SERVER end of the fee route and a fourth field on
+   this same page has ALWAYS been whole units:
+
+     · Capital call  → POST /api/partner/me/spvs/:id/capital-calls
+                       body `amount_minor`, zod `z.number().int().min(0)`
+                       (server/spvFundStore.ts:409-413) — MINOR units, as a JSON
+                       number. CONVERTED here.
+     · Distribution  → POST /api/partner/me/spv/:spvId/distributions
+                       body `grossProceedsMinor` + `costBasisMinor`
+                       (server/spvEngineRoutes.ts:501, allowlist
+                       `pickDistributionBody` :72) — MINOR units. CONVERTED here.
+     · LP commitment → POST /api/partner/me/spv/:spvId/lp-commit
+                       body `amount`, a DECIMAL STRING IN WHOLE UNITS which the
+                       server itself scales with `decimalStringToMinor`
+                       (server/spvEngineRoutes.ts:1193/1243, server/lib/money.ts:727).
+                       NOT converted, deliberately: multiplying it by a hundred
+                       on the client would CREATE the very defect this finding
+                       removes. It gets the same label and the same live
+                       confirmation line, and nothing else.
+
+   ONE CONVERTER. `parseWholeUnits` / `toWireMinor` from the Wave 126 partner
+   money module, via the shared notice component. No `Number()`, `parseInt` or
+   `parseFloat` runs on anything a client typed; `wireMinorNumber` widens an
+   ALREADY-PROVEN digits-only minor-unit string for the two endpoints whose
+   schemas type the field as a JSON number, and refuses outside safe-integer
+   range rather than losing precision.
+   ════════════════════════════════════════════════════════════════════════════ */
+import {
+  PartnerMoneyEntryNotice,
+  wholeUnitsToWireMinor,
+  wireMinorNumber,
+} from "@/components/partner/PartnerMoneyEntryNotice";
+import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits } from "@/components/partner/partnerMoneyInput";
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -218,6 +262,30 @@ export default function PartnerSpvDetail() {
 
   const commitMut = useMutation({
     mutationFn: async () => {
+      /* WAVE 135 · FINDING 2 — THE BOUND WAS DISPLAYED BUT NEVER ENFORCED.
+
+         Wave 128 put `PartnerMoneyEntryNotice` under this field, and that notice
+         correctly REFUSES a negative amount in a sentence as the client types —
+         `parseWholeUnits` has always rejected a leading minus. But nothing on the
+         submit path ever ASKED the parser. The button's `disabled` tested
+         `!commitAmount.trim()` (non-empty) and the handler posted
+         `amount: commitAmount.trim()` verbatim, so `-5000` sailed past a visible
+         red refusal and reached the endpoint. A refusal a client can read and
+         then ignore is not a bound; it is a decoration.
+
+         So the parser's verdict now gates BOTH the button's `disabled` expression
+         and this handler. Gated twice on purpose, and consulted
+         through the SAME parser the notice already renders, so the sentence the
+         client sees and the reason the submit refuses cannot drift apart.
+
+         WHAT IS DELIBERATELY NOT DONE: the value is still posted as
+         `commitAmount.trim()`, byte-for-byte what it was. This endpoint takes
+         `amount` as a DECIMAL STRING IN WHOLE UNITS and scales it itself with
+         `decimalStringToMinor` (server/lib/money.ts:727), so sending the parser's
+         minor-unit integer here would be a hundredfold error — the exact trap wave
+         128 documented at the field. Validate with the parser; do not convert. */
+      const commitCheck = parseWholeUnits(commitAmount, s.currency, { label: "Commitment amount" });
+      if (!commitCheck.ok) throw new Error(commitCheck.message);
       const res = await apiRequest("POST", `/api/partner/me/spv/${spvId}/lp-commit`, {
         holderFirstName: commitFirst.trim(),
         holderLastName: commitLast.trim(),
@@ -387,12 +455,17 @@ export default function PartnerSpvDetail() {
       {isManagingPartner ? (
         <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-capital-call-form">
           <div className="font-medium">Record Capital Call</div>
+          {/* WAVE 128 · FINDING 2 — whole currency units. `type="text"` because a
+              person writes "250,000" and a number input silently discards the
+              separators it does not like; the parser does the refusing, in a
+              sentence, under the field. The notice is ONE always-rendered sibling
+              (W116 §3.1), so the panel's child shape does not move. */}
           <div className="flex items-center gap-2">
             <Input
-              type="number"
-              inputMode="numeric"
-              min="1"
-              placeholder={`Amount in ${s.currency} cents, not whole ${s.currency}`}
+              type="text"
+              inputMode="decimal"
+              placeholder={wholeUnitsPlaceholder(s.currency)}
+              aria-label={wholeUnitsLabel("Capital call amount", s.currency)}
               value={callAmount}
               onChange={(e) => setCallAmount(e.target.value)}
               data-testid="partner-spv-capital-call-amount"
@@ -400,18 +473,36 @@ export default function PartnerSpvDetail() {
             <Button
               disabled={!callAmount || callMut.isPending}
               onClick={() => {
-                const n = Number(callAmount);
-                if (!Number.isFinite(n) || n <= 0) {
-                  toast({ variant: "destructive", title: "Invalid amount" });
+                /* The typed amount becomes the exact minor-unit integer this
+                   endpoint has always taken. A refusal is stated, never guessed
+                   at and never rounded — `Math.round(Number(...))` is gone. */
+                let amountMinor: number;
+                try {
+                  amountMinor = wireMinorNumber(
+                    wholeUnitsToWireMinor(callAmount, s.currency, "Capital call amount"),
+                    "Capital call amount",
+                  );
+                } catch (err) {
+                  toast({
+                    variant: "destructive",
+                    title: "Capital call not recorded",
+                    description: (err as Error).message,
+                  });
                   return;
                 }
-                callMut.mutate(Math.round(n));
+                callMut.mutate(amountMinor);
               }}
               data-testid="partner-spv-capital-call-submit"
             >
               {callMut.isPending ? "Recording…" : "Record"}
             </Button>
           </div>
+          <PartnerMoneyEntryNotice
+            raw={callAmount}
+            currency={s.currency}
+            label="Capital call amount"
+            testid="partner-spv-capital-call-amount-notice"
+          />
         </Card>
       ) : null}
 
@@ -463,11 +554,14 @@ export default function PartnerSpvDetail() {
               <option value="dividend">Dividend</option>
               <option value="exit">Exit Proceeds</option>
             </select>
+            {/* WAVE 128 · FINDING 2 — both distribution amounts in whole currency
+                units. The wire still carries `grossProceedsMinor` and
+                `costBasisMinor` as exact minor-unit integers. */}
             <Input
-              type="number"
-              inputMode="numeric"
-              min="1"
-              placeholder={`Gross proceeds in ${s.currency} cents, not whole ${s.currency}`}
+              type="text"
+              inputMode="decimal"
+              placeholder={wholeUnitsPlaceholder(s.currency)}
+              aria-label={wholeUnitsLabel("Gross proceeds", s.currency)}
               value={distAmount}
               onChange={(e) => setDistAmount(e.target.value)}
               data-testid="partner-spv-distribution-amount"
@@ -475,10 +569,10 @@ export default function PartnerSpvDetail() {
               disabled={DIST_PANEL_DISABLED}
             />
             <Input
-              type="number"
-              inputMode="numeric"
-              min="0"
-              placeholder={`Cost basis in ${s.currency} cents, not whole ${s.currency}`}
+              type="text"
+              inputMode="decimal"
+              placeholder={wholeUnitsPlaceholder(s.currency)}
+              aria-label={wholeUnitsLabel("Cost basis", s.currency)}
               value={distCostBasis}
               onChange={(e) => setDistCostBasis(e.target.value)}
               data-testid="partner-spv-distribution-cost-basis"
@@ -495,22 +589,38 @@ export default function PartnerSpvDetail() {
                 /* FE-2 — client-side validation mirrors the SERVER's rules; it
                    does not replace them. The server still enforces INVALID_GROSS
                    and DISTRIBUTION_BASIS_REQUIRED (spvEngineStore.ts:1538,1543),
-                   so this only spares the GP a round trip. */
-                const n = Number(distAmount);
-                if (!Number.isFinite(n) || n <= 0) {
-                  toast({ variant: "destructive", title: "Invalid amount" });
+                   so this only spares the GP a round trip.
+
+                   WAVE 128 · FINDING 2 — the three `Number()` guards that stood
+                   here are gone, and nothing they protected is now unprotected.
+                   `parseWholeUnits` refuses a negative, an empty field, exponent
+                   notation, junk, and MORE fractional digits than the currency
+                   carries — which is the same rule the old "whole minor units
+                   only" guard was expressing, stated in the unit the client is
+                   actually typing in. The cost basis is still REQUIRED and still
+                   never defaulted to zero: `allowZero` is true so a genuine zero
+                   basis can be RECORDED, but an EMPTY field is refused by the
+                   parser and by the button's own disabled condition. A silent 0
+                   basis would treat every dollar of proceeds as profit and
+                   over-charge carry to the LPs. */
+                let n: number;
+                let cb: number;
+                try {
+                  n = wireMinorNumber(
+                    wholeUnitsToWireMinor(distAmount, s.currency, "Gross proceeds"),
+                    "Gross proceeds",
+                  );
+                } catch (err) {
+                  toast({ variant: "destructive", title: "Distribution not recorded", description: (err as Error).message });
                   return;
                 }
-                /* Blocker 4 discipline: the cost basis is REQUIRED and is never
-                   defaulted to 0 here. A silent 0 basis would treat every dollar
-                   of proceeds as profit and over-charge carry to the LPs. */
-                const cb = Number(distCostBasis);
-                if (!Number.isFinite(cb) || cb < 0 || !Number.isInteger(cb)) {
-                  toast({ variant: "destructive", title: "Cost basis required", description: "Enter the cost basis in whole minor units. It is never assumed to be zero." });
-                  return;
-                }
-                if (!Number.isInteger(n)) {
-                  toast({ variant: "destructive", title: "Whole minor units only", description: "Amounts are integers in minor units; fractional minor units cannot be allocated." });
+                try {
+                  cb = wireMinorNumber(
+                    wholeUnitsToWireMinor(distCostBasis, s.currency, "Cost basis", { allowZero: true }),
+                    "Cost basis",
+                  );
+                } catch (err) {
+                  toast({ variant: "destructive", title: "Cost basis required", description: (err as Error).message });
                   return;
                 }
                 /* FE-5 — IRREVERSIBILITY. A distribution is an append-only,
@@ -530,6 +640,20 @@ export default function PartnerSpvDetail() {
               {distMut.isPending ? "Recording…" : "Record"}
             </Button>
           </div>
+          {/* Two always-rendered siblings, one per amount, so a GP sees both
+              figures stated before appending an irreversible ledger row. */}
+          <PartnerMoneyEntryNotice
+            raw={distAmount}
+            currency={s.currency}
+            label="Gross proceeds"
+            testid="partner-spv-distribution-amount-notice"
+          />
+          <PartnerMoneyEntryNotice
+            raw={distCostBasis}
+            currency={s.currency}
+            label="Cost basis"
+            testid="partner-spv-distribution-cost-basis-notice"
+          />
         </Card>
       ) : null}
 
@@ -565,7 +689,7 @@ export default function PartnerSpvDetail() {
                       <td className="p-2">{sub.name ?? "—"}</td>
                       <td className="p-2 text-[var(--cv-color-text-muted)]">{sub.email ?? "—"}</td>
                       <td className="p-2 font-mono">{formatMinor(sub.commitmentMinor, s.currency)}</td>
-                      <td className="p-2">{sub.status}</td>
+                      <td className="p-2">{humanizeMachineKey(sub.status, "Status not recorded")}</td>
                       {canWriteLp && (
                         <td className="p-2">
                           <Button
@@ -662,11 +786,20 @@ export default function PartnerSpvDetail() {
                 onChange={(e) => setCommitEmail(e.target.value)}
                 data-testid="partner-spv-lp-commit-email"
               />
+              {/* WAVE 128 · FINDING 2 — THIS FIELD IS NOT CONVERTED, AND THAT IS
+                  THE FINDING FOR IT. `lp-commit` takes `amount` as a DECIMAL
+                  STRING IN WHOLE UNITS and the server scales it itself with
+                  `decimalStringToMinor` (server/spvEngineRoutes.ts:1193/1243).
+                  It sat beside three cents fields looking identical to them; a
+                  client-side ×100 here would have introduced a hundredfold error
+                  where there was none. It gets the explicit whole-unit label and
+                  the same confirmation line, and the value posted for a given
+                  keystroke is byte-identical to before. */}
               <Input
-                type="number"
+                type="text"
                 inputMode="decimal"
-                min="0"
-                placeholder={`Amount (${s.currency})`}
+                placeholder={wholeUnitsPlaceholder(s.currency)}
+                aria-label={wholeUnitsLabel("Commitment amount", s.currency)}
                 value={commitAmount}
                 onChange={(e) => setCommitAmount(e.target.value)}
                 data-testid="partner-spv-lp-commit-amount"
@@ -681,15 +814,30 @@ export default function PartnerSpvDetail() {
                 data-testid="partner-spv-lp-commit-units"
               />
             </div>
+            <PartnerMoneyEntryNotice
+              raw={commitAmount}
+              currency={s.currency}
+              label="Commitment amount"
+              testid="partner-spv-lp-commit-amount-notice"
+            />
             {commitLastTouched && !commitLast.trim() && (
               <div className="text-xs text-rose-600" data-testid="partner-spv-lp-commit-lastname-error">
                 Last name is required to commit an LP.
               </div>
             )}
             <Button
+              /* WAVE 135 · FINDING 2 — `!commitAmount.trim()` only ever asked whether
+                 the client had typed SOMETHING. It now also asks the shared parser
+                 whether what they typed is an amount, which is what the refusal
+                 sentence rendered above this button has been claiming all along. A
+                 negative, a scientific-notation figure, an over-precise fraction and
+                 zero are all refused here exactly as the notice states. No new element
+                 is introduced — the sentence is already on screen from the notice at
+                 the field — so no sibling shape moves and no gate sees a swap. */
               disabled={
                 !commitFirst.trim() || !commitLast.trim() || !commitEmail.trim() ||
-                !commitAmount.trim() || !commitUnits.trim() || commitMut.isPending
+                !commitAmount.trim() || !commitUnits.trim() || commitMut.isPending ||
+                !parseWholeUnits(commitAmount, s.currency, { label: "Commitment amount" }).ok
               }
               onClick={() => commitMut.mutate()}
               data-testid="partner-spv-lp-commit-submit"
@@ -726,7 +874,7 @@ export default function PartnerSpvDetail() {
           <div data-revision-hash={s.revisionHash} data-testid="partner-spv-audit-receipt-ref">
             Revision fingerprint: {auditReceiptReference(s.revisionHash) ?? "not recorded"}
           </div>
-          <div>Created: {s.createdAt}</div>
+          <div>Created: {formatTimestamp(s.createdAt)}</div>
         </div>
         <div className="text-xs" data-testid="partner-spv-audit-receipt-help">
           Quote this fingerprint to Capavate support if you need this receipt checked.

@@ -22,6 +22,7 @@ import http from "node:http";
 import { registerRoutes } from "../routes";
 import { createContact } from "../adminContactsStore";
 import * as collectiveMembershipStore from "../collectiveMembershipStore"; /* v14 Tier-1 Fix 3 */
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture"; /* WAVE 134 cause 1 */
 
 let app: Express;
 let server: http.Server;
@@ -35,8 +36,16 @@ beforeAll(async () => {
   // v14 Tier-1 Fix 3: activate the demo personas as Collective members so
   // they pass requireCollectiveMember on /api/collective/{members,companies,
   // soft-circles,companies/:id,activity}.
-  collectiveMembershipStore.activate("u_aisha_patel", "u_admin");
-  collectiveMembershipStore.activate("u_avi_managing", "u_admin");
+  // WAVE 134 cause 1 (R98) — activation alone is not enough and has not been for
+  // some time: `requireCollectiveMember` step 4 (W2-A1) refuses an active member
+  // with no accreditation self-declaration, so every request below returned 403
+  // ACCREDITATION_DECLARATION_REQUIRED and the assertions were never reached.
+  // The ONE shared helper seats a genuinely compliant investor (membership +
+  // cap-table position + a real declaration recorded through the production
+  // capture primitive). The gate is unchanged and still refuses an undeclared
+  // member — proved in w134_collective_accreditation_fixture.test.ts.
+  seatCompliantInvestor("u_aisha_patel", { activatedBy: "u_admin" });
+  seatCompliantInvestor("u_avi_managing", { activatedBy: "u_admin" });
   await new Promise<void>((resolve) => {
     server.listen(0, () => {
       port = (server.address() as { port: number }).port;

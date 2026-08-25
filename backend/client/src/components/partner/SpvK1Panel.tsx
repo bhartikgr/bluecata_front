@@ -114,7 +114,11 @@ function StatementCard({
     <div className="rounded-md p-3 mb-3" style={{ border: "1px solid rgba(4,30,65,0.18)" }} data-testid="spv-k1-statement">
       <div className="flex items-baseline gap-3 flex-wrap mb-2">
         <div className="font-medium text-sm" data-testid="spv-k1-investor">{partyReferenceLabel(s.investorId)}</div>
-        <div className="text-xs text-[var(--cv-color-text-muted)]">Tax year {s.taxYear}</div>
+        {/* WAVE 128 - FINDING 4: "Tax year 2025" alone reads like a filter that
+            has been applied to the list, or a default nobody chose. It is the
+            tax year THIS statement covers, so it says so. The value and the
+            default (last completed year) are unchanged - only the words. */}
+        <div className="text-xs text-[var(--cv-color-text-muted)]">Covers tax year {s.taxYear}</div>
         {s.status && (
           <span
             className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"

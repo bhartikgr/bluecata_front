@@ -19,6 +19,7 @@ import { rawDb } from "../db/connection";
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
 import { requireSignedAgreement } from "./requireSignedAgreement";
 import { sanitizeErrorMessage } from "./sanitize";
+import { log } from "./logger";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { emitNotification } from "../notificationsStore";
 import {
@@ -54,6 +55,33 @@ function fail(res: Response, err: unknown): void {
     res.status(status).json({ error: err.code, message: err.message });
     return;
   }
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 127 · FINDING 1 — THE MISSING HALF OF THE SCRUBBER'S CONTRACT.
+     ══════════════════════════════════════════════════════════════════════════
+     `sanitizeErrorMessage` replaces the real error with a generic sentence when
+     NODE_ENV=production, and server/lib/sanitize.ts's own doc contract says it
+     must ALWAYS be paired with a server-side log.error(...) that keeps the full
+     error for operators. That pairing was missing here, and the cost was
+     concrete: the live E-signature tab rendered
+     "An unexpected error occurred. Please try again." — the scrubber's default
+     fallback, the only occurrence of that sentence in this codebase — and
+     NOTHING on the server retained the throw. The fault was unknowable to us as
+     well as to the client, which is exactly the outcome the scrubber is not
+     supposed to produce.
+
+     THIS IS NOT A SWALLOW. The status is still 500 and the client-facing body is
+     byte-identical. Only the operator side gains the stack it was always owed.
+     ESIGN_LIST_READ is the reference the panel tells the partner to quote, so a
+     support ticket and this log line can be joined.
+
+     The prime remaining suspect is named deliberately: spvOwner()'s SECOND
+     query — the best-effort read of the legacy `spvs` mirror — is unguarded, so
+     any error there arrives here as this generic 500. */
+  log.error(
+    "[esignature] ESIGN_FAILED (ref ESIGN_LIST_READ) — the client received a scrubbed 500; " +
+    "the full error is retained here for operators: " +
+    (err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? "(no stack)"}` : String(err)),
+  );
   res.status(500).json({ error: "ESIGN_FAILED", message: sanitizeErrorMessage(err) });
 }
 

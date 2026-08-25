@@ -288,7 +288,14 @@ describe("WAVE 48 · ITEM 2 — WAIVER-5 ratification is recorded everywhere it 
      legal bytes are now the WAVE 89 bytes. The assertion is still an EXACT pin, at
      the new value, which is what makes an unwaived edit fail here.
      Wave 34 bytes, retained: ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f */
-  const FROZEN_SHA = "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7";
+  /* WAVE 131 · R97 — the legal bytes moved once more. The owner expressly
+     authorised ONE further edit in this file (spec/OWNER_RULINGS_2026_08_13.md
+     R97): the collective application fee rendered raw MINOR units behind a
+     dollar sign, so $300 displayed as "$30,000". It now renders through
+     formatMinor() and an absent fee renders no figure. The pin stays EXACT, at
+     the new value, so an unwaived edit still fails here.
+     Wave 89 bytes, retained: bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7 */
+  const FROZEN_SHA = "ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6";
 
   it("point 1 — scripts/sacred_check.sh marks the row RATIFIED without touching the hash", () => {
     const sh = fs.readFileSync(SH, "utf8");

@@ -136,6 +136,24 @@ export interface LockNotice {
   setAt: string | null;
   /** What the surface renders. Never a paraphrase of an unsupplied lock. */
   copy: string;
+  /**
+   * WAVE 126 / FINDING 1 — what a CLIENT reads.
+   *
+   * `copy` is unchanged and stays byte-identical, because it is asserted on
+   * elsewhere and because the admin lock register genuinely does want to be
+   * told that a wording is outstanding. But the partner pipeline is a paying
+   * client's screen, and on that screen the not-supplied sentence was
+   * describing our internal state: whose wording it is, that it has not been
+   * supplied, and that a future release will replace it. None of that is the
+   * client's business.
+   *
+   * `clientCopy` says the same operative thing in the platform's own voice: the
+   * rule is in force, the clause itself is not reproduced on screen, and here
+   * is how to obtain it. When the wording IS supplied, `clientCopy` is the
+   * owner's text verbatim, exactly as `copy` is — so the two agree in the only
+   * case where wording exists at all.
+   */
+  clientCopy: string;
 }
 
 /**
@@ -150,6 +168,25 @@ export interface LockNotice {
  */
 const NOT_SUPPLIED_COPY =
   "The wording for this lock has not been supplied by the owner, so it is not shown. It is deliberately not summarised or approximated: an approximate lock is not a lock. This notice will be replaced by the exact text once it is provided.";
+
+/**
+ * WAVE 126 / FINDING 1 — the CLIENT-FACING form of the same absence.
+ *
+ * Everything about our own process is gone: no owner, no "not supplied", no
+ * "will be replaced", no release language. What remains is the only part a
+ * client needs, and all of it is true:
+ *
+ *   - the rule stated on the surface is in force and is enforced on every write
+ *     (this is Part A, and it is enforced server-side at the write sink);
+ *   - the governing clause is not reproduced on this screen;
+ *   - the clause can be obtained, and here is how.
+ *
+ * It still does not paraphrase the clause, which is the OQ-5 constraint. It
+ * declines to reproduce it, which is a different and entirely ordinary thing
+ * for a platform to say.
+ */
+const CLIENT_NOT_SUPPLIED_COPY =
+  "Capavate does not reproduce the governing clause on this screen. The provenance rule stated above is in force and is applied to every partner-sourced soft circle recorded on this platform. If you need the governing wording for your files, ask your Capavate contact and it will be issued to you.";
 
 export function describeLockNotice(row: {
   key: string;
@@ -167,8 +204,12 @@ export function describeLockNotice(row: {
     // When supplied, the owner's text IS the copy, byte for byte. Nothing is
     // prepended, appended, trimmed into, or wrapped around it.
     copy: text !== null ? text : NOT_SUPPLIED_COPY,
+    clientCopy: text !== null ? text : CLIENT_NOT_SUPPLIED_COPY,
   };
 }
 
 /** The unsupplied notice, exported so tests can assert it is not a paraphrase. */
 export const LOCK_NOT_SUPPLIED_COPY = NOT_SUPPLIED_COPY;
+
+/** The client-facing unsupplied notice (WAVE 126 / FINDING 1). */
+export const LOCK_CLIENT_NOT_SUPPLIED_COPY = CLIENT_NOT_SUPPLIED_COPY;

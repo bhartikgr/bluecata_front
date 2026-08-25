@@ -35,6 +35,9 @@ export default function PartnerAddPortfolioCompany() {
   const { toast } = useToast();
 
   const [companyName, setCompanyName] = useState("");
+  /* WAVE 126 / FINDING 5 — has the client interacted with the name field yet?
+     Without this the form refuses a field nobody has touched. */
+  const [touchedCompanyName, setTouchedCompanyName] = useState(false);
   const [founderEmail, setFounderEmail] = useState("");
   const [founderName, setFounderName] = useState("");
   const [legalName, setLegalName] = useState("");
@@ -109,8 +112,14 @@ export default function PartnerAddPortfolioCompany() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label>Company name *</Label>
-              <Input data-testid="apc-company-name" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Acme Robotics" />
-              {!companyName.trim() && (
+              <Input data-testid="apc-company-name" value={companyName} onChange={(e) => { setTouchedCompanyName(true); setCompanyName(e.target.value); }} onBlur={() => setTouchedCompanyName(true)} placeholder="Acme Robotics" />
+              {/* WAVE 126 / FINDING 5 — this refused the field before the client
+                  had touched it. The email field two rows down already had the
+                  right gate (`founderEmail.length > 0`); this one now matches it,
+                  so the message appears only once there is something to be wrong
+                  about — a name typed and then cleared. The required marker in
+                  the label is what states the requirement up front. */}
+              {touchedCompanyName && !companyName.trim() && (
                 <div className="text-xs text-rose-600 mt-1" data-testid="apc-company-name-error">A company name is required.</div>
               )}
             </div>

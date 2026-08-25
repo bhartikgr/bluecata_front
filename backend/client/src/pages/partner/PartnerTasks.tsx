@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 /* v25.12 NH9 — toast task-creation failures. */
 import { useToast } from "@/hooks/use-toast";
+import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
 
 type PartnerTask = {
   id: string;
@@ -118,7 +119,7 @@ export default function PartnerTasks() {
             <Card key={t.id} className="p-3 flex justify-between items-center" data-testid={`partner-task-${t.id}`}>
               <div>
                 <div className="font-medium">{t.title}</div>
-                <div className="text-xs text-[var(--cv-color-text-muted)]">{t.status}{t.dueDate ? ` · due ${t.dueDate}` : ""}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)]">{humanizeMachineKey(t.status)}{t.dueDate ? ` · due ${t.dueDate}` : ""}</div>
               </div>
             </Card>
           ))}

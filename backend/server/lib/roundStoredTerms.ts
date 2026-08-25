@@ -41,9 +41,13 @@ import { getRoundById } from "../roundsStore";
    CONSUMES them. Nothing about what the engine concludes changes: the moved code is
    this file's own, and `w111_one_term_reader_agreement.test.ts` pins every field
    below against the values the pre-move code produced. */
+/* WAVE 136 · ITEM 3 (R100) — `readMfnOnRecord` joins the list for the same reason
+   the liquidation parsing did: the MFN rules were declared here and re-invented,
+   wrongly, in `server/roundCarryForwardEngine.ts`. */
 import {
   readLiquidationTermFacts,
   parseCapMultiple,
+  readMfnOnRecord,
   PARTICIPATION_CAP_MAX as SHARED_PARTICIPATION_CAP_MAX,
 } from "../../shared/liquidationTermsReader";
 
@@ -52,6 +56,7 @@ import {
    here are talking about the same thing. */
 export {
   readLiquidationTermFacts,
+  readMfnOnRecord,
   readLiquidationTerms,
   decideLiquidationTerms,
   describeLiquidationTerms,
@@ -390,17 +395,20 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
   const lpRaw = facts.raw;
   const lpMultiple = facts.multiple;
   /* WAVE 71 · D13 — `mfn`. Stored by the Edit-terms dialog as a boolean or as the
-     strings a form control produces. Only an explicit yes turns it on. */
-  let mfn: boolean | null = null;
-  const mfnRaw = rnd?.["mfn"];
-  if (mfnRaw === true) mfn = true;
-  else if (mfnRaw === false) mfn = false;
-  else if (typeof mfnRaw === "string" && mfnRaw.trim() !== "") {
-    const v = mfnRaw.trim().toLowerCase();
-    if (v === "true" || v === "yes" || v === "1" || v === "on") mfn = true;
-    else if (v === "false" || v === "no" || v === "0" || v === "off") mfn = false;
-  } else if (mfnRaw === 1) mfn = true;
-  else if (mfnRaw === 0) mfn = false;
+     strings a form control produces. Only an explicit yes turns it on.
+
+     WAVE 136 · ITEM 3 (R100) — THE RULES ARE UNCHANGED AND ARE NO LONGER HERE.
+     The truthy-flag ladder that used to sit inline in this function was MOVED to
+     `readMfnOnRecord` in `shared/liquidationTermsReader.ts`, the same module this
+     function already reads the liquidation terms from, and this call is now the
+     only interpretation on the server side. It moved because
+     `server/roundCarryForwardEngine.ts` had FOUR sites computing MFN as
+     `sideLetter.includes(...) ?? mfn ?? false`, where the boolean `false` from an
+     existing-but-silent side letter made the stored flag unreachable
+     (`SACRED_DOC` §5.3). Those sites now call the SAME function, so there is one
+     reader and not a sixteenth. This call passes only the flag — a side letter is
+     not a field on the ROUND — so the behaviour of this reader is identical. */
+  const mfn: boolean | null = readMfnOnRecord({ mfn: rnd?.["mfn"] }).onRecord;
 
   /* WAVE 79 · ITEM 2 — the seniority rank. Integer, `[0, 99]`, `0` most senior.
      A fractional or out-of-domain value is a typing error, not a ranking, so it

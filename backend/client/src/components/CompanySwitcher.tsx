@@ -41,6 +41,10 @@ type FounderCompany = {
        there is nothing to compute from. This component does not render the field;
        the type is widened so it cannot silently start rendering a `null` as `0`. */
     ownershipPct: number | null;
+    /* WAVE 125 · FINDING 2 — the DERIVED holder count. `capTableHolders` above has no
+       writer in live code, so the line that rendered it said "0 holders" about every
+       company in this menu. */
+    capTableHoldersOnRecord?: number | null;
   };
   collective: { status: string; memberSince?: string };
   billing: {
@@ -191,7 +195,13 @@ export function CompanySwitcher() {
                     {[co.sector, co.stage, co.hq].filter(Boolean).join(" · ")}
                   </div>
                   <div className="text-[10px] text-muted-foreground tabular-nums mt-0.5">
-                    {co.kpi.capTableHolders} holders · {co.kpi.activeRoundsCount} active round
+                    {/* WAVE 125 · FINDING 2 — a derived count, or the words for not
+                        having one. `"0 holders"` is a statement a founder will
+                        believe, and nothing in live code ever computed it. */}
+                    Holders{" "}
+                    {typeof co.kpi.capTableHoldersOnRecord === "number"
+                      ? `${co.kpi.capTableHoldersOnRecord}`
+                      : "not counted"}{" · "}{co.kpi.activeRoundsCount} active round
                     {co.kpi.activeRoundsCount === 1 ? "" : "s"}
                   </div>
                 </div>

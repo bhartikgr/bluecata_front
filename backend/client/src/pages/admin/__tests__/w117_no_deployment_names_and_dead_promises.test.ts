@@ -225,18 +225,52 @@ describe("W117 F4c — the refused-view figure, now FIXED by the file's owner", 
        still renders. That is the distinction the fix turns on, and it is why
        the hint had to be gated on the SAME condition as the value above it
        rather than simply deleted. */
+    /* ═════════════════════════════════════════════════════════════════════
+       WAVE 133 · R98 — RE-PINNED ONTO WAVE 125'S STRONGER, THIRD GATE.
+       ═════════════════════════════════════════════════════════════════════
+       RULING: OWNER_RULINGS_2026_08_13.md R98.
+
+       The pin below used to require the founder hint to BEGIN literally with
+       `hint={securities.isSuccess && !viewRefusal ? ${fmtNum(`. Wave 125 then
+       added a THIRD gate in front of it — `founderHolding.refuse`, which fires on
+       founder-row PRESENCE rather than on publication — because the tile was
+       printing a false `0.00%` over `0 shares` for a company with 150 shares and
+       no founder row at all. So the literal prefix moved, and the pin failed
+       against code that is STRICTLY STRONGER than the code it was written for.
+       The CODE is correct; the pin was stale.
+
+       Not weakened: the two original assertions per tile are kept verbatim in
+       substance (the load-success + refusal gate, and the unit-qualified
+       fallback) — they are simply no longer anchored to the start of the hint
+       attribute, so a further gate may be prepended but none may be removed. A
+       THIRD assertion is then added for `stat-founders` requiring wave 125's
+       row-presence gate to be present AND to be evaluated BEFORE the
+       publication gate, which is the property that actually closes the
+       `0.00%` defect and which nothing pinned until now. 6 pins out, 9 in. */
     const src = read("client/src/pages/founder/CapTable.tsx");
     for (const [testid, unit] of [["stat-founders", "shares"], ["stat-investors", "shares"], ["stat-options", "options"]] as const) {
       const line = src.split("\n").find((l) => l.includes(`testid="${testid}"`));
       expect(line, `expected a ${testid} tile`).toBeTruthy();
-      expect(line, `${testid} hint must be gated on the refusal, not only on load success`).toContain(
-        `hint={securities.isSuccess && !viewRefusal ? \`\${fmtNum(`,
+      const hint = line!.slice(line!.indexOf("hint={"));
+      expect(hint, `${testid} hint must be gated on the refusal, not only on load success`).toContain(
+        `securities.isSuccess && !viewRefusal ? \`\${fmtNum(`,
       );
       /* The hint's own fallback, matched together with its unit so this cannot
          be satisfied by the VALUE's `: MONEY_UNAVAILABLE` earlier on the line. */
-      expect(line, `${testid} must fall back to the unavailable marker, never a figure`).toContain(
+      expect(hint, `${testid} must fall back to the unavailable marker, never a figure`).toContain(
         `${unit}\` : MONEY_UNAVAILABLE}`,
       );
+      if (testid === "stat-founders") {
+        /* WAVE 125 · FINDING 1 — the row-presence refusal must come FIRST, so a
+           cap table with no founder row can never reach the percentage branch. */
+        expect(hint, "the founder hint must also carry wave 125's row-presence refusal").toContain("founderHolding.refuse");
+        expect(
+          hint.indexOf("founderHolding.refuse"),
+          "wave 125's row-presence refusal must be evaluated BEFORE the publication gate",
+        ).toBeLessThan(hint.indexOf("securities.isSuccess"));
+        const value = line!.slice(line!.indexOf("value={"), line!.indexOf("hint={"));
+        expect(value, "the founder VALUE must carry the same row-presence refusal as its hint").toContain("founderHolding.refuse");
+      }
     }
   });
 });

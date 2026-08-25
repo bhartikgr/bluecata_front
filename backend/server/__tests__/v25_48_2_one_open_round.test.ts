@@ -22,6 +22,18 @@ import request from "supertest";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 const CO = `co_q4c_${Date.now()}`;
 const ADMIN = "u_admin";
@@ -30,7 +42,7 @@ async function createDraftRound(name: string, extra: Record<string, unknown> = {
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({ companyId: CO, name, type: "seed", state: "draft", targetAmount: 1_000_000, ...extra });
+    .send(withRoundDates({ companyId: CO, name, type: "seed", state: "draft", targetAmount: 1_000_000, ...extra }));
   expect(res.status).toBe(200);
   expect(res.body.ok).toBe(true);
   return res.body.id as string;
@@ -98,7 +110,7 @@ describe("v25.48.2 Q4c — one-open-round hard block", () => {
       const r = await request(app)
         .post("/api/rounds")
         .set("x-user-id", ADMIN)
-        .send({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 });
+        .send(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 }));
       expect(r.status).toBe(200);
       return r.body.id as string;
     }
@@ -123,7 +135,7 @@ describe("v25.48.2 Q4c — one-open-round hard block", () => {
       const r = await request(app)
         .post("/api/rounds")
         .set("x-user-id", ADMIN)
-        .send({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 });
+        .send(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 }));
       expect(r.status).toBe(200);
       return r.body.id as string;
     }

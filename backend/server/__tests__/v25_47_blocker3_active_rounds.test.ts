@@ -17,6 +17,18 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { hasActiveOrLiveRound } from "../roundsStore";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 let port: number;
@@ -74,7 +86,7 @@ describe("BLOCKER-2/3 new rounds active immediately", () => {
   it("defaults a new round to active", async () => {
     const res = await call("POST", "/api/rounds", {
       userId: "u_admin",
-      body: { companyId: ACTIVE_CO, name: "Seed", type: "seed", targetAmount: 1000000 },
+      body: withRoundDates({ companyId: ACTIVE_CO, name: "Seed", type: "seed", targetAmount: 1000000 }),
     });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -88,7 +100,7 @@ describe("BLOCKER-2/3 new rounds active immediately", () => {
   it("honors an explicit draft override (gate stays closed)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId: "u_admin",
-      body: { companyId: DRAFT_CO, name: "Quiet", type: "seed", state: "draft", targetAmount: 500000 },
+      body: withRoundDates({ companyId: DRAFT_CO, name: "Quiet", type: "seed", state: "draft", targetAmount: 500000 }),
     });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe("draft");

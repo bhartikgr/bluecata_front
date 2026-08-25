@@ -372,6 +372,104 @@ export function describeLiquidationTerms(d: LiquidationTermDecision): string {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 136 · ITEM 3 (R100) — THE ONE READER OF A ROUND'S MFN, IN THE SAME FILE
+ *   AS THE ONE READER OF ITS LIQUIDATION TERMS.
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * THE DEFECT, stated as `SACRED_DOC` §5.3 states it. `server/roundCarryForwardEngine.ts`
+ * computed MFN as:
+ *
+ *     sec.sideLetter?.toLowerCase().includes("mfn") ?? sec.mfn ?? false
+ *
+ * `??` falls through on `null`/`undefined` ONLY. A side letter that EXISTS and does
+ * not mention MFN yields boolean `false`, and `false` IS a value — so the fallback
+ * to the STORED `mfn` flag was unreachable whenever a side letter existed at all,
+ * and a recorded MFN read as absent. Four sites in that file carried the same
+ * expression.
+ *
+ * WHY IT LIVES HERE AND NOT IN A NEW FILE. The rules below are
+ * `server/lib/roundStoredTerms.ts:392-403`'s own truthy-flag code, MOVED, not
+ * rewritten — that file now calls this function, so there is ONE interpretation and
+ * not a sixteenth. A new module would have been a second home for term-reading and
+ * would have repeated Wave 92's mistake (a mirror that drifts). This file is already
+ * the shared home for reading a round's negotiated terms and is reachable from both
+ * the browser bundle and the server.
+ *
+ * ABSENT IS NOT `false`. `onRecord: null` means the round records NOTHING about MFN.
+ * Collapsing that to `false` is precisely the value that made the bug above
+ * possible, so it is a distinct outcome the caller must handle.
+ *
+ * ORDER: THE FLAG FIRST. The stored `mfn` flag is a deliberate answer to a
+ * question; a side letter is prose. An EXPLICIT `mfn: false` is therefore NOT
+ * overridden by the word "MFN" appearing somewhere in a side letter.
+ */
+
+/** The two places a round can record MFN, as any caller holds them. */
+export type MfnSource = {
+  /** The round's own flag: boolean, or the strings/numbers a form control produces. */
+  mfn?: unknown;
+  /** Free text. Read ONLY where the flag records nothing. */
+  sideLetter?: unknown;
+};
+
+export type MfnOnRecord = {
+  /** `true` / `false` = recorded. `null` = NOT RECORDED — never read as "no". */
+  onRecord: boolean | null;
+  source: "mfn_field" | "side_letter" | null;
+  /** What was read, verbatim, so a refusal or a rationale can quote it. */
+  raw: string | null;
+};
+
+/** The side-letter wordings that record an MFN. `\b` on both sides so "amfnote"
+ *  is not an MFN, and both spellings of "favoured" because both are typed. */
+const MFN_TEXT_PATTERNS: readonly RegExp[] = [
+  /\bmfn\b/i,
+  /\bmost[-\s]?favou?red[-\s]?nation\b/i,
+];
+
+/**
+ * READ WHETHER MFN IS ON RECORD. Nothing here substitutes a value, and nothing
+ * here is a display: `onRecord === null` is an answer, and the caller says so.
+ */
+export function readMfnOnRecord(source: MfnSource): MfnOnRecord {
+  /* THE FLAG, FIRST. This block is `roundStoredTerms`'s, moved verbatim in
+     substance: only an explicit yes turns it on, only an explicit no turns it off,
+     and anything else records nothing. */
+  const flagRaw = source.mfn;
+  if (flagRaw === true) return { onRecord: true, source: "mfn_field", raw: "true" };
+  if (flagRaw === false) return { onRecord: false, source: "mfn_field", raw: "false" };
+  if (typeof flagRaw === "string" && flagRaw.trim() !== "") {
+    const v = flagRaw.trim().toLowerCase();
+    if (v === "true" || v === "yes" || v === "1" || v === "on") {
+      return { onRecord: true, source: "mfn_field", raw: flagRaw.trim() };
+    }
+    if (v === "false" || v === "no" || v === "0" || v === "off") {
+      return { onRecord: false, source: "mfn_field", raw: flagRaw.trim() };
+    }
+    /* A string nobody can read as a flag records NOTHING — it does not fall
+       through to the side letter, because the round DID answer the question and
+       the answer is unusable. Falling through would let prose overrule a stored
+       answer, which is the shape of the defect this function removes. */
+    return { onRecord: null, source: null, raw: flagRaw.trim() };
+  }
+  if (flagRaw === 1) return { onRecord: true, source: "mfn_field", raw: "1" };
+  if (flagRaw === 0) return { onRecord: false, source: "mfn_field", raw: "0" };
+
+  /* THE SIDE LETTER, ONLY WHERE THE FLAG SAID NOTHING. A side letter that is
+     silent about MFN records nothing about MFN — it is NOT a recorded "no". */
+  const letterRaw = source.sideLetter;
+  if (typeof letterRaw === "string" && letterRaw.trim() !== "") {
+    const text = letterRaw.trim();
+    for (const re of MFN_TEXT_PATTERNS) {
+      if (re.test(text)) return { onRecord: true, source: "side_letter", raw: text };
+    }
+    return { onRecord: null, source: null, raw: text };
+  }
+
+  return { onRecord: null, source: null, raw: null };
+}
+
 /** The same decision in the few words a table cell or a class label has room for.
  *  It obeys the same rule: no multiple and no cap when nothing was decided. */
 export function describeLiquidationTermsShort(d: LiquidationTermDecision): string {

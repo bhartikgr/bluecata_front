@@ -12,7 +12,20 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
-import { wireSafeMinorUnits } from "@/lib/wireSafeMinorUnits";
+/* WAVE 135 · FINDING 4 — the partner money-entry contract, reused not rebuilt.
+   Same change as the sibling SPV screen, and for the same reason: this field no
+   longer carries minor units in from the client, so a minor-unit gate is the
+   wrong instrument. `client/src/lib/wireSafeMinorUnits.ts` is untouched (outside
+   this wave's ownership) and merely uncalled here. */
+import {
+  wholeUnitsLabel,
+  wholeUnitsPlaceholder,
+} from "@/components/partner/partnerMoneyInput";
+import {
+  PartnerMoneyEntryNotice,
+  wholeUnitsToWireMinor,
+  wireMinorNumber,
+} from "@/components/partner/PartnerMoneyEntryNotice";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -21,7 +34,9 @@ import { Label } from "@/components/ui/label";
 /* WAVE 115 · FINDING 1 (L8) — the fund status reached the list raw. The two
    literal branches stay two literal branches (see the note above them about the
    guard inventory); only the interpolated expression moved. */
-import { fundStatusLabel } from "@/lib/partnerDisplay";
+/* WAVE 138 — `humanizeMachineKey` labels the fund-type options through the same
+   shared accessor, so `closed_end` never reaches a client's eye raw. */
+import { fundStatusLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
 /* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of the SC-1 fix applied to
  * PartnerFundDetail.tsx in Wave 2.
  *
@@ -63,10 +78,43 @@ function formatMinor(minor: number, currency: string) {
   return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
+/* WAVE 138 · DEFECT B — the two enums this endpoint accepts, verbatim from its
+   own guards (`server/partnerRoutes.ts:1975` / `:1976`). `fundType` deliberately
+   has NO default: it materially changes the vehicle, so an assumed value would
+   be a business assumption made on the partner's behalf. `planning` is the first
+   state of the status enum and is the visible, editable seed. */
+const FUND_TYPE_WIRE_VALUES = ["evergreen", "closed_end", "rolling"] as const;
+const FUND_STATUS_WIRE_VALUES = ["planning", "raising", "investing", "harvesting", "wound_down"] as const;
+
+/* Computed, never a year literal — `"2026"` was hardcoded here and would be
+   wrong for every client from 1 January onwards. */
+function currentVintageYear(): string {
+  return String(new Date().getFullYear());
+}
+
 export default function PartnerFunds() {
   const role = useRequirePartnerRole();
   const qc = useQueryClient();
-  const [form, setForm] = useState({ fundName: "", vintageYear: "2026", targetSizeMinor: "0", currency: "USD" });
+  /* WAVE 138 · DEFECT B — the state key was `vintageYear`, which this file's own
+     header comment (`:48`) already recorded as "not a DTO field at all"; the
+     server reads `vintage` (`server/partnerRoutes.ts:1971`), so the value arrived
+     `undefined` and `isNumber` failed on every call. `fundType`, `jurisdiction`
+     and `status` were never collected at all. All four now have visible,
+     editable controls. */
+  const [form, setForm] = useState({
+    fundName: "",
+    fundType: "",
+    jurisdiction: "Delaware",
+    /* The local state key stays `vintageYear` deliberately: renaming it would
+       rewrite this field's `onChange` expression, which the silent-drop guard
+       inventories by hash, and a rename is not worth a drop-gate waiver. The
+       DEFECT was never the local name — it was that the local name was put ON
+       THE WIRE. The payload below sends `vintage`, the key the server reads. */
+    vintageYear: currentVintageYear(),
+    status: "planning",
+    targetSizeMinor: "0",
+    currency: "USD",
+  });
   const [showForm, setShowForm] = useState(false);
 
   const { data, isLoading, isError } = useQuery<{ funds: Fund[] }>({
@@ -85,29 +133,54 @@ export default function PartnerFunds() {
   const create = useMutation({
     mutationFn: async () => {
       /* WAVE 100 · ITEM 3 (R72) — checked BEFORE the request is built, by the same
-         shared helper the SPV screen uses. One rule, one implementation (R21). */
-      const fundTarget = wireSafeMinorUnits(form.targetSizeMinor);
-      if (!fundTarget.ok) {
-        throw new Error(`TARGET_SIZE_NOT_EXACTLY_REPRESENTABLE — ${fundTarget.reason}.`);
-      }
+         shared helper the SPV screen uses. One rule, one implementation (R21).
+
+         WAVE 135 · FINDING 4 — the shared helper is now the whole-currency-unit
+         parser, still one rule and one implementation across both screens. This
+         field's units matter MORE than the SPV screen's, because unlike that one
+         this payload is actually persisted: `targetRaiseMinor: isNumber(
+         targetSizeMinor) ? targetSizeMinor : null` (server/partnerRoutes.ts:1987).
+         A client typing five million and getting fifty thousand recorded was a
+         stored 100× error, not a display one. `allowZero: true` because the
+         seeded value is "0" and a fund may be recorded before its target is set. */
+      const fundTargetSizeMinor = wireMinorNumber(
+        wholeUnitsToWireMinor(form.targetSizeMinor, form.currency, "Target size", { allowZero: true }),
+        "Target size",
+      );
       /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
          guard was unreachable dead code. The thrown ApiError reaches onError
          unchanged, preserving the "Create fund failed" toast. */
       const res = await apiRequest("POST", "/api/partner/me/funds", {
         fundName: form.fundName,
-        vintageYear: parseInt(form.vintageYear, 10),
+        fundType: form.fundType,
+        jurisdiction: form.jurisdiction,
+        status: form.status,
+        /* WAVE 138 — renamed to the key the server actually reads. `parseInt` is
+           correct HERE and is NOT money: this is a four-digit calendar YEAR. The
+           money field below keeps its exact-integer `wholeUnitsToWireMinor`
+           path, untouched. */
+        vintage: parseInt(form.vintageYear, 10),
         /* WAVE 100 · ITEM 3 (R72) — `parseInt(form.targetSizeMinor, 10)` was here.
            The SAME defect as `PartnerSpvs.tsx` and, unlike that screen, this payload
            does persist: `POST /api/partner/me/funds` writes `targetRaiseMinor`
-           (`server/partnerRoutes.ts:1987`). Checked, not narrowed. */
-        targetSizeMinor: fundTarget.value,
+           (`server/partnerRoutes.ts:1987`). Checked, not narrowed. WAVE 135 — and now
+           scaled exactly from what the client meant, with the wire unit unchanged. */
+        targetSizeMinor: fundTargetSizeMinor,
         currency: form.currency,
       });
       return res.json();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/funds"] });
-      setForm({ fundName: "", vintageYear: "2026", targetSizeMinor: "0", currency: "USD" });
+      setForm({
+        fundName: "",
+        fundType: "",
+        jurisdiction: "Delaware",
+        vintageYear: currentVintageYear(),
+        status: "planning",
+        targetSizeMinor: "0",
+        currency: "USD",
+      });
       setShowForm(false);
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Create fund failed", description: e.message }),
@@ -144,17 +217,80 @@ export default function PartnerFunds() {
               <Input type="number" value={form.vintageYear} onChange={(e) => setForm({ ...form, vintageYear: e.target.value })} data-testid="partner-fund-vintage" />
             </div>
             <div>
-              <Label>Target Size (minor units)</Label>
-              <Input type="number" value={form.targetSizeMinor} onChange={(e) => setForm({ ...form, targetSizeMinor: e.target.value })} data-testid="partner-fund-target" />
+              {/* WAVE 135 · FINDING 4 — see the sibling comment in PartnerSpvs.tsx.
+                  `type="text"` + `inputMode="decimal"`; the notice is ONE
+                  always-rendered sibling (W116 §3.1) so the child shape is stable.
+                  Literal label + `aria-label` from the shared helper, for the
+                  drop-detector reason written out in full on PartnerSpvs.tsx. */}
+              <Label>Target size</Label>
+              <Input
+                type="text"
+                inputMode="decimal"
+                placeholder={wholeUnitsPlaceholder(form.currency)}
+                aria-label={wholeUnitsLabel("Target size", form.currency)}
+                value={form.targetSizeMinor}
+                onChange={(e) => setForm({ ...form, targetSizeMinor: e.target.value })}
+                data-testid="partner-fund-target"
+              />
+              <PartnerMoneyEntryNotice
+                raw={form.targetSizeMinor}
+                currency={form.currency}
+                label="Target size"
+                testid="partner-fund-target-notice"
+              />
             </div>
             <div>
               <Label>Currency (ISO 4217)</Label>
               <Input value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} maxLength={3} data-testid="partner-fund-currency" />
             </div>
           </div>
+          {/* WAVE 138 · DEFECT B — `fundType`, `jurisdiction` and `status` are
+              REQUIRED by the server and were never collected. `fundType` opens
+              UNSET so the partner chooses the vehicle; the submit stays disabled
+              until they do. */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label>Fund type *</Label>
+              <select
+                className="w-full border rounded h-9 px-2"
+                value={form.fundType}
+                onChange={(e) => setForm({ ...form, fundType: e.target.value })}
+                data-testid="partner-fund-type"
+              >
+                <option value="">Select a fund type…</option>
+                {FUND_TYPE_WIRE_VALUES.map((t) => (
+                  <option key={t} value={t}>{humanizeMachineKey(t)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label>Jurisdiction</Label>
+              <Input
+                value={form.jurisdiction}
+                onChange={(e) => setForm({ ...form, jurisdiction: e.target.value })}
+                data-testid="partner-fund-jurisdiction"
+              />
+            </div>
+            <div>
+              <Label>Status</Label>
+              <select
+                className="w-full border rounded h-9 px-2"
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value })}
+                data-testid="partner-fund-status"
+              >
+                {FUND_STATUS_WIRE_VALUES.map((s) => (
+                  <option key={s} value={s}>{fundStatusLabel(s)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-fund-type-note">
+            {form.fundType ? "" : "Choose a fund type to record this fund. It changes the vehicle, so it is never assumed for you."}
+          </div>
           <Button
             onClick={() => create.mutate()}
-            disabled={!form.fundName.trim() || create.isPending}
+            disabled={!form.fundName.trim() || !form.fundType || create.isPending}
             data-testid="partner-funds-create"
           >
             {create.isPending ? "Recording…" : "Record Fund"}

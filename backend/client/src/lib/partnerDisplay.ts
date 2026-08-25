@@ -273,6 +273,39 @@ export function billingCadenceLabel(key: string | null | undefined): string {
   return BILLING_CADENCE_LABELS[raw] ?? humanizeMachineKey(raw);
 }
 
+/* WAVE 129 (R95) — A PRICE MUST STATE ITS PERIOD, AND ONLY THE PERIOD ON RECORD.
+ *
+ * `billingCadenceLabel` above answers "what cadence is this?" with an adjective
+ * ("Annual"). Beside a money figure you need the prepositional form — "$240.00
+ * per year" — and "Annual" cannot be used there without reading wrong. So this
+ * is the ONE place that turns a cadence key into the phrase that sits next to an
+ * amount; it reuses BILLING_CADENCE_LABELS' vocabulary rather than introducing a
+ * second cadence map.
+ *
+ * It returns `null` — never a default and never "/ mo" — when no cadence is on
+ * record. R95: a surface with no period must print no figure and say why. The
+ * caller decides how to refuse; this helper refuses to invent.
+ */
+const BILLING_PERIOD_PHRASES: Record<string, string> = {
+  monthly: "per month",
+  annual: "per year",
+  annually: "per year",
+  yearly: "per year",
+  quarterly: "per quarter",
+  one_time: "one-off",
+  /* WAVE 131 — the pricing console reports a one-off fee as `one_off` (the SPV
+     deployment fee and the collective application fee both are one). Without
+     this the period column fell back to the humanised key. Same phrase as
+     `one_time`; both spellings exist in the data. */
+  one_off: "one-off",
+};
+
+export function billingPeriodPhrase(key: string | null | undefined): string | null {
+  const raw = String(key ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  return BILLING_PERIOD_PHRASES[raw] ?? null;
+}
+
 /**
  * A plan/tier slug → a readable tier name. `partner_pro` is a storage slug, not
  * a product name; it was reaching the dashboard's plan-error line raw.

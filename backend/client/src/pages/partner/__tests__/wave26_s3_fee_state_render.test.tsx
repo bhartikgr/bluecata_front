@@ -86,10 +86,79 @@ function routeApi(breakdown: unknown) {
 beforeEach(() => apiRequestMock.mockReset());
 afterEach(() => cleanup());
 
+/**
+ * ============================================================================
+ * WAVE 128 - AMENDMENT, AND THE REASONING FOR IT (required reading before this
+ * file is changed again).
+ *
+ * BOTH TESTS BELOW BROKE, AND THE TEST WAS THE THING THAT WAS WRONG.
+ *
+ * Wave 127 - Finding 2 fixed a real defect in `SpvFeeLedgerPanel`: with the
+ * commitment box EMPTY the panel queried `/fee-breakdown` with no amount and
+ * rendered whatever the server returned for it, so a GP who had typed nothing
+ * was shown a management fee, a platform fee and a net-deployed figure for a
+ * commitment that did not exist. The panel now holds the query until an amount
+ * parses (`enabled: !awaitingCommitmentInput`) and renders a prompt in place of
+ * the figures.
+ *
+ * These two tests rendered the panel and immediately looked for
+ * `spv-fee-breakdown-netDeployedMinor` WITHOUT typing an amount. They passed
+ * only because the panel used to fetch and render figures for an empty input -
+ * that is, they pinned the phantom-figure behaviour wave 127 removed. Wave 127
+ * never saw them fail: they are a pre-existing test of the panel it rewrote,
+ * they are not among the 20 known pre-existing failures, and nothing in
+ * build_log/wave127/ mentions them.
+ *
+ * THE FIX IS THEREFORE IN THE TEST, and it is the smallest one that preserves
+ * every original assertion: each test now TYPES a commitment - which is what a
+ * GP must do before any fee figure is legitimate - and then asserts exactly
+ * what it asserted before: the refusal banner at the faulted pole, the honest
+ * dash instead of a zero, the real 95,000 yen at the healthy pole, and the
+ * absence of the banner there. Nothing was weakened: no assertion deleted, no
+ * matcher loosened. What changed is the PRECONDITION, because the precondition
+ * is now part of the contract. A third test is ADDED for the displaced
+ * precondition itself, so the behaviour that broke these two is pinned head-on
+ * rather than merely worked around.
+ *
+ * The amount is typed in WHOLE currency units, per WAVE 128 - FINDING 2: the
+ * field no longer asks a client for cents. JPY has ISO-4217 exponent 0, so a
+ * typed 1000 is 1,000 yen and reaches the wire as `commitmentMinor=1000`,
+ * asserted directly below - so this file now also pins that the conversion did
+ * not move the wire format for a zero-decimal currency.
+ * ============================================================================
+ */
+/** Type a commitment, because an empty box must model nothing (wave 127). */
+async function enterCommitment(whole: string) {
+  const input = await screen.findByTestId("spv-fee-breakdown-input");
+  fireEvent.change(input, { target: { value: whole } });
+  await waitFor(() =>
+    expect(
+      apiRequestMock.mock.calls.some((c) =>
+        c.some((a: unknown) => typeof a === "string" && a.includes("/fee-breakdown?commitmentMinor=")),
+      ),
+    ).toBe(true),
+  );
+}
+
 describe("WAVE 26 / S-3 — SpvFeeLedgerPanel renders the withheld-fee state", () => {
+  it("WAVE 128 — with NOTHING typed the panel models nothing at all", async () => {
+    /* The precondition wave 127 introduced, asserted head-on: no request, no
+       figures, and a prompt where the phantom breakdown used to be. */
+    routeApi(HEALTHY_BREAKDOWN);
+    renderPanel();
+    expect(await screen.findByTestId("spv-fee-breakdown-awaiting-input")).toBeTruthy();
+    expect(screen.queryByTestId("spv-fee-breakdown-netDeployedMinor")).toBeNull();
+    expect(
+      apiRequestMock.mock.calls.some((c) =>
+        c.some((a: unknown) => typeof a === "string" && a.includes("/fee-breakdown")),
+      ),
+    ).toBe(false);
+  });
+
   it("FAULTED POLE — the refusal is rendered and no fee is shown as zero", async () => {
     routeApi(UNKNOWN_BREAKDOWN);
     renderPanel();
+    await enterCommitment("1000");
     const alert = await screen.findByTestId("spv-fee-breakdown-unknown");
     expect(alert.textContent).toMatch(/could not be read/i);
     expect(alert.textContent).toMatch(/no amount shown here is a zero fee/i);
@@ -103,6 +172,13 @@ describe("WAVE 26 / S-3 — SpvFeeLedgerPanel renders the withheld-fee state", (
   it("HEALTHY POLE — the refusal is ABSENT and the real JPY amounts render", async () => {
     routeApi(HEALTHY_BREAKDOWN);
     renderPanel();
+    await enterCommitment("1000");
+    /* WAVE 128 — 1,000 yen typed in whole units is 1000 on the wire, not
+       100000: the converter scales by the currency's own exponent, which is 0. */
+    const url = apiRequestMock.mock.calls
+      .flat()
+      .find((a: unknown) => typeof a === "string" && (a as string).includes("/fee-breakdown?")) as string;
+    expect(url).toMatch(/[?&]commitmentMinor=1000(&|$)/);
     const net = await screen.findByTestId("spv-fee-breakdown-netDeployedMinor");
     // JPY has exponent 0: 95000 minor units is ¥95,000. A `/100` would print 950.
     expect(net.textContent).toMatch(/95,?000/);

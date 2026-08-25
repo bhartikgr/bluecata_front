@@ -30,9 +30,12 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { sanitizeErrorMessage } from "./lib/sanitize";
 import { log } from "./lib/logger";
 import { listFees, getFee, setFee } from "./platformFeesStore";
+import { invalidateAllPricingCaches } from "./lib/pricingCacheBus";
 import { updateApplicationFee } from "./lib/collectiveApplicationFeeResolver";
-/* WAVE 34 · TASK 2 — ISO-4217 exponent for the minor→display mirror below. */
-import { fromMinor } from "./lib/currency";
+/* WAVE 131 — the WAVE 34 minor→display mirror conversion is GONE (see the note
+   at the mirror-write): the config column is true minor units, so no exponent
+   conversion belongs on this path at all. `fromMinor` is no longer imported
+   here; nothing else in this file converted money. */
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -110,8 +113,21 @@ export function registerAdminPlatformFeesRoutes(app: Express): void {
     if (key === "collective_application_fee") {
       try {
         const mirrorCurrency = updated.currency || "USD";
+        /* WAVE 131 (R95 / R96 req 3 — displayed must equal charged). The mirror
+         * used to convert minor→MAJOR before writing, on the belief that
+         * `collective_application_fee_config.amount_minor` held display dollars.
+         * It does not. That column is TRUE minor units on every other path:
+         * PUT /api/admin/collective/application-fee validates its body as
+         * "non-negative integer (minor units)" and writes it unscaled
+         * (server/adminCollectiveFeeRoutes.ts), updateApplicationFee re-validates
+         * the same contract, and the seed default is 30000 for a $300 fee
+         * (DEFAULT_APPLICATION_FEE_MINOR, server/lib/collectiveApplicationFeeResolver.ts:30).
+         * So the conversion was writing 300 where 30000 was meant — a fee
+         * understated by two orders of magnitude, in the opposite direction to
+         * the founder-side render defect R97 names. The value is mirrored
+         * unscaled; one unit, one contract, on both sides. */
         updateApplicationFee(
-          fromMinor(amountMinor, mirrorCurrency),
+          amountMinor,
           mirrorCurrency,
           userId || "admin",
         );
@@ -122,6 +138,10 @@ export function registerAdminPlatformFeesRoutes(app: Express): void {
         );
       }
     }
+    /* WAVE 131 (R95) — an admin price change must be visible on the NEXT
+     * request, not after a cache TTL. One call, one place: see
+     * server/lib/pricingCacheBus.ts. */
+    invalidateAllPricingCaches(`platform_fees.set:${key}`);
     // Hash-chained admin audit with the before/after diff.
     try {
       appendAdminAudit(actorOf(req), `platform_fee:${key}`, "platform_fee_updated", {

@@ -54,6 +54,7 @@
 import type { Express, Request, Response } from "express";
 import { requireAdmin } from "./authMiddleware";
 import { requirePartnerAuth } from "./requirePartnerAuth";
+import { invalidateAllPricingCaches } from "./pricingCacheBus";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
 import { sanitizeErrorMessage } from "./sanitize";
@@ -501,6 +502,10 @@ export function registerWave14MoneyRoutes(app: Express): void {
         updatedBy: actorOf(req),
         notes: typeof b.notes === "string" ? b.notes : undefined,
       });
+      /* WAVE 131 (R95) — `partner_tier_price` is the AUTHORITATIVE subscription
+       * price. Every cache in front of a price is dropped here so the number the
+       * admin just typed is the number the next request quotes. */
+      invalidateAllPricingCaches(`partner_tier_price.set:${tierSlug}:${cadence}`);
       /* W-7 — show the admin what an ANNUAL amount now resolves to, including
          whether the legacy ×12 fallback is still in play for this tier. This is
          the one place the fallback is visible before a partner is charged. */

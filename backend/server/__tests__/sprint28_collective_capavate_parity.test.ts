@@ -9,7 +9,7 @@
  *   5. Bridge outbox drain rate: 95% of events processed within 30 seconds (simulation)
  *   6. Hash chain integrity: same event hash on both Capavate and Collective sides
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll } from "vitest";
 import {
   emitBridgeEvent,
   getOutbox,
@@ -28,6 +28,18 @@ import {
 } from "../subscriptionsStore";
 import { listContacts, _testContacts } from "../adminContactsStore";
 import { companies as canonicalCompanies } from "../mockData";
+import { authorFounderCatalogue } from "./_fixtures/pricingCatalogueFixture";
+
+/* WAVE 134 cause 1-of-3 (R98) — the parity tests below change a subscription's
+   status, and `updateSubscription` prices the plan from the admin-authored
+   pricing store, refusing with `plan_not_configured` when nothing is published.
+   v25.27 removed the source-baked seed on purpose (R95/R96: pricing is admin-set
+   and database-driven), so every one of those calls returned ok:false and the
+   parity assertions after it never ran. The one shared fixture publishes the
+   tiers first; no assertion here was weakened. */
+beforeAll(() => {
+  authorFounderCatalogue({ includeCollective: true });
+});
 
 /* ========================================================================
  * Helpers

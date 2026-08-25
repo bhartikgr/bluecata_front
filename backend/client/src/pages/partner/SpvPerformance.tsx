@@ -49,6 +49,25 @@ import { FilterChip } from "@/components/ui/filter-chip";
    reason becomes a sentence. Also (L12) the fair-value label asked for "minor
    units of USD". */
 import { reconcileBreakReasonLabel } from "@/lib/partnerDisplay";
+import { humanizeMachineKey } from "@/lib/partnerDisplay";
+/* WAVE 128 · FINDING 2 — A SIXTH FIELD ASKED FOR CENTS, AND IT WAS ALSO THE ONE
+   PLACE ON THE PARTNER SURFACE STILL RUNNING `parseInt` ON TYPED MONEY.
+
+   The brief named five. This one — the GP mark override — was found by the same
+   scan and is reported as a sixth: label "Overridden fair value, in USD cents,
+   not whole USD", placeholder "e.g. 125000000 for 1,250,000.00", and
+   `fairValueMinor: Number.parseInt(ovValue.trim(), 10)` on the way to
+   POST /api/partner/me/spv/:id/mark/override, which expects MINOR units. A GP
+   overriding a mark to $1,250,000 typed 1250000 and recorded $12,500.00 — on the
+   figure every LP's reported value is derived from.
+
+   Converted with the same one module, same notice, same wire format. */
+import {
+  PartnerMoneyEntryNotice,
+  wholeUnitsToWireMinor,
+  wireMinorNumber,
+} from "@/components/partner/PartnerMoneyEntryNotice";
+import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits } from "@/components/partner/partnerMoneyInput";
 /* ---------------------------------------------------------------------- */
 
 type MetricValue =
@@ -339,9 +358,17 @@ export default function SpvPerformance({
       (
         await apiRequest("POST", `${base}/mark/override`, {
           valuationEventId: ovEventId.trim(),
-          /* Integer minor units, parsed from a digits-only field. No decimal
-             arithmetic and no rounding happens on the client. */
-          fairValueMinor: Number.parseInt(ovValue.trim(), 10),
+          /* WAVE 128 · FINDING 2 — the client types whole currency units and this
+             is the exact minor-unit integer the route has always taken.
+             `wholeUnitsToWireMinor` is bigint string surgery; `wireMinorNumber`
+             widens an ALREADY-PROVEN digit string for a JSON number field and
+             refuses outside safe-integer range. No `parseInt`, no rounding, no
+             float. The submit button is disabled unless the parse succeeds, so
+             this cannot be reached with an unparseable value. */
+          fairValueMinor: wireMinorNumber(
+            wholeUnitsToWireMinor(ovValue, ccy, "Overridden fair value"),
+            "Overridden fair value",
+          ),
           currency: ccy,
           reason: ovReason.trim(),
           priorFairValueMinor: metricsQ.data?.valuation?.fairValueMinor ?? null,
@@ -455,10 +482,24 @@ export default function SpvPerformance({
       {/* --------------------------- CASH FLOWS -------------------------- */}
       {tab === "cashflows" && (
         <AppCard className="p-0" data-testid="spv-cashflows-card">
+          {/* WAVE 135 · FINDING 1 — "the append-only chain", "not installed on this
+              deployment" and "integrity is not being enforced" name our mechanism and
+              our hosting. The warning must NOT be softened, because it is a real
+              limitation on a financial record and hiding it would be worse than
+              phrasing it badly. So it keeps its full force and says what the client
+              loses — we cannot prove these rows are unaltered — rather than which
+              component of ours is absent.
+
+              The comment sits OUTSIDE the `&&`. A braced JSX comment placed as the
+              first child of a JSX `&&` expression is a syntax error, not a comment,
+              and a comment-closing token written INSIDE a comment ends it early. This
+              wave made both mistakes once, here, and they are recorded so the next
+              wave does not repeat them. */}
           {flowsQ.data && !flowsQ.data.chainInstalled && (
             <div className="border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="spv-cashflows-unchained-warning">
-              The append-only chain is not installed on this deployment. Rows below are
-              readable but their integrity is not being enforced.
+              Tamper-evident recording is not active for this vehicle. The rows below are
+              shown exactly as they were recorded, but Capavate cannot currently prove to
+              you that none of them has been altered since.
             </div>
           )}
           {flows.length === 0 ? (
@@ -496,7 +537,7 @@ export default function SpvPerformance({
                     <td className={`p-2 text-right tabular-nums ${f.amountMinor < 0 ? "text-rose-700" : "text-emerald-700"}`}>
                       {formatMinor(f.amountMinor, f.currency, { locale: "en-US" })}
                     </td>
-                    <td className="p-2 text-xs text-slate-500">{f.sourceKind}</td>
+                    <td className="p-2 text-xs text-slate-500">{humanizeMachineKey(f.sourceKind, "Source not recorded")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -512,15 +553,26 @@ export default function SpvPerformance({
           {verifyQ.data && (
             <>
               <div
+                /* WAVE 126 / FINDING 5 — nothing-to-verify is not a pass, so it
+                   is not green either. */
                 className={`rounded-md p-3 text-sm ${
                   verifyQ.data.verification.ok
-                    ? "border border-emerald-200 bg-emerald-50 text-emerald-900"
+                    ? verifyQ.data.verification.checked === 0
+                      ? "border border-[var(--cv-color-border)] bg-[var(--cv-color-surface-muted)] text-[var(--cv-color-text-secondary)]"
+                      : "border border-emerald-200 bg-emerald-50 text-emerald-900"
                     : "border border-rose-200 bg-rose-50 text-rose-900"
                 }`}
                 data-testid="spv-integrity-verdict"
               >
+                {/* WAVE 126 / FINDING 5 — "Chain verified: 0 row(s) recomputed
+                    and matched" is a green pass over nothing at all, on a
+                    vehicle that has no ledger yet. Zero checked rows is not a
+                    verification and must not be dressed as one. The failure
+                    wording is unchanged. */}
                 {verifyQ.data.verification.ok
-                  ? `Chain verified: ${verifyQ.data.verification.checked} row(s) recomputed and matched.`
+                  ? verifyQ.data.verification.checked === 0
+                    ? "There are no ledger entries for this vehicle yet, so there is nothing to verify. Verification will run against entries as they are recorded."
+                    : `Chain verified: ${verifyQ.data.verification.checked} row(s) recomputed and matched.`
                   : `Chain FAILED verification. ${verifyQ.data.verification.breaks.length} break(s) found.`}
               </div>
               {/* Unchained rows are reported separately and NEVER counted as
@@ -659,10 +711,16 @@ export default function SpvPerformance({
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <div className="text-sm font-medium text-[var(--cv-color-navy)]">Accrued carry at an as-of date</div>
+              {/* WAVE 135 · FINDING 1 — "exact integer minor units" is our storage unit
+                  and "the database enforces that too" is our implementation. What the
+                  client needs is the GUARANTEE: nothing is approximated, rounding never
+                  favours the GP, and the parts always reconcile to the whole. All three
+                  survive; only our vocabulary goes. */}
               <div className="mt-1 text-xs text-slate-500" data-testid="spv-carry-provenance">
-                Computed in exact integer minor units through a four-tier waterfall. The GP share is
-                TRUNCATED and every residual cent goes to the LP, so the three components always sum to
-                the amount distributed — the database enforces that too.
+                Calculated exactly through all four waterfall tiers, with no rounding of the
+                figures themselves. Where a split leaves a fraction, it goes to the LP and never
+                to the GP, so the three amounts below always add up to exactly the amount
+                distributed — not a fraction more and not a fraction less.
               </div>
             </div>
             <div className="flex items-end gap-2">
@@ -735,7 +793,7 @@ export default function SpvPerformance({
                   } hurdle`}
                 </div>
                 <div data-testid="spv-carry-basis">
-                  {`Basis: ${carryQ.data.accrual.basis} · accrual convention: ${carryQ.data.accrual.convention} · ${carryQ.data.accrual.componentCount} component(s)`}
+                  {`Basis: ${humanizeMachineKey(carryQ.data.accrual.basis, "not recorded")} · accrual convention: ${humanizeMachineKey(carryQ.data.accrual.convention, "not recorded")} · ${carryQ.data.accrual.componentCount} component(s)`}
                 </div>
                 <div data-testid="spv-carry-hurdle">
                   {carryQ.data.accrual.hurdleMet
@@ -767,7 +825,7 @@ export default function SpvPerformance({
                 {accrualsQ.data.accruals.map((a) => (
                   <tr key={a.id} className="border-b last:border-0" data-testid={`spv-carry-history-${a.id}`}>
                     <td className="p-2 tabular-nums">{a.asOfDate}</td>
-                    <td className="p-2">{a.basis}</td>
+                    <td className="p-2">{humanizeMachineKey(a.basis, "Basis not recorded")}</td>
                     <td className="p-2 text-right tabular-nums">
                       {formatMinor(a.carryMinor, a.currency, { locale: "en-US" })}
                     </td>
@@ -787,17 +845,32 @@ export default function SpvPerformance({
       {tab === "marks" && (
         <AppCard className="p-4" data-testid="spv-marks-card">
           <div className="text-sm font-medium text-[var(--cv-color-navy)]">GP mark override</div>
+          {/* WAVE 135 · FINDING 1 — the first two sentences were our development
+              history: an engine, its routes, a missing screen, and a GP calling the
+              API. None of it is a fact about the client's vehicle. What IS operative
+              is the CONTROL on an override, and that is all that is kept. The
+              `font-medium` span is kept in place, carrying different words — removing
+              an element would be a per-file element-count decrease and the restyle
+              drop detector reads that as a removal (W116 §3.1). */}
           <div className="mt-1 text-xs text-slate-500" data-testid="spv-marks-provenance">
-            The override engine and its routes existed for some time with no screen, which meant a GP
-            was <span className="font-medium">able to</span> override a mark only by calling the API. This
-            is that screen. A reason of at least ten characters is mandatory and is stored with the
-            override; the prior fair value is captured so the change is legible after the fact.
+            An override replaces the fair value carried for a position, and it is never
+            silent. A reason of at least ten characters is
+            <span className="font-medium"> required</span>, is stored alongside the override,
+            and the previous fair value is kept, so anyone reviewing this vehicle later can
+            see what the mark was, what it became, and why.
           </div>
           {overridesQ.data?.approvalMode && (
             <div className="mt-2 text-xs text-slate-600" data-testid="spv-marks-approval-mode">
+              {/* WAVE 135 · CLASS B — the else branch interpolated the RAW mode key into
+                  a sentence a GP reads. The key is a machine value and reaches an eye,
+                  which is the hard-rule class (R77), so it goes through the shared
+                  `humanizeMachineKey` every other partner screen already uses. The
+                  `=== "able_to"` comparison above is untouched: a literal in a
+                  comparison is code, not copy. Two literal branches stay two literal
+                  branches so the guard inventory does not move. */}
               {overridesQ.data.approvalMode === "able_to"
-                ? "Approval mode: an override takes effect immediately and is recorded for review afterwards."
-                : `Approval mode: ${overridesQ.data.approvalMode} — an override is recorded and does NOT take effect until an admin approves it.`}
+                ? "An override takes effect immediately and is recorded for review afterwards."
+                : `Approval required (${humanizeMachineKey(overridesQ.data.approvalMode, "method not recorded")}) — an override is recorded and does NOT take effect until Capavate approves it.`}
             </div>
           )}
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -815,20 +888,26 @@ export default function SpvPerformance({
               />
             </label>
             <label className="text-xs text-slate-500">
-              {`Overridden fair value, in ${ccy} cents, not whole ${ccy}`}
+              {wholeUnitsLabel("Overridden fair value", ccy)}
               <input
                 value={ovValue}
                 onChange={(e) => setOvValue(e.target.value)}
-                inputMode="numeric"
-                placeholder="e.g. 125000000 for 1,250,000.00"
+                inputMode="decimal"
+                placeholder={wholeUnitsPlaceholder(ccy)}
                 className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm tabular-nums"
                 data-testid="spv-marks-value-input"
               />
             </label>
           </div>
+          <PartnerMoneyEntryNotice
+            raw={ovValue}
+            currency={ccy}
+            label="Overridden fair value"
+            testid="spv-marks-value-notice"
+          />
           <div className="mt-1 text-xs text-slate-500" data-testid="spv-marks-minor-units-note">
-            Entered and transmitted as integer minor units. The client performs no arithmetic on this
-            figure and never rounds it.
+            The figure is recorded exactly as stated above. It is never rounded, and no arithmetic is
+            performed on it before it is sent.
           </div>
           <label className="mt-3 block text-xs text-slate-500">
             Reason (mandatory, at least 10 characters)
@@ -847,7 +926,9 @@ export default function SpvPerformance({
             disabled={
               overrideM.isPending ||
               ovReason.trim().length < 10 ||
-              !/^\d+$/.test(ovValue.trim()) ||
+              /* WAVE 128 · FINDING 2 — the digits-only test is replaced by the
+                 real parse, so "1,250,000.00" is accepted and "1e6" is not. */
+              !parseWholeUnits(ovValue, ccy, { label: "Overridden fair value" }).ok ||
               !ovEventId.trim()
             }
             data-testid="spv-marks-submit-button"
@@ -883,7 +964,7 @@ export default function SpvPerformance({
                     <td className="p-2 text-right tabular-nums">
                       {formatMinor(o.fairValueMinor, o.currency ?? ccy, { locale: "en-US" })}
                     </td>
-                    <td className="p-2 text-xs">{o.approvalState ?? "—"}</td>
+                    <td className="p-2 text-xs">{o.approvalState ? humanizeMachineKey(o.approvalState) : "—"}</td>
                     <td className="p-2 text-xs">{o.reason}</td>
                   </tr>
                 ))}

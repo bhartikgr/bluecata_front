@@ -497,14 +497,23 @@ describe("N — nothing anywhere authors, defaults or approximates a lock wordin
 
   it("N2 the client panel renders ONLY server-supplied strings for the lock body", () => {
     const src = readCode("client/src/components/partner/Lock1NoticePanel.tsx");
-    // The two branches it may render.
+    // The two branches it may render. WAVE 126 / FINDING 1 changed WHICH
+    // server string the not-supplied branch prints — `clientCopy` instead of
+    // `copy` — because `copy` described our internal state (whose wording was
+    // outstanding, and that a later release would replace it) on a paying
+    // client's screen. The invariant this assertion actually protects is
+    // unchanged and is what still matters: the lock body is a SERVER-SUPPLIED
+    // string with no client-side fallback, so this panel can never author,
+    // default or approximate a lock wording.
     expect(src).toContain("{q.data.text}");
-    expect(src).toContain("{q.data.copy}");
+    expect(src).toContain("{q.data.clientCopy}");
     // No local fallback: `text ?? "..."` is how a placeholder becomes a lock.
     expect(src).not.toMatch(/data\.text\s*\|\|/);
     expect(src).not.toMatch(/data\.text\s*\?\?/);
     expect(src).not.toMatch(/data\.copy\s*\|\|/);
     expect(src).not.toMatch(/data\.copy\s*\?\?/);
+    expect(src).not.toMatch(/data\.clientCopy\s*\|\|/);
+    expect(src).not.toMatch(/data\.clientCopy\s*\?\?/);
   });
 
   it("N3 no source file in this item contains lock-like legal prose", () => {

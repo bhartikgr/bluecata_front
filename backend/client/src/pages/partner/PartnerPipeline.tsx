@@ -472,7 +472,20 @@ export default function PartnerPipeline() {
                               // the partner to "Add Portfolio Company" first.
                               <a
                                 href="/collective/partner/add-portfolio-company"
-                                className="h-6 inline-flex items-center text-[10px] px-2 border rounded text-[var(--cv-color-text-muted)] hover:text-[var(--cv-color-text-secondary)]"
+                                /* WAVE 128 - FINDING 4: THIS IS A WORKING LINK
+                                   THAT WAS STYLED TO LOOK DISABLED. It sits in a
+                                   row of outline Buttons, but it was rendered in
+                                   muted grey with no underline and no hover
+                                   affordance beyond a slightly darker grey - the
+                                   platform's own visual language for a control
+                                   that cannot be used - so partners read it as an
+                                   explanation of why they could not publish
+                                   rather than as the door to the screen that
+                                   fixes it. Only the styling changes: same
+                                   element, same href, same text, same test id.
+                                   It now carries the primary link colour, an
+                                   underline and a real hover state. */
+                                className="h-6 inline-flex items-center text-[10px] px-2 border rounded underline text-[color:var(--cv-color-primary)] hover:bg-[rgba(4,30,65,0.06)]"
                                 data-testid={`add-to-capavate-hint-${d.id}`}
                                 title="Add this as a portfolio company on Capavate (cap table + rounds) before publishing to the Collective."
                               >Add to Capavate first</a>

@@ -43,6 +43,26 @@ import { getCompanyRecordById } from "./multiCompanyStore";
    SOLE arbiter of the [0,1] domain — it is not weakened, bypassed or
    duplicated here. */
 import { toWireDiscount } from "@shared/roundMathEngineAdapter";
+/* WAVE 136 · ITEMS 2 AND 3 (R100) — THIS FILE NOW READS TERMS INSTEAD OF DECIDING
+   THEM. Two defects in this file had the same cause: a negotiated term was being
+   interpreted here, inline, instead of by the ONE reader every other surface uses.
+   ITEM 2: `buildPricedEquityCarryForward` read `liquidationPreference` off a
+   SECURITY — a field no security in this tree has — so the value was ALWAYS 1, the
+   branch was unconditional, and the engine published the sentence "1x
+   non-participating liquidation preference was used in {round}" as a statement of
+   fact about a named round without reading anything that round recorded.
+   ITEM 3: FOUR sites computed MFN as `sideLetter.includes(...) ?? mfn ?? false`,
+   where a side letter that EXISTS and is silent about MFN yields boolean `false`,
+   which is a VALUE, so `??` never reached the stored flag (`SACRED_DOC` §5.3).
+   Both now consume `shared/liquidationTermsReader`. NO CALCULATION IN THIS FILE
+   CHANGES: these functions produce SUGGESTIONS and warnings, they compute no money,
+   and `computeConversionProjections` (R69) is not touched by this wave. */
+import {
+  readLiquidationTerms,
+  describeLiquidationTerms,
+  describeLiquidationTermsShort,
+  readMfnOnRecord,
+} from "@shared/liquidationTermsReader";
 
 function resolveCompanyForCarryForward(
   companyId: string,
@@ -330,25 +350,42 @@ function buildSafeCarryForward(
     "Discount rate is not carried forward — discount terms are round-specific and must be set explicitly.",
   );
 
-  // MFN — medium confidence carry from previous SAFE
+  /* ── WAVE 136 · ITEM 3 (R100) — MFN IS READ BY THE ONE READER. ────────────────
+     WHAT WAS HERE: `sideLetter?.toLowerCase().includes("mfn") ?? sec.mfn ?? false`.
+     A side letter that EXISTS and does not mention MFN evaluates to boolean
+     `false`, and `??` falls through on null/undefined ONLY — so the stored `mfn`
+     flag was unreachable for every instrument that had any side letter at all, and
+     a recorded MFN was reported as absent (`SACRED_DOC` §5.3). The final `?? false`
+     then made "not recorded" indistinguishable from "recorded as no".
+     `readMfnOnRecord` reads the FLAG FIRST and returns `null` for absent, so the
+     suggestion is emitted only where the previous round actually recorded the
+     term, and the absence is stated as an absence. */
   if (exampleSec) {
-    const mfnValue =
-      exampleSec.sideLetter?.toLowerCase().includes("mfn") ??
-      (exampleSec as { mfn?: boolean }).mfn ??
-      false;
-    fields.mfn = {
-      fieldName: "mfn",
-      suggestedValue: mfnValue,
-      source: "prev_round",
-      sourceRoundId: prevRound.id,
-      sourceRoundName: prevRound.name,
-      sourceRoundClosedAt: closedAt,
-      confidence: "medium",
-      rationale:
-        "Most founders maintain a consistent MFN policy across SAFE rounds. Derived from " +
-        `${prevRound.name} (${mfnValue ? "MFN: yes" : "MFN: no"}).`,
-      warnings: ["Verify MFN policy with counsel before accepting."],
-    };
+    const mfnRead = readMfnOnRecord({
+      mfn: (exampleSec as { mfn?: unknown }).mfn,
+      sideLetter: exampleSec.sideLetter,
+    });
+    if (mfnRead.onRecord === null) {
+      warnings.push(
+        `MFN is not carried forward — ${prevRound.name} records nothing about an MFN clause, and an absent ` +
+          `term is not the same as a term recorded as “no”. Decide it with counsel for this round.`,
+      );
+    } else {
+      fields.mfn = {
+        fieldName: "mfn",
+        suggestedValue: mfnRead.onRecord,
+        source: "prev_round",
+        sourceRoundId: prevRound.id,
+        sourceRoundName: prevRound.name,
+        sourceRoundClosedAt: closedAt,
+        confidence: "medium",
+        rationale:
+          "Most founders maintain a consistent MFN policy across SAFE rounds. Read from " +
+          `${prevRound.name} (${mfnRead.onRecord ? "MFN: yes" : "MFN: no"}), on record in ` +
+          `${mfnRead.source === "side_letter" ? "the side letter" : "the round's MFN field"}.`,
+        warnings: ["Verify MFN policy with counsel before accepting."],
+      };
+    }
   }
 
   // proRata — medium confidence carry
@@ -425,23 +462,34 @@ function buildNoteCarryForward(
     warnings: [],
   };
 
-  // mfn — medium confidence
+  /* WAVE 136 · ITEM 3 (R100) — the SAME defect as the SAFE branch above, in the
+     note branch, fixed by the SAME reader rather than by a second copy of the
+     rules. See the comment there for why `?? false` hid a recorded MFN. */
   if (exampleSec) {
-    const mfnValue =
-      exampleSec.sideLetter?.toLowerCase().includes("mfn") ??
-      (exampleSec as { mfn?: boolean }).mfn ??
-      false;
-    fields.mfn = {
-      fieldName: "mfn",
-      suggestedValue: mfnValue,
-      source: "prev_round",
-      sourceRoundId: prevRound.id,
-      sourceRoundName: prevRound.name,
-      sourceRoundClosedAt: closedAt,
-      confidence: "medium",
-      rationale: "MFN policy from prior round. Verify with counsel.",
-      warnings: ["Verify MFN policy with counsel before accepting."],
-    };
+    const mfnRead = readMfnOnRecord({
+      mfn: (exampleSec as { mfn?: unknown }).mfn,
+      sideLetter: exampleSec.sideLetter,
+    });
+    if (mfnRead.onRecord === null) {
+      warnings.push(
+        `MFN is not carried forward — ${prevRound.name} records nothing about an MFN clause. An absent term ` +
+          `is not a term recorded as “no”, so nothing is suggested here.`,
+      );
+    } else {
+      fields.mfn = {
+        fieldName: "mfn",
+        suggestedValue: mfnRead.onRecord,
+        source: "prev_round",
+        sourceRoundId: prevRound.id,
+        sourceRoundName: prevRound.name,
+        sourceRoundClosedAt: closedAt,
+        confidence: "medium",
+        rationale:
+          `MFN policy read from ${prevRound.name} (${mfnRead.onRecord ? "MFN: yes" : "MFN: no"}), on record in ` +
+          `${mfnRead.source === "side_letter" ? "the side letter" : "the round's MFN field"}. Verify with counsel.`,
+        warnings: ["Verify MFN policy with counsel before accepting."],
+      };
+    }
   }
 
   // proRata — medium confidence
@@ -542,14 +590,52 @@ function buildPricedEquityCarryForward(
         })
       | undefined;
 
-    // liquidationPreference — carry if previous was 1x non-participating
-    const liqPref = examplePref?.liquidationPreference ?? 1;
+    /* ── WAVE 136 · ITEM 2 (R100) — THE LIQUIDATION PREFERENCE IS READ, NEVER
+       ASSERTED. ──────────────────────────────────────────────────────────────────
+       WHAT WAS HERE, and why it was a fabrication rather than a bug:
+
+           const liqPref = examplePref?.liquidationPreference ?? 1;
+           const isNonParticipating = prevTermsSummary.includes(...) || liqPref === 1;
+           if (liqPref === 1 && isNonParticipating) { ...suggest 1x non-participating,
+             source: prev_round, confidence: high,
+             rationale: `...was used in ${prevPricedRound.name}...` }
+
+       `examplePref` is a SECURITY. No security record in this tree carries a
+       `liquidationPreference` field, so the read was ALWAYS `undefined`, `liqPref`
+       was ALWAYS 1, and `liqPref === 1` alone satisfied the condition: the branch
+       was UNCONDITIONAL. The engine then published `source: "prev_round"`,
+       `confidence: "high"` and a sentence naming the round, all of which state that
+       a specific round recorded a specific term — produced without reading anything
+       that round recorded. The else-branch was unreachable, so a round with a 2x or
+       participating preference would still have been reported as 1x
+       non-participating.
+
+       WHAT IT DOES NOW. The term is read from the ROUND, by the one reader every
+       other surface uses (`shared/liquidationTermsReader`), off the round's own
+       `liquidationPreference` free-text field and, where that is empty, its
+       `termsSummary` — which is where this tree's seed data actually records the
+       wording — together with the round's `capParticipation` key. Where the reader
+       cannot determine the term, NO FIELD IS EMITTED AND THE REASON IS STATED in the
+       reader's own words, so this panel and the exit-waterfall 422 cannot describe
+       one round differently. NOTHING IS DEFAULTED and no arithmetic is performed:
+       this function computes no money before or after this change.
+
+       ONLY the `1x non-participating` SHAPE can be carried, because that is the only
+       value this suggestion field has ever been able to express. A determined term
+       of any other shape is reported as not carried, with what the round records
+       quoted, rather than flattened into the one value the field can hold. */
     const prevTermsSummary = (prevPricedRound as { termsSummary?: string }).termsSummary ?? "";
-    const isNonParticipating =
-      prevTermsSummary.toLowerCase().includes("non-participating") ||
-      prevTermsSummary.toLowerCase().includes("non participating") ||
-      liqPref === 1;
-    if (liqPref === 1 && isNonParticipating) {
+    const prevLiquidation = readLiquidationTerms({
+      liquidationPreference:
+        (prevPricedRound as { liquidationPreference?: unknown }).liquidationPreference ??
+        (prevPricedRound as { termsSummary?: unknown }).termsSummary,
+      capParticipation: (prevPricedRound as { capParticipation?: unknown }).capParticipation,
+    });
+    const carriesOneXNonParticipating =
+      prevLiquidation.determined &&
+      prevLiquidation.multiple === 1 &&
+      prevLiquidation.participating === false;
+    if (carriesOneXNonParticipating) {
       fields.liquidationPreference = {
         fieldName: "liquidationPreference",
         suggestedValue: "1x_non_participating",
@@ -558,12 +644,23 @@ function buildPricedEquityCarryForward(
         sourceRoundName: prevPricedRound.name,
         sourceRoundClosedAt: (prevPricedRound as { closeDate?: string }).closeDate ?? "",
         confidence: "high",
-        rationale: `1x non-participating liquidation preference was used in ${prevPricedRound.name}. This is the NVCA market standard for early-stage priced rounds.`,
+        rationale:
+          `${prevPricedRound.name} records ${describeLiquidationTermsShort(prevLiquidation)}, ` +
+          `read from the terms on that round by the same reader the exit waterfall uses. ` +
+          `This is carried from that record, not from market practice.`,
         warnings: ["Verify with lead investor — some Series A+ investors request participating preference."],
       };
+    } else if (prevLiquidation.determined) {
+      warnings.push(
+        `Liquidation preference is not carried forward: the previous priced round ` +
+          `(${prevPricedRound.name}) records ${describeLiquidationTermsShort(prevLiquidation)}, which is ` +
+          `not the 1x non-participating shape this field can hold. Set it explicitly and review with counsel.`,
+      );
     } else {
       warnings.push(
-        `Previous priced round (${prevPricedRound.name}) had a non-standard liquidation preference (${liqPref}x). Review with counsel before setting.`,
+        `Liquidation preference is not carried forward because it is not on record in a form Capavate can ` +
+          `read on the previous priced round (${prevPricedRound.name}): ` +
+          `${describeLiquidationTerms(prevLiquidation)}`,
       );
     }
 
@@ -588,16 +685,24 @@ function buildPricedEquityCarryForward(
       warnings: [],
     };
   } else {
-    // No prior priced round — use market standard defaults
-    fields.liquidationPreference = {
-      fieldName: "liquidationPreference",
-      suggestedValue: "1x_non_participating",
-      source: "market_standard",
-      confidence: "high",
-      rationale:
-        "1x non-participating is the NVCA market standard for early-stage priced rounds (NVCA Model Charter §4.4).",
-      warnings: ["Verify with lead investor — some investors request participating preference."],
-    };
+    /* ── WAVE 136 · ITEM 2 (R100) — THE PRINTED DEFAULT THAT USED TO BE HERE IS GONE.
+       This branch runs when the company has NO prior priced round, i.e. when there is
+       nothing on record to carry. It used to emit:
+
+           fields.liquidationPreference = { suggestedValue: "1x_non_participating",
+             source: "market_standard", confidence: "high",
+             rationale: "1x non-participating is the NVCA market standard ..." }
+
+       That is a term this platform invented for a round nobody has negotiated, shown
+       at HIGH confidence. R100 forbids printing a default where a term is not on
+       record, so the field is not emitted at all and the absence is STATED instead.
+       `antiDilutionType` below KEEPS its `market_standard` suggestion deliberately:
+       it is a MECHANISM choice at MEDIUM confidence, not an assertion about money
+       owed at an exit, and `patch2_carry_forward.test.ts:334-340` pins it. */
+    warnings.push(
+      "Liquidation preference is not suggested — this company has no prior priced round, so there is nothing on " +
+        "record to carry forward. It must be negotiated with your lead investor and recorded on the round.",
+    );
     fields.antiDilutionType = {
       fieldName: "antiDilutionType",
       suggestedValue: "broad_based_weighted_average",
@@ -690,10 +795,17 @@ function buildUnrealizedInstruments(companyId: string): UnrealizedInstrument[] {
     if (sec.instrument === "safe") {
       const discountDecStr = discountAsDecimalStr(sec.discount as number | null);
       const capStr = sec.cap != null ? String(sec.cap) : null;
+      /* WAVE 136 · ITEM 3 (R100) — third of the four sites. `UnrealizedInstrument.mfn`
+         is declared `boolean`, so a `null` (nothing on record) cannot be published
+         through it without widening the published contract, which R100 does not
+         grant; `.onRecord === true` is therefore used, which is EXACTLY the value the
+         old expression was trying to produce and now produces correctly for an
+         instrument that has a side letter AND a stored flag. Widening the field to
+         `boolean | null` so this surface can say "not recorded" is raised as
+         OQ-W136-2 in `build_log/wave136/W136_PREFLIGHT.md`. */
       const mfnValue =
-        sec.sideLetter?.toLowerCase().includes("mfn") ??
-        (sec as { mfn?: boolean }).mfn ??
-        false;
+        readMfnOnRecord({ mfn: (sec as { mfn?: unknown }).mfn, sideLetter: sec.sideLetter })
+          .onRecord === true;
 
       const rationale =
         capStr && discountDecStr
@@ -739,7 +851,12 @@ function buildUnrealizedInstruments(companyId: string): UnrealizedInstrument[] {
         principal: String(sec.investmentAmount ?? 0),
         cap: capStr,
         discount: discountDecStr,
-        mfn: sec.sideLetter?.toLowerCase().includes("mfn") ?? false,
+        /* WAVE 136 · ITEM 3 (R100) — fourth site. This one never even looked at the
+           stored flag: it read the side letter and defaulted to `false`. Same reader,
+           same `boolean` contract note as the SAFE branch above (OQ-W136-2). */
+        mfn:
+          readMfnOnRecord({ mfn: (sec as { mfn?: unknown }).mfn, sideLetter: sec.sideLetter })
+            .onRecord === true,
         currency,
         sourceRoundId: sec.roundId,
         sourceRoundName: sourceRound?.name ?? sec.roundId,

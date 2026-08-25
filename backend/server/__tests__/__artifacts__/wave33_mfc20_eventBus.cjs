@@ -22052,6 +22052,13 @@ var init_roundMathEngineAdapter = __esm({
   }
 });
 
+// client/src/lib/captable/capTableHolderCount.ts
+var init_capTableHolderCount = __esm({
+  "client/src/lib/captable/capTableHolderCount.ts"() {
+    "use strict";
+  }
+});
+
 // server/lib/founderOwnershipEngine.ts
 var import_decimal3;
 var init_founderOwnershipEngine = __esm({
@@ -22059,6 +22066,7 @@ var init_founderOwnershipEngine = __esm({
     "use strict";
     import_decimal3 = require("decimal.js");
     init_roundMathEngineAdapter();
+    init_capTableHolderCount();
   }
 });
 

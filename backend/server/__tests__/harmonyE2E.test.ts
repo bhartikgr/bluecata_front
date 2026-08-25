@@ -45,6 +45,7 @@ import {
 import { spvFundStore, hydrateSpvFundStore } from "../spvFundStore";
 import { investorNominations as investorNominationsTable } from "../../shared/schema";
 import { subscribe, publish, _internal as sseInternal } from "../lib/sseHub";
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture";
 
 /* ------- canonical personas -------- */
 const CHAPTER_KC = "chap_keiretsu_canada";
@@ -112,8 +113,13 @@ beforeAll(async () => {
   // Activate collective membership for the canonical personas.
   for (const uid of [MAYA, AISHA, DANIEL, NYC_ADMIN, PARTNER_ADMIN]) {
     try {
-      collectiveMembershipStore.activate(uid, "u_admin_harmony");
-      upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
+      // WAVE 134 cause 1 (R98) — ONE shared helper seats a FULLY COMPLIANT investor:
+      // active membership + cap-table position + the W2-A1 accreditation self-declaration
+      // that requireCollectiveMember step 4 requires. Before this the requests below all
+      // returned 403 ACCREDITATION_DECLARATION_REQUIRED, so the assertions were never
+      // reached — these blocks were ABSENT from CI, not failing. The gate is unchanged and
+      // still refuses an undeclared member (see w134_collective_accreditation_fixture.test.ts).
+      seatCompliantInvestor(uid, { activatedBy: "u_admin_harmony" });
     } catch {
       /* may already be active */
     }

@@ -25,6 +25,7 @@ import {
   chapterMemberships as chapterMembershipsTable,
   tenants as tenantsTable,
 } from "../../shared/schema";
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture";
 
 const CHAPTER_ID = `chap_empty_${randomBytes(4).toString("hex")}`;
 const CHAPTER_TENANT = `tenant_chap_${CHAPTER_ID}`;
@@ -73,8 +74,13 @@ beforeAll(async () => {
       createdAt: now,
     } as any).run();
   } catch {/* may already exist */}
-  collectiveMembershipStore.activate(USER_ID, "u_admin_empty_state");
-  upsertCapTablePositionForTests(USER_ID); // W3-C: cap-table hard gate needs a position
+  // WAVE 134 cause 1 (R98) — ONE shared helper seats a FULLY COMPLIANT investor:
+  // active membership + cap-table position + the W2-A1 accreditation self-declaration
+  // that requireCollectiveMember step 4 requires. Before this the requests below all
+  // returned 403 ACCREDITATION_DECLARATION_REQUIRED, so the assertions were never
+  // reached — these blocks were ABSENT from CI, not failing. The gate is unchanged and
+  // still refuses an undeclared member (see w134_collective_accreditation_fixture.test.ts).
+  seatCompliantInvestor(USER_ID, { activatedBy: "u_admin_empty_state" });
   __setRuntimePersona({
     userId: USER_ID,
     email: `${USER_ID}@empty.example`,

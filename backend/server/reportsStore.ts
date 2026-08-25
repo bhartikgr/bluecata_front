@@ -61,6 +61,9 @@ import { getDb, rawDb } from "./db/connection";
 import { reports as reportsTable } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
+/* WAVE 125 · FINDING 2 — the one derived cap-table holder count. A report snapshot
+   is sent to investors; it must not carry a figure nobody computed. */
+import { computeCapTableHoldersOnRecord } from "./lib/founderOwnershipEngine";
 
 // Tenant id for a company. Same canonical pattern as roundsStore /
 // adminPlatformStore / founderCrmStore.
@@ -158,7 +161,9 @@ function mapReportRow(row: any): Report {
     sections: Array.isArray(content.sections) ? content.sections : [],
     readReceipts: Array.isArray(content.readReceipts) ? content.readReceipts : [],
     schedule: content.schedule ?? null,
-    metricsSnapshot: content.metricsSnapshot ?? { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+    /* WAVE 125 · FINDING 2 — a stored report that carries NO snapshot recorded no
+         holder count, so the count is `null`, not `0`. */
+        metricsSnapshot: content.metricsSnapshot ?? { raisedToDateUsd: 0, capTableHolders: null, softCirclePipelineUsd: 0, activeRounds: 0 },
   };
 }
 
@@ -249,7 +254,9 @@ export async function hydrateReportsStore(): Promise<void> {
         sections: Array.isArray(content.sections) ? content.sections : [],
         readReceipts: Array.isArray(content.readReceipts) ? content.readReceipts : [],
         schedule: content.schedule ?? null,
-        metricsSnapshot: content.metricsSnapshot ?? { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+        /* WAVE 125 · FINDING 2 — a stored report that carries NO snapshot recorded no
+         holder count, so the count is `null`, not `0`. */
+        metricsSnapshot: content.metricsSnapshot ?? { raisedToDateUsd: 0, capTableHolders: null, softCirclePipelineUsd: 0, activeRounds: 0 },
       };
       reports.push(r);
     }
@@ -294,7 +301,14 @@ export type Report = {
   schedule: Schedule | null;
   metricsSnapshot: {
     raisedToDateUsd: number;
-    capTableHolders: number;
+    /* WAVE 125 · FINDING 2 — `number | null`. This field is part of a snapshot a
+       founder SENDS TO INVESTORS, and until this wave every non-demo report was
+       created with the literal `0`: nothing in live code ever computed it (29 live
+       occurrences of `capTableHolders`, 0 computations —
+       `build_log/wave125/enum_captable_holders.py`). It is now DERIVED from the
+       cap-table engine at report-creation time, and `null` where it could not be
+       derived — never a zero nobody computed. */
+    capTableHolders: number | null;
     softCirclePipelineUsd: number;
     activeRounds: number;
   };
@@ -391,7 +405,11 @@ export function registerReportsRoutes(app: Express): void {
       readReceipts: [],
       schedule: null,
       // PATCH v3: new companies start at zero metrics; NovaPay values kept for demo only
-      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+      /* WAVE 125 · FINDING 2 — DERIVED, not `0`. `computeCapTableHoldersOnRecord` runs the
+         same injected securities provider and the same `runEngine` call the founder
+         dashboard's ownership figure uses, and returns `null` when it has nothing to
+         read. The other three figures in this snapshot are outside this wave. */
+      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: computeCapTableHoldersOnRecord(companyId), softCirclePipelineUsd: 0, activeRounds: 0 },
     };
     // v25.34 FAIL-CLOSED: persist BEFORE mutating the cache. If the DB write
     // throws, surface 500 and leave the cache untouched.
@@ -659,7 +677,11 @@ export function registerReportsRoutes(app: Express): void {
       ],
       readReceipts: [],
       schedule: null,
-      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+      /* WAVE 125 · FINDING 2 — DERIVED, not `0`. `computeCapTableHoldersOnRecord` runs the
+         same injected securities provider and the same `runEngine` call the founder
+         dashboard's ownership figure uses, and returns `null` when it has nothing to
+         read. The other three figures in this snapshot are outside this wave. */
+      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: computeCapTableHoldersOnRecord(companyId), softCirclePipelineUsd: 0, activeRounds: 0 },
     };
     // v25.34 FAIL-CLOSED: persist BEFORE mutating the cache.
     const nowIso = new Date().toISOString();

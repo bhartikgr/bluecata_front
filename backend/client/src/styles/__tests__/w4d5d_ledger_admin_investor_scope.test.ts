@@ -204,7 +204,14 @@ describe("W4D5D §3 · the OVERFLOW invariant — a table header can only shrink
 describe("W4D5D §4 · R80 — founder Billing is untouched and unreachable from here", () => {
   it("founder/Billing.tsx is byte-identical to the value Wave 96 published", () => {
     expect(sha(BILLING)).toBe(
-      "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7"
+    /* WAVE 131 · R97 — the legal bytes moved once more. The owner expressly
+       authorised ONE further edit in this file (spec/OWNER_RULINGS_2026_08_13.md
+       R97): the collective application fee rendered raw MINOR units behind a
+       dollar sign, so $300 displayed as "$30,000". It now renders through
+       formatMinor() and an absent fee renders no figure. The pin stays EXACT, at
+       the new value, so an unwaived edit still fails here.
+       Wave 89 bytes, retained: bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7 */
+      "ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6"
     );
   });
 

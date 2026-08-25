@@ -208,11 +208,33 @@ describe("W82 ITEM 3 · Review & Launch shows every field the wizard collects", 
     }
   });
 
-  it("money on the new rows uses the SAME formatter and the SAME currency as the existing rows", () => {
-    expect(review).toContain('value={fmt(toMinor(parseFloat(w.minCheckMinor || "0") || 0, w.currency), w.currency)}');
-    expect(review).toContain('value={fmt(toMinor(parseFloat(w.capMinor || "0") || 0, w.currency), w.currency)}');
-    expect(review).toContain('value={w.checkMinMajor.trim() ? fmt(toMinor(parseFloat(w.checkMinMajor) || 0, w.currency), w.currency) : "—"}');
-    expect(review).toContain('value={w.checkMaxMajor.trim() ? fmt(toMinor(parseFloat(w.checkMaxMajor) || 0, w.currency), w.currency) : "—"}');
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 133 · R98 — RE-PINNED ONTO THE POST-WAVE-128 MONEY PATH.
+     ═══════════════════════════════════════════════════════════════════════════
+     RULING: OWNER_RULINGS_2026_08_13.md R98 ("a test that pins a DELETED DEFECT
+     is stale and must be updated to pin the CORRECT behaviour"), read with the
+     platform's absolute rule against float arithmetic on money.
+
+     This test previously demanded FOUR literal `fmt(toMinor(parseFloat(…)))`
+     expressions on the Review rows. Wave 128 DELETED every `parseFloat` from
+     this file and routed the wizard's money through the ONE partner money module
+     (`wizardMoneyDisplay` / `wizardMoneyDisplayOptional`, declared at
+     PartnerSpvEngine.tsx:190/196). The old pins therefore demanded the defect
+     back. The CODE is correct; the pins were stale.
+
+     Not weakened: 4 pins out, 5 in. The four value pins are re-expressed against
+     the live money path, AND a fifth, strictly stronger assertion is added that
+     `parseFloat` is ABSENT from the Review block altogether — which the old
+     four could never have caught, because they only ever checked that four
+     specific float expressions were PRESENT. ═════════════════════════════════ */
+  it("money on the new rows goes through the ONE partner money module — the SAME formatter and currency as the existing rows (R98 / wave 128)", () => {
+    expect(review).toContain('value={wizardMoneyDisplay(w.minCheckMinor, w.currency, "Minimum cheque")}');
+    expect(review).toContain('value={wizardMoneyDisplay(w.capMinor, w.currency, "Hard cap")}');
+    expect(review).toContain('value={wizardMoneyDisplayOptional(w.checkMinMajor, w.currency, "Minimum cheque (mandate)")}');
+    expect(review).toContain('value={wizardMoneyDisplayOptional(w.checkMaxMajor, w.currency, "Maximum cheque (mandate)")}');
+    // STRONGER THAN THE PIN IT REPLACES: no float arithmetic on money anywhere
+    // on this screen, not merely "these four expressions exist".
+    expect(review, "no parseFloat on money may return to the Review & Launch block").not.toContain("parseFloat");
   });
 
   it("a blank optional renders an explicit em-dash and stays optional", () => {
@@ -275,6 +297,14 @@ describe("W82 ITEM 3 · Review & Launch shows every field the wizard collects", 
     }
     // And the rows that were already there still read exactly as they did.
     expect(review).toContain('<ReviewRow label="Name" value={w.name || "(unnamed)"} onEdit={() => setStep(0)} />');
-    expect(review).toContain('<ReviewRow label="Target raise" value={fmt(toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency), w.currency)} onEdit={() => setStep(3)} />');
+    /* WAVE 133 · R98 — the Target raise row still reads exactly as it did EXCEPT
+       for its money converter, which wave 128 moved off `parseFloat` onto
+       `wizardMoneyDisplay` (PartnerSpvEngine.tsx:1247). Re-pinned onto the live
+       expression; label, position and onEdit target are unchanged, which is what
+       this test is actually guarding. Assertion count is not reduced — the one
+       replaced pin is followed by a second, stronger pin that no float
+       arithmetic reached the row. */
+    expect(review).toContain('<ReviewRow label="Target raise" value={wizardMoneyDisplay(w.targetRaiseMinor, w.currency, "Target raise")} onEdit={() => setStep(3)} />');
+    expect(review, "Target raise must not be re-valued through a float converter").not.toContain("toMinor(parseFloat");
   });
 });

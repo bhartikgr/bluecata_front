@@ -38,7 +38,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { apiRequest, ApiError, queryClient } from "@/lib/queryClient";
-import { fmtUSD } from "@/lib/format";
+/* WAVE 137 · DEFECT A — the application fee arrives as TRUE minor units from
+ * GET /api/collective/application-fee (collective_application_fee_config
+ * .amount_minor; seed default 30000 = $300, PUT contract "non-negative integer
+ * (minor units)"). `fmtUSD` formats WHOLE units, so both fee statements on this
+ * page quoted the founder 100× the real fee ($300 shown as $30,000) — the same
+ * fee the admin surface was over-displaying on the other side of the wall.
+ * `formatMinorOrUnavailable` is ISO-4217-exponent aware, takes the currency from
+ * the payload instead of assuming USD, and prints "—" (never "$0.00") for an
+ * absent amount. No arithmetic is applied to the amount. */
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 
 type CrmRow = {
@@ -703,7 +712,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>This path is for founders without a cap-table investor sponsor.</p>
-          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {feeReady ? <>{fmtUSD(APPLICATION_FEE as number)}</> : <FeeLoading />} applies.</p>
+          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : <FeeLoading />} applies.</p>
           <p className="pt-2 text-xs italic">Reminder: this applies your COMPANY to PRESENT — it doesn't enrol you as a member.</p>
         </CardContent>
       </Card>
@@ -884,7 +893,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
 
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
             <div className="font-semibold text-amber-900 mb-1 flex items-center gap-2">
-              <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{fmtUSD(APPLICATION_FEE as number)}</> : <FeeLoading />} non-refundable
+              <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : <FeeLoading />} non-refundable
             </div>
             {/* v25.45.4 M-8 — Airwallex is the active payment provider (was Stripe). */}
             <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Airwallex before the application enters the queue. Demo mode does not charge.</p>

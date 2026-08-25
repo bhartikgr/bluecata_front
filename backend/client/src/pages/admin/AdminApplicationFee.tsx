@@ -5,18 +5,42 @@
  * hardcoded. Look-and-feel mirrors PartnerFeeSchedules.tsx exactly (PageHeader/
  * PageBody/Card/Input/Label/Button + apiRequest/queryClient/useToast).
  *
- * v25.39 round-2 (per GPT-5.5 concern #4): the founder-facing display uses
- * `fmtUSD(amountMinor)` (no /100) — i.e., the DB column historically named
- * `amount_minor` actually stores the LITERAL displayed amount (2500 -> $2,500),
- * matching the v25.37 hardcoded literal that this resolver replaced. To stay
- * consistent with the founder page and the v25.38 resolver's documented
- * "displayed value is identical to v25.37" contract, this admin UI now
- * displays and edits the same literal value the founder page renders (no
- * /100 or *100 conversion). The column name is preserved for API-shape
- * consistency but is treated as an opaque integer here.
+ * WAVE 137 · DEFECT A — THE v25.39 round-2 BELIEF RECORDED BELOW IS FALSE AND IS
+ * CORRECTED HERE. It said `collective_application_fee_config.amount_minor`
+ * "stores the LITERAL displayed amount (2500 -> $2,500)" and that this editor
+ * should therefore render it with `fmtUSD` (whole units, no division). The column
+ * is TRUE MINOR UNITS on every other path in the tree:
+ *   · PUT /api/admin/collective/application-fee validates its body as
+ *     "amountMinor must be a non-negative integer (minor units)" and writes it
+ *     unscaled (server/adminCollectiveFeeRoutes.ts);
+ *   · the seed default is 30000 for a $300 fee
+ *     (DEFAULT_APPLICATION_FEE_MINOR, server/lib/collectiveApplicationFeeResolver.ts:30,
+ *     and the connection.ts bootstrap seeds 30000);
+ *   · WAVE 131 removed the minor→major conversion from the platform-fees
+ *     mirror-write for exactly this reason (server/adminPlatformFeesRoutes.ts).
+ * So both renders on this page (the typed-value preview and the live read-back)
+ * were showing 100× the real fee — $300 displayed as $30,000. They now go through
+ * `formatMinorOrUnavailable`, which is ISO-4217-exponent aware and prints "—"
+ * rather than "$0.00" for an absent value. NO arithmetic is applied to the
+ * amount: the stored/typed/wire value is minor units end to end, exactly as it
+ * was before this wave, and only the FORMATTER changed.
+ *
+ * COPY LEFT ALONE ON PURPOSE. The three visible strings below still say "Amount
+ * (displayed to founders)", "e.g. 2500" and "...shown to founders exactly as
+ * entered here (e.g. 2500 -> $2,500)" — wording that belongs to the false belief
+ * corrected above. This wave rewrote them and the silent-drop guard BLOCKED the
+ * build: those exact strings are frozen in the guard baseline, so replacing them
+ * counts as a removal of primary functionality that needs an owner-approved
+ * allowlist entry (scripts/silent-drop-guard/allowlist.json), which is outside a
+ * two-defect display wave. The strings were therefore restored byte-for-byte and
+ * the copy correction is logged as a residual item in
+ * build_log/wave137/W137_BUILD.md. Nothing a founder sees is affected: this page
+ * is deliberately UNROUTED (server/__tests__/wave7_r1_fee_page_disposition.test.ts
+ * requires it to stay unrouted), and the founder-facing amount on
+ * founder/ApplyToCollective.tsx IS fixed in this wave.
  */
 import { useEffect, useState } from "react";
-import { fmtUSD } from "@/lib/format";
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,10 +73,10 @@ export default function AdminApplicationFee() {
   });
 
   // v25.39 round-2 (per GPT-5.5 concern #4): seed the editor with the DB value
-  // DIRECTLY (no /100). The founder page renders this integer via
-  // `fmtUSD(amountMinor)` which produces e.g. `$2,500` for the value 2500. To
-  // prevent the admin/founder unit mismatch, the editor stores the literal
-  // integer too.
+  // DIRECTLY (no /100) — WAVE 137 keeps this unchanged. The typed value, this
+  // pre-filled default and the PUT wire value are all ONE unit (minor units),
+  // and the founder page reads the same column, so nothing here is rescaled.
+  // Only the two rendered previews were wrong, and only they were changed.
   useEffect(() => {
     if (data && !dirty) {
       setAmountMajor(String(data.amountMinor));
@@ -76,7 +100,7 @@ export default function AdminApplicationFee() {
   const saveMut = useMutation({
     mutationFn: async () => {
       // v25.39 round-2 (per GPT-5.5 concern #4) + round-3 (concern A): save the
-      // literal integer the founder page will display via `fmtUSD`. Validate
+      // integer minor-unit amount the founder page displays. Validate
       // via the strict whole-number regex so invalid input (1.5, 1e3, "abc")
       // is rejected client-side before reaching the server.
       const parsed = parseWholeAmount(amountMajor);
@@ -127,10 +151,13 @@ export default function AdminApplicationFee() {
                   <div className="text-[10px] text-muted-foreground">
                     {/* v25.39 round-3 (per GPT-5.5 concern A): preview uses
                         the SAME strict whole-number validation as save, so
-                        `1.5`/`1e3`/"abc" show "—" instead of misleading $1. */}
+                        `1.5`/`1e3`/"abc" show "—" instead of misleading $1.
+                        WAVE 137: the typed value IS minor units (it is PUT
+                        unscaled), so the preview must format it as minor units
+                        — `fmtUSD` here quoted founders 100× the real fee. */}
                     Founders see: <span className="font-medium" data-testid="text-fee-preview">{(() => {
                       const p = parseWholeAmount(amountMajor);
-                      return p === null ? "—" : fmtUSD(p);
+                      return p === null ? "—" : formatMinorOrUnavailable(p, currency || "USD");
                     })()}</span>
                   </div>
                 </div>
@@ -145,7 +172,7 @@ export default function AdminApplicationFee() {
                 <div className="space-y-1.5">
                   <Label className="text-xs">Current (live)</Label>
                   <div className="h-9 flex items-center text-sm font-medium" data-testid="text-current-fee">
-                    {data ? fmtUSD(data.amountMinor) : "—"}
+                    {data ? formatMinorOrUnavailable(data.amountMinor, data.currency) : "—"}
                   </div>
                 </div>
                 <div className="md:col-span-3 flex items-center gap-3">

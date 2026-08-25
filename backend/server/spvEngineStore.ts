@@ -1665,7 +1665,40 @@ export const spvEngineStore = {
   /** Investor register / beneficial ownership: per-LP position + %. */
   /** ALL-subscriptions view (every non-withdrawn sub, any stage). Used for
    *  display/beneficial-ownership listings — NOT for money gates. */
-  investorRegister(partnerId: string, spvId: string): Array<{ investorId: string; commitmentMinor: number; ownershipPct: number }> {
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 127 · FINDING 3 — THE REGISTER NOW CARRIES EACH ROW'S STATUS.
+     ══════════════════════════════════════════════════════════════════════════
+     WHY THE ROWS WERE MIS-READ, AND IT WAS NOT THE ARITHMETIC. Two rendered
+     surfaces read THIS method:
+
+         · the SPV detail LPs tab   (server/spvEngineRoutes.ts, `register`)
+         · the Fund Commitment Register (server/partnerRoutes.ts, `commitments`)
+
+     Both then printed an amount and a percentage with NO STATUS AT ALL. On the
+     live `Test SPV` that rendered a subscription whose status is `review` as
+     `$2,500.00 (100.0%)` — an indication of interest presented as a commitment —
+     while the Close tab, the K-1 tab and the Overview raise figure correctly
+     reported nothing committed. The five surfaces were NOT equally wrong: the
+     three committed-only surfaces were RIGHT, and these two were wrong in their
+     FRAMING.
+
+     THIS IS NOT A SECOND COMMITTED PREDICATE, AND THE FILTER HAS NOT MOVED.
+     An all-stages register is a legitimate and necessary view — its own doc
+     comment already says it is NOT for money gates — and filtering `review`
+     rows out of it would be a silent drop of a real record. The committed figure
+     stays converged on `canonicalCommittedMinorForSpv` (:3731). What was missing
+     was the LABEL, so `status` is returned ADDITIVELY, unchanged from storage,
+     and the surfaces above render it in words. One honest read serves both,
+     rather than each restating the distinction for itself.
+
+     THE PERCENTAGE'S DENOMINATOR, NAMED. `total` below is the sum of ALL
+     NON-WITHDRAWN subscriptions at ANY stage. It is NOT the target raise and it
+     is NOT committed capital. One row over one row is 1.0, which is why a
+     $2,500.00 row read `100.0%` beside a $30.00 target and looked nonsensical:
+     the figure was never a percentage OF THE TARGET, and nothing on screen said
+     which denominator it used. Additive, presentation-only; no amount, filter or
+     ratio computed here changes. */
+  investorRegister(partnerId: string, spvId: string): Array<{ investorId: string; commitmentMinor: number; ownershipPct: number; status: string }> {
     if (!this.getSpv(partnerId, spvId)) return [];
     const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
@@ -1673,6 +1706,7 @@ export const spvEngineStore = {
       investorId: x.investorId,
       commitmentMinor: x.commitmentMinor,
       ownershipPct: total > 0 ? x.commitmentMinor / total : 0,
+      status: x.status,
     }));
   },
 

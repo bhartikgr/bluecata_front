@@ -123,7 +123,15 @@ describe("v25.45.4 L-2 — platform fees admin", () => {
     expect([401, 403]).toContain(r.status);
   });
 
-  it("admin can list fees and the seeded collective_application_fee row is present (250000 cents)", async () => {
+  /* WAVE 139 / RULINGS R101 + R102, applied per R98 (stale test, not stale code).
+     This block pinned 250000 minor ($2,500.00) as "the seeded row". The owner
+     ruled on 2026-08-25 that the canonical Collective application fee is
+     $300.00 = 30000 TRUE minor units, matching the live database and
+     collectiveApplicationFeeResolver.DEFAULT_APPLICATION_FEE_MINOR, and that
+     migrations/0066's 250000 seed is a DEFECT (corrected forward by
+     migrations/0196). The expectation is therefore re-pinned to the canonical
+     value. No assertion was removed. */
+  it("admin can list fees and the seeded collective_application_fee row is present (30000 minor = $300.00)", async () => {
     const r = await ADMIN(request(app).get("/api/admin/platform-fees"));
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
@@ -131,7 +139,7 @@ describe("v25.45.4 L-2 — platform fees admin", () => {
       (f) => f.key === COLLECTIVE_APPLICATION_FEE_KEY,
     );
     expect(row).toBeTruthy();
-    expect(row!.amountMinor).toBe(250000);
+    expect(row!.amountMinor).toBe(30000);
   });
 
   it("PUT /api/admin/platform-fees/:key rejects a non-integer / negative amount (400)", async () => {
@@ -154,25 +162,31 @@ describe("v25.45.4 L-2 — platform fees admin", () => {
     const reloaded = getFee(COLLECTIVE_APPLICATION_FEE_KEY);
     expect(reloaded.amountMinor).toBe(NEW_CENTS);
 
-    // And the public collective application-fee endpoint reflects it in DISPLAY
-    // units (cents ÷ 100): 300000 → 3000.
+    /* WAVE 139 / R98 — this assertion pinned the OLD "display units (cents ÷ 100)"
+       belief: it expected the mirror to publish 300000 as 3000. WAVE 131 removed
+       that division; the mirror is now 1:1 in TRUE minor units, which is what
+       R101 requires (30000 == $300.00, not $30,000). Re-pinned 1:1, and the
+       no-division property is now asserted EXPLICITLY so a re-introduced ÷100
+       fails loudly instead of silently matching. Assertions: 3 -> 4. */
     const fee = await request(app).get("/api/collective/application-fee");
     expect(fee.status).toBe(200);
-    expect(fee.body.amountMinor).toBe(3000);
+    expect(fee.body.amountMinor).toBe(NEW_CENTS);
+    expect(fee.body.amountMinor).not.toBe(NEW_CENTS / 100);
     expect(fee.body.source).toBe("db");
 
-    // Restore the seed so other suites see the canonical $2,500. We restore via
+    // Restore the seed so other suites see the canonical $300.00. We restore via
     // the admin PUT path so the L-2 config-table MIRROR-WRITE also resets the
-    // collective_application_fee_config row back to the display-unit seed (2500),
-    // keeping the v25.38/v25.39 application-fee suites isolated.
+    // collective_application_fee_config row, keeping the v25.38/v25.39
+    // application-fee suites isolated.
+    const CANONICAL_FEE_MINOR = 30000; // $300.00 — R101
     const restore = await ADMIN(
       request(app).put(`/api/admin/platform-fees/${COLLECTIVE_APPLICATION_FEE_KEY}`),
-    ).send({ amountMinor: 250000, currency: "USD" });
+    ).send({ amountMinor: CANONICAL_FEE_MINOR, currency: "USD" });
     expect(restore.status).toBe(200);
-    expect(getFee(COLLECTIVE_APPLICATION_FEE_KEY).amountMinor).toBe(250000);
-    // And confirm the config-table mirror is back to the display seed (2500).
+    expect(getFee(COLLECTIVE_APPLICATION_FEE_KEY).amountMinor).toBe(CANONICAL_FEE_MINOR);
+    // And confirm the config-table mirror is back to the canonical fee, 1:1.
     const restoredFee = await request(app).get("/api/collective/application-fee");
-    expect(restoredFee.body.amountMinor).toBe(2500);
+    expect(restoredFee.body.amountMinor).toBe(CANONICAL_FEE_MINOR);
   });
 
   it("listFees() always includes the collective_application_fee key (v25.46 extension invariant)", () => {

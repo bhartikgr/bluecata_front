@@ -17,6 +17,15 @@
 import { useState, useRef, useEffect } from "react";
 import { useCollectiveStream } from "@/lib/sseClient"; /* WAVE 18 / XT-7 */
 import { formatMinor as formatMinorLib, toMinor } from "@/lib/currency";
+/* WAVE 128 - ADDITION 3: the wizard's money now goes through the ONE partner
+   money module (wave 126) instead of `parseFloat`. No second converter. */
+import {
+  parseWholeUnits,
+  toWireMinor,
+  formatWholeUnits,
+} from "@/components/partner/partnerMoneyInput";
+import { wireMinorNumber } from "@/components/partner/PartnerMoneyEntryNotice";
+import { REGIONS_ALL } from "@/lib/regions";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter"; /* SC-2 (WAVE 2) — inbound link to the SPV detail route */
 import { apiRequest } from "@/lib/queryClient";
@@ -34,6 +43,8 @@ import { COLLECTIVE_SECTORS_45 } from "@shared/schema";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import { SPV_EDU } from "@/lib/spvEducation"; /* WAVE 8 / ORP-063 */
 import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
+import { spvStatusLabel } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
+import { ATTESTATION_TEXT_V1 } from "@shared/spvAttestation"; /* WAVE 138 — one definition, shared with the server that records it */
 import {
   SPV_CARRY_BASES,
   SPV_CARRY_BASIS_HELP,
@@ -95,6 +106,98 @@ function fmt(minor: number | null, currency: string) {
   return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 128 · ADDITION 3 — NO FLOAT TOUCHES THE FIGURES A VEHICLE IS CREATED WITH
+   ══════════════════════════════════════════════════════════════════════════════
+   THE DEFECT. Seven sites in this file ran `parseFloat` on money and handed the
+   result to `toMinor`, which multiplies by a power of ten:
+
+     targetRaiseMinor: toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency)
+     minCheckMinor / capMinor / gpCommitMinor / checkMinMinor / checkMaxMinor /
+     fixedAmountMinor  — identical shape
+
+   This is NOT a cents bug: these fields already collect whole units, and the
+   review step already displayed them as whole units. It is FLOAT ARITHMETIC ON
+   MONEY, and binary floating point cannot hold ordinary decimal amounts exactly:
+   `Math.round(parseFloat("8916.13") * 100)` is one of the family of expressions
+   that lands a cent away from the amount that was typed. These particular seven
+   are the target raise, the minimum cheque, the hard cap, the GP's own
+   commitment, both mandate bounds and the fixed management fee — the terms a
+   vehicle is CREATED with and then administered against for years.
+
+   `parseFloat` also fails silently in three ways this platform must not tolerate
+   on money, all of which were live here:
+     · `parseFloat("500,000")` is 500 — a thousandfold loss from a thousands
+       separator a client is entitled to type;
+     · `parseFloat("12abc")` is 12 — garbage becomes a figure;
+     · `|| 0` turned every unparseable entry into a legitimate-looking ZERO
+       target raise, so a typo created a vehicle with no target at all.
+
+   THE FIX. Everything goes through `parseWholeUnits` from
+   client/src/components/partner/partnerMoneyInput.ts — the module wave 126 built
+   for exactly this: string surgery against the currency's ISO-4217 exponent, one
+   `BigInt` applied to a string of digits, thousands separators accepted, more
+   fractional digits than the currency has REFUSED rather than rounded, and a
+   refusal returned as a sentence rather than a zero. `toMinor` is no longer
+   called on any of these seven; the wire value is the exact integer
+   `toWireMinor` produces.
+
+   THE WIRE FORMAT DOES NOT MOVE. Every one of these keys still posts minor units
+   as an integer JSON number, to the same endpoints, validated by the same server
+   handlers. `wireMinorNumber` is what converts the exact digit string to the JSON
+   number, and it REFUSES beyond `Number.MAX_SAFE_INTEGER` instead of losing
+   precision quietly.
+
+   AND THE REVIEW STEP IS RE-PINNED. The confirmation screen used the same
+   `parseFloat` expressions, so it showed the float — meaning it agreed with the
+   wire by sharing its defect. It now renders through the same parse, and when an
+   entry cannot be parsed it states the REFUSAL where the figure would be, so the
+   last screen before a vehicle is created can no longer show a number that is
+   not the number that will be recorded.
+   ══════════════════════════════════════════════════════════════════════════════ */
+export type WizardMoney =
+  | { ok: true; minor: bigint; wire: number; display: string }
+  | { ok: false; message: string };
+
+/** Blank counts as zero ONLY where the old code did (`|| "0"`); never rounds. */
+export function wizardMoney(raw: string, currency: string, label: string): WizardMoney {
+  const r = parseWholeUnits(raw.trim() === "" ? "0" : raw, currency, { label, allowZero: true });
+  if (!r.ok) return { ok: false, message: r.message };
+  try {
+    return {
+      ok: true,
+      minor: r.minor,
+      wire: wireMinorNumber(toWireMinor(r.minor), label),
+      display: formatWholeUnits(r.minor, currency),
+    };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+}
+
+/** For `create.mutationFn`: refuse the whole launch before the first request. */
+export function wizardMoneyWire(raw: string, currency: string, label: string): number {
+  const m = wizardMoney(raw, currency, label);
+  if (!m.ok) throw new Error(m.message);
+  return m.wire;
+}
+
+/** Optional money: blank stays NULL, and is never turned into a zero. */
+export function wizardMoneyWireOptional(raw: string, currency: string, label: string): number | null {
+  return raw.trim() === "" ? null : wizardMoneyWire(raw, currency, label);
+}
+
+/** What the Review step shows: the exact figure, or the refusal, never a float. */
+export function wizardMoneyDisplay(raw: string, currency: string, label: string): string {
+  const m = wizardMoney(raw, currency, label);
+  return m.ok ? m.display : m.message;
+}
+
+/** The same, where blank means "not given" rather than zero. */
+export function wizardMoneyDisplayOptional(raw: string, currency: string, label: string): string {
+  return raw.trim() === "" ? "—" : wizardMoneyDisplay(raw, currency, label);
+}
+
 const NAVY = "var(--cv-color-navy)";
 const STEPS = ["Name & jurisdiction", "Mandate", "Fees", "Terms", "Review & launch"] as const;
 const CURRENCY_OPTIONS = buildCurrencyOptions();
@@ -144,6 +247,9 @@ interface WizardState {
   // 1c — launch sign-off (typed full legal name + explicit attestation ack).
   signoffLegalName: string;
   signoffAccepted: boolean;
+  /* WAVE 126 · REFERRED ITEM — the client's explicit acknowledgement of the
+     vehicle's denomination. Defaults to false on every fresh wizard. */
+  currencyConfirmed: boolean;
 }
 
 const OTHER = "__other__";
@@ -158,20 +264,14 @@ function splitList(raw: string): string[] {
 }
 
 /**
- * 1c — the versioned launch attestation text shown to the signer. Must match
- * server/spvLaunchSignoffStore.ts ATTESTATION_TEXT_V1 (the server records the
- * canonical text; this is the presentation copy for the same version). If the
- * server bumps the version, update this string to match.
+ * 1c — the versioned launch attestation text shown to the signer.
+ *
+ * WAVE 138 — this was a client-local COPY of the server's constant, kept in
+ * sync by a comment ("must match server/spvLaunchSignoffStore.ts"). The wording
+ * is unchanged; it is now imported from the single shared definition that
+ * `server/spvLaunchSignoffStore.ts` also records, so the sentence a partner
+ * ticks and the sentence the platform stores cannot drift apart.
  */
-const ATTESTATION_TEXT_V1 =
-  "I certify that I am authorized to launch this special-purpose vehicle on " +
-  "behalf of this Consortium Partner. I confirm that the information entered " +
-  "— including jurisdiction, legal structure, mandate, fees, carry, and terms " +
-  "— is accurate and complete to the best of my knowledge. I understand this " +
-  "action creates a recorded, timestamped commitment on the Capavate " +
-  "platform, and I consent to the use of my electronic signature as the legal " +
-  "equivalent of a handwritten signature under applicable e-signature law " +
-  "(ESIGN/UETA).";
 
 /**
  * 1e — Derive the strict engine legal-entity enum (SPV_JURISDICTIONS) from the
@@ -190,6 +290,61 @@ const ATTESTATION_TEXT_V1 =
  */
 function deriveEngineJurisdiction(country: string): string {
   return resolveSpvJurisdiction(country);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 126 · REFERRED ITEM — THE WIZARD NO LONGER HARD-DEFAULTS TO USD.
+
+   `EMPTY_WIZARD` set `currency: "USD"` unconditionally, and nothing re-derived
+   it when the client picked a jurisdiction. A partner incorporating in Canada
+   therefore got a CAD-jurisdiction vehicle denominated in USD unless they
+   noticed the currency select on step 3 and changed it by hand. Every figure
+   afterwards — commitments, fees, distributions, the K-1 — is then denominated
+   in a currency the vehicle does not operate in, and the denomination is a
+   column on the SPV row that no partner-facing screen can edit after creation.
+
+   THE DERIVATION USES THE TABLE THAT ALREADY EXISTS. `REGIONS_ALL`
+   (client/src/lib/regions.ts) is keyed by the same country NAME strings the
+   jurisdiction picker uses and already carries a currency per country, so this
+   is a lookup, not a second source of truth.
+
+   WHERE THE TABLE HAS NO ANSWER, THIS RETURNS null AND THE WIZARD ASKS.
+   `REGIONS_ALL` covers 9 countries; the jurisdiction picker offers 15 plus
+   "other". Cayman, BVI, Luxembourg, Ireland, the UAE, Jersey, Guernsey, the
+   Netherlands and Mauritius are NOT in it. Guessing for those would swap one
+   silent wrong default for another — several are genuinely USD-denominated in
+   practice while others are EUR or GBP, and that is a judgement about a
+   client's fund, not a lookup. So this returns null and the caller leaves the
+   client's own selection alone rather than overwriting it with an invention. */
+export function spvCurrencyForJurisdictionCountry(country: string): string | null {
+  const hit = REGIONS_ALL.find((r) => r.name === country);
+  return hit ? hit.currency : null;
+}
+
+/**
+ * WAVE 128 · ADDITION 4 (ratified referral) — WHERE THIS DENOMINATION CAME FROM.
+ *
+ * The owner ratified the deliberate gap in `spvCurrencyForJurisdictionCountry`:
+ * for the nine offered jurisdictions the table does not cover, the wizard keeps
+ * the client's own selection rather than inventing a currency, and the table is
+ * NOT to be "completed" by guessing. What the confirmation step was still not
+ * saying is WHICH of those two things happened. A partner confirming "USD" for a
+ * Cayman vehicle should know whether the platform derived that or whether it is
+ * simply the value that was in the box, because only one of those is a statement
+ * anybody has made about their fund.
+ *
+ * Additive: a sentence inside the existing confirmation block. No row is moved,
+ * renamed or removed, and nothing here changes the value being confirmed.
+ */
+export function currencyOriginStatement(country: string, currency: string): string {
+  const derived = spvCurrencyForJurisdictionCountry(country);
+  if (derived && derived === currency) {
+    return `${currency} was derived from the jurisdiction you chose (${country}). Change it on the Terms step if this vehicle operates in another currency.`;
+  }
+  if (derived && derived !== currency) {
+    return `You have selected ${currency}, which is not the currency this platform associates with ${country} (${derived}). That is allowed - please be certain it is what this vehicle operates in.`;
+  }
+  return `${currency} is your own selection: this platform holds no denomination for ${country || "that jurisdiction"} and will not invent one. Confirm it against the vehicle's formation documents.`;
 }
 
 const EMPTY_WIZARD: WizardState = {
@@ -214,6 +369,7 @@ const EMPTY_WIZARD: WizardState = {
   hurdleRatePct: "", gpCommitMajor: "",
   termsDocRef: "", closeDate: "",
   signoffLegalName: "", signoffAccepted: false,
+  currencyConfirmed: false,
 };
 
 export default function PartnerSpvEngine() {
@@ -346,6 +502,20 @@ export default function PartnerSpvEngine() {
          an attested vehicle behind it. */
       const refusal = feeStepRefusal();
       if (refusal) throw new Error(refusal);
+      /* WAVE 128 - ADDITION 3 — AND THE MONEY IS PARSED HERE, BEFORE THE FIRST
+         REQUEST, for the same reason the refusal above is first: this function
+         issues three sequential writes and the first one records an ESIGN/UETA
+         attestation. A figure that cannot be parsed must stop the launch while
+         nothing exists, not half-way through it. Each of these throws the
+         parser's own sentence, which the `onError` toast shows verbatim. */
+      const targetRaiseWire = wizardMoneyWire(w.targetRaiseMinor, w.currency, "Target raise");
+      const minCheckWire = wizardMoneyWire(w.minCheckMinor, w.currency, "Minimum cheque");
+      const capWire = wizardMoneyWire(w.capMinor, w.currency, "Hard cap");
+      const gpCommitWire = wizardMoneyWireOptional(w.gpCommitMajor, w.currency, "GP commitment");
+      const checkMinWire = wizardMoneyWireOptional(w.checkMinMajor, w.currency, "Minimum cheque (mandate)");
+      const checkMaxWire = wizardMoneyWireOptional(w.checkMaxMajor, w.currency, "Maximum cheque (mandate)");
+      const mgmtFixedWire =
+        w.mgmtFeeType !== "carry" ? wizardMoneyWire(w.mgmtFixedMinor, w.feeCurrency, "Fixed fee amount") : undefined;
       // Descriptive fields ride on the SPV's `terms` JSON blob (round-tripped by
       // the store as terms_json) — no schema churn required.
       const jurisdictionCountry = w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : w.jurisdictionCountry;
@@ -374,7 +544,7 @@ export default function PartnerSpvEngine() {
         // (null when blank). hurdleRatePct feeds the optional distribution tiers;
         // gpCommitMinor records the GP's own commitment.
         hurdleRatePct: w.hurdleRatePct.trim() ? Number(w.hurdleRatePct) : null,
-        gpCommitMinor: w.gpCommitMajor.trim() ? toMinor(parseFloat(w.gpCommitMajor) || 0, w.currency) : null,
+        gpCommitMinor: gpCommitWire,
       };
       const spvRes = await apiRequest("POST", "/api/partner/me/spv", {
         name: w.name, jurisdiction: w.jurisdiction, spvType: w.spvType,
@@ -387,9 +557,9 @@ export default function PartnerSpvEngine() {
         // convert to MINOR units on write (currency-aware ×10^exp, e.g. ×100 for
         // USD) so a $500,000 target is stored as 50,000,000 minor and displays as
         // $500,000.00 (was stored raw → displayed 100x low as $5,000.00).
-        targetRaiseMinor: toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency),
-        minCheckMinor: toMinor(parseFloat(w.minCheckMinor || "0") || 0, w.currency),
-        capMinor: toMinor(parseFloat(w.capMinor || "0") || 0, w.currency),
+        targetRaiseMinor: targetRaiseWire,
+        minCheckMinor: minCheckWire,
+        capMinor: capWire,
         currency: w.currency, closeDate: w.closeDate || null, status: "open",
         terms,
         // 1c — launch sign-off recorded server-side before the SPV is created.
@@ -403,8 +573,8 @@ export default function PartnerSpvEngine() {
         // D2 — optional mandate refinements; empty arrays / nulls when blank.
         geography: splitList(w.geography),
         stage: splitList(w.stage),
-        checkMinMinor: w.checkMinMajor.trim() ? toMinor(parseFloat(w.checkMinMajor) || 0, w.currency) : null,
-        checkMaxMinor: w.checkMaxMajor.trim() ? toMinor(parseFloat(w.checkMaxMajor) || 0, w.currency) : null,
+        checkMinMinor: checkMinWire,
+        checkMaxMinor: checkMaxWire,
         ruleTree: w.sectors.length
           ? { op: "and", rules: [{ field: "sector", op: "in", value: w.sectors }] }
           : { op: "and", rules: [{ field: "company_id", op: "in", value: [] }] },
@@ -412,7 +582,7 @@ export default function PartnerSpvEngine() {
       if (w.mgmtFeeType) {
         await apiRequest("POST", `/api/partner/me/spv/${spv.id}/fees`, {
           layer: "management", feeType: w.mgmtFeeType,
-          fixedAmountMinor: w.mgmtFeeType !== "carry" ? toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency) : undefined,
+          fixedAmountMinor: mgmtFixedWire,
           carryPct: w.mgmtFeeType !== "fixed" ? Number(w.mgmtCarryPct) / 100 : undefined,
           // 3g — fixed/hybrid fees carry their own currency selection.
           currency: w.mgmtFeeType !== "carry" ? w.feeCurrency : undefined,
@@ -512,6 +682,13 @@ export default function PartnerSpvEngine() {
       // 1e — auto-derive the strict engine enum from the country (the standalone
       // "Engine legal-entity type" field was removed as redundant).
       jurisdiction: deriveEngineJurisdiction(country),
+      /* WAVE 126 · REFERRED ITEM — the denomination follows the jurisdiction.
+         Only when the table HAS an answer for this country; otherwise the
+         client's own selection is left exactly as it is (see
+         `spvCurrencyForJurisdictionCountry`). The client still confirms the
+         result on the Review step before anything is created. */
+      currency: spvCurrencyForJurisdictionCountry(country) ?? prev.currency,
+      feeCurrency: spvCurrencyForJurisdictionCountry(country) ?? prev.feeCurrency,
     }));
   /* ════════════════════════════════════════════════════════════════════════
      WAVE 82 · ITEM 2 — THE LAUNCH IS NOT ATOMIC, SO REFUSE BEFORE ANYTHING IS
@@ -571,10 +748,11 @@ export default function PartnerSpvEngine() {
       }
     }
     if (w.mgmtFeeType !== "carry") {
-      const raw = w.mgmtFixedMinor.trim();
-      const f = Number(raw === "" ? "0" : raw);
-      if (!Number.isFinite(f)) return "Fixed fee amount must be a number.";
-      if (f < 0) return "Fixed fee amount cannot be negative.";
+      /* WAVE 128 - ADDITION 3: the gate now asks the SAME parser the launch
+         asks, so Next can never be enabled for an amount the launch will
+         refuse. `Number.isFinite` used to accept "500,000" as 500. */
+      const fixed = wizardMoney(w.mgmtFixedMinor, w.feeCurrency, "Fixed fee amount");
+      if (!fixed.ok) return fixed.message;
     }
     if (w.hurdleRatePct.trim() !== "") {
       const h = Number(w.hurdleRatePct.trim());
@@ -585,9 +763,8 @@ export default function PartnerSpvEngine() {
       }
     }
     if (w.gpCommitMajor.trim() !== "") {
-      const g = Number(w.gpCommitMajor.trim());
-      if (!Number.isFinite(g)) return "GP commitment must be a number.";
-      if (g < 0) return "GP commitment cannot be negative.";
+      const gp = wizardMoney(w.gpCommitMajor, w.currency, "GP commitment");
+      if (!gp.ok) return gp.message;
     }
     if (!w.carryBasis) return "Choose a carry basis to continue.";
     return null;
@@ -880,7 +1057,12 @@ export default function PartnerSpvEngine() {
                 </div>
               </div>
 
-              <p className="text-xs text-[var(--cv-color-text-muted)]">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match — eligibility is fail-closed.</p>
+              {/* WAVE 135 · FINDING 1 — "fail-closed" is how an engineer describes a
+                  default; "nothing else is offered" is the same guarantee in the
+                  client's language, and it is the part they actually care about. The
+                  three eligibility conditions are unchanged because they are the
+                  operative fact. */}
+              <p className="text-xs text-[var(--cv-color-text-muted)]">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match. Anything that does not meet all three is never offered here.</p>
             </div>
           )}
 
@@ -1059,10 +1241,10 @@ export default function PartnerSpvEngine() {
               {w.subSector && <ReviewRow label="Sub-sector" value={w.subSector} onEdit={() => setStep(1)} />}
               <ReviewRow
                 label="Management fee"
-                value={w.mgmtFeeType === "carry" ? `Carry ${w.mgmtCarryPct}%` : w.mgmtFeeType === "fixed" ? `${fmt(toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency), w.feeCurrency)} fixed` : `${fmt(toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency), w.feeCurrency)} + ${w.mgmtCarryPct}% carry`}
+                value={w.mgmtFeeType === "carry" ? `Carry ${w.mgmtCarryPct}%` : w.mgmtFeeType === "fixed" ? `${wizardMoneyDisplay(w.mgmtFixedMinor, w.feeCurrency, "Fixed fee amount")} fixed` : `${wizardMoneyDisplay(w.mgmtFixedMinor, w.feeCurrency, "Fixed fee amount")} + ${w.mgmtCarryPct}% carry`}
                 onEdit={() => setStep(2)}
               />
-              <ReviewRow label="Target raise" value={fmt(toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency), w.currency)} onEdit={() => setStep(3)} />
+              <ReviewRow label="Target raise" value={wizardMoneyDisplay(w.targetRaiseMinor, w.currency, "Target raise")} onEdit={() => setStep(3)} />
               <ReviewRow label="Distribution scope" value={SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.find((o) => o.value === w.distributionScope)?.label ?? w.distributionScope} onEdit={() => setStep(3)} />
               <ReviewRow label="Co-investor visibility" value={w.lpVisibility === "co_investors" ? "On (club deal)" : "Off (own only)"} onEdit={() => setStep(3)} />
               <ReviewRow label="Carry basis" value={w.carryBasis ? (w.carryBasis === "per_deployment" ? "Per deployment" : "Whole SPV") : "— (required)"} onEdit={() => setStep(2)} />
@@ -1070,7 +1252,7 @@ export default function PartnerSpvEngine() {
               {(w.hurdleRatePct.trim() || w.gpCommitMajor.trim()) && (
                 <ReviewRow
                   label="Waterfall"
-                  value={[w.hurdleRatePct.trim() ? `${w.hurdleRatePct}% hurdle` : null, w.gpCommitMajor.trim() ? `${fmt(toMinor(parseFloat(w.gpCommitMajor) || 0, w.currency), w.currency)} GP commit` : null].filter(Boolean).join(" · ")}
+                  value={[w.hurdleRatePct.trim() ? `${w.hurdleRatePct}% hurdle` : null, w.gpCommitMajor.trim() ? `${wizardMoneyDisplay(w.gpCommitMajor, w.currency, "GP commitment")} GP commit` : null].filter(Boolean).join(" · ")}
                   onEdit={() => setStep(2)}
                 />
               )}
@@ -1104,28 +1286,58 @@ export default function PartnerSpvEngine() {
               <ReviewRow label="Stage" value={w.stage.trim() || "—"} onEdit={() => setStep(1)} />
               <ReviewRow
                 label="Mandate min check"
-                value={w.checkMinMajor.trim() ? fmt(toMinor(parseFloat(w.checkMinMajor) || 0, w.currency), w.currency) : "—"}
+                value={wizardMoneyDisplayOptional(w.checkMinMajor, w.currency, "Minimum cheque (mandate)")}
                 onEdit={() => setStep(1)}
               />
               <ReviewRow
                 label="Mandate max check"
-                value={w.checkMaxMajor.trim() ? fmt(toMinor(parseFloat(w.checkMaxMajor) || 0, w.currency), w.currency) : "—"}
+                value={wizardMoneyDisplayOptional(w.checkMaxMajor, w.currency, "Maximum cheque (mandate)")}
                 onEdit={() => setStep(1)}
               />
               <ReviewRow
                 label="Minimum investment"
-                value={fmt(toMinor(parseFloat(w.minCheckMinor || "0") || 0, w.currency), w.currency)}
+                value={wizardMoneyDisplay(w.minCheckMinor, w.currency, "Minimum cheque")}
                 onEdit={() => setStep(3)}
               />
               <ReviewRow
                 label="Cap"
-                value={fmt(toMinor(parseFloat(w.capMinor || "0") || 0, w.currency), w.currency)}
+                value={wizardMoneyDisplay(w.capMinor, w.currency, "Hard cap")}
                 onEdit={() => setStep(3)}
               />
               {/* Named in its own row so no amount on this screen is unit-ambiguous.
                   Until now the currency was only INFERABLE from how Target raise
                   happened to be formatted. */}
               <ReviewRow label="Currency" value={w.currency} onEdit={() => setStep(3)} />
+              {/* WAVE 126 · REFERRED ITEM — the denomination is confirmed in
+                  words, as a SIBLING of the review row above, never as a
+                  replacement for it (the silent-drop guard fingerprints this
+                  block by its inline text). A vehicle created in the wrong
+                  currency is not something a partner can put right from any
+                  screen in this product, so it is stated plainly and
+                  acknowledged before the launch button will act. */}
+              <div className="text-xs rounded p-2" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }} data-testid="spv-w-currency-confirm-block">
+                <div data-testid="spv-w-currency-confirm-statement">
+                  This vehicle will be denominated in {w.currency}. Every commitment, fee, distribution and tax
+                  form for it will be recorded in {w.currency}. The denomination cannot be changed after the
+                  vehicle is created.
+                </div>
+                <div className="mt-1" data-testid="spv-w-currency-origin">
+                  {currencyOriginStatement(
+                    w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : w.jurisdictionCountry,
+                    w.currency,
+                  )}
+                </div>
+                <label className="flex items-start gap-2 mt-1">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={w.currencyConfirmed}
+                    onChange={(e) => setW({ ...w, currencyConfirmed: e.target.checked })}
+                    data-testid="spv-w-currency-confirm"
+                  />
+                  <span>I confirm {w.currency} is the correct denomination for this vehicle.</span>
+                </label>
+              </div>
               {/* The fee currency is a SEPARATE selection from the SPV currency and
                   applies only to a fixed or hybrid management fee. Shown when it can
                   differ, so the fixed amount above is never read in the wrong unit.
@@ -1194,7 +1406,7 @@ export default function PartnerSpvEngine() {
             {step < STEPS.length - 1 ? (
               <Button data-testid="spv-wizard-next" disabled={!canAdvance()} onClick={() => setStep(step + 1)} style={{ background: NAVY, borderColor: NAVY }}>Next</Button>
             ) : (
-              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY, borderColor: NAVY }}>
+              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || !w.currencyConfirmed || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY, borderColor: NAVY }}>
                 {create.isPending ? "Launching…" : "Launch SPV"}
               </Button>
             )}
@@ -1284,7 +1496,7 @@ export default function PartnerSpvEngine() {
               <div className="flex justify-between items-center">
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>
-                  <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {labelFor(DISTRIBUTION_SCOPE_LABELS, s.distributionScope)} · Carry: {labelFor(CARRY_BASIS_LABELS, s.carryBasis)}</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {spvStatusLabel(s.status)} · {labelFor(DISTRIBUTION_SCOPE_LABELS, s.distributionScope)} · Carry: {labelFor(CARRY_BASIS_LABELS, s.carryBasis)}</div>
                   {/* J-4 (WAVE 3C) — jurisdiction was rendered NOWHERE in this
                       accordion; it only appeared on the standalone detail page. */}
                   <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-jurisdiction-${s.id}`}>
@@ -1335,6 +1547,18 @@ export default function PartnerSpvEngine() {
                        keyboard user. Stop the event here so the link works by
                        keyboard as well as by mouse. */
                     onKeyDown={(e) => e.stopPropagation()}
+                    /* WAVE 128 - FINDING 4: TWO LINKS ON THIS CARD POINT AT THE
+                       SAME URL AND DO DIFFERENT THINGS. This one intercepts the
+                       plain click and opens the LPs TAB in place; the
+                       `spv-open-standalone-*` link below navigates to the
+                       standalone admin page. Neither may be deleted - the comment
+                       at the standalone link records six endpoints that exist
+                       only there - and the href here must stay real so a
+                       middle-click still opens a page. What was missing was any
+                       way for a reader to tell them apart, so each now states
+                       what it does and what a new-tab click will land on. Titles
+                       are ADDED; no text, href or test id changes. */
+                    title="Opens the LP roster and capital calls as a tab on this page. A middle-click or Cmd/Ctrl-click opens the standalone admin page in a new tab instead."
                     data-testid={`spv-open-detail-${s.id}`}
                   >
                     Open LP roster &amp; capital calls →
@@ -1425,13 +1649,28 @@ export default function PartnerSpvEngine() {
                     className="text-xs underline text-[color:var(--cv-color-text-muted)] inline-block mt-1"
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
+                    title="Leaves this list and opens the standalone SPV admin page, which holds the LP invite form, LP commitments and the capital-call record that the tabs do not."
                     data-testid={`spv-open-standalone-${s.id}`}
                   >
                     Open standalone SPV admin page (LP invites, commits, capital calls) →
                   </Link>
                 </div>
                 <div className="flex items-center gap-3">
-                  <div className="text-right font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
+                  {/* WAVE 126 · REFERRED ITEM — THIS FIGURE NOW SAYS WHAT IT IS.
+                      It renders `targetRaiseMinor` — the TARGET SIZE of the
+                      vehicle. Uncaptioned, right-aligned and in a money font, it
+                      reads as money raised, and a column of them reads as a
+                      portfolio total; on the live workspace that invited the
+                      conclusion that ~$22m had been committed while the
+                      Dashboard correctly reported $0.00 committed. The Dashboard
+                      was right. Nothing about the value changes here — only that
+                      a reader can now tell what they are looking at. */}
+                  <div className="text-right">
+                    <div className="font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
+                    <div className="text-[10px] text-[color:var(--cv-color-text-faint)]" data-testid={`spv-target-raise-caption-${s.id}`}>
+                      Target raise — not the amount committed
+                    </div>
+                  </div>
                   {canWrite && (
                     <Button
                       variant="outline"

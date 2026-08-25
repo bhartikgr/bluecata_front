@@ -27,6 +27,21 @@ import Lock1NoticePanel from "../Lock1NoticePanel";
 const NOT_SUPPLIED =
   "The wording for this lock has not been supplied by the owner, so it is not shown. It is deliberately not summarised or approximated: an approximate lock is not a lock. This notice will be replaced by the exact text once it is provided.";
 
+/**
+ * WAVE 126 / FINDING 1 — the CLIENT-facing form of the same sentence, which is
+ * what this panel now prints. `copy` above is still emitted by the route and is
+ * still what the admin lock register reads, so it stays in these fixtures; the
+ * partner surface reads `clientCopy`, because `copy` told a paying client whose
+ * wording was outstanding and what a future release would do with it.
+ *
+ * The assertions below are UNCHANGED IN SUBSTANCE. They still measure RENDERED
+ * TEXT, still require the not-supplied branch to be non-empty, and still forbid
+ * any fabricated or hinted wording — which is the whole point of this file. Only
+ * the string they expect moved.
+ */
+const CLIENT_NOT_SUPPLIED =
+  "Capavate does not reproduce the governing clause on this screen. The provenance rule stated above is in force and is applied to every partner-sourced soft circle recorded on this platform. If you need the governing wording for your files, ask your Capavate contact and it will be issued to you.";
+
 function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
@@ -49,27 +64,27 @@ afterEach(() => {
 
 describe("the notice with NO wording supplied — the shipped state", () => {
   it("renders the server's not-supplied notice, and renders it VISIBLY", async () => {
-    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, setAt: null });
+    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, clientCopy: CLIENT_NOT_SUPPLIED, setAt: null });
     renderPanel();
     const el = await screen.findByTestId("lock1-notice-not-supplied");
     // Content, not merely the element: an empty node satisfies "the element
     // exists" and says nothing (this build's recurring lesson).
-    expect(el.textContent).toBe(NOT_SUPPLIED);
+    expect(el.textContent).toBe(CLIENT_NOT_SUPPLIED);
     expect(screen.queryByTestId("lock1-notice-text")).toBeNull();
   });
 
   it("KILLS M26 — the panel is never blank where the lock wording belongs", async () => {
-    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, setAt: null });
+    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, clientCopy: CLIENT_NOT_SUPPLIED, setAt: null });
     const { container } = renderPanel();
     await screen.findByTestId("lock1-notice-not-supplied");
     // Forcing the "supplied" branch renders `{null}` here. Measured on the
     // rendered text, so no source assertion can substitute for it.
-    expect(container.textContent).toContain("has not been supplied");
-    expect(container.textContent!.length).toBeGreaterThan(NOT_SUPPLIED.length);
+    expect(container.textContent).toContain("does not reproduce the governing clause");
+    expect(container.textContent!.length).toBeGreaterThan(CLIENT_NOT_SUPPLIED.length);
   });
 
   it("does not fabricate, summarise or hint at a wording", async () => {
-    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, setAt: null });
+    respond({ key: "LOCK_1", supplied: false, text: null, copy: NOT_SUPPLIED, clientCopy: CLIENT_NOT_SUPPLIED, setAt: null });
     const { container } = renderPanel();
     await screen.findByTestId("lock1-notice-not-supplied");
     const txt = container.textContent ?? "";
@@ -86,6 +101,7 @@ describe("the notice WITH wording supplied — the owner's text, verbatim", () =
       supplied: true,
       text: WORDING,
       copy: WORDING,
+      clientCopy: WORDING,
       setAt: "2026-08-11T00:00:00.000Z",
     });
     const { container } = renderPanel();
@@ -96,7 +112,7 @@ describe("the notice WITH wording supplied — the owner's text, verbatim", () =
   });
 
   it("wraps nothing around the wording — no label, no quotes", async () => {
-    respond({ key: "LOCK_1", supplied: true, text: WORDING, copy: WORDING, setAt: null });
+    respond({ key: "LOCK_1", supplied: true, text: WORDING, copy: WORDING, clientCopy: WORDING, setAt: null });
     renderPanel();
     const el = await screen.findByTestId("lock1-notice-text");
     expect(el.textContent).toBe(WORDING);

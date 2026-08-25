@@ -55,7 +55,7 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
 import { resolveCanonicalPlan, planSlugToLabel } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 canonical plan projection */
 import { fromMinor } from "./lib/currency"; /* WAVE 36 · ROW 4 — ISO-4217 exponent, never a hardcoded 100 */
-import { computeFounderOwnershipFraction } from "./lib/founderOwnershipEngine"; /* WAVE 75 · ITEM 1 (R70) */
+import { computeFounderOwnershipFraction, computeCapTableHoldersOnRecord } from "./lib/founderOwnershipEngine"; /* WAVE 75 · ITEM 1 (R70); WAVE 125 · FINDING 2 */
 import { getDb, rawDb } from "./db/connection";
 import {
   tenants as tenantsTable,
@@ -106,6 +106,17 @@ export type FounderCompanyMembership = {
        `server/lib/founderOwnershipEngine.ts` for where the computed value comes
        from and why it is not a second computation. */
     ownershipPct: number | null;
+    /* WAVE 125 · FINDING 2 — the DERIVED distinct holder count, or `null` when it
+       could not be derived. `capTableHolders` above it has no writer anywhere in
+       live code (29 live occurrences, 0 computations — see
+       `build_log/wave125/enum_captable_holders.py`), so every surface that printed
+       it printed a zero nobody computed. Those surfaces now read THIS field.
+
+       `capTableHolders` is left in place, and left as `number`, deliberately: it is
+       declared in `server/lib/userContext.ts:169` and copied at `:309`, and that
+       file is SACRED. Widening or removing it there needs an owner-ratified waiver,
+       which is out of this wave's scope and is reported as found-not-fixed. */
+    capTableHoldersOnRecord?: number | null;
   };
   collective: {
     status: "none" | "applied" | "approved" | "lapsed";
@@ -1497,7 +1508,18 @@ export function mergeBillingFromSubscription(c: FounderCompanyMembership): Found
    becomes `null` and the founder sees `—`. There is no `?? 0` and no `|| 1` on this
    path (R70 condition 3). */
 export function withComputedOwnership(c: FounderCompanyMembership): FounderCompanyMembership {
-  return { ...c, kpi: { ...c.kpi, ownershipPct: computeFounderOwnershipFraction(c.companyId) } };
+  return {
+    ...c,
+    kpi: {
+      ...c.kpi,
+      ownershipPct: computeFounderOwnershipFraction(c.companyId),
+      /* WAVE 125 · FINDING 2 — derived on the same read, from the same injected
+         provider and the same `runEngine` call, so the switcher, the dashboard and
+         the journey KPI on the same page cannot show three answers. `null` when the
+         engine has nothing to read; there is no `?? 0` on this path. */
+      capTableHoldersOnRecord: computeCapTableHoldersOnRecord(c.companyId),
+    },
+  };
 }
 
 // Expose for tests

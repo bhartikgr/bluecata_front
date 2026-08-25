@@ -63,6 +63,7 @@ import {
 } from "./consortiumFeesStore";
 /* WAVE 46 / R22 — one-source disclosure. */
 import { listSpvDeploymentFeeSourceDivergences } from "./lib/spvDeploymentFeeSource";
+import { invalidateAllPricingCaches } from "./lib/pricingCacheBus";
 import {
   listSpvDeployments,
   recordSpvDeployment,
@@ -446,6 +447,10 @@ export function registerAdminFeeTierRoutes(app: Express): void {
           message: sanitizeErrorMessage(err),
         });
       }
+      /* WAVE 131 (R95) — the SPV deployment fee is the fee this wave repoints so
+       * that displayed == charged; a stale cache would reintroduce exactly the
+       * divergence being closed. Visible on the next request. */
+      invalidateAllPricingCaches(`platform_fees.set:${CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY}`);
       try {
         appendAdminAudit(
           actorOf(req),

@@ -22,6 +22,18 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 
@@ -57,7 +69,7 @@ describe("23-May Fix 3 \u2014 Round detail endpoint reads from DB+legacy union",
     const create = await request(app)
       .post("/api/rounds")
       .set("x-user-id", "u_maya_chen")
-      .send({
+      .send(withRoundDates({
         companyId: "co_novapay",
         name: "23-May Fix 3 Verification Round",
         targetAmount: 1_000_000,
@@ -65,7 +77,7 @@ describe("23-May Fix 3 \u2014 Round detail endpoint reads from DB+legacy union",
         postMoney: 10_000_000,
         pricePerShare: 1.5,
         minTicket: 25_000,
-      });
+      }));
     // Some test deployments will 200 + { id }, others 201. Both signal a
     // committed row; what matters is that the new id is then resolvable.
     expect([200, 201]).toContain(create.status);

@@ -4024,15 +4024,33 @@ function handleDataRoomGrantRevoke(req: Request, res: Response): void {
     grantId, fileId: grant.file_id, investorId: grant.investor_id, revokedAt, revokedBy: ctx.userId,
   });
 
-  /* WAVE 120 — WHY THE GRANTEE IS NOT NOTIFIED HERE, STATED RATHER THAN LEFT AS
-     AN OMISSION. Telling the investor their access was withdrawn would need a
-     `dataroom.access_revoked` member of `NotificationKind`, and that union lives
-     in `server/notificationsStore.ts`, which is SACRED and is not touched by this
-     wave. Reusing `dataroom.access_granted` for a REVOCATION would put a false
-     label on a real event, which is worse than sending nothing. The withdrawal is
-     recorded on the row (`revoked_at`/`revoked_by`) and emitted on the outbound
-     bridge above, so it is auditable; the investor-facing notice is left for the
-     wave that owns that union. */
+  /* WAVE 136 · ITEM 4 (R100) — THE GRANTEE IS NOW TOLD. This is where WAVE 120
+     explained, at length, that the investor is NOT notified because saying so
+     would need a `dataroom.access_revoked` member of `NotificationKind` in the
+     sacred `server/notificationsStore.ts`, and that relabelling the revocation as
+     a grant would put a false label on a real event. R100 granted the member (it
+     is APPENDED, index 37, so no stored `kind` moved), so the excuse is now false
+     and has been deleted rather than left to mislead.
+
+     BEST-EFFORT, exactly like the grant path at `:3927-3935`: the revocation has
+     ALREADY COMMITTED to the row above. A notification failure must not turn a
+     completed withdrawal into a 500 the caller would retry — the withdrawal is
+     also on the row (`revoked_at`/`revoked_by`) and on the outbound bridge, so it
+     stays auditable even if this notice never lands.
+
+     The kind is mapped to NO founder preference key, so `isKindEnabled` returns
+     true for it (`server/lib/founderNotificationPrefs.ts:258-260`) and a
+     withdrawal-of-access notice cannot be silently muted by a switch the user was
+     never offered. Making it mutable would be a preference decision R100 does not
+     grant. */
+  try {
+    emitNotification({
+      userId: grant.investor_id,
+      kind: "dataroom.access_revoked",
+      title: "Data room access withdrawn",
+      body: "Your access to a shared document has been withdrawn. The link you were issued stops serving the document on the very next request. If you believe this was in error, contact the company that shared it with you.",
+    });
+  } catch { /* best-effort */ }
 
   res.status(200).json({
     ok: true, grantId, alreadyRevoked: false, revokedAt, revokedBy: ctx.userId,

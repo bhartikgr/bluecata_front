@@ -48,6 +48,21 @@ export interface EffectivePrice {
   currency: string;
   /** 'partner_override' when a per-partner fee_override_json price wins; else 'tier_advertised'. */
   source: "partner_override" | "tier_advertised";
+  /* WAVE 129 (R95) — THE PERIOD TRAVELS WITH THE AMOUNT.
+   *
+   * The defect this field exists to remove: `resolveChargeTier` already returned
+   * `billingPeriod` on the tier row (partnerTiers.ts:149, read from
+   * `partner_tier_price.cadence`), and this function DISCARDED it. With no period
+   * in the payload, `client/src/pages/partner/PartnerDashboard.tsx` rendered a
+   * compiled-in "/ mo" beside the amount — so the owner's $240.00 ANNUAL fee was
+   * quoted to a Consortium Partner as $240.00 per MONTH, twelve times the real
+   * price, on the surface a paying client sees first.
+   *
+   * `null` is a real state and is NOT a licence to guess: it means no cadence is
+   * on record for this amount. R95 requires the surface to print NO figure and
+   * say why, rather than pick a period. The period is never derived from another
+   * period (no annual/12, no monthly*12) — it is only ever reported. */
+  billingPeriod: string | null;
 }
 
 export interface PartnerArrangement {
@@ -82,7 +97,7 @@ export interface PartnerEffectivePlan {
   partnerId: string;
   tier: PartnerTier;
   cycle: SubscriptionCycle;
-  advertisedPrice: { amountMinor: number; currency: string } | null;
+  advertisedPrice: { amountMinor: number; currency: string; billingPeriod: string | null } | null;
   effectivePrice: EffectivePrice;
   commission: { rate: number; via: string };
   arrangement: PartnerArrangement | null;
@@ -163,7 +178,15 @@ export function resolvePartnerEffectivePlan(
   // Advertised (public) price — the tier row the pricing page shows.
   const advertisedTier = resolveChargeTier(tier);
   const advertisedPrice = advertisedTier
-    ? { amountMinor: advertisedTier.amountMinor, currency: advertisedTier.currency }
+    ? {
+        amountMinor: advertisedTier.amountMinor,
+        currency: advertisedTier.currency,
+        /* WAVE 129 — carried, never assumed. This is the cadence stored on the
+         * authoritative `partner_tier_price` row an admin edits; an empty or
+         * absent cadence stays null so the caller must refuse rather than
+         * label the amount with a period nobody configured. */
+        billingPeriod: advertisedTier.billingPeriod || null,
+      }
     : null;
 
   // Per-partner override detection via the SACRED-adjacent 3-level resolver:
@@ -186,9 +209,17 @@ export function resolvePartnerEffectivePlan(
   if (override) {
     // Explicit per-partner price (incl. $0) supersedes the tier on the
     // partner's OWN view/checkout.
-    effectivePrice = { amountMinor: override.amountMinor, currency: override.currency, source: "partner_override" };
+    /* WAVE 129 — an override is labelled with ITS OWN period, never re-labelled.
+     * The per-partner override editor (client/src/pages/admin/PartnerDetail.tsx)
+     * writes `fee_override_json.subscription_monthly`, so a partner really can be
+     * on a monthly amount today. `cycle` is the cadence whose override was just
+     * resolved above, so this reports what that partner is actually on instead of
+     * re-pricing them onto the annual tier row. R3 retires monthly billing for
+     * NEW purchases; it does not authorise silently restating an existing
+     * customer's price. */
+    effectivePrice = { amountMinor: override.amountMinor, currency: override.currency, source: "partner_override", billingPeriod: cycle };
   } else if (advertisedPrice) {
-    effectivePrice = { amountMinor: advertisedPrice.amountMinor, currency: advertisedPrice.currency, source: "tier_advertised" };
+    effectivePrice = { amountMinor: advertisedPrice.amountMinor, currency: advertisedPrice.currency, source: "tier_advertised", billingPeriod: advertisedPrice.billingPeriod };
   } else {
     /* FAIL-CLOSED: never silently $0 unless an explicit $0 override was set.
      *

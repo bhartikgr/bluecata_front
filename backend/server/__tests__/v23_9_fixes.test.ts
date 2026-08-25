@@ -15,6 +15,18 @@ import express, { type Express } from "express";
 import http from "node:http";
 import { registerRoutes } from "../routes";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 let port: number;
@@ -149,7 +161,7 @@ describe("v23.9 Group A — P0", () => {
   it("A2: POST /api/rounds strips commas from numeric fields → 200", async () => {
     const r = await call("POST", "/api/rounds", {
       userId: FOUNDER,
-      body: {
+      body: withRoundDates({
         companyId: COMPANY,
         name: "A2 Comma Round",
         type: "seed",
@@ -162,7 +174,7 @@ describe("v23.9 Group A — P0", () => {
         fdPreMoneyShares: "1,000,000",
         pricePerShare: "5",
         sharesAuthorized: "1,000,000",
-      },
+      }),
     });
     expect(r.status).toBe(200);
   });
@@ -170,7 +182,7 @@ describe("v23.9 Group A — P0", () => {
   it("A2: POST /api/rounds rejects negative numeric → 400", async () => {
     const r = await call("POST", "/api/rounds", {
       userId: FOUNDER,
-      body: { companyId: COMPANY, name: "A2 Neg", type: "seed", instrument: "preferred", targetAmount: "-5000" },
+      body: withRoundDates({ companyId: COMPANY, name: "A2 Neg", type: "seed", instrument: "preferred", targetAmount: "-5000" }),
     });
     expect(r.status).toBe(400);
     expect(String(r.body?.error ?? "")).toContain("targetAmount");
@@ -179,7 +191,7 @@ describe("v23.9 Group A — P0", () => {
   it("A2: POST /api/rounds rejects non-numeric (NaN) → 400", async () => {
     const r = await call("POST", "/api/rounds", {
       userId: FOUNDER,
-      body: { companyId: COMPANY, name: "A2 NaN", type: "seed", instrument: "preferred", preMoney: "abc" },
+      body: withRoundDates({ companyId: COMPANY, name: "A2 NaN", type: "seed", instrument: "preferred", preMoney: "abc" }),
     });
     expect(r.status).toBe(400);
     expect(String(r.body?.error ?? "")).toContain("preMoney");
@@ -253,14 +265,14 @@ describe("v23.9 Group B — HIGH", () => {
   it("B3: POST /api/rounds rejects closeDate before openDate → 400", async () => {
     const r = await call("POST", "/api/rounds", {
       userId: FOUNDER,
-      body: {
+      body: withRoundDates({
         companyId: COMPANY,
         name: "B3 Bad Dates",
         type: "seed",
         instrument: "preferred",
         openDate: "2026-06-01",
         closeDate: "2026-05-01",
-      },
+      }),
     });
     expect(r.status).toBe(400);
     expect(String(r.body?.error ?? "")).toContain("closeDate");

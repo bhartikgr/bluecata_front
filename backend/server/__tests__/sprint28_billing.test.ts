@@ -14,7 +14,7 @@
  *   9. GET /api/founder/invoices scoped to company only (cross-company → 403/404)
  *  10. PDF endpoint returns 200, application/pdf, Content-Disposition: attachment
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll } from "vitest";
 import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
@@ -51,6 +51,20 @@ import {
   _testSubscriptions,
   PLAN_PRICES,
 } from "../subscriptionsStore";
+import { authorFounderCatalogue } from "./_fixtures/pricingCatalogueFixture";
+
+/* WAVE 134 cause 1-of-3 (R98) — every subscription/plan path in this file needs a
+   PRICE, and since v25.27 a price exists only if an admin published a tier
+   (`pricingModelStore.ts:160-181`, "NO SEED. Admin is the source of truth.",
+   per R95/R96). With nothing published, `PLAN_PRICES.founder_pro` was undefined,
+   `updateSubscription` refused with `plan_not_configured`, and the routes those
+   refusals sit behind answered 403/404/500 — so the invoice, webhook, state-graph
+   and auto-provisioning assertions in this file were never reached. The one
+   shared fixture plays the admin and publishes the four canonical founder tiers
+   through the production write path. No assertion below was weakened. */
+beforeAll(() => {
+  authorFounderCatalogue();
+});
 
 /* ---------- HTTP helper ---------- */
 async function req(

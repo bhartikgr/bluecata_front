@@ -37,7 +37,10 @@ import { serverRefusalMessage } from "@/lib/serverRefusalMessage";
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
 /* WAVE 115 · FINDING 1 (L4/L5/L6) — this page printed raw `status`, `tierSlug`,
    `cadence` and a raw superseding subscription id straight into table cells. */
-import { subscriptionStatusLabel, planTierLabel, billingCadenceLabel, supersededPlanLabel } from "@/lib/partnerDisplay";
+/* WAVE 129 (R95) — `billingPeriodPhrase` joins them: the prepositional form of a
+   cadence, for the position immediately after a money figure. */
+/* WAVE 131 (R96 req 7) — `humanizeMachineKey` so no storage key reaches a partner. */
+import { subscriptionStatusLabel, planTierLabel, billingCadenceLabel, supersededPlanLabel, billingPeriodPhrase, humanizeMachineKey } from "@/lib/partnerDisplay";
 /* WAVE 16 / CP-BRG-07 + ORP-052 — the partner surface subscribes to the
  * already-mounted, already-authorised `/api/stream` (CP-034). */
 import { useCollectiveStream } from "@/lib/sseClient";
@@ -435,7 +438,9 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
           <div className="mt-1 text-lg font-semibold text-[var(--cv-color-navy)]">{sub.tierId}</div>
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
             <dt className="text-[var(--cv-color-text-muted)]">Amount</dt>
-            <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} / {sub.billingCycle}</dd>
+            {/* WAVE 129 (R95) — the period is stated in words, from the cadence on
+                the subscription row, instead of interpolating the raw enum. */}
+            <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} {billingPeriodPhrase(sub.billingCycle) ?? billingCadenceLabel(sub.billingCycle)}</dd>
             <dt className="text-[var(--cv-color-text-muted)]">Status</dt>
             <dd>{sub.status}</dd>
             <dt className="text-[var(--cv-color-text-muted)]">Renews</dt>
@@ -466,11 +471,11 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
             <dt className="text-[var(--cv-color-text-muted)]">Plan</dt>
             <dd className="font-mono">
-              {lifecycle.tierSlug} / {lifecycle.cycle}
+              {planTierLabel(lifecycle.tierSlug)} / {billingCadenceLabel(lifecycle.cycle)}
             </dd>
             <dt className="text-[var(--cv-color-text-muted)]">Charged</dt>
             <dd className="font-mono" data-testid="lifecycle-amount">
-              {formatMinor(lifecycle.amountMinor, lifecycle.currency)}
+              {formatMinor(lifecycle.amountMinor, lifecycle.currency)} {billingPeriodPhrase(lifecycle.cycle) ?? billingCadenceLabel(lifecycle.cycle)}
             </dd>
             <dt className="text-[var(--cv-color-text-muted)]">Status</dt>
             <dd data-testid="lifecycle-status">{lifecycle.status}</dd>
@@ -661,9 +666,10 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
             return (
               <div className="mt-3 text-sm" data-testid="subscribe-quote-result">
                 <div className="font-mono text-lg text-[var(--cv-color-navy)]">
-                  {formatMinor(amt, quote.currency)} / {quote.cycle}
+                  {/* WAVE 129 (R95) — a quote must say what period it is for. */}
+                  {formatMinor(amt, quote.currency)} {billingPeriodPhrase(quote.cycle) ?? billingCadenceLabel(quote.cycle)}
                 </div>
-                <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">Tier: {quote.tier}</div>
+                <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">Tier: {planTierLabel(quote.tier)}</div>
                 {/* WAVE 11 / EN-6 — the element, its testid, its Button and its
                     copy are all PRESERVED; only the behaviour is fixed. The href
                     is a real fallback target (the hosted payment page once we
@@ -1635,6 +1641,14 @@ type FeeAggregateLine = {
   computedVia: string | null;
   feeScheduleId: string | null;
   error: string | null;
+  /* WAVE 131 (R96 req 4) — every price states its period. The aggregate now
+     carries the period of each line, and the table below prints it next to the
+     amount instead of leaving "$2,000" to mean whatever the reader assumes. */
+  billingPeriod?: string | null;
+  /* WAVE 131 — which table the amount came from, and whether the display is
+     still on the legacy fee-schedule source pending an admin confirmation. */
+  authoritativeSource?: string | null;
+  pendingRepoint?: boolean;
 };
 type FeeAggregate = {
   partnerId: string;
@@ -1670,6 +1684,10 @@ const AGG_VIA_LABELS: Record<string, string> = {
   platform_default: "Platform default",
   db: "Configured rate",
   default: "Fallback rate",
+  /* WAVE 131 (R96 req 7) — the two provenances the repointed display can report.
+     Without these the partner would read the storage key itself. */
+  partner_tier_price_authoritative: "Your tier's published price",
+  platform_fee_authoritative: "Platform fee, as published",
 };
 
 function FeeScheduleTab({ ready }: { ready: boolean }) {
@@ -1731,7 +1749,7 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
         <AppCard className="p-4">
           <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Billing tier</div>
           {agg.tier ? (
-            <div className="mt-1 font-mono text-lg" data-testid="partner-feeschedule-tier">{agg.tier}</div>
+            <div className="mt-1 font-mono text-lg" data-testid="partner-feeschedule-tier">{planTierLabel(agg.tier)}</div>
           ) : (
             /* WAVE 87 · ITEM 2 · R44/R77 — reviewer 3 settled its previously
                UNVERIFIED Billing sweep on 2026-08-21 and found this residue:
@@ -1783,6 +1801,8 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
               <tr>
                 <th className="px-4 py-2">Fee</th>
                 <th className="px-4 py-2">Amount</th>
+                {/* WAVE 131 (R96 req 4) — the period is part of the price. */}
+                <th className="px-4 py-2">Period</th>
                 <th className="px-4 py-2">Source</th>
               </tr>
             </thead>
@@ -1802,9 +1822,14 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-2 text-xs whitespace-nowrap" data-testid={`partner-feeschedule-period-${line.feeKind}`}>
+                    {billingPeriodPhrase(line.billingPeriod) ?? humanizeMachineKey(line.billingPeriod, "Period not recorded")}
+                  </td>
                   <td className="px-4 py-2 text-xs text-[var(--cv-color-text-muted)]">
                     {line.ok
-                      ? (line.computedVia ? (AGG_VIA_LABELS[line.computedVia] ?? line.computedVia) : "—")
+                      ? (line.computedVia
+                          ? (AGG_VIA_LABELS[line.computedVia] ?? humanizeMachineKey(line.computedVia, "Source not recorded"))
+                          : "Source not recorded")
                       : (line.error ?? "unresolved")}
                   </td>
                 </tr>

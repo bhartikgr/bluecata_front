@@ -207,9 +207,16 @@ describe("W70-D6 — one interest computation, on the stored typed rate", () => 
     const cf = src("server/roundCarryForwardEngine.ts");
     expect(cf).toContain('interestRate: "0.06"');
     expect(cf).toMatch(/Interest rate: \$\{noteFields\.interestRate \?\? "N\/A"\}% APR/);
-    /* Byte-identical to its ONE waived hash — this wave did not edit it. */
+    /* Byte-identical to its ONE waived hash — THIS wave did not edit it.
+       RE-PINNED 2026-08-25 · WAVE 136 · R100: the one legal state moved when R100
+       authorised items 2 and 3 in that file (the fabricated `1x non-participating`
+       liquidation preference, and the mfn `?? false` that hid a stored flag). It is
+       recorded against the EXISTING WAIVER-7 row, so the ratified-waiver count is
+       still NINE. Lineage: d7fa53f0… (pre-waiver) → 42d04653… (Wave 58g) →
+       b8627df8… (Wave 136). What W70-D6f asserts above is unchanged and still
+       passes: the `interestRate: "0.06"` literal is still there. */
     expect(require("node:crypto").createHash("sha256").update(fs.readFileSync(path.join(ROOT, "server/roundCarryForwardEngine.ts"))).digest("hex"))
-      .toBe("42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8");
+      .toBe("b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3");
   });
 });
 

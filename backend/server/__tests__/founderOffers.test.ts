@@ -31,6 +31,7 @@ import { investorNominations as investorNominationsTable } from "../../shared/sc
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
 import { upsertCapTablePositionForTests } from "../membershipStore";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture";
 
 const CHAPTER_ID = "chap_keiretsu_canada";
 const TENANT_ID = "tenant_chap_chap_keiretsu_canada";
@@ -64,8 +65,13 @@ beforeAll(async () => {
   // here because that env var is read at module-load time across the
   // codebase, and we want this test to be independent of process-wide state.
   for (const uid of [MAYA, AISHA, DANIEL]) {
-    collectiveMembershipStore.activate(uid, "u_admin_test");
-    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
+    // WAVE 134 cause 1 (R98) — ONE shared helper seats a FULLY COMPLIANT investor:
+    // active membership + cap-table position + the W2-A1 accreditation self-declaration
+    // that requireCollectiveMember step 4 requires. Before this the requests below all
+    // returned 403 ACCREDITATION_DECLARATION_REQUIRED, so the assertions were never
+    // reached — these blocks were ABSENT from CI, not failing. The gate is unchanged and
+    // still refuses an undeclared member (see w134_collective_accreditation_fixture.test.ts).
+    seatCompliantInvestor(uid, { activatedBy: "u_admin_test" });
   }
 
   app = express();

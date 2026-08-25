@@ -923,7 +923,10 @@ function AppRouter() {
               role="admin" and the admin login redirect. There is no
               `RequireAdmin` component in this file — checked, rather than
               assumed from the name. */}
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerBillingOps /></RequireAuth>}
+          {/* WAVE 131 — see the pricing-console note below: this renders the
+              consolidated console on its Partner Tier Prices tab, which mounts
+              AdminPartnerBillingOps itself. */}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="tier-prices" /></RequireAuth>}
         </Route>
         <Route path="/admin/partner-taxonomy">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerTaxonomyAdmin /></RequireAuth>}
@@ -949,7 +952,10 @@ function AppRouter() {
              and they are user-reachable again. Same admin guard as /admin/fees.
              MUST stay above the /admin/:rest* catch-all. */}
         <Route path="/admin/collective-payment-schedules">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="fee-schedules" /></RequireAuth>}
+          {/* WAVE 131 — retargeted from the shared Fee Schedules tab to the tab
+              that mounts the Collective Payment Schedules page itself, so the
+              URL lands on the capability it names. */}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="collective-payment-schedules" /></RequireAuth>}
         </Route>
         <Route path="/admin/partner-fees">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="fee-schedules" /></RequireAuth>}
@@ -1001,11 +1007,76 @@ function AppRouter() {
             wave exists to prevent. Overriding a settled unit-correctness ruling
             is not R-1's job, so they are DESCOPED and the override is recorded
             in the disposition script rather than left as an unexplained gap. */}
+        {/* WAVE 131 (R95 / R96 req 1 + req 6) — ONE pricing console. This URL is
+            KEPT (an admin who bookmarked it must not get a 404) and now renders
+            the consolidated console deep-linked to the tab that MOUNTS the very
+            same page component. Nothing is dropped: the capability moved address,
+            it did not disappear. */}
         <Route path="/admin/collective-subscriptions">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveSubscriptions /></RequireAuth>}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="collective-subscriptions" /></RequireAuth>}
         </Route>
         <Route path="/admin/commission-rates">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="commission-rates" /></RequireAuth>}
+        </Route>
+        {/* WAVE 131 — the three pricing pages wave 7 R-1 DESCOPED (left on disk,
+            unrouted) are now reachable again, as tabs of the one console. A
+            descoped page that an admin can no longer open is a dropped
+            capability however it is labelled. */}
+        <Route path="/admin/payments">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="payments" /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-pl">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="partner-pl" /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective-payment-pl">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="collective-pl" /></RequireAuth>}
+        </Route>
+        {/* WAVE 131 — the three W-V44 hub URLs D2.5 DELETED now open the console
+            on its Price Source Map tab instead of the admin 404. A hub URL whose
+            job was "show me where pricing lives" is answered exactly by it. */}
+        <Route path="/admin/capavate-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="source-map" /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="source-map" /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-fees-hub">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="source-map" /></RequireAuth>}
+        </Route>
+        {/* ══ WAVE 131 — THE FIVE DIRECT-VIEW ALIASES ═════════════════════
+
+            R96 req 6: NOTHING MAY BE DROPPED. Repointing the five pricing URLs
+            onto the consolidated console removed the only place these five page
+            components were RENDERED from a route
+            (AdminPricing, PricingModels, CollectiveSubscriptions,
+            AdminCommissionRates, AdminPartnerBillingOps), which the restyle drop
+            detector correctly reported as five bare disappearances from this
+            file — to a user, a rendered surface that no route can produce is
+            gone. The consolidated console MOUNTS all five as tabs, and that is
+            where administration happens; these aliases exist so the standalone
+            rendering ALSO still exists, unchanged, for anyone holding a direct
+            link or debugging one page in isolation.
+
+            They are deliberately NOT in the sidebar and are not linked from the
+            console: the owner asked for ONE pricing link and there is one
+            ("Pricing & Payments" → /admin/fees). Same admin guard as every
+            neighbouring route. `/admin/pricing-models/direct` MUST precede
+            `/admin/pricing-models/:id` or wouter would read "direct" as an id.
+            Enforced by server/__tests__/wave131_one_pricing_console.test.ts §2. */}
+        <Route path="/admin/pricing/direct">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPricing /></RequireAuth>}
+        </Route>
+        <Route path="/admin/pricing-models/direct">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PricingModels /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective-subscriptions/direct">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveSubscriptions /></RequireAuth>}
+        </Route>
+        <Route path="/admin/commission-rates/direct">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCommissionRates /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-billing-ops/direct">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerBillingOps /></RequireAuth>}
         </Route>
         {/* /admin/pricing-models/:id MUST precede /admin/pricing-models so
             wouter matches the detail path; and both must precede the
@@ -1014,10 +1085,10 @@ function AppRouter() {
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><PricingModelDetail /></RequireAuth>}
         </Route>
         <Route path="/admin/pricing-models">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PricingModels /></RequireAuth>}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="pricing-models" /></RequireAuth>}
         </Route>
         <Route path="/admin/pricing">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPricing /></RequireAuth>}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="capavate-pricing" /></RequireAuth>}
         </Route>
         {/* ══ /WAVE 7 R-1 ═════════════════════════════════════ */}
         <Route path="/admin/partner-responders">

@@ -60,6 +60,7 @@
  */
 import { rawDb } from "../db/connection";
 import { isSpvBackedCompany } from "./spvBackedCompanies";
+import { hasLiveCapTableVisibilityGrant } from "./shareholderRegisterStore";
 
 export type CapTableSinkOutcome = "allow" | "scope_to_self" | "refuse";
 
@@ -74,7 +75,21 @@ export interface CapTableSinkAccess {
   | "spv_lp_own_only"
   | "spv_lp_co_investors"
   | "no_relationship"
-  | "unauthenticated";
+  | "unauthenticated"
+  /* WAVE 130 — an EXPLICIT, founder-granted, expiring, revocable grant. See the
+     branch at the end of `decideCapTableSinkAccess`. */
+  | "founder_granted_visibility";
+  /**
+   * WAVE 130 — the grant that produced a `founder_granted_visibility` outcome,
+   * for the audit line a sink may want to log. `null` for every other reason, so
+   * no existing caller changes shape or behaviour.
+   */
+  grantedVisibility?: {
+    grantId: string;
+    subjectKind: string;
+    subjectLabel: string;
+    expiresAt: string;
+  } | null;
 }
 
 /** Minimal shape this helper needs; keeps it usable from both typed and `any` call sites. */
@@ -143,6 +158,53 @@ export function decideCapTableSinkAccess(
     (p) => p?.companyId === cid,
   );
   if (!hasInvestorRelationship) {
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 130 — THE ONLY BRANCH THIS WAVE ADDS, AND IT IS DELIBERATELY LAST.
+       ═══════════════════════════════════════════════════════════════════════
+       The owner asked that the cap table be "visible for all parties when
+       updated (founder, investors, consortium partner (IF REQUIRED), Collective
+       (IF REQUIRED))". Today a Consortium Partner and a Collective party have NO
+       cap-table visibility at all — verified by enumerating this function's
+       branches (W130_PREFLIGHT.md §3.1). "If required" is the founder's call, so
+       it is an EXPLICIT grant he creates and can revoke, not a role flag.
+
+       WHY IT SITS HERE. It is consulted ONLY AFTER every pre-existing branch has
+       already declined — unauthenticated refuses above it, admin, founder and a
+       real investor relationship all return above it. It can therefore only ever
+       turn a `refuse` into an `allow`, and it is structurally incapable of
+       narrowing, scoping or removing access anybody has today. That is what keeps
+       this inside R90: no authentication, no session scoping, no cookie, no role
+       resolution and no portal guard is touched, and `UserContext` is unchanged.
+
+       WHY THE SUBJECT IS A USER ID. The context this helper receives carries no
+       partner-org or collective-org identifier (`server/lib/userContext.ts:172`),
+       and inventing one would be exactly the role resolution R90 forbids. So a
+       grant names the PERSON the founder chose to admit, and `subject_kind`
+       records which party he understood them to be.
+
+       WHY AN INVESTOR IS NEVER A GRANT. R8 is binding: "scope follows the
+       POSITION, never an account flag", and a cap-table member has "full,
+       identical rights". A holder's sight of the register he appears on is not a
+       favour a founder can withdraw, so it is resolved by the branch above this
+       one and is not revocable.
+
+       FAIL-CLOSED. `hasLiveCapTableVisibilityGrant` swallows every read error and
+       returns `null`, so an unreadable grants table refuses — the denying
+       direction this whole file is written in. */
+    const grant = hasLiveCapTableVisibilityGrant(cid, [String(ctx.userId ?? "")]);
+    if (grant) {
+      return {
+        outcome: "allow",
+        scopedToUserId: null,
+        reason: "founder_granted_visibility",
+        grantedVisibility: {
+          grantId: grant.id,
+          subjectKind: grant.subjectKind,
+          subjectLabel: grant.subjectLabel,
+          expiresAt: grant.expiresAt,
+        },
+      };
+    }
     return { outcome: "refuse", scopedToUserId: null, reason: "no_relationship" };
   }
 

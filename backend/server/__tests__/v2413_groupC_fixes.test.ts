@@ -13,6 +13,7 @@ import http from "node:http";
 import { installV14TestIdentity } from "./_v14TestIdentity";
 import { registerFounderUser } from "../lib/userContext";
 import { getSubscription } from "../subscriptionsStore";
+import { authorFounderCatalogue } from "./_fixtures/pricingCatalogueFixture";
 import {
   createInvitation,
   _testAccessInvitations,
@@ -126,6 +127,19 @@ describe("C.1 B-301 — carry-forward graceful empty for new company", () => {
  * C.2  L-003 — founder_free auto-activates on company create
  * ==================================================================== */
 describe("C.2 L-003 — founder_free auto-activates on company create", () => {
+  /* WAVE 134 cause 1-of-3 (R98) — L-003's own rule is that a plan auto-activates
+     only when an admin CONFIGURED it at zero: subscriptionsStore.ts:641-650 treats
+     `PLAN_PRICES[plan] === undefined` as "not configured" and deliberately keeps
+     such a company `pending_payment` so an unconfigured PRICED plan can never slip
+     to active. v25.27 removed the source-baked seed (R95/R96), so with no published
+     tier these two tests were asserting against the not-configured branch and could
+     not reach the free-plan branch at all. The shared fixture publishes
+     `founder-free` at 0 through the admin write path, which is the precondition
+     L-003 always assumed. No assertion was weakened. */
+  beforeAll(() => {
+    authorFounderCatalogue();
+  });
+
   it("POST /api/founder/companies/new with selectedPlan='founder_free' → tier='founder_free' + status='active'", async () => {
     const { app } = await buildApp();
     const { userId } = registerFounderUser({

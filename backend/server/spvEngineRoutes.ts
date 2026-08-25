@@ -537,7 +537,63 @@ export function registerSpvEngineRoutes(app: Express): void {
     const pid = req.partnerContext!.partnerId;
     const spv = spvEngineStore.getSpv(pid, String(req.params.spvId));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-    const commitmentMinor = Number(req.query.commitmentMinor ?? spv.minCheckMinor ?? 0);
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 127 · FINDING 2 — THIS ROUTE NO LONGER INVENTS A COMMITMENT.
+       ══════════════════════════════════════════════════════════════════════
+       WHAT THIS LINE USED TO BE:
+
+           const commitmentMinor = Number(req.query.commitmentMinor ?? spv.minCheckMinor ?? 0);
+
+       TWO DEFECTS ON ONE LINE, and the first was visible on production.
+
+       (1) `?? spv.minCheckMinor` — when the client sent no parameter (which the
+           fee panel did whenever its "model a commitment" box was empty) the
+           server SUBSTITUTED THE VEHICLE'S MINIMUM CHEQUE SIZE and returned a
+           complete, arithmetically-correct breakdown of an amount nobody had
+           entered. On the live site Test SPV modelled $484.47 (min_check_minor
+           48447) and QUantum SPV modelled $100.00 (min_check_minor 10000)
+           against verifiably empty inputs. The arithmetic was never wrong; the
+           INPUT was fabricated, which is worse than a hardcoded placeholder
+           because real code was running on a question nobody asked. A minimum
+           cheque size is a MANDATE TERM, not a commitment, and the two are not
+           interchangeable on a money surface.
+
+       (2) `Number()` applied to money. It accepts exponent notation ("1e7" is
+           read as 10,000,000), accepts decimals into a minor-unit field, and
+           yields NaN on junk rather than refusing.
+
+       BOTH ARE CLOSED HERE, AT SOURCE, rather than only in the one client that
+       happened to expose them — a client-side guard alone would leave the next
+       caller free to be lied to in exactly the same way. The parameter is now
+       REQUIRED and strictly parsed: digits only, safe integer. Absent or
+       malformed is a 400 naming what is missing, never a substituted amount.
+
+       BLAST RADIUS, CHECKED RATHER THAN ASSUMED. The only other producer of a
+       breakdown is the SPV detail route above, which calls the STORE directly
+       with an explicit 0 and does not come through here. No route is added or
+       removed, so the route-count guard is unmoved. */
+    const rawCommitment = req.query.commitmentMinor;
+    /* Deliberately NOT trimmed. Measured while writing the tests: with a
+       `.trim()` the string " 100" was accepted, and silently repairing a
+       malformed money parameter is the same class of helpfulness that produced
+       this defect. The client sends URL-encoded digits; anything else is a bug
+       in the caller and is told so. */
+    const commitmentText = typeof rawCommitment === "string" ? rawCommitment : "";
+    if (!/^\d+$/.test(commitmentText)) {
+      return res.status(400).json({
+        error: "COMMITMENT_MINOR_REQUIRED",
+        message:
+          "Provide commitmentMinor as a whole number of minor units to model. This endpoint does not " +
+          "substitute an amount you did not supply — a fee breakdown of an unstated commitment is not an answer.",
+      });
+    }
+    const commitmentMinor = Number(commitmentText);
+    if (!Number.isSafeInteger(commitmentMinor)) {
+      return res.status(400).json({
+        error: "COMMITMENT_MINOR_OUT_OF_RANGE",
+        message: "commitmentMinor is larger than can be represented exactly and is refused rather than rounded.",
+      });
+    }
     res.json({ breakdown: spvEngineStore.feeBreakdown(spv.id, commitmentMinor, spv.currency) });
   });
 

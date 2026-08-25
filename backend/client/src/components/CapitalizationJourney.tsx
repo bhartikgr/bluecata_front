@@ -53,6 +53,11 @@ import {
   OWNERSHIP_UNDEFINED,
 } from "@/lib/captable/ownershipPercent";
 import { VIEW_DENOMINATOR_LABEL } from "@/lib/captable/exportProvenance";
+/* WAVE 125 · FINDING 1 — an absent founder row is a refusal, not a zero. */
+import { founderHoldingVerdict } from "@/lib/captable/founderHoldingOnRecord";
+/* WAVE 125 · FINDING 2 — the one definition of "a cap-table holder", shared with
+   the server producer that feeds the dashboard, switcher and report snapshot. */
+import { countCapTableHolders } from "@/lib/captable/capTableHolderCount";
 
 const COLORS = {
  primary: "#20808D", // teal — engine/brand
@@ -64,9 +69,18 @@ const COLORS = {
  safe: "#B53D6E", // wine/rose
  note: "#E0A82E", // amber
  warrant: "#3F8C5C", // forest
+ /* WAVE 128 · R94 — the NEW band. A colour of its own, taken from neither the
+    founder navy nor the preferred teal, so common held by an investor cannot be
+    mistaken on the chart for either of the two bands it used to be confused
+    with. No existing colour is changed. */
+ common: "#8A6FBF", // violet
 };
 
-const INSTRUMENT_ORDER = ["founder", "pool", "preferred", "safe", "note", "warrant"] as const;
+/* WAVE 128 · R94 / R91 — `common` is APPENDED. Indices 0-5 and their labels are
+   frozen exactly as Wave 120 shipped them; a band is added, nothing is renamed
+   and nothing is reordered. `w128_journey_common_band` pins this array and the
+   label map as literals so a later reorder fails the build. */
+const INSTRUMENT_ORDER = ["founder", "pool", "preferred", "safe", "note", "warrant", "common"] as const;
 
 const INSTRUMENT_LABEL: Record<string, string> = {
  founder: "Founders",
@@ -75,6 +89,11 @@ const INSTRUMENT_LABEL: Record<string, string> = {
  safe: "SAFE (Investors)",
  note: "Notes (Investors)",
  warrant: "Warrants",
+ /* Follows the sibling vocabulary ("Preferred (Investors)"). Holder type is
+    consulted BEFORE the instrument, so a founder's common and an employee
+    pool's common never reach this band — everything that does is held by a
+    non-founder, non-pool party, which on this platform is an investor. */
+ common: "Common (Investors)",
 };
 
 const INSTRUMENT_COLOR: Record<string, string> = {
@@ -84,6 +103,7 @@ const INSTRUMENT_COLOR: Record<string, string> = {
  safe: COLORS.safe,
  note: COLORS.note,
  warrant: COLORS.warrant,
+ common: COLORS.common,
 };
 
 type Snapshot = {
@@ -93,6 +113,12 @@ type Snapshot = {
  preMoney: number;
  postMoney: number;
  composition: Record<string, number>; // bucket -> pct of SNAPSHOT_DENOMINATOR_LABEL
+ /* WAVE 128 · R94 REQUIREMENT 4 — why no founders figure may be published for
+    this snapshot, or `null` when one may be. The verdict is NOT re-derived here:
+    it is `founderHoldingVerdict`'s (WAVE 125), asked with the CORRECTED band as
+    the discriminator, so "no founder holding on record" says the same words on
+    this card as it does on the cap table and the dashboard. */
+ founderStatement: string | null;
 };
 
 /* WAVE 116 · FINDING 2 — THE INVENTED DENOMINATOR, AND WHY THE PANEL NOW REFUSES.
@@ -170,6 +196,23 @@ export type SnapshotRefusal = {
  statement: string;
 };
 
+/** WAVE 128 · R94 REQUIREMENT 2 — the ONE place the unclassifiable-row refusal is
+ *  worded, so the sentence names the row that stopped the card. Exported so a
+ *  test can assert the exact statement rather than a substring of it. */
+export function unclassifiedRowStatement(
+ roundName: string,
+ rows: ReadonlyArray<{ holderName: string; kind: string }>,
+): string {
+ const named = rows
+ .map((r) => `${(r.holderName ?? "").trim() || "a holding with no holder name on record"} (${r.kind || "no instrument recorded"})`)
+ .join("; ");
+ return (
+ `No composition shown at ${roundName}: ${rows.length} ${rows.length === 1 ? "holding could" : "holdings could"} not be ` +
+ `classified into an ownership band — ${named}. Assigning ${rows.length === 1 ? "it" : "them"} to a band would attribute ` +
+ "somebody else's equity, so no percentages are drawn for this round until the instrument and holder type are recorded."
+ );
+}
+
 export type SnapshotBuild = {
  snapshots: Snapshot[];
  refusals: SnapshotRefusal[];
@@ -180,15 +223,58 @@ export type SnapshotBuild = {
  *  it in a `let` across a `try`. `runEngine` is imported, not re-implemented. */
 type CapTableRunResult = ReturnType<typeof runEngine>;
 
-/** The composition bands, in the order the chart stacks them. */
-const SNAPSHOT_BUCKETS = ["founder", "pool", "preferred", "safe", "note", "warrant"] as const;
+/** The composition bands, in the order the chart stacks them.
+ *  WAVE 128 · R94 / R91 — `common` APPENDED at index 6; 0-5 unchanged. */
+const SNAPSHOT_BUCKETS = ["founder", "pool", "preferred", "safe", "note", "warrant", "common"] as const;
 
 /** WAVE 120 · FINDING 3 — which band an ENGINE row belongs to. The same rules the
  *  old private bucket loop applied to raw securities, now applied to the engine's
  *  rows so the bands still add up to the engine's own denominator. Holder type
  *  wins over instrument (a founder's preferred is still founder equity), which is
  *  the precedence the previous code used. */
-function snapshotBucketOf(row: { holderType: string; kind: string }): string {
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 128 · R94 — THE FALL-THROUGH THAT GAVE AN INVESTOR'S SHARES TO FOUNDERS.
+   ════════════════════════════════════════════════════════════════════════════
+   WHAT THIS FUNCTION USED TO END WITH:
+
+       return "founder";
+
+   The engine emits `kind: "common"` for a common issuance
+   (shared/roundMathEngineAdapter.ts:1936-1946 and :2117) and `holderType`
+   defaults to `"other"` when the record carries none (:1930). `common` matched
+   NO branch, so every share of common held by anyone who was not typed a founder
+   or a pool fell through and was counted as FOUNDER EQUITY.
+
+   THE MEASURED CONSEQUENCE. `BluePrint Catalyst Limited` — one investor holding
+   all 150 common shares, no founder row at all — made the per-round card read
+   `Founders 100%`. That is the same fabricated figure Wave 120 removed and
+   Wave 125 fixed on the cap table and the dashboard, reintroduced here by a
+   default. Three surfaces, one lie.
+
+   WHAT CHANGES, AND WHAT DELIBERATELY DOES NOT. The PRECEDENCE is correct and
+   stays: holder type is read FIRST, so a founder's preferred — and a founder's
+   common — is still founder equity. Only the DEFAULT goes. Common gets a band of
+   its own (the owner's ruling of 2026-08-22: common shares are issued to all
+   types of investor, and common held by an investor is INVESTOR equity), and a
+   row that matches nothing at all returns `null`, which makes the caller REFUSE
+   the card and name the row rather than quietly handing it to the largest and
+   most consequential band.
+
+   HOW REACHABLE IS THE `null` PATH TODAY, STATED HONESTLY. `adaptSecuritiesToEngine`
+   ends with a FALLBACK of its own (shared/roundMathEngineAdapter.ts:2113-2118):
+   an instrument it does not recognise is issued to the engine as `kind: "common"`.
+   So every row this function can currently be handed is one of common, preferred,
+   option, safe, note or warrant, and the `null` is a DEFENCE rather than a live
+   path — an unrecognised instrument now lands in the COMMON band (investor
+   equity) instead of in the founders'. The guard stays because the alternative is
+   a default, and a default is what caused R94: the day a new `kind` reaches this
+   function, the card must refuse rather than attribute somebody's equity to the
+   founders. `w128_journey_common_band` pins both halves.
+
+   Exported ONLY so a test can pin the classification directly, including the
+   `null`; nothing outside this module calls it.
+   ════════════════════════════════════════════════════════════════════════════ */
+export function snapshotBucketOf(row: { holderType: string; kind: string }): string | null {
  if (row.holderType === "founder") return "founder";
  if (row.holderType === "pool") return "pool";
  if (row.kind === "option") return "pool";
@@ -196,7 +282,8 @@ function snapshotBucketOf(row: { holderType: string; kind: string }): string {
  if (row.kind === "safe") return "safe";
  if (row.kind === "note") return "note";
  if (row.kind === "warrant") return "warrant";
- return "founder";
+ if (row.kind === "common") return "common";
+ return null;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -261,8 +348,29 @@ export function journeyCardOwnership(build: SnapshotBuild, roundId: string): Jou
  "No ownership composition was computed for this round, so no founder percentage is shown for it.",
  };
  }
- const after = build.snapshots[idx]?.composition.founder;
- const before = idx > 0 ? build.snapshots[idx - 1]?.composition.founder : null;
+ /* WAVE 128 · R94 REQUIREMENT 4 — NO FOUNDERS FIGURE AT ALL WHEN NO FOUNDER
+    HOLDING IS ON RECORD. `buildSnapshots` has already asked WAVE 125's
+    `founderHoldingVerdict` for this snapshot; if it refused, the card publishes
+    neither a percentage nor a dash-with-a-percent-sign — it says why, in the
+    refusal branch this card already had. */
+ const snap = build.snapshots[idx];
+ if (snap?.founderStatement) {
+ return {
+ shown: false,
+ roundId,
+ beforeText: OWNERSHIP_UNDEFINED,
+ afterText: OWNERSHIP_UNDEFINED,
+ beforeIsNumber: false,
+ afterIsNumber: false,
+ statement: snap.founderStatement,
+ };
+ }
+ const after = snap?.composition.founder;
+ /* "Before" is the PREVIOUS snapshot's founders share — and only when that
+    snapshot was itself allowed to publish one. Reading a figure through a
+    refusal would put back the fabrication on the neighbouring card. */
+ const prev = idx > 0 ? build.snapshots[idx - 1] : undefined;
+ const before = prev && !prev.founderStatement ? prev.composition.founder : null;
  const beforeText = ownershipPercentCellText(before ?? null, 0);
  const afterText = ownershipPercentCellText(after ?? null, 0);
  return {
@@ -375,11 +483,28 @@ export function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], co
  const key = `${s.holderName ?? ""}|${s.instrument}`;
  if (!recordedTypeByKey.has(key) && s.holderType) recordedTypeByKey.set(key, s.holderType);
  }
- const bandOf = (row: { holderType: string; kind: string; holderName: string }): string =>
+ const bandOf = (row: { holderType: string; kind: string; holderName: string }): string | null =>
  snapshotBucketOf({
  holderType: recordedTypeByKey.get(`${row.holderName ?? ""}|${row.kind}`) ?? row.holderType,
  kind: row.kind,
  });
+
+ /* WAVE 128 · R94 REQUIREMENT 2 — A ROW THAT CANNOT BE BANDED STOPS THE CARD.
+    `snapshotBucketOf` no longer has a default, so an unrecognised instrument
+    comes back `null` instead of being added to the founders. The honest outcome
+    is the one the exit waterfall and the cap table already take: draw nothing,
+    and say which row stopped it. Collected BEFORE any percentage is summed, so
+    no partial figure is ever computed from an incomplete classification. */
+ const unclassified = fd.rows.filter((row) => bandOf(row) === null);
+ if (unclassified.length > 0) {
+ refusals.push({
+ roundId: round.id,
+ roundName: round.name,
+ unconvertedRows: 0,
+ statement: unclassifiedRowStatement(round.name, unclassified.map((r) => ({ holderName: r.holderName, kind: r.kind }))),
+ });
+ continue;
+ }
 
  const composition: Record<string, number> = {};
  let undefinedBucket = false;
@@ -400,6 +525,25 @@ export function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], co
  continue;
  }
 
+ /* WAVE 128 · R94 REQUIREMENT 4 — AN ABSENT FOUNDER ROW IS NOT `Founders 0%`,
+    AND IT IS CERTAINLY NOT `Founders 100%`.
+
+    With the fall-through gone, the BluePrint shape (one investor, 150 common,
+    no founder row) now bands correctly — `common` 100, `founder` 0 — and a
+    naked `0` on the card would be the SECOND false statement about the same
+    data, the exact one Wave 125 removed from the cap table. So the card is
+    asked, per snapshot, whether a founders figure may be published at all.
+
+    The rule is NOT restated here. `founderHoldingVerdict` (WAVE 125) is the
+    platform's one place for it, and it is asked with the CORRECTED band as the
+    discriminator rather than the raw `holderType`, because the band is what the
+    percentages were summed by — the question and the arithmetic must agree.
+    A founder row RECORDING zero still publishes `0.00%` (state B). */
+ const founderVerdict = founderHoldingVerdict(
+ fd.rows.map((r) => ({ holderType: bandOf(r) === "founder" ? "founder" : "other" })),
+ fd.totalShares as unknown as bigint,
+ );
+
  snapshots.push({
  date: round.closeDate ?? "",
  roundId: round.id,
@@ -407,6 +551,7 @@ export function buildSnapshots(rounds: ApiRound[], securities: ApiSecurity[], co
  preMoney: round.preMoney ?? 0,
  postMoney: round.postMoney ?? 0,
  composition,
+ founderStatement: founderVerdict.refuse ? founderVerdict.statement : null,
  });
  }
 
@@ -546,14 +691,30 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
     It now READS the engine's `ownershipPercent` for the founder rows through
     `client/src/lib/captable/ownershipPercent.ts`, the platform's one null-aware
     ownership renderer, and refuses when the engine has no answer. The engine
-    itself is not touched. */
- const founderPctText = ownershipPercentCellText(
-   sumOwnershipPercent(fd.rows.filter((r) => r.holderType === "founder")),
- );
- const investorCount = new Set(
- fd.rows.filter((r) => r.holderType === "investor" || r.holderType === "founder" || r.holderType === "pool").map((r) => r.holderName),
- ).size;
- return { latestValuation, founderPctText, investorCount };
+    itself is not touched.
+
+    WAVE 125 · FINDING 1 — AND IT STILL SUMMED AN EMPTY SET TO ZERO.
+    `sumOwnershipPercent([])` returns `0`, not `null`: for a cap table with rows
+    but NO founder row (`BluePrint Catalyst Limited` — 150 shares, one investor
+    holding all of them) this printed a confident `0.00%` for founder ownership,
+    the same fabrication the cap-table page made. The engine already names this
+    case — `server/lib/founderOwnershipEngine.ts:158-171`,
+    `no_founder_holding_on_record` — and `@/lib/captable/founderHoldingOnRecord`
+    restates that one rule for renderers. A founder row RECORDING zero is
+    untouched and still reads `0.00%`; only an ABSENT row refuses. */
+ const founderHolding = founderHoldingVerdict(fd.rows, fd.totalShares as unknown as bigint);
+ const founderPctText = founderHolding.refuse
+   ? OWNERSHIP_UNDEFINED
+   : ownershipPercentCellText(
+       sumOwnershipPercent(fd.rows.filter((r) => r.holderType === "founder")),
+     );
+ /* WAVE 125 · FINDING 2 — the distinct-holder definition moved, unchanged, into
+    `@/lib/captable/capTableHolderCount` so that the server producer feeding the
+    dashboard, the company switcher and the report snapshot counts holders the
+    SAME way this KPI does. This page used to contradict itself: this figure said
+    `1` while the tile above it said `0 holders` (R46). */
+ const investorCount = countCapTableHolders(fd.rows);
+ return { latestValuation, founderPctText, founderHoldingStatement: founderHolding.statement, investorCount };
  }, [novapayRounds, rounds.data, securities.data]);
 
  const isLoading = rounds.isLoading || securities.isLoading;
@@ -623,7 +784,11 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
      precision only: `kpis.founderPct` and its units are untouched (R16). */}
  {/* WAVE 116 · FINDING 3 — the engine's own answer, and the denominator named
      from the one shared label map rather than the loose words "fully diluted". */}
- <Kpi icon={PieIcon} label="Founder ownership" value={`${kpis.founderPctText}${kpis.founderPctText === OWNERSHIP_UNDEFINED ? "" : "%"}`} hint={`of ${VIEW_DENOMINATOR_LABEL.fully_diluted}`} />
+ {/* WAVE 125 · FINDING 1 — when the founder holding is not on record the value is
+     the em dash and the hint carries the REASON instead of the denominator. The
+     `<Kpi>` sibling shape is unchanged (no element added, none removed), so the
+     drop gate still sees the same positional children. */}
+ <Kpi icon={PieIcon} label="Founder ownership" value={`${kpis.founderPctText}${kpis.founderPctText === OWNERSHIP_UNDEFINED ? "" : "%"}`} hint={kpis.founderHoldingStatement ?? `of ${VIEW_DENOMINATOR_LABEL.fully_diluted}`} />
  <Kpi icon={Users} label="Cap-table holders" value={kpis.investorCount} hint="founders + investors + pool" />
  </div>
  )}

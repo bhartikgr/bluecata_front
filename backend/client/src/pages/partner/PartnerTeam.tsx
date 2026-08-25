@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 /* v25.56 GROUP-D — client-side guard so a raw synthetic id can never render. */
 import { safePersonDisplayName } from "@/lib/personName"; /* W3.2 — name slot must never render email/opaque id */
+import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
 /* 2a — display/CRM titles (distinct from the 5 permission tiers). */
 import { PARTNER_TITLES } from "@shared/partnerTitles";
 
@@ -164,9 +165,16 @@ export default function PartnerTeam() {
   // v26.7.3 FIX-4 — the Team roster may collapse legacy duplicate identities
   // for presentation, so render the API's authoritative server count rather
   // than deriving a different seat total from display rows.
-  const activeCount =
-    q.data?.activeSeats ??
-    (q.data?.members ?? []).filter((m) => m.status === "active").length;
+  /* WAVE 126 / FINDING 5 — THE COUNT MUST AGREE WITH THE LIST.
+     The server count (`activeSeats`) counts SEAT records; the roster below
+     collapses legacy duplicate identities into one row per person. When those
+     two disagree the banner reads "2 of 2 seats" above a single member row,
+     which on a client's screen is simply a wrong number. The roster is what the
+     reader can see and count, so the roster wins: the displayed figure is now
+     derived from the rows that are actually rendered. The server figure is not
+     discarded — the surplus is what the consolidation note below reports. */
+  const renderedMembers = q.data?.members ?? [];
+  const activeCount = renderedMembers.filter((m) => m.status === "active").length;
   const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;
   /* w-partner F-new3 — 9999 is the nexus/founding_member sentinel for "no cap"
      (adminContactsStore.ts:235 TIER_SEAT_LIMITS); rendering the digits would
@@ -203,7 +211,13 @@ export default function PartnerTeam() {
           className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
           data-testid="duplicate-seat-warning"
         >
-          Duplicate historical seats hidden; cleanup required.
+          {/* WAVE 126 / FINDING 1 — "cleanup required" is an admission about
+              our own data hygiene and "hidden" invites the reader to wonder
+              what else is. The roster shows one row per member, which is the
+              correct roster and is what this sentence now says. */}
+          This roster shows one row for each member of your organisation.
+          Earlier duplicate records for the same people are consolidated into
+          the row for that member.
         </div>
       )}
       {/* v25.15 NM3b — explicit error + loading branches. */}
@@ -286,7 +300,15 @@ export default function PartnerTeam() {
                      defensive client-side guard in case a future payload
                      regresses and puts an email/opaque id in `name`. Email stays
                      in its own separate line below. */}
-                  <div className="font-medium text-[var(--cv-color-text)]">{safePersonDisplayName(m.name, "Pending member")}</div>
+                  {/* WAVE 126 / FINDING 5 — "Pending member" was applied on the
+                      basis of a MISSING NAME, not of a pending status, so an
+                      active signed-in Managing Partner whose name had not been
+                      captured was labelled pending. The fallback now depends on
+                      the member's actual status, which is the thing the label
+                      claims to describe. */}
+                  <div className="font-medium text-[var(--cv-color-text)]">
+                    {safePersonDisplayName(m.name, m.status === "active" ? "Name not on file" : "Invitation pending")}
+                  </div>
                   {m.email && <div className="text-xs text-[var(--cv-color-text-muted)]">{m.email}</div>}
                 </td>
                 <td className="p-2 text-xs text-[var(--cv-color-text-muted)]">
@@ -298,7 +320,7 @@ export default function PartnerTeam() {
                 {/* 2a — Title (display/CRM) then Access (permission tier). */}
                 <td className="p-2 text-[var(--cv-color-text-muted)]" data-testid={`member-title-${m.userId}`}>{m.title || <span className="text-[var(--cv-color-text-faint)]">—</span>}</td>
                 <td className="p-2 text-[var(--cv-color-text-muted)]">{positionLabel(m.subRole)}</td>
-                <td className="p-2 text-[var(--cv-color-text-muted)]">{m.status}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{humanizeMachineKey(m.status, "Status not recorded")}</td>
                 <td className="p-2 text-right whitespace-nowrap">
                   {/* v25.50 Phase 7 (7c) — managing_partner may edit contact info. */}
                   {canInvite && m.status === "active" && (

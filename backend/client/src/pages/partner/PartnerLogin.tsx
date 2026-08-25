@@ -248,10 +248,17 @@ export default function PartnerLogin() {
         >
           <div className="flex items-center gap-2 mb-2">
             <Zap className="h-4 w-4 text-[#cc0001]" />
-            <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Preview environment — one-click sign-in</span>
+            {/* WAVE 135 · FINDING 1 — "Preview environment", "preview hosts" and
+                "hidden in production" are our deployment vocabulary. A partner
+                being walked through a demonstration reads this panel; they do not
+                need to know how we host anything. The OPERATIVE FACTS are kept
+                exactly: this is a demonstration, it is not the real workspace, and
+                it signs you into the Keiretsu Forum demonstration account. The
+                gating expression, the element and the testid are untouched. */}
+            <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Demonstration sign-in</span>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
-            This shortcut only appears on preview hosts and is hidden in production. Click to sign in as the Keiretsu Forum demo partner instantly.
+            This shortcut is offered on demonstration sites only, never where live client records are held. It signs you straight into the Keiretsu Forum demonstration account.
           </p>
           <Button
             type="button"
@@ -341,8 +348,13 @@ export default function PartnerLogin() {
       {/* Demo partner quick-fill — only when ?demo=1 */}
       {demoMode && (
         <div className="mt-6 border-t pt-4" data-testid="demo-partner-panel">
+          {/* WAVE 135 · FINDING 1 — the parenthetical named the query parameter that
+              reveals the panel. That is an instruction to whoever wrote the URL, not
+              information for whoever is reading the screen, and a URL fragment printed
+              as prose is a machine value reaching an eye (R77). The heading now says
+              what the panel IS. Nothing about how it is revealed changes. */}
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
-            Demo partner (visible because ?demo=1)
+            Demonstration account
           </div>
           <button
             type="button"

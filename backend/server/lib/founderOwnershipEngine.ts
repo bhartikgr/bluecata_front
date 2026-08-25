@@ -71,6 +71,11 @@
  */
 import { Decimal } from "decimal.js";
 import { runEngine, type ApiSecurity } from "@shared/roundMathEngineAdapter";
+/* WAVE 125 · FINDING 2 — the ONE definition of "a cap-table holder", shared with
+   `client/src/components/CapitalizationJourney.tsx` so the dashboard tile and the
+   journey KPI beside it cannot report two counts for one quantity (R46). Server
+   → client-library imports are established here: `server/commsStore.ts:56`. */
+import { countCapTableHolders } from "../../client/src/lib/captable/capTableHolderCount";
 
 export type CompanySecuritiesProvider = (companyId: string) => Array<Record<string, unknown>>;
 
@@ -193,4 +198,70 @@ export function computeFounderOwnership(companyId: unknown): FounderOwnershipRes
  */
 export function computeFounderOwnershipFraction(companyId: unknown): number | null {
   return computeFounderOwnership(companyId).fraction;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 125 · FINDING 2 — THE HOLDER COUNT, DERIVED FROM THE SAME ROWS.
+   ═══════════════════════════════════════════════════════════════════════════
+   `FounderCompanyKpi.capTableHolders` had NO WRITER in live code. A
+   comment-stripped enumeration (`build_log/wave125/enum_captable_holders.py`)
+   classified all 29 live occurrences — 7 type declarations, 16 integer literals
+   (three of them a demo `14 / 6 / 9`, the rest `0`), 2 passthroughs, 6 renderers,
+   and 0 computations — so five founder-facing surfaces printed a figure nobody
+   had ever computed, including `"0 holders"` in the company switcher and
+   `"0 investors"` on the company picker. On the founder dashboard,
+   `CapitalizationJourney.tsx` derived the same quantity from the engine and
+   showed `1` a few pixels away: the page contradicted itself (R46).
+
+   This adds the missing writer, on the SAME injected provider and the SAME
+   `runEngine` call the founder-ownership figure above uses, so the two can never
+   disagree. The definition of "a holder" is NOT restated here: it is imported
+   from `client/src/lib/captable/capTableHolderCount.ts`, the file the journey's
+   KPI now also calls, which is the definition the journey already used. Importing
+   a client library from the server is established in this tree
+   (`server/commsStore.ts:56` imports `../client/src/lib/comms/types`).
+
+   A COUNT IS NOT MONEY, so a DERIVED zero is published: a company whose
+   securities were read and contained no counted holder genuinely has none. What
+   is never published is a zero that means "not derived" — every failure path
+   below returns `null`, and every renderer shows a plain-English statement for
+   `null`. There is no `?? 0` on this path. */
+export type CapTableHolderCountResult = {
+  /** Distinct holders on record, or `null` when nothing could be derived. */
+  count: number | null;
+  reason:
+    | "computed"
+    | "no_securities_provider"
+    | "no_securities_on_record"
+    | "engine_refused";
+};
+
+export function computeCapTableHolderCount(companyId: unknown): CapTableHolderCountResult {
+  const cid = String(companyId ?? "").trim();
+  if (!cid) return { count: null, reason: "no_securities_on_record" };
+  if (!companySecuritiesProvider) return { count: null, reason: "no_securities_provider" };
+
+  let rows: Array<Record<string, unknown>>;
+  try {
+    rows = companySecuritiesProvider(cid) ?? [];
+  } catch {
+    /* A provider that throws is not evidence of a holder count. */
+    return { count: null, reason: "no_securities_provider" };
+  }
+  /* No securities on record is NOT "zero holders known to be zero" — nothing was
+     read, so nothing is known. `null`. */
+  if (rows.length === 0) return { count: null, reason: "no_securities_on_record" };
+
+  let result: ReturnType<typeof runEngine>;
+  try {
+    result = runEngine(rows as unknown as ApiSecurity[], "fully_diluted", "US");
+  } catch {
+    return { count: null, reason: "engine_refused" };
+  }
+  return { count: countCapTableHolders(result.rows), reason: "computed" };
+}
+
+/** The KPI-shaped wrapper, mirroring `computeFounderOwnershipFraction` above. */
+export function computeCapTableHoldersOnRecord(companyId: unknown): number | null {
+  return computeCapTableHolderCount(companyId).count;
 }

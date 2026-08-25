@@ -23,6 +23,18 @@ import { registerRoutes } from "../routes";
 import { registerFounderUser } from "../lib/userContext";
 import { addCompanyForFounder } from "../multiCompanyStore";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 let port: number;
@@ -102,7 +114,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
   it("common round with only PPS + shares → 200, targetAmount derived = PPS × shares", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Foundation (Common)",
         type: "foundation",
@@ -113,7 +125,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         // (sends null). Mirror that here — the phantom "0" is gone.
         preMoney: null,
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -125,7 +137,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
   it("MATH RE-CHECK — cap-table inputs (PPS + shares) are echoed byte-for-byte unchanged; preMoney absent", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Common Math Guard",
         type: "foundation",
@@ -134,7 +146,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         sharesAuthorized: 800_000,
         preMoney: null,
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(200);
     // The cap-table engine commits PPS + shares directly. This wave adds ONLY
@@ -150,7 +162,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
   it("common round still fails closed when PPS is missing (fail-closed on cap-table input)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Bad Common",
         type: "foundation",
@@ -158,7 +170,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         sharesAuthorized: 1_000_000,
         preMoney: null,
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -168,7 +180,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
   it("preferred round validation UNCHANGED — still requires a user-entered target", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Series A",
         type: "series_a",
@@ -180,7 +192,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         sharesAuthorized: 3_200_000,
         // targetAmount omitted → preferred must still reject (unchanged contract).
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -190,7 +202,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
   it("3a — server rejects close-before-open (backstop for the client inline guard)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Backwards Dates Common",
         type: "foundation",
@@ -201,7 +213,7 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         closeDate: "2027-05-01",
         preMoney: null,
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("invalid_closeDate");
@@ -253,7 +265,7 @@ describe("v25.51 5a — round initial shareholders discrete first/last/company",
   it("creates a round to attach shareholders to", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Initial Shareholders Round",
         type: "foundation",
@@ -262,7 +274,7 @@ describe("v25.51 5a — round initial shareholders discrete first/last/company",
         sharesAuthorized: 500_000,
         preMoney: null,
         targetAmount: null,
-      },
+      }),
     });
     expect(res.status).toBe(200);
     roundId = res.body?.id;

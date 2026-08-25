@@ -69,7 +69,16 @@ export type NotificationKind =
   // Sprint 14 D4 — broadcast / intro signals
   | "cap_table.broadcast"
   | "crm.intro_request"
-  | "dsc.feedback_summary";
+  | "dsc.feedback_summary"
+  /* WAVE 136 · ITEM 4 (R100) — APPENDED, NEVER INSERTED. `server/track1Routes.ts`
+     carried a WAVE 120 comment explaining that a grantee is NOT told their data-room
+     access was withdrawn, because saying so would need this member and this file is
+     sacred, and that reusing `dataroom.access_granted` for a revocation would put a
+     false label on a real event. R100 grants the member. It is added at the END of
+     both the union and `ALL_NOTIFICATION_KINDS` below so that no existing member
+     changes index: `kind` values are persisted, and a reordering would silently
+     repoint stored rows. Existing count 37 → 38, new member at index 37. */
+  | "dataroom.access_revoked";
 
 export const ALL_NOTIFICATION_KINDS: NotificationKind[] = [
   "round.invitation_received",
@@ -109,6 +118,10 @@ export const ALL_NOTIFICATION_KINDS: NotificationKind[] = [
   "cap_table.broadcast",
   "crm.intro_request",
   "dsc.feedback_summary",
+  /* WAVE 136 · ITEM 4 (R100) — appended last, mirroring the union above. `perKind`
+     (`:137-138`) is built dynamically from this array, so an additive member needs
+     no further change in this file. */
+  "dataroom.access_revoked",
 ];
 
 export interface Notification {

@@ -12,7 +12,14 @@
  * Label/Button + apiRequest/queryClient/useToast + data-testid attributes).
  */
 import { useEffect, useMemo, useState } from "react";
-import { fmtUSD } from "@/lib/format";
+/* WAVE 137 · DEFECT A — `amountMinor` on this page is TRUE minor units on every
+ * writer (Airwallex price refs from AIRWALLEX_COLLECTIVE_*_AMOUNT_MINOR / the
+ * integer minor-unit `collective_subscription_configs.amount_minor` column, and
+ * `collective_subscription_packages.amount_minor` via rowToPackage). `fmtUSD`
+ * formats WHOLE units, so a $249.00 tier rendered `$24,900` in four places —
+ * including the tier <option> label and the member preview. `formatMinor` is
+ * ISO-4217-exponent aware; no arithmetic is performed on any amount here. */
+import { formatMinor } from "@/lib/currency";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -240,7 +247,7 @@ export default function CollectiveSubscriptions() {
                 >
                   {refs.map((r) => (
                     <option key={r.tier} value={r.tier} disabled={!r.available}>
-                      {r.tier}{r.available ? ` — ${r.priceId} (${r.amountMinor != null ? fmtUSD(r.amountMinor) : "?"} ${r.currency ?? ""}/${r.interval ?? "?"})` : " — not configured"}
+                      {r.tier}{r.available ? ` — ${r.priceId} (${r.amountMinor != null ? formatMinor(r.amountMinor, r.currency ?? "USD") : "?"} ${r.currency ?? ""}/${r.interval ?? "?"})` : " — not configured"}
                     </option>
                   ))}
                 </select>
@@ -263,7 +270,7 @@ export default function CollectiveSubscriptions() {
               {/* Amount/currency/interval are auto-filled from the ref (read-only display of the charged price) */}
               <div className="space-y-1.5">
                 <Label className="text-xs">Amount (from tier — display)</Label>
-                <div className="h-9 flex items-center text-sm font-medium" data-testid="text-amount">{fmtUSD(form.amountMinor)} {form.currency}</div>
+                <div className="h-9 flex items-center text-sm font-medium" data-testid="text-amount">{formatMinor(form.amountMinor, form.currency || "USD")} {form.currency}</div>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Interval (from tier)</Label>
@@ -300,7 +307,7 @@ export default function CollectiveSubscriptions() {
                 <div className="text-xs font-medium mb-1 flex items-center gap-1"><Eye className="h-3.5 w-3.5" /> Member preview</div>
                 <div className="text-sm font-semibold">{form.label || "—"}</div>
                 <div className="text-xs text-muted-foreground">{form.description || "—"}</div>
-                <div className="text-sm mt-1">{fmtUSD(form.amountMinor)} {form.currency} / {form.interval}</div>
+                <div className="text-sm mt-1">{formatMinor(form.amountMinor, form.currency || "USD")} {form.currency} / {form.interval}</div>
                 <div className="text-[10px] text-muted-foreground mt-1">{form.entitlements || "no entitlements"}</div>
               </div>
 
@@ -335,7 +342,7 @@ export default function CollectiveSubscriptions() {
                         <td className="py-2 pr-3 font-medium">{p.label}</td>
                         <td className="pr-3">{p.slug}</td>
                         <td className="pr-3">{p.airwallexTier}</td>
-                        <td className="pr-3">{fmtUSD(p.amountMinor)} {p.currency}/{p.interval}</td>
+                        <td className="pr-3">{formatMinor(p.amountMinor, p.currency)} {p.currency}/{p.interval}</td>
                         <td className="pr-3"><span className="text-xs font-medium">{p.status}</span></td>
                         <td className="pr-3 text-xs">{p.version}</td>
                         <td className="pr-3">

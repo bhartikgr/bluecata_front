@@ -40,6 +40,15 @@ export type ActiveCompanyResp = {
          `fmtPct(null, 2)` renders the platform's em-dash, so an unknown ownership
          reaches the founder as `—` rather than as a fabricated `100.00%`. */
       ownershipPct: number | null;
+      /* WAVE 125 · FINDING 2 — the DERIVED distinct cap-table holder count, added at
+         read time by `server/multiCompanyStore.ts::withComputedOwnership` from the
+         same engine call as `ownershipPct`. `capTableHolders` above has NO WRITER in
+         live code (29 live sites, 0 computations), so `?? 0` on it published a zero
+         nobody computed; the dashboard now reads THIS field and renders an em dash
+         plus a plain-English statement when it is `null`. Optional because the
+         SACRED `/api/auth/me` projection (`server/lib/userContext.ts:309`) cannot
+         carry it. */
+      capTableHoldersOnRecord?: number | null;
     };
     collective: { status: string; memberSince?: string };
     billing: {

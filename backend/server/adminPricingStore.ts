@@ -28,6 +28,7 @@ import type { Express, Request, Response } from "express";
    `/100`. Review A falsified that classification by execution. */
 import { fromMinor, toMinor, currencyExponent } from "./lib/currency";
 import * as pricingModel from "./pricingModelStore";
+import { invalidateAllPricingCaches } from "./lib/pricingCacheBus";
 import { requireAuth } from "./lib/authMiddleware"; /* v25.48.3 Q-C3 — founder-scoped read route */
 
 export type PricingTier = {
@@ -255,6 +256,9 @@ export function registerAdminPricingRoutes(app: Express): void {
       (req as { userContext?: { userId?: string } }).userContext?.userId || "admin:legacy-pricing-tiers";
     const result = pricingModel.updateModel(id, update, actor);
     if (!result.ok) return res.status(400).json({ error: result.error });
+    /* WAVE 131 (R95) — a founder-tier price edit reaches the PUBLIC pricing
+     * payload, whose 5-minute cache had no invalidation caller at all. */
+    invalidateAllPricingCaches(`pricing_model.tier.set:${id}`);
     return res.json(modelToTier(result.model));
   });
 }

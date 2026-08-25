@@ -93,7 +93,22 @@ describe("W-FIX2d D3 — hurdle % + GP-commit optional inputs, platform fee read
     expect(wizard).toContain('data-testid="spv-w-hurdle"');
     expect(wizard).toContain('data-testid="spv-w-gpcommit"');
     expect(wizard).toContain("hurdleRatePct: w.hurdleRatePct.trim() ? Number(w.hurdleRatePct) : null");
-    expect(wizard).toContain("gpCommitMinor: w.gpCommitMajor.trim() ?");
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 133 · R98 — RE-PINNED ONTO THE POST-WAVE-128 GP-COMMIT WIRE.
+       ═══════════════════════════════════════════════════════════════════════
+       RULING: OWNER_RULINGS_2026_08_13.md R98. The old pin demanded the inline
+       ternary `gpCommitMinor: w.gpCommitMajor.trim() ? …`, whose blank/non-blank
+       branch ended in `parseFloat` on money. Wave 128 deleted that and hoisted
+       the optional-ness into `wizardMoneyWireOptional` (PartnerSpvEngine.tsx:519),
+       assigning the result at :552. The CODE is correct; the pin was stale.
+
+       Not weakened: 1 pin out, 3 in. The blank-default behaviour the old ternary
+       expressed is still pinned — it now lives in the `…Optional` helper, which
+       is asserted by name — and the absence of float arithmetic on the GP
+       commitment is pinned too, which the old ternary did not do. ══════════ */
+    expect(wizard).toContain('const gpCommitWire = wizardMoneyWireOptional(w.gpCommitMajor, w.currency, "GP commitment");');
+    expect(wizard).toContain("gpCommitMinor: gpCommitWire,");
+    expect(wizard, "the GP commitment must never be parsed as a float").not.toContain("parseFloat(w.gpCommitMajor");
   });
   it("platform carry % is DB-driven — read from feeSummary, not hardcoded", () => {
     expect(tabs).toContain("detail.feeSummary?.platformCarryPct");

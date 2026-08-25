@@ -24,6 +24,7 @@ import http from "node:http";
 import { registerRoutes } from "../routes";
 import { __setRuntimePersona } from "../lib/userContext";
 import { getSubscription, getSubscriptionHistory } from "../subscriptionsStore";
+import { authorFounderCatalogue } from "./_fixtures/pricingCatalogueFixture";
 
 let app: Express;
 let server: http.Server;
@@ -43,6 +44,15 @@ beforeAll(async () => {
     isAdmin: false,
     hasInvitations: false,
   });
+
+  /* WAVE 134 cause 1-of-3 (R98) — the subscribe flow this test drives charges a
+     PLAN, and since v25.27 a plan has a price only if an admin published a tier
+     (R95/R96: pricing is admin-set and database-driven; pricingModelStore ships
+     no seed). Unpublished, /activate-free and /charge answered 500 and the plan
+     never moved off founder_free, so every assertion below was measuring the
+     absence of a price list rather than the B-202 fix. The one shared fixture
+     publishes the tiers as the admin would. */
+  authorFounderCatalogue();
 
   app = express();
   app.use(express.json());

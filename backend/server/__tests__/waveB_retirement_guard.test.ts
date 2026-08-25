@@ -229,7 +229,14 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
       // sacred_check.sh with exit 3 (transcript: build_log/wave89/probe/).
       // Wave 34 bytes, retained: ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f
       "client/src/pages/founder/Billing.tsx":
-        "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7",
+      /* WAVE 131 · R97 — the legal bytes moved once more. The owner expressly
+         authorised ONE further edit in this file (spec/OWNER_RULINGS_2026_08_13.md
+         R97): the collective application fee rendered raw MINOR units behind a
+         dollar sign, so $300 displayed as "$30,000". It now renders through
+         formatMinor() and an absent fee renders no figure. The pin stays EXACT, at
+         the new value, so an unwaived edit still fails here.
+         Wave 89 bytes, retained: bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7 */
+        "ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6",
       /* WAIVER-7 — WAVE 58g, OWNER-APPROVED 2026-08-15 (ruling R34, "If approved
        * is the best practice. Then OK.").
        *
@@ -253,12 +260,17 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
        * second-path miss has now happened four times — a duplicate pin costs
        * nothing and a missing one costs a silent hole.
        *
-       * Lineage: d7fa53f0… (pre-waiver) → 42d04653… (Wave 58g, current).
-       * TO DECLINE: restore d7fa53f0… as the live content and delete this entry,
-       * the EXTRA_WAIVED_FROZEN entry, the RATIFIED_HERE entry and the
-       * sacred_check.sh row (and put the freeze count back to 7). */
+       * Lineage: d7fa53f0… (pre-waiver) → 42d04653… (Wave 58g) → b8627df8…
+       * (Wave 136 · R100, current). WAVE 136 re-pinned this because R100 authorised
+       * items 2 and 3 in the same file and recorded them against the EXISTING
+       * WAIVER-7 row — no tenth waiver, count still NINE.
+       * TO DECLINE R100 alone: restore the Wave 58g bytes and put 42d04653… back
+       * here, in EXTRA_WAIVED_FROZEN and in sacred_check.sh field 3; WAIVER-7 stays.
+       * TO DECLINE WAIVER-7 entirely: restore d7fa53f0… as the live content and
+       * delete this entry, the EXTRA_WAIVED_FROZEN entry, the RATIFIED_HERE entry and
+       * the sacred_check.sh row (and put the freeze count back to 7). */
       "server/roundCarryForwardEngine.ts":
-        "42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8",
+        "b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3",
       /* WAIVER-8 — WAVE 75 · ITEM 1, OWNER-RATIFIED 2026-08-18 (ruling R70, "Q2:
        * Change it. Has to be dynamic and real-time. No hard codes.").
        *
@@ -434,7 +446,10 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
      * a further unwaived edit to the carry-forward engine fails BOTH of them as
      * well as sacred_check.sh. Rationale and hash lineage: see WAIVER_1_FROZEN. */
     "server/roundCarryForwardEngine.ts": {
-      sha: "42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8",
+      /* RE-PINNED 2026-08-25 · WAVE 136 · R100 — see the lineage note in
+       * WAIVER_1_FROZEN above. Recorded against the EXISTING WAIVER-7 row; the
+       * ratified-waiver count is unchanged at NINE. */
+      sha: "b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3",
       waiver: "WAIVER-7",
     },
   };
@@ -610,7 +625,7 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     /* WAVE 89 — the enforced bytes are the R79 / WAIVER-10 bytes (the four
        date-only renewal-date renders). Independently duplicated here, as always. */
     expect(WAIVER_1_FROZEN["client/src/pages/founder/Billing.tsx"]).toBe(
-      "bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7",
+      "ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6",
     );
   });
 

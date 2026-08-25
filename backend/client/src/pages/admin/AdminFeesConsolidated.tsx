@@ -89,6 +89,28 @@ import { currencyExponent, formatMinor, fromMinor, toMinor } from "@/lib/currenc
 import { minorToMajorString, formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 /* WAVE 56 (R36 / 56-Q9) — the create/freeze/archive tier surface. */
 import { PartnerTierLifecycleAdmin } from "@/components/admin/PartnerTierLifecycleAdmin";
+/* WAVE 131 (R95/R96) — THE CONSOLIDATION THE OWNER ASKED FOR SEVERAL TIMES.
+ *
+ * Wave 4A retired eight standalone pricing pages from the router but left them
+ * on disk and left their sidebar links in place, so the admin area still had
+ * eight doors into pricing. R96 requirement 6 forbids dropping any capability,
+ * so those pages are not deleted and not rewritten: they are MOUNTED HERE as
+ * tabs of this one route, and their old URLs now render this page deep-linked to
+ * the matching tab (see App.tsx). Every capability that existed still exists, at
+ * one address.
+ *
+ * Each import is a zero-prop default-exported page component. */
+import AdminPartnerBillingOps from "@/pages/admin/AdminPartnerBillingOps";
+import AdminCommissionRates from "@/pages/admin/AdminCommissionRates";
+import AdminCollectiveSubscriptions from "@/pages/admin/CollectiveSubscriptions";
+import AdminPricingPage from "@/pages/admin/Pricing";
+import AdminPricingModelsPage from "@/pages/admin/PricingModels";
+import AdminPaymentsPage from "@/pages/admin/Payments";
+import AdminPartnerPLPage from "@/pages/admin/PartnerPL";
+import AdminCollectivePaymentPLPage from "@/pages/admin/CollectivePaymentPL";
+import AdminCollectivePaymentSchedulesPage from "@/pages/admin/CollectivePaymentSchedules";
+/* WAVE 131 (R96 req 7) — a storage key is not a label. */
+import { humanizeMachineKey, billingPeriodPhrase, planTierLabel } from "@/lib/partnerDisplay";
 
 /* ==========================================================================
  * Money helpers (single implementation for the whole fee area — the audit's
@@ -1561,12 +1583,11 @@ function ApplicationFeeTab() {
         >
           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
-            Known unit quirk:{" "}
-            this value is also mirror-written into{" "}
-            <code>collective_application_fee_config.amount_minor</code> as{" "}
-            <code>Math.round(amountMinor / 100)</code> because that legacy table stores
-            DISPLAY dollars. Lossy on non-round-dollar amounts. Reconciling the two
-            tables needs a live-DB check (M2) and is not part of a UI-only slice.
+            Unit contract, corrected: this fee is stored and mirrored in{" "}
+            minor units (cents for USD) on every path, and the founder-facing page
+            reads the same figure. It is no longer scaled down on the way into the
+            second table, so the amount an admin types here is the amount a founder
+            is shown and charged.
           </span>
         </div>
       </AppCard>
@@ -3342,17 +3363,379 @@ function FeeSchedulesTab() {
 }
 
 /* ==========================================================================
+ * WAVE 131 · Price Source Map — one authoritative source per price, named.
+ * ======================================================================== */
+
+interface SourceMapEntryDto {
+  id: string;
+  label: string;
+  area: string;
+  authoritativeSource: string;
+  authoritativeKey: string | null;
+  amountMinor: number | null;
+  currency: string | null;
+  billingPeriod: string | null;
+  error: string | null;
+  editorTab: string;
+}
+
+interface PriceCacheDto {
+  name: string;
+  location: string;
+  invalidatedBy: string;
+}
+
+interface SourceMapResponse {
+  ok?: boolean;
+  prices?: SourceMapEntryDto[];
+  secondTablePurpose?: string;
+  caches?: PriceCacheDto[];
+}
+
+const AREA_LABELS: Record<string, string> = {
+  capavate: "Capavate",
+  collective: "Collective",
+  consortium: "Consortium Partners",
+  admin: "Admin",
+};
+
+/** A period is part of the price. A bare amount is an ambiguous amount. */
+function periodLabel(period: string | null | undefined): string {
+  const phrase = billingPeriodPhrase(period);
+  if (phrase) return phrase;
+  if (period) return humanizeMachineKey(period, "Period not recorded");
+  return "Period not recorded";
+}
+
+function SourceMapTab({ onGoToTab }: { onGoToTab: (tab: string) => void }) {
+  const q = useQuery<SourceMapResponse>({
+    queryKey: ["/api/admin/pricing-console/source-map"],
+    /* WAVE 131 (R95, remove the staleness) — the default staleTime is 30s; an
+       admin who has just changed a price must not be shown the old one. */
+    staleTime: 0,
+  });
+  const prices = q.data?.prices ?? [];
+  const caches = q.data?.caches ?? [];
+
+  return (
+    <div className="space-y-6" data-testid="tab-source-map">
+      <AppCard>
+        <SectionTitle hint="Resolved live by calling the same code the charge paths call, so this list cannot drift from what is actually charged. Each row names its period and the tab that edits it.">
+          Every administered price and the one source that decides it
+        </SectionTitle>
+        <Table data-testid="price-source-map-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Price</TableHead>
+              <TableHead>Area</TableHead>
+              <TableHead>Authoritative source</TableHead>
+              <TableHead>Amount</TableHead>
+              <TableHead>Period</TableHead>
+              <TableHead>Edited on</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {prices.map((p) => (
+              <TableRow key={p.id} data-testid={`price-source-row-${p.id}`}>
+                <TableCell className="font-medium">{p.label}</TableCell>
+                <TableCell>{AREA_LABELS[p.area] ?? humanizeMachineKey(p.area, "Unassigned")}</TableCell>
+                <TableCell>
+                  <code className="text-xs">{p.authoritativeSource}</code>
+                  {p.authoritativeKey ? (
+                    <div className="text-xs text-muted-foreground">{p.authoritativeKey}</div>
+                  ) : null}
+                </TableCell>
+                <TableCell data-testid={`price-source-amount-${p.id}`}>
+                  {/* R6 — where the source cannot answer, no figure is rendered
+                      and the reason is said out loud. Never a stand-in zero. */}
+                  {p.error ? (
+                    <span className="text-amber-600 text-xs">{p.error}</span>
+                  ) : (
+                    formatMinorOrUnavailable(p.amountMinor, p.currency)
+                  )}
+                </TableCell>
+                <TableCell data-testid={`price-source-period-${p.id}`}>{periodLabel(p.billingPeriod)}</TableCell>
+                <TableCell>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onGoToTab(p.editorTab)}
+                    data-testid={`price-source-goto-${p.id}`}
+                  >
+                    Open editor
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {!q.isLoading && prices.length === 0 ? (
+          <p className="text-sm text-muted-foreground mt-3">
+            No administered price resolved. Nothing is shown rather than a placeholder price being invented.
+          </p>
+        ) : null}
+      </AppCard>
+
+      <AppCard>
+        <SectionTitle hint="Every cache that can stand between an admin edit and what a customer sees, and what clears it. A price edit clears all of them in the same request.">
+          Where a change is cached
+        </SectionTitle>
+        <Table data-testid="price-cache-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Cache</TableHead>
+              <TableHead>Where it lives</TableHead>
+              <TableHead>Cleared by</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {caches.map((c) => (
+              <TableRow key={c.name}>
+                <TableCell className="font-medium">{c.name}</TableCell>
+                <TableCell>
+                  <code className="text-xs">{c.location}</code>
+                </TableCell>
+                <TableCell className="text-xs">{c.invalidatedBy}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </AppCard>
+    </div>
+  );
+}
+
+/* ==========================================================================
+ * WAVE 131 · Displayed vs Charged — R96 requirement 5.
+ *
+ * `partner_fee_schedules` decides what a partner is SHOWN; `partner_tier_price`
+ * and `platform_fees` decide what they are CHARGED. Where those disagree the fix
+ * is not to overwrite the display silently — that reprices a live customer
+ * without anybody deciding to. This tab shows both numbers and repoints the
+ * display onto the authoritative source ONLY on an explicit confirmation, which
+ * is recorded against the admin who confirmed it.
+ * ======================================================================== */
+
+interface SourcedAmountDto {
+  amountMinor: number | null;
+  currency: string | null;
+  computedVia: string | null;
+  billingPeriod: string | null;
+  error: string | null;
+}
+
+interface RepointRowDto {
+  feeKind: string;
+  authoritativeSource: string;
+  billingPeriod: string | null;
+  displayed: SourcedAmountDto;
+  authoritative: SourcedAmountDto;
+  divergent: boolean;
+  acknowledged: boolean;
+  ack: { acknowledgedByUserId: string | null; acknowledgedAt: string } | null;
+}
+
+interface RepointResponse {
+  ok?: boolean;
+  rows?: RepointRowDto[];
+  secondTablePurpose?: string;
+}
+
+function DisplayedVsChargedTab() {
+  const { toast } = useToast();
+  const [tier, setTier] = useState("");
+  const [partnerId, setPartnerId] = useState("");
+  const [submitted, setSubmitted] = useState<{ tier: string; partnerId: string } | null>(null);
+
+  const qs = useMemo(() => {
+    if (!submitted) return null;
+    const p = new URLSearchParams({ tier: submitted.tier });
+    if (submitted.partnerId) p.set("partnerId", submitted.partnerId);
+    return p.toString();
+  }, [submitted]);
+
+  const q = useQuery<RepointResponse>({
+    queryKey: [`/api/admin/pricing-console/repoint?${qs ?? ""}`],
+    enabled: Boolean(qs),
+    staleTime: 0,
+  });
+
+  const ack = useMutation({
+    mutationFn: async (feeKind: string) => {
+      if (!submitted) throw new Error("Choose a tier first.");
+      return apiRequest("POST", "/api/admin/pricing-console/repoint-ack", {
+        feeKind,
+        tier: submitted.tier,
+        partnerId: submitted.partnerId || undefined,
+        /* The confirmation IS the payload. No amount is sent from the browser —
+           both numbers are re-resolved on the server at confirmation time. */
+        confirm: true,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/admin/pricing-console/repoint?${qs ?? ""}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-console/source-map"] });
+      toast({
+        title: "Repoint confirmed",
+        description: "The displayed fee now reads from the authoritative source.",
+      });
+    },
+    onError: (e: unknown) => {
+      toast({ title: "Not confirmed", description: (e as Error).message, variant: "destructive" });
+    },
+  });
+
+  const rows = q.data?.rows ?? [];
+
+  return (
+    <div className="space-y-6" data-testid="tab-displayed-vs-charged">
+      <AppCard>
+        <SectionTitle hint="What a partner is shown today, what the authoritative source says, and the difference. Moving the display onto the authoritative source changes what a live customer sees, so it requires an explicit confirmation here.">
+          Displayed fee vs charged fee
+        </SectionTitle>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <Label htmlFor="dvc-tier">Tier slug</Label>
+            <Input
+              id="dvc-tier"
+              value={tier}
+              onChange={(e) => setTier(e.target.value)}
+              placeholder="consortium_partner"
+              data-testid="input-dvc-tier"
+            />
+          </div>
+          <div>
+            <Label htmlFor="dvc-partner">Partner id (optional)</Label>
+            <Input
+              id="dvc-partner"
+              value={partnerId}
+              onChange={(e) => setPartnerId(e.target.value)}
+              placeholder="Leave blank for the tier default"
+              data-testid="input-dvc-partner"
+            />
+          </div>
+          <Button
+            onClick={() => setSubmitted({ tier: tier.trim(), partnerId: partnerId.trim() })}
+            disabled={!tier.trim()}
+            data-testid="button-dvc-compare"
+          >
+            Compare
+          </Button>
+        </div>
+
+        <Table className="mt-4" data-testid="dvc-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Fee</TableHead>
+              <TableHead>Period</TableHead>
+              <TableHead>Displayed now</TableHead>
+              <TableHead>Authoritative</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>State</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.feeKind} data-testid={`dvc-row-${r.feeKind}`}>
+                <TableCell className="font-medium">{labelFor(FEE_KIND_LABELS, r.feeKind)}</TableCell>
+                <TableCell data-testid={`dvc-period-${r.feeKind}`}>{periodLabel(r.billingPeriod)}</TableCell>
+                <TableCell data-testid={`dvc-displayed-${r.feeKind}`}>
+                  {r.displayed.error ? (
+                    <span className="text-amber-600 text-xs">
+                      {humanizeMachineKey(r.displayed.error, "Not resolvable")}
+                    </span>
+                  ) : (
+                    formatMinorOrUnavailable(r.displayed.amountMinor, r.displayed.currency)
+                  )}
+                  {r.displayed.computedVia ? (
+                    <div className="text-xs text-muted-foreground">
+                      {humanizeMachineKey(r.displayed.computedVia, "Provenance not recorded")}
+                    </div>
+                  ) : null}
+                </TableCell>
+                <TableCell data-testid={`dvc-authoritative-${r.feeKind}`}>
+                  {r.authoritative.error ? (
+                    <span className="text-amber-600 text-xs">
+                      {humanizeMachineKey(r.authoritative.error, "Not resolvable")}
+                    </span>
+                  ) : (
+                    formatMinorOrUnavailable(r.authoritative.amountMinor, r.authoritative.currency)
+                  )}
+                </TableCell>
+                <TableCell>
+                  <code className="text-xs">{r.authoritativeSource}</code>
+                </TableCell>
+                <TableCell data-testid={`dvc-state-${r.feeKind}`}>
+                  {r.acknowledged ? (
+                    <Badge variant="secondary">Repointed — confirmed</Badge>
+                  ) : r.divergent ? (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => ack.mutate(r.feeKind)}
+                      disabled={ack.isPending}
+                      data-testid={`button-dvc-confirm-${r.feeKind}`}
+                    >
+                      Confirm repricing
+                    </Button>
+                  ) : (
+                    <Badge variant="outline">Displayed matches charged</Badge>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {submitted && !q.isLoading && rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground mt-3">
+            Nothing resolved for tier {planTierLabel(submitted.tier)}. No figure is shown rather than a zero being
+            implied.
+          </p>
+        ) : null}
+      </AppCard>
+
+      <AppCard>
+        <SectionTitle hint="It is no longer a second price list. It survives for one different, named purpose: per-partner negotiated overrides and their history, recorded against the authoritative catalogue price rather than replacing it.">
+          Why the partner fee-schedule table still exists
+        </SectionTitle>
+        <p className="text-sm text-muted-foreground" data-testid="second-table-purpose">
+          {q.data?.secondTablePurpose ??
+            "Per-partner negotiated overrides and their audit history — not a second price list."}
+        </p>
+      </AppCard>
+    </div>
+  );
+}
+
+/* ==========================================================================
  * Shell
  * ======================================================================== */
 
+/* WAVE 131 (R95 / R96 req 1) — ONE route, tab-driven, covering Capavate,
+ * Collective, Consortium Partners and Admin. The first eleven tabs are wave 4A's
+ * and are untouched; the eight after them MOUNT the pricing pages that wave 4A
+ * unrouted but never consolidated, so nothing is dropped (R96 req 6) and no
+ * third consolidation page was created. Every retired URL deep-links to its tab
+ * via `initialTab` — see App.tsx. */
 const TABS = [
+  { key: "source-map", label: "Price Source Map" },
   { key: "capavate-annual", label: "Capavate Annual Plan" },
+  { key: "capavate-pricing", label: "Capavate Pricing & Gateway" },
+  { key: "pricing-models", label: "Pricing Models" },
   { key: "collective-tiers", label: "Collective Tiers" },
+  { key: "collective-subscriptions", label: "Collective Subscriptions" },
+  { key: "collective-payment-schedules", label: "Collective Payment Schedules" },
+  { key: "collective-pl", label: "Collective Payment P&L" },
   { key: "consortium-promotions", label: "Consortium Partner Promotions" },
+  { key: "tier-prices", label: "Partner Tier Prices & Billing Ops" },
+  { key: "commission-rates", label: "Commission Rates" },
+  { key: "partner-pl", label: "Partner P&L" },
   { key: "application-fee", label: "Application Fee" },
   { key: "discount-codes", label: "Discount Codes" },
   { key: "ledger-invoices", label: "Ledger & Invoices" },
+  { key: "payments", label: "Payments" },
   { key: "fee-schedules", label: "Fee Schedules" },
+  { key: "displayed-vs-charged", label: "Displayed vs Charged" },
   { key: "config", label: "Config" },
 ] as const;
 
@@ -3382,6 +3765,39 @@ export default function AdminFeesConsolidated({ initialTab }: { initialTab?: str
             ))}
           </TabsList>
 
+          <TabsContent value="source-map" className="mt-4">
+            <SourceMapTab onGoToTab={setTab} />
+          </TabsContent>
+          <TabsContent value="capavate-pricing" className="mt-4">
+            <AdminPricingPage />
+          </TabsContent>
+          <TabsContent value="pricing-models" className="mt-4">
+            <AdminPricingModelsPage />
+          </TabsContent>
+          <TabsContent value="collective-subscriptions" className="mt-4">
+            <AdminCollectiveSubscriptions />
+          </TabsContent>
+          <TabsContent value="collective-payment-schedules" className="mt-4">
+            <AdminCollectivePaymentSchedulesPage />
+          </TabsContent>
+          <TabsContent value="collective-pl" className="mt-4">
+            <AdminCollectivePaymentPLPage />
+          </TabsContent>
+          <TabsContent value="tier-prices" className="mt-4">
+            <AdminPartnerBillingOps />
+          </TabsContent>
+          <TabsContent value="commission-rates" className="mt-4">
+            <AdminCommissionRates />
+          </TabsContent>
+          <TabsContent value="partner-pl" className="mt-4">
+            <AdminPartnerPLPage />
+          </TabsContent>
+          <TabsContent value="payments" className="mt-4">
+            <AdminPaymentsPage />
+          </TabsContent>
+          <TabsContent value="displayed-vs-charged" className="mt-4">
+            <DisplayedVsChargedTab />
+          </TabsContent>
           <TabsContent value="capavate-annual" className="mt-4">
             <CapavateAnnualTab />
           </TabsContent>

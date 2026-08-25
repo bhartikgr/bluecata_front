@@ -1816,7 +1816,14 @@ export function registerPartnerRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const body = req.body ?? {};
-      const { spvName, jurisdiction, vintage, currency, status, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = body;
+      /* WAVE 138 · DEFECT A — `targetSizeMinor` was NOT destructured here, so the
+         one figure the client computed correctly (whole units → exact minor
+         units, PartnerSpvs.tsx:105-108) was silently discarded and the SPV list
+         rendered an em-dash for a target the partner had typed. Mapped below
+         EXACTLY as the sibling fund route already does (`targetRaiseMinor:
+         isNumber(targetSizeMinor) ? targetSizeMinor : null`, :1996) — same wire
+         key in, same canonical column out, no new field invented. */
+      const { spvName, jurisdiction, vintage, currency, status, targetSizeMinor, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = body;
       if (!isString(spvName) || !isString(jurisdiction) || !isNumber(vintage) || !isISOCurrency(currency) || !isString(status)) {
         return badRequest(res, "spvName, jurisdiction, vintage, ISO 4217 currency, status required");
       }
@@ -1862,6 +1869,8 @@ export function registerPartnerRoutes(app: Express): void {
             carryBasis: "whole_spv",
             currency,
             status: LEGACY_TO_CANONICAL_SPV_STATUS[status] ?? "draft",
+            // WAVE 138 · DEFECT A — mirrors the fund route's mapping at :1996.
+            targetRaiseMinor: isNumber(targetSizeMinor) ? targetSizeMinor : null,
             targetCompanyId: targetCompanyId ?? null,
             terms: { legacyShim: true, vintage, entityStructure, externalAdminProvider, externalAdminRef, notes, legacyJurisdiction: jurisdiction },
           },

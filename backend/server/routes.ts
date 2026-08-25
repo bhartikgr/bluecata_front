@@ -113,7 +113,10 @@ import { revokeSession } from "./lib/sessionRevocation.js";
 import { revokeSession as revokeAuthSessionBySid } from "./lib/auth.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
+import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore";
+/* WAVE 125 · FINDING 3 — one resolver for the company name in an investor-facing
+   invitation payload. Never the raw identifier, never an invented name. */
+import { invitationCompanyName } from "./lib/invitationCompanyName"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForCompany, listFilesVisibleTo as dataroomStoreListVisibleTo } from "./dataroomStore"; // v25.48 DATA-2 (V-4); WAVE 113 FINDING 2 — the permission-filtered reader
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -144,6 +147,14 @@ import { setFounderOwnershipSecuritiesProvider } from "./lib/founderOwnershipEng
    registerCaptableCommitRoutes — same rule as registerRoundMathRoutes above. */
 import { registerComplianceHoldAuditGuard } from "./lib/complianceHoldAuditGuard";
 import { registerFounderOpsRoutes } from "./founderOpsRoutes";
+/* WAVE 130 — the shareholder register: record a holder with NO round in
+   existence, both first-run scenarios, and explicit cap-table visibility. */
+import { registerShareholderRegisterRoutes } from "./shareholderRegisterRoutes";
+import {
+  projectRegisterToSecurities,
+  listShareholderRecords,
+  minorToMajorDecimal,
+} from "./lib/shareholderRegisterStore";
 import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
 import { registerInvestmentSignalsV2548Routes } from "./lib/investmentSignalsV2548"; /* v25.48 B3 + B4 — docs-sent flag + investor wired advisory */
 import { seedInvestorCrmFromInvitation, resolveInviterForInvestorCrm } from "./lib/investorCrmInvitationSeed"; /* v25.48 B1 — investor-side CRM auto-seed; v25.48.3 Q-K2 — enrich founder/company fields */
@@ -445,6 +456,9 @@ import { registerPartnerSelfServiceRoutes } from "./lib/partnerSelfServiceRoutes
 /* WAVE 11 / EN-9 — e-signature execution surface (an engine with no route is not shipped). */
 import { registerEsignatureRoutes } from "./lib/esignatureRoutes";
 import { registerWave14MoneyRoutes } from "./lib/wave14MoneyRoutes";
+/* WAVE 131 — the one pricing console's server side: the price→source map and
+   the R96 req 5 "displayed vs charged" confirmation. */
+import { registerPricingConsoleRoutes } from "./lib/pricingConsoleRoutes";
 /* WAVE 15 — M-1d footnote binding + M-5 accrued-carry engine. Both engines
    existed with no HTTP surface (renderFootnotes had zero callers tree-wide;
    spv_carry_accrual had zero writers). See server/lib/wave15ReportingRoutes.ts. */
@@ -1277,6 +1291,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerComplianceHoldAuditGuard(app);
   registerCaptableCommitRoutes(app);
   registerFounderOpsRoutes(app); /* v25.54 G0-1 seed-founder-shares + G0-2 round archive */
+  registerShareholderRegisterRoutes(app); /* WAVE 130 — shareholder register + first run + visibility */
   registerCaptableCommitV2548Routes(app); /* v25.48 B2 + B5 — parallel commit wrapper */
   registerInvestmentSignalsV2548Routes(app); /* v25.48 B3 + B4 — docs-sent + wired advisory */
 
@@ -1475,6 +1490,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
      subscription-history, money-events, checkout/status, commission-summary,
      promotions/quote) and shadows nothing. */
   registerWave14MoneyRoutes(app);
+  /* WAVE 131 — /api/admin/pricing-console/*. Distinct paths under the admin
+     namespace; shadows nothing, and every route is requireAdmin. */
+  registerPricingConsoleRoutes(app);
   // v25.34 — member-facing Collective payment quote-only endpoints. Each route
   // is individually gated requireCollectiveMember; distinct /api/collective/me/*
   // paths shadow nothing Avi owns.
@@ -2608,6 +2626,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     } catch (pricedBridgeErr) {
       // Fail-open: a priced-bridge failure must never break the cap-table read.
+    }
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 130 — THE SHAREHOLDER REGISTER, PROJECTED HERE AND NOWHERE ELSE.
+       ═══════════════════════════════════════════════════════════════════════
+       A holding recorded directly on the cap table — with NO round in existence —
+       lives in `company_shareholder_records`. It is projected into the SAME
+       `ApiSecurity` shape as the two ledger bridges above, by the SAME single
+       builder, so it propagates to every reading surface at once with no cache
+       and no second reader: the founder cap table and its exports, the founder
+       dashboard's ownership tile, Wave 125's `computeCapTableHolderCount` (no
+       ninth counting rule is added), the capitalisation journey, the round-math
+       route, the close-gate reconciliation, the exit waterfall, and THE
+       INVESTOR'S OWN VIEW — which runs the same engine over the same rows, so
+       the percentages agree by construction rather than by coincidence.
+
+       UNKNOWN STAYS UNKNOWN. `pricePerShare` and `investmentAmount` are
+       `number | null` on this shape, and a stated-unknown register figure crosses
+       as `null` — which every renderer in this tree already shows as an explicit
+       refusal. It is NEVER 0. The exact minor units ride along untouched on
+       `registerExactMoney`.
+
+       `holderType` IS THE FOUNDER'S OWN CHOICE, not an inference, so the
+       founder-ownership tile Wave 125 corrected stays correct for a
+       register-recorded founder block. The `founder_seed_<companyId>` marker the
+       priced bridge above depends on is NOT touched.
+
+       DE-DUPED AND FAIL-OPEN, like both bridges: a register read that throws
+       leaves the ledger-derived rows intact. */
+    try {
+      const seenIds = new Set(baseSecurities.map((s: any) => s.id));
+      for (const projected of projectRegisterToSecurities(String(cid))) {
+        if (seenIds.has(projected.id)) continue;
+        seenIds.add(projected.id as string);
+        baseSecurities.push(projected as any);
+      }
+    } catch (registerBridgeErr) {
+      // Fail-open: a register failure must never break the cap-table read.
     }
     /* WAVE 70 — the BASE rows too, and this is the half that matters most on a
        live workspace: the demo and DB-hydrated `securities` array carries a
@@ -4219,13 +4274,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const resolvedCompanyId = inv.companyId ?? round?.companyId ?? "";
       const company = (_allCompanies as Array<{ id: string; name: string }>).find(c => c.id === resolvedCompanyId);
       // Also check real company store (production companies not in demo seed)
-      const resolvedCompanyName = company?.name ?? getCompanyNameById(resolvedCompanyId);
+      /* WAVE 125 · FINDING 3 — this chain used to end `?? resolvedCompanyId`, which
+         printed `spv_e08dcbdd2921a89c` as a company NAME on the live investor
+         invitations list. `getCompanyNameById` searches founder-company memberships
+         only, so an `spv_…` id could never resolve there. `invitationCompanyName`
+         adds the step nobody had taken — the `spv` table has a `name` column — and
+         where a name is genuinely unavailable it returns the Wave 115 reference
+         label or the words, NEVER a fabricated name and NEVER the raw id. */
+      const resolvedCompanyName = invitationCompanyName(resolvedCompanyId, company?.name);
       return {
         ...inv,
         companyId: resolvedCompanyId,
         company: {
           id: resolvedCompanyId,
-          name: resolvedCompanyName ?? resolvedCompanyId ?? "",
+          name: resolvedCompanyName,
           sector: "",
         },
         round: {
@@ -4386,9 +4448,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({
       ...modern,
       companyId: resolvedCompanyId,
+      /* WAVE 125 · FINDING 3 — the invitation DETAIL payload had the same fallback
+         to the raw identifier as the list above; one resolver now serves both, so
+         the two screens cannot disagree about a company's name. */
       company: {
         id: resolvedCompanyId,
-        name: getCompanyNameById(resolvedCompanyId) ?? resolvedCompanyId ?? "",
+        name: invitationCompanyName(resolvedCompanyId),
         sector: "",
       },
       round: {
@@ -6057,10 +6122,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        * Shares are decimal-as-string on the ledger; we sum them as numbers here
        * because cap-table totals are presentational only. The underlying ledger
        * is the source of truth. */
-      type HolderAgg = { shares: number; amount: number; currency: string; kinds: string[] };
+      type HolderAgg = {
+        shares: number;
+        amount: number;
+        currency: string;
+        kinds: string[];
+        /* WAVE 130 — FALSE means "this holder's subscribed amount is NOT KNOWN",
+           which is not the same claim as zero. A ledger commit always carries an
+           amount, so every ledger-derived aggregate stays `true` and prints
+           exactly as it did before. Only a register row whose amount the founder
+           recorded as unknown can turn this false, and the PDF then prints the
+           same em-dash it already prints for an undefined percentage instead of a
+           confident zero. */
+        amountKnown: boolean;
+        /* WAVE 130 — the human name for a register-derived holder. A register
+           holding often has no platform identity at all, so there is no
+           `investorId` for the privacy resolver to resolve and the pre-existing
+           fallback would have printed the raw aggregation key to a human. When
+           this is set it is used verbatim; ledger rows leave it null and keep the
+           v25.45 privacy-resolver path byte-for-byte. */
+        registerLabel: string | null;
+      };
       const byHolder: Record<string, HolderAgg> = Object.create(null);
       for (const e of ledger) {
-        const cur = byHolder[e.investorId] ?? { shares: 0, amount: 0, currency: e.currency || "USD", kinds: [] };
+        const cur = byHolder[e.investorId] ?? { shares: 0, amount: 0, currency: e.currency || "USD", kinds: [], amountKnown: true, registerLabel: null };
         const sh = parseFloat(e.shares || "0");
         if (isFinite(sh)) cur.shares += sh;
         const amt = parseFloat(e.amount || "0");
@@ -6068,6 +6153,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (e.currency) cur.currency = e.currency;
         if (cur.kinds.indexOf("commit") === -1) cur.kinds.push("commit");
         byHolder[e.investorId] = cur;
+      }
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 130 — THE REGISTER IS UNIONED IN **BEFORE** AGGREGATION.
+         ═══════════════════════════════════════════════════════════════════════
+         This handler is the ONE reading surface that does not go through
+         `buildCompanySecurities`: it reads the sacred commit ledger directly. Left
+         alone, a founder who recorded his incorporation shareholders would see
+         them on every screen and then download a PDF that omitted them — and the
+         PDF is the artifact an investor keeps on disk. So the register is unioned
+         here, BEFORE the totals, the holder count and the percentages are derived,
+         which is the same ordering Wave 36 · Row 2 imposed for scoping: every
+         downstream number is computed from the same set of rows the reader is
+         shown.
+
+         THE SCOPE DECISION IS RESPECTED. When the caller is scoped to their own
+         rows, register rows they do not own are excluded here rather than being
+         filtered later — a register holding is a holding, and it must obey the
+         same privacy decision as a ledger holding. A register row with no
+         platform identity can never belong to a scoped caller, so it is excluded
+         from a scoped read.
+
+         KEYING. A register holding usually has no platform identity, so it cannot
+         share the ledger's `investorId` key. It aggregates under its own
+         `shreg:<id>` key unless it names an `investorId`, in which case it rolls
+         up with that holder's ledger rows — which is the correct answer: one
+         person, one row.
+
+         FAIL-OPEN, like the two display bridges: if the register cannot be read,
+         the PDF still prints the ledger. */
+      try {
+        for (const rec of listShareholderRecords(id)) {
+          if (sinkAccess.outcome === "scope_to_self") {
+            if (!rec.investorId || rec.investorId !== sinkAccess.scopedToUserId) continue;
+          }
+          const key = rec.investorId || `shreg:${rec.id}`;
+          const cur =
+            byHolder[key] ??
+            ({ shares: 0, amount: 0, currency: rec.currency, kinds: [], amountKnown: true, registerLabel: null } as HolderAgg);
+          const sh = parseFloat(rec.shares || "0");
+          if (isFinite(sh)) cur.shares += sh;
+          if (rec.amountMinor === null) {
+            /* STATED UNKNOWN. Nothing is added, and the aggregate is marked so the
+               cell prints a refusal rather than an unearned figure. */
+            cur.amountKnown = false;
+          } else {
+            const major = minorToMajorDecimal(rec.amountMinor, rec.minorUnitExponent);
+            const amt = major === null ? NaN : parseFloat(major);
+            if (isFinite(amt)) cur.amount += amt;
+          }
+          /* The register row carries the currency the founder actually stated — HK$
+             for the company in the owner's own walkthrough. No USD literal. */
+          if (rec.currency) cur.currency = rec.currency;
+          if (cur.kinds.indexOf("shareholder register") === -1) cur.kinds.push("shareholder register");
+          if (!cur.registerLabel) cur.registerLabel = rec.holderName;
+          byHolder[key] = cur;
+        }
+      } catch (registerPdfErr) {
+        // Fail-open: the ledger half of the PDF still prints.
       }
 
       let totalSharesNum = 0;
@@ -6114,16 +6257,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const isCoMember = viewerForPdf
           ? areCoMembersOnAnyCapTable(investorId, viewerForPdf)
           : false;
-        const shareholderLabel = resolveDisplayName(investorId, viewerForPdf, "externalCapTable", { legalName: investorId, isCoMember });
+        /* WAVE 130 — a register holding usually has NO platform identity, so the
+           pre-existing `legalName: investorId` fallback would have printed the raw
+           aggregation key (`shreg:…`) to a human being. The founder's own words for
+           the holder are used instead. A register row that DOES name an investorId
+           still goes through the privacy resolver, unchanged, because that person
+           has a stated visibility preference to honour. */
+        const shareholderLabel =
+          v.registerLabel && !v.kinds.includes("commit")
+            ? v.registerLabel
+            : resolveDisplayName(investorId, viewerForPdf, "externalCapTable", { legalName: investorId, isCoMember });
         entries.push({
           shareholder: shareholderLabel,
           securityKind: v.kinds.join(",") || "commit",
           shares: v.shares,
           pctOwnership: pct,
-          invested: v.amount,
+          /* WAVE 130 — `null`, not `0`, when the founder recorded the amount as
+             unknown. `CapTableEntry.invested` is already `number | null` and
+             `fmtMoney` already renders an em-dash for `null`, so this reuses the
+             refusal Wave 73 built rather than inventing a second one. */
+          invested: v.amountKnown ? v.amount : null,
           currency: v.currency,
         });
-        totalInvested += v.amount;
+        if (v.amountKnown) totalInvested += v.amount;
       }
       /* Sort by shares descending so largest holder appears first */
       entries.sort((a, b) => b.shares - a.shares);
@@ -6141,7 +6297,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         /* WAVE 116 · FINDING 3 — "a PDF that does not say which is worse, because
            it travels." The basis name goes into the document itself. */
         ownershipBasisLabel: COMMITTED_LEDGER_BASIS_LABEL,
-        ownershipBasisSentence: COMMITTED_LEDGER_BASIS_SENTENCE,
+        /* WAVE 130 — the basis sentence is EXTENDED, never replaced, and only when
+           a register holding is actually in the document. The reader of a PDF
+           cannot ask a follow-up question, so the document must say what its
+           denominator now includes and where those rows came from. */
+        ownershipBasisSentence: entries.some((e) => e.securityKind.includes("shareholder register"))
+          ? `${COMMITTED_LEDGER_BASIS_SENTENCE} This cap table also includes holdings recorded ` +
+            "directly on the company's shareholder register — shareholders the company already had " +
+            "when it joined Capavate, or holdings entered without a fundraising round — and those " +
+            "shares are part of the total above. Where an amount or a price per share was not known " +
+            "it is shown as unrecorded rather than as zero."
+          : COMMITTED_LEDGER_BASIS_SENTENCE,
         generatedAt: new Date().toISOString(),
       });
     } catch (err) {

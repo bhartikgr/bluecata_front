@@ -24,6 +24,10 @@ import {
   deactivateMembership,
   upsertCapTablePositionForTests,
 } from "../membershipStore";
+import {
+  seatCompliantInvestor,
+  declareAccreditationForTests,
+} from "./_fixtures/collectiveInvestorFixture"; /* WAVE 134 cause 1 */
 
 let app: Express;
 let server: http.Server;
@@ -84,7 +88,12 @@ describe("v16 F-coll-X3 — unified collective member check", () => {
     // Ensure seed-store does NOT flag them.
     try { deactivateMembership(uid); } catch {}
     // Activate ONLY in the admin store.
-    collectiveMembershipStore.activate(uid, "u_admin");
+    // WAVE 134 cause 1 (R98) — the admin-store source still has to clear step 4 of
+    // requireCollectiveMember (W2-A1 accreditation capture), which this fixture never
+    // recorded, so the request below 403'd instead of asserting the admission path.
+    // The ONE shared helper activates in the SAME admin store and additionally records
+    // a real declaration. Gate unchanged (w134_collective_accreditation_fixture.test.ts).
+    seatCompliantInvestor(uid, { activatedBy: "u_admin" });
     // W3-C — C-5 gate now also requires an active cap-table position; seed one
     // so this admin-store-source admission still passes (accreditation is SOFT).
     upsertCapTablePositionForTests(uid);
@@ -97,6 +106,13 @@ describe("v16 F-coll-X3 — unified collective member check", () => {
   it("accepts u_aisha_patel via seed signal (isCollectiveMember=true) even with admin store cleared", async () => {
     // Aisha has isCollectiveMember=true in MOCK_MEMBERSHIP — the SEED path.
     try { collectiveMembershipStore.deactivate("u_aisha_patel", "u_admin"); } catch {}
+    // WAVE 134 cause 1 (R98) — the SEED source satisfies step 2 (active member) but
+    // step 4 (W2-A1 accreditation capture) is independent of WHICH source admitted
+    // the member, so this request 403'd ACCREDITATION_DECLARATION_REQUIRED and never
+    // exercised the seed-path admission it exists to pin. Only the declaration is
+    // added here — the admin store stays deliberately cleared, which is the point of
+    // the test. Gate unchanged (w134_collective_accreditation_fixture.test.ts).
+    declareAccreditationForTests("u_aisha_patel");
     const r = await call("GET", "/api/collective/dashboard", { userId: "u_aisha_patel" });
     expect(r.status).toBe(200);
   });

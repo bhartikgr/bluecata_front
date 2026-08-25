@@ -40,6 +40,10 @@ import {
   type ResolvedFee,
 } from "./partnerFeeResolver";
 import { listFeeSchedules } from "./spvFeeScheduleStore";
+import {
+  resolveDisplayedFee,
+  AUTHORITATIVE_SOURCE_BY_FEE_KIND,
+} from "./pricingDisplaySourceRepoint";
 import { resolveCanonicalPartnerTier, PARTNER_TIER_TABLE } from "./partnerTierResolver";
 
 /** The fee kinds the aggregate reports. Ordered for stable rendering. */
@@ -58,6 +62,17 @@ export interface AggregateLine {
   feeScheduleId: string | null;
   /** Populated instead of the amount when resolution FAILED. Never a silent 0. */
   error: string | null;
+  /* ── WAVE 131 (R95/R96) ──────────────────────────────────────────────────
+   * The three fields that make "displayed == charged" checkable by a reader
+   * rather than assumable. `billingPeriod` is CARRIED from the row, so a fee
+   * whose period nobody configured stays null instead of being labelled with a
+   * guess. `authoritativeSource` names the ONE table that decides this price.
+   * `pendingRepoint` is true while this fee kind is still displayed from the
+   * legacy fee-schedule table because no admin has confirmed the repoint yet —
+   * R96 requirement 5 forbids making that change silently. */
+  billingPeriod: string | null;
+  authoritativeSource: string | null;
+  pendingRepoint: boolean;
 }
 
 export interface FeeScheduleAggregate {
@@ -108,6 +123,7 @@ export function buildFeeScheduleAggregate(
   }
 
   const lines: AggregateLine[] = AGGREGATE_FEE_KINDS.map((kind) => {
+    const authoritativeSource = AUTHORITATIVE_SOURCE_BY_FEE_KIND[String(kind)] ?? null;
     if (!tier) {
       return {
         feeKind: String(kind),
@@ -117,33 +133,34 @@ export function buildFeeScheduleAggregate(
         computedVia: null,
         feeScheduleId: null,
         error: tierError ?? "TIER_UNRESOLVED",
+        billingPeriod: null,
+        authoritativeSource,
+        pendingRepoint: false,
       };
     }
-    try {
-      const r: ResolvedFee = resolvePartnerFee(partnerId, tier as any, kind, {
-        sizeMinor: opts?.committedMinor ?? null,
-      });
-      return {
-        feeKind: String(kind),
-        ok: true,
-        amountMinor: r.amountMinor,
-        currency: r.currency,
-        computedVia: r.computedVia,
-        feeScheduleId: r.feeScheduleId ?? null,
-        error: null,
-      };
-    } catch (err) {
-      const code = err instanceof FeeResolutionError ? `${err.code}: ${err.message}` : String(err);
-      return {
-        feeKind: String(kind),
-        ok: false,
-        amountMinor: null,
-        currency: null,
-        computedVia: null,
-        feeScheduleId: null,
-        error: code,
-      };
-    }
+    /* WAVE 131 — THE REPOINT. This line used to call `resolvePartnerFee`
+     * directly, i.e. it displayed `partner_fee_schedules` while the charge paths
+     * read `partner_tier_price` (subscriptions) and `platform_fees` (SPV
+     * deployment). `resolveDisplayedFee` returns the CHARGE resolver's answer
+     * once an admin has confirmed the repoint for that fee kind, and today's
+     * value until then — so displayed converges on charged without repricing
+     * anybody by surprise (R96 req 5). Per-partner and per-tier NEGOTIATED
+     * overrides still win, and `computedVia` still names which. */
+    const d = resolveDisplayedFee(partnerId, String(tier), String(kind), {
+      sizeMinor: opts?.committedMinor ?? null,
+    });
+    return {
+      feeKind: String(kind),
+      ok: d.error === null && d.amountMinor !== null,
+      amountMinor: d.amountMinor,
+      currency: d.currency,
+      computedVia: d.computedVia,
+      feeScheduleId: d.feeScheduleId,
+      error: d.error,
+      billingPeriod: d.billingPeriod,
+      authoritativeSource,
+      pendingRepoint: d.pendingRepoint,
+    };
   });
 
   let commission: FeeScheduleAggregate["commission"] = { rateFraction: null, via: null, error: null };

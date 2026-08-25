@@ -445,12 +445,46 @@ describe("WAVE 2B / BLOCKER 3 — the deferral register gates, it does not forgi
     }
   });
 
-  it("the RS-1/RS-2 ids are NOT in allowlist.json", () => {
-    const al = fs.readFileSync(path.join(GUARD_DIR, "allowlist.json"), "utf-8");
-    expect(al).not.toContain('"/admin/partner-fees"');
-    expect(al).not.toContain('"/admin/collective-payment-schedules"');
-    expect(al).not.toContain("Collective Payment Schedules");
-    expect(al).not.toContain("Partner Fees");
+  /* WAVE 131 — WHAT THIS TEST PROTECTS, STATED PRECISELY.
+   *
+   * The rule is that RS-1 and RS-2 were RESTORED, so neither may be forgiven as
+   * a lost ROUTE: `/admin/partner-fees` and `/admin/collective-payment-schedules`
+   * must keep resolving. Until this wave the assertion was a substring search
+   * over the whole allowlist file, which also forbade the WORDS "Partner Fees"
+   * and "Collective Payment Schedules" appearing anywhere in it for any reason.
+   *
+   * Wave 131 collapsed the admin sidebar's eight pricing links to one, which the
+   * guard requires to be ratified as `removedNav` entries — and a nav id IS
+   * `href\tlabel`, so ratifying the retirement of those two SIDEBAR LINKS forces
+   * exactly those words into the file. The old wording made the guard's own
+   * ratification path unreachable for the very consolidation the owner asked for.
+   *
+   * So the assertion is now made by CLASS rather than by substring: the two ids
+   * may not appear in any route class (that would be the forgiveness the anti-rot
+   * rule forbids), and both URLs must still be registered in App.tsx — a stronger
+   * check than the text search, because it verifies the restoration rather than
+   * the absence of a word. A retired NAV LINK whose URL still resolves is not a
+   * lost route; `server/__tests__/wave131_one_pricing_console.test.ts` §2 holds
+   * that each retired link's URL renders the console tab carrying its capability.
+   */
+  it("the RS-1/RS-2 ids are NOT forgiven as lost routes, and both URLs still resolve", () => {
+    const al = JSON.parse(fs.readFileSync(path.join(GUARD_DIR, "allowlist.json"), "utf-8")) as Record<
+      string,
+      Array<{ id: string }>
+    >;
+    const RS_IDS = ["/admin/partner-fees", "/admin/collective-payment-schedules"];
+    for (const cls of ["removedRoutes", "removedClientRoutes", "removedRouteTargets", "removedPages"]) {
+      for (const entry of al[cls] ?? []) {
+        for (const rs of RS_IDS) {
+          expect(
+            entry.id.split("\t")[0],
+            `${rs} was RESTORED — it may not be allowlisted as a removed ${cls}`,
+          ).not.toBe(rs);
+        }
+      }
+    }
+    const app = fs.readFileSync(path.join(GUARD_DIR, "..", "..", "client/src/App.tsx"), "utf-8");
+    for (const rs of RS_IDS) expect(app, `${rs} no longer resolves`).toContain(`path="${rs}"`);
   });
 });
 

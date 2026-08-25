@@ -1,8 +1,24 @@
 /**
  * Sprint 28 — Pricing Model Authoring Store tests.
  *
+ * WAVE 134 cause 1-of-3 (R98) — WHY THIS FILE CHANGED
+ * --------------------------------------------------
+ * `beforeAll` used to say `void listModels(); // Touch list so seed runs`, and
+ * six tests then reached for `listModels().find(m => m.slug === "founder-pro")!`
+ * or `.find(m => m.status === "live")`. v25.27 deleted the seed deliberately
+ * (`pricingModelStore.ts:160-181` — "NO SEED. Admin is the source of truth.")
+ * because R95/R96 make pricing admin-set and database-driven, so those finds
+ * returned undefined and the tests died on a TypeError BEFORE asserting anything
+ * about versioning, hash chains, transitions or clone/delete. They were absent
+ * tests, not failing ones. Per R98 the fixture is what changes: the models are
+ * now AUTHORED through the production write path by the one shared
+ * `_fixtures/pricingCatalogueFixture.ts`, and a new case pins the no-seed rule
+ * itself (empty store until an admin authors) which the old "seeds three models"
+ * assertion actively contradicted.
+ *
  * Locks the production-grade invariants of pricingModelStore:
- *   - Seed: 3 pre-seeded models with ISO 4217 currency + integer minor units
+ *   - No source-baked seed; admin-authored models carry ISO 4217 currency +
+ *     integer minor units
  *   - Money is always integer minor units (no floats anywhere)
  *   - Version increments + SHA-256 hash chain extends on every mutation
  *   - Status transition graph: draft→preview→live→deprecated (one-way)
@@ -28,6 +44,10 @@ import {
   previewPrice,
   type PricingModel,
 } from "../pricingModelStore";
+import {
+  authorFounderCatalogue,
+  clearAuthoredPricingTiers,
+} from "./_fixtures/pricingCatalogueFixture";
 
 // Capture audit + bridge calls in test harness
 const audits: Array<{ action: string; target: string }> = [];
@@ -38,12 +58,21 @@ beforeAll(() => {
     audit: (e) => audits.push({ action: e.action, target: e.target }),
     bridge: (eventType, aggregateId) => bridges.push({ eventType, aggregateId }),
   });
-  // Touch list so seed runs
-  void listModels();
+  /* WAVE 134 cause 1-of-3 (R98) — the admin publishes the catalogue these tests
+     operate on. Nothing is source-baked. */
+  authorFounderCatalogue({ includeCollective: true });
 });
 
-describe("pricingModelStore — seed integrity", () => {
-  it("seeds three production pricing models", () => {
+describe("pricingModelStore — authored-catalogue integrity", () => {
+  it("ships NO seed: the store is empty until an admin authors a model (v25.27)", () => {
+    clearAuthoredPricingTiers();
+    expect(listModels()).toEqual([]);
+    /* Re-publish for the remaining cases in this file. */
+    authorFounderCatalogue({ includeCollective: true });
+    expect(listModels().length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("holds the models the admin published, keyed by slug", () => {
     const all = listModels();
     expect(all.length).toBeGreaterThanOrEqual(3);
     const slugs = all.map(m => m.slug).sort();
@@ -52,7 +81,7 @@ describe("pricingModelStore — seed integrity", () => {
     expect(slugs).toContain("collective-standard");
   });
 
-  it("every seed uses integer minor units (no floats anywhere)", () => {
+  it("every authored model uses integer minor units (no floats anywhere)", () => {
     for (const m of listModels()) {
       expect(Number.isInteger(m.basePriceMinor)).toBe(true);
       for (const o of m.currencyOverrides) expect(Number.isInteger(o.basePriceMinor)).toBe(true);
@@ -65,7 +94,7 @@ describe("pricingModelStore — seed integrity", () => {
     }
   });
 
-  it("every seed uses 3-letter ISO 4217 currency codes", () => {
+  it("every authored model uses 3-letter ISO 4217 currency codes", () => {
     for (const m of listModels()) {
       expect(m.currency).toMatch(/^[A-Z]{3}$/);
       for (const o of m.currencyOverrides) expect(o.currency).toMatch(/^[A-Z]{3}$/);

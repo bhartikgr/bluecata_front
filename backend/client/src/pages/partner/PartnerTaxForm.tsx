@@ -6,7 +6,7 @@
  * the form list is read DB-direct. apiRequest throws ApiError on non-2xx, so a
  * 403 (non-managing-partner) is surfaced as an access note, not a hard error.
  */
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError, queryClient } from "@/lib/queryClient";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
@@ -79,6 +79,50 @@ export default function PartnerTaxForm() {
   const role = useRequirePartnerRole();
   const { toast } = useToast();
   const [form, setForm] = useState({ formType: "W-9", jurisdiction: "US", taxId: "", documentUrl: "", expiresAt: "" });
+  /* WAVE 126 / FINDING 3 — WHAT AN EXPIRY DATE ON A TAX CERTIFICATE MEANS, AND
+     THEREFORE WHAT BOUNDS IT.
+   *
+   * This is the date the certificate CEASES TO BE VALID. Recording a form that
+   * expired in 2020 files a document that is already dead, and until this wave
+   * the only thing the client saw was the browser's own red outline with no
+   * sentence at all — the owner typed 2020-01-01 and got no explanation.
+   *
+   *   - MUST NOT BE IN THE PAST. A certificate whose expiry has passed is not on
+   *     file, it is lapsed; a withholding decision taken against it would be
+   *     wrong. TODAY is allowed: a form expiring today is valid today.
+   *   - NOT BOUNDED ABOVE by any particular horizon. A W-8BEN runs three
+   *     calendar years, other certificates run longer, and some jurisdictions
+   *     issue indefinite ones — so any upper cutoff would be a guess about a
+   *     document we did not issue. A far-future date is a client's business.
+   *   - OPTIONAL. Blank stays blank; many certificates carry no expiry, and the
+   *     field must not start refusing an empty value.
+   *
+   * The comparison is on the DATE STRING, not on parsed timestamps, for the
+   * reason recorded at PartnerTaxForm.tsx's own date-only note: a date-only
+   * value pushed through `new Date()` acquires a UTC midnight and can slip a day
+   * either side of the client's own calendar. Comparing YYYY-MM-DD to YYYY-MM-DD
+   * lexically is exact and has no timezone in it at all. */
+  const expiryProblem = useMemo<string | null>(() => {
+    const t = form.expiresAt.trim();
+    if (t === "") return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+      return "Enter the expiry date as year-month-day, for example 2029-03-31. Leave it blank if this certificate does not expire.";
+    }
+    const [y, m, d] = t.split("-").map((x) => Number.parseInt(x, 10));
+    if (m < 1 || m > 12 || d < 1 || d > 31) {
+      return "That is not a date on the calendar. Enter the expiry date as year-month-day, for example 2029-03-31.";
+    }
+    const probe = new Date(Date.UTC(y, m - 1, d));
+    if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
+      return "That is not a date on the calendar. Enter the expiry date as year-month-day, for example 2029-03-31.";
+    }
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    if (t < today) {
+      return "This expiry date has already passed, so the certificate is no longer current. Enter the expiry date from a valid certificate, or leave the field blank if it does not expire.";
+    }
+    return null;
+  }, [form.expiresAt]);
 
   const { data, isLoading, isError, error } = useQuery<{ forms: TaxForm[] }>({
     queryKey: ["/api/partner/me/tax-forms"],
@@ -180,8 +224,16 @@ export default function PartnerTaxForm() {
                 <Input value={form.taxId} onChange={(e) => setForm((f) => ({ ...f, taxId: e.target.value }))} placeholder="SSN / EIN / SIN" data-testid="input-taxform-taxid" />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Expires at (optional, ISO date)</Label>
-                <Input value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))} placeholder="YYYY-MM-DD" data-testid="input-taxform-expires" />
+                {/* WAVE 126 / FINDING 3 — "ISO date" is our vocabulary, not a
+                    client's; the format hint in the placeholder already says the
+                    same thing without naming a standard. */}
+                <Label className="text-xs">Expiry date (optional)</Label>
+                <Input value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))} placeholder="YYYY-MM-DD" aria-invalid={expiryProblem !== null} data-testid="input-taxform-expires" />
+                {/* One element, always rendered, so the field's sibling shape
+                    does not change with its validity. */}
+                <div className="text-xs text-rose-600" data-testid="taxform-expires-error">
+                  {expiryProblem ?? ""}
+                </div>
               </div>
               {/* v25.50 Phase 7 (10) — real file upload OR a document URL. */}
               <div className="space-y-1.5">
@@ -203,7 +255,7 @@ export default function PartnerTaxForm() {
             <div className="mt-4">
               <Button
                 onClick={() => submitMut.mutate()}
-                disabled={submitMut.isPending || !form.taxId.trim() || !form.jurisdiction.trim()}
+                disabled={submitMut.isPending || !form.taxId.trim() || !form.jurisdiction.trim() || expiryProblem !== null}
                 data-testid="button-submit-taxform"
               >
                 Submit tax form

@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Building2, Plus, Users, Clock, ArrowRight } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ import { useEntitlement, type FounderCompany } from "@/lib/entitlement";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { NewCompanyDialog } from "@/components/NewCompanyDialog";
+/* WAVE 125 · FINDING 2 — the words for a holder count that has not been derived. */
+import { CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT } from "@/lib/captable/capTableHolderCount";
 
 function formatLastActive(iso: string): string {
   if (!iso) return "—";
@@ -66,6 +68,33 @@ export default function SelectCompany() {
   });
 
   const companies = ctx?.founder.companies ?? [];
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 125 · FINDING 2 — WHERE "0 INVESTORS" CAME FROM.
+     ═══════════════════════════════════════════════════════════════════════════
+     Each tile printed `{c.capTableHolders} investors`. `capTableHolders` has NO
+     WRITER anywhere in live code (29 live occurrences, 0 computations — see
+     `build_log/wave125/enum_captable_holders.py`), so this screen told every
+     founder that every one of his companies had `0 investors` before he had even
+     opened one.
+
+     The derived count cannot arrive on this screen's own payload: these companies
+     come from `/api/auth/me`, whose projection is built by
+     `server/lib/userContext.ts:309` — a SACRED file that lists its fields
+     explicitly and drops anything added to `kpi`. Rather than print a figure
+     nobody computed, this reads the SAME derived field from
+     `GET /api/founder/companies`, which `withComputedOwnership` overlays and which
+     the top-bar CompanySwitcher already queries, and joins it by `companyId`. When
+     that read has not landed, or the engine could not derive a count, the tile says
+     so in plain English instead of showing a number. */
+  const derivedCompanies = useQuery<Array<{ companyId: string; kpi?: { capTableHoldersOnRecord?: number | null } }>>({
+    queryKey: ["/api/founder/companies"],
+  });
+  const holderCountByCompanyId = new Map<string, number>();
+  for (const row of derivedCompanies.data ?? []) {
+    const n = row?.kpi?.capTableHoldersOnRecord;
+    if (typeof n === "number") holderCountByCompanyId.set(row.companyId, n);
+  }
   const founderName =
     ctx?.identity.screenName ?? ctx?.identity.name?.split(" ")[0] ?? "there";
 
@@ -143,7 +172,9 @@ export default function SelectCompany() {
                 <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1" data-testid={`text-investor-count-${c.companyId}`}>
                     <Users className="h-3 w-3" />
-                    {c.capTableHolders} {c.capTableHolders === 1 ? "investor" : "investors"}
+                    {holderCountByCompanyId.has(c.companyId)
+                      ? `${holderCountByCompanyId.get(c.companyId)} ${holderCountByCompanyId.get(c.companyId) === 1 ? "holder" : "holders"}`
+                      : CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT}
                   </span>
                   <span className="inline-flex items-center gap-1">
                     <Clock className="h-3 w-3" />

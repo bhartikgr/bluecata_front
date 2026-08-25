@@ -46,8 +46,14 @@ const CO = "co_novapay";
 const ADMIN = "u_admin";
 const CF_URL = `/api/founder/companies/${CO}/carry-forward?roundType=priced_equity`;
 
-/** The one legal state of the sacred file under WAIVER-7. */
-const POST_WAIVER_SHA = "42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8";
+/** The one legal state of the sacred file under WAIVER-7.
+ *  RE-PINNED 2026-08-25 · WAVE 136 · R100 — items 2 and 3 (the fabricated liquidation
+ *  preference and the mfn `?? false`) were authorised in this same file and recorded
+ *  against the EXISTING WAIVER-7 row, so the waiver count remains NINE. What WAIVER-7
+ *  itself covers is unchanged: `discountAsDecimalStr` still delegates to
+ *  `toWireDiscount`, and `computeConversionProjections` is still untouched (R69).
+ *  Lineage: d7fa53f0… (pre-waiver) → 42d04653… (Wave 58g) → b8627df8… (Wave 136). */
+const POST_WAIVER_SHA = "b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3";
 const PRE_WAIVER_SHA = "d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119";
 
 /** The slice of the engine that WAIVER-7 authorised, lifted from source. */
@@ -385,8 +391,11 @@ describe("W58G-A — the second conversion authority is gone, and nothing else m
            11). A FOURTH would be a units defect;
          · `resolvePreferredTerms` still refuses an unknown token BY NAME;
          · `server/roundCarryForwardEngine.ts` (WAIVER-7's file, R69's standing
-           prohibition) is BYTE-IDENTICAL at
-           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8, and
+           prohibition) was BYTE-IDENTICAL at
+           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8 — the legal
+           state as at the wave this block records; WAVE 136 · R100 moved it to
+           b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3 against the
+           SAME WAIVER-7 row, so the waiver count is still NINE — and
            `computeConversionProjections` was neither read as a fix target nor edited;
          · `npm run sacred` -> 48/48 byte-identical, `unratified_waivers:0`. This file
            has never been in the 48-entry manifest.
@@ -439,8 +448,11 @@ describe("W58G-A — the second conversion authority is gone, and nothing else m
            would be a units defect. Neither the clock nor the clamp divides anything
            by 100 and neither goes near a percent;
          · `server/roundCarryForwardEngine.ts` (WAIVER-7's file, R69's standing
-           prohibition) is BYTE-IDENTICAL at
-           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8, and
+           prohibition) was BYTE-IDENTICAL at
+           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8 — the legal
+           state as at the wave this block records; WAVE 136 · R100 moved it to
+           b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3 against the
+           SAME WAIVER-7 row, so the waiver count is still NINE — and
            `computeConversionProjections` was neither read as a fix target nor
            edited. Review A explicitly proposed no change to it and Wave 79 proposes
            none either — FOUR agents have now been tempted by that function and the
@@ -494,8 +506,11 @@ describe("W58G-A — the second conversion authority is gone, and nothing else m
          · no existing export was renamed, removed, re-typed or re-ordered; every
            addition is appended after the final pre-existing declaration;
          · `server/roundCarryForwardEngine.ts` (WAIVER-7's file, R69's standing
-           prohibition) is BYTE-IDENTICAL at
-           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8, and
+           prohibition) was BYTE-IDENTICAL at
+           42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8 — the legal
+           state as at the wave this block records; WAVE 136 · R100 moved it to
+           b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3 against the
+           SAME WAIVER-7 row, so the waiver count is still NINE — and
            `computeConversionProjections` was neither read as a fix target nor edited.
            FIVE agents have now been tempted by that function; the first three were
            all wrong, and Wave 80 proposes no change to it either (R69);

@@ -4,6 +4,7 @@
  * Tier-aware landing page summarizing portfolio + pipeline + recent activity.
  * No mock data on any code path. Empty state for new partners.
  */
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole, tierAtLeast } from "@/lib/partner/useRequirePartnerRole";
@@ -13,7 +14,7 @@ import { apiRequest } from "@/lib/queryClient";
    accessor delegates to PARTNER_PIPELINE_STAGE_LABELS (shared/crmStages.ts:130),
    the map that already governs these six keys on PartnerPipeline.tsx — no second
    vocabulary is introduced here. */
-import { activityTypeLabel, partnerPipelineStageLabel, quotaEnforcementLabel, planTierLabel } from "@/lib/partnerDisplay";
+import { activityTypeLabel, partnerPipelineStageLabel, quotaEnforcementLabel, planTierLabel, billingPeriodPhrase } from "@/lib/partnerDisplay";
 import { formatMinor } from "@/lib/currency"; /* v25.40 FIX-12 currency sweep */
 // v25.46 BLOCKER FIX #4 (Tier 9 #73) — dashboard cards now use the canonical
 // AppCard primitive instead of shadcn Card. Widgets/data-testids unchanged.
@@ -29,8 +30,12 @@ import { VentureMarketsCard } from "@/components/collective/widgets/VentureMarke
    partner (price incl. per-partner override, commission, report-only quota,
    fixed rev-share). Drives the quota tracker + rev-share status cards below. */
 interface EffectivePlan {
-  effectivePrice: { amountMinor: number; currency: string; source: string };
-  advertisedPrice: { amountMinor: number; currency: string } | null;
+  /* WAVE 129 — `billingPeriod` is the cadence stored on the authoritative
+     `partner_tier_price` row (or, for an override, the cadence that override was
+     written under). It is nullable because "no cadence on record" is a real
+     state that must be refused, not defaulted. */
+  effectivePrice: { amountMinor: number; currency: string; source: string; billingPeriod: string | null };
+  advertisedPrice: { amountMinor: number; currency: string; billingPeriod: string | null } | null;
   commission: { rate: number; via: string };
   arrangement: {
     subscriptionModel?: string | null;
@@ -106,13 +111,57 @@ export default function PartnerDashboard() {
     queryKey: ["/api/partner/me"],
     enabled: role.ready && flagsQ.data?.PARTNER_WORKSPACE_ENABLED !== false,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me")).json(),
+    /* WAVE 129 (R95) — NO CACHE MAY OUTLIVE AN ADMIN PRICE CHANGE.
+       client/src/lib/queryClient.ts:282 sets `staleTime: 30_000` as the default
+       for EVERY query, with refetchOnWindowFocus and refetchInterval off. This
+       payload carries the partner's price, so that default meant an admin could
+       change the tier price and this dashboard would keep quoting the old figure
+       for up to 30 seconds. `staleTime: 0` makes the next request read through,
+       matching the one surface that already got this right
+       (client/src/pages/founder/ApplyToCollective.tsx:565). */
+    staleTime: 0,
   });
+
+  /* WAVE 129 (R95) — the plan price and its PERIOD, computed once.
+   *
+   * Hoisted into a useMemo rather than written as a conditional in the JSX on
+   * purpose: replacing sibling elements with one conditional trips the
+   * silent-drop gate (build_log/wave116/W116_TESTS.md §3.1). The rendered element
+   * shape below is therefore IDENTICAL to before — one div, one span — and only
+   * the strings inside them come from here.
+   *
+   * `figure` is deliberately EMPTY when no billing period is on record. R95: a
+   * surface that cannot state the period must print no figure and say why, rather
+   * than show an amount whose meaning the reader has to guess. That guess is the
+   * defect this wave exists to remove — the annual $240.00 was read as monthly. */
+  const planPrice = useMemo(() => {
+    const price = planQ.data?.effectivePlan?.effectivePrice ?? null;
+    if (!price) return { figure: "", periodText: "" };
+    const phrase = billingPeriodPhrase(price.billingPeriod);
+    if (!phrase) {
+      return {
+        figure: "",
+        periodText:
+          "We cannot show this price: no billing period is recorded for your tier, " +
+          "so we will not state an amount that could be read as the wrong period. " +
+          "Nothing has been charged. Contact us and we will confirm your price.",
+      };
+    }
+    return {
+      figure: formatMinor(price.amountMinor, price.currency, { locale: "en-US" }),
+      periodText: `${price.currency} ${phrase}`,
+    };
+  }, [planQ.data]);
 
   if (flagsQ.data && flagsQ.data.PARTNER_WORKSPACE_ENABLED === false) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center p-8" data-testid="partner-workspace-preview-banner">
         <AppCard className="max-w-lg text-center">
-          <div className="cv-card-title text-base font-semibold mb-2">🚧 Preview / Coming Soon</div>
+          {/* WAVE 126 / FINDING 1 — a construction sign and "Coming Soon" are a
+              statement about OUR release schedule. The access rule is the only
+              thing the reader needs, and the paragraph below already states it
+              and already says who to ask. */}
+          <div className="cv-card-title text-base font-semibold mb-2">Access to the Partner Workspace</div>
           <p className="text-[var(--cv-color-text)]">
             The Partner Workspace is an invite-only beta. Reach out to{" "}
             <a className="text-[var(--cv-color-primary)] underline" href="mailto:ops@capavate.com">ops@capavate.com</a>{" "}
@@ -291,12 +340,8 @@ export default function PartnerDashboard() {
                     <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Your subscription</div>
                   )}
                   <div className="text-xl font-semibold" data-testid="kpi-plan-price">
-                    {formatMinor(
-                      planQ.data.effectivePlan.effectivePrice.amountMinor,
-                      planQ.data.effectivePlan.effectivePrice.currency,
-                      { locale: "en-US" },
-                    )}{" "}
-                    <span className="text-[var(--cv-color-text-faint)] text-xs">{planQ.data.effectivePlan.effectivePrice.currency} / mo</span>
+                    {planPrice.figure}{" "}
+                    <span className="text-[var(--cv-color-text-faint)] text-xs" data-testid="kpi-plan-price-period">{planPrice.periodText}</span>
                   </div>
                   {planQ.data.effectivePlan.effectivePrice.source === "partner_override" && (
                     <div className="text-xs mt-1 text-emerald-600" data-testid="price-custom-badge">Custom partner price</div>
@@ -427,7 +472,15 @@ export default function PartnerDashboard() {
             <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
               <div className="cv-card-title text-sm font-semibold mb-3">Cross-portfolio investor overlap</div>
               <div>
-                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="text-cross-portfolio-unavailable">Not yet available. Showing you that an investor in your portfolio also appears in another partner's portfolio requires that investor's recorded consent, and Capavate will not surface an overlap without it.</div>
+                {/* WAVE 135 · FINDING 1 — "Not yet available." is a statement about OUR build
+                    state, and a client does not buy our build state. Wave 126 wrote it
+                    deliberately and this reverses that choice deliberately: the operative
+                    fact is a CONSENT RULE, and the consent rule is true today, permanently,
+                    and independently of whether anything is shipped. Stating the rule tells
+                    the client exactly why the card is empty and what would change it, which
+                    is strictly more than "not yet" told them. Nothing about the gating,
+                    the card or the absent control moves — only the sentence. */}
+                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="text-cross-portfolio-unavailable">An investor is only shown as appearing in another partner's portfolio when that investor has recorded their consent to it. Capavate will not surface an overlap without that consent, so this card stays empty until consent is on record.</div>
               </div>
             </AppCard>
           )}

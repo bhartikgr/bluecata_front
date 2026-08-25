@@ -31,6 +31,18 @@ import { addCompanyForFounder } from "../multiCompanyStore";
 import { _testAccessRounds } from "../roundsStore";
 import { signSessionValue, LEGACY_SESSION_COOKIE } from "../lib/sessionCookie";
 
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 let app: Express;
 let server: http.Server;
 let port: number;
@@ -154,7 +166,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("warrant round creates with strike + shares (targetAmount derived = strike × shares)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "Warrant Round",
         type: "seed",
@@ -162,7 +174,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
         strikePrice: 2.5,
         sharesAuthorized: 400_000,
         expiryYears: 5,
-      },
+      }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -174,13 +186,13 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("option-pool round creates with poolSize and NO target amount", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: {
+      body: withRoundDates({
         companyId,
         name: "ESOP Top-Up",
         type: "seed",
         instrument: "option_pool",
         poolSize: 500_000,
-      },
+      }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -190,7 +202,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("warrant still fails closed when strike price is missing", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Bad Warrant", type: "seed", instrument: "warrant", sharesAuthorized: 100_000 },
+      body: withRoundDates({ companyId, name: "Bad Warrant", type: "seed", instrument: "warrant", sharesAuthorized: 100_000 }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -200,7 +212,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("option pool still fails closed when poolSize is missing", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Bad Pool", type: "seed", instrument: "option_pool" },
+      body: withRoundDates({ companyId, name: "Bad Pool", type: "seed", instrument: "option_pool" }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -210,31 +222,31 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("the other five vehicles still create (common, preferred, safe_post, safe_pre, convertible_note)", async () => {
     const common = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Common", type: "foundation", instrument: "common", pricePerShare: 1, sharesAuthorized: 100_000, preMoney: null, targetAmount: null },
+      body: withRoundDates({ companyId, name: "Common", type: "foundation", instrument: "common", pricePerShare: 1, sharesAuthorized: 100_000, preMoney: null, targetAmount: null }),
     });
     expect(common.status).toBe(200);
 
     const preferred = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Series A", type: "series_a", instrument: "preferred", preMoney: 8_000_000, targetAmount: 2_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 },
+      body: withRoundDates({ companyId, name: "Series A", type: "series_a", instrument: "preferred", preMoney: 8_000_000, targetAmount: 2_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 }),
     });
     expect(preferred.status).toBe(200);
 
     const safePost = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "SAFE (post)", type: "preseed", instrument: "safe_post", targetAmount: 750_000, valuationCap: 10_000_000, discount: 20 },
+      body: withRoundDates({ companyId, name: "SAFE (post)", type: "preseed", instrument: "safe_post", targetAmount: 750_000, valuationCap: 10_000_000, discount: 20 }),
     });
     expect(safePost.status).toBe(200);
 
     const safePre = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "SAFE (pre)", type: "preseed", instrument: "safe_pre", targetAmount: 500_000, valuationCap: 8_000_000, discount: 15 },
+      body: withRoundDates({ companyId, name: "SAFE (pre)", type: "preseed", instrument: "safe_pre", targetAmount: 500_000, valuationCap: 8_000_000, discount: 15 }),
     });
     expect(safePre.status).toBe(200);
 
     const note = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Convertible Note", type: "preseed", instrument: "convertible_note", targetAmount: 600_000, valuationCap: 9_000_000, discount: 10, interestRate: 5, maturityMonths: 24 },
+      body: withRoundDates({ companyId, name: "Convertible Note", type: "preseed", instrument: "convertible_note", targetAmount: 600_000, valuationCap: 9_000_000, discount: 10, interestRate: 5, maturityMonths: 24 }),
     });
     expect(note.status).toBe(200);
   });
@@ -242,7 +254,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
   it("preferred still REQUIRES a user-entered target (unchanged contract)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Preferred No Target", type: "series_a", instrument: "preferred", preMoney: 4_000_000, pricePerShare: 1.25, sharesAuthorized: 3_200_000, targetAmount: null },
+      body: withRoundDates({ companyId, name: "Preferred No Target", type: "series_a", instrument: "preferred", preMoney: 4_000_000, pricePerShare: 1.25, sharesAuthorized: 3_200_000, targetAmount: null }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -255,7 +267,7 @@ describe("v25.53 3a / N4 — date guards on creation", () => {
     // v25.55 1a (per Ozan): past open dates are allowed; only close < open is rejected.
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Past Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(10), closeDate: futureDate(30) },
+      body: withRoundDates({ companyId, name: "Past Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(10), closeDate: futureDate(30) }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -265,7 +277,7 @@ describe("v25.53 3a / N4 — date guards on creation", () => {
     // A round may close before today, just not before its own open date.
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Both Past", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(30), closeDate: pastDate(5) },
+      body: withRoundDates({ companyId, name: "Both Past", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(30), closeDate: pastDate(5) }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -274,7 +286,7 @@ describe("v25.53 3a / N4 — date guards on creation", () => {
   it("rejects close-date before open-date", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Close Before Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: pastDate(1) },
+      body: withRoundDates({ companyId, name: "Close Before Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: pastDate(1) }),
     });
     expect(res.status).toBe(400);
     // close < open triggers the typed 400; either typed error is acceptable.
@@ -282,21 +294,48 @@ describe("v25.53 3a / N4 — date guards on creation", () => {
   });
 
   it("N4 — rejects a malformed (non-4-digit) year", async () => {
+    /* WAVE 134 cause 3-of-3 (R98) — this case used to post openDate ONLY, on the
+       stated assumption that "a valid closeDate would trip the close-before-open
+       check first". Since the mandatory-date backstop (routes.ts:7399-7412) a
+       dateless close is refused CLOSE_DATE_REQUIRED before the malformed-year
+       guard is reached, so the assertion could not run at all. Rather than drop
+       coverage, the case is SPLIT and made stronger: the format guard is now
+       isolated with a malformed year that still orders BEFORE the close date (so
+       routes.ts:7566-7572 cannot pre-empt it), the malformed CLOSE date is
+       covered too, and the original far-future "70620" input is still proved to
+       be refused by a typed date error rather than accepted. */
+
+    // (a) malformed year, correctly ordered → the format guard fires by name.
+    const threeDigitYear = await call("POST", "/api/rounds", {
+      userId,
+      body: withRoundDates({ companyId, name: "Bad Year A", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: "202-06-07" }),
+    });
+    expect(threeDigitYear.status).toBe(400);
+    expect(threeDigitYear.body?.error).toBe("invalid_openDate");
+    expect(String(threeDigitYear.body?.message)).toContain("4-digit year");
+
+    // (b) the same guard on the TARGET CLOSE date, by name.
+    const badClose = await call("POST", "/api/rounds", {
+      userId,
+      body: withRoundDates({ companyId, name: "Bad Year B", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, closeDate: "70620-06-07" }),
+    });
+    expect(badClose.status).toBe(400);
+    expect(badClose.body?.error).toBe("invalid_closeDate");
+
+    // (c) the original concatenated-date input is still REFUSED, never accepted.
     const res = await call("POST", "/api/rounds", {
       userId,
-      // Only openDate supplied so the malformed-year guard fires in isolation
-      // (a valid closeDate would trip the close-before-open check first, since
-      // the malformed "70620" parses as a far-future year).
-      body: { companyId, name: "Bad Year", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: "70620-06-07" },
+      body: withRoundDates({ companyId, name: "Bad Year", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: "70620-06-07" }),
     });
     expect(res.status).toBe(400);
-    expect(res.body?.error).toBe("invalid_openDate");
+    expect(["invalid_openDate", "invalid_closeDate"]).toContain(res.body?.error);
+    expect(res.body?.id).toBeFalsy();
   });
 
   it("accepts valid future dates", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Good Dates", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: futureDate(60) },
+      body: withRoundDates({ companyId, name: "Good Dates", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: futureDate(60) }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -309,7 +348,7 @@ describe("v25.53 3a — CRM-invite gate on past rounds", () => {
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Gate Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: futureDate(60) },
+      body: withRoundDates({ companyId, name: "Gate Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: futureDate(60) }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();
@@ -352,7 +391,7 @@ describe("v25.53 6a — no duplicate active invite per (round, email)", () => {
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Dupe Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      body: withRoundDates({ companyId, name: "Dupe Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();
@@ -397,7 +436,7 @@ describe("v25.53 8a — optional investor fields persist to the CRM", () => {
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "CRM Opt Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      body: withRoundDates({ companyId, name: "CRM Opt Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
   });
@@ -431,7 +470,7 @@ describe("v25.53 N6 — re-invited existing user is not forced to re-register", 
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "N6 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      body: withRoundDates({ companyId, name: "N6 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();
@@ -454,7 +493,7 @@ describe("v25.53 N6 — re-invited existing user is not forced to re-register", 
   it("existing user redeems WITHOUT a password → login+view-round route, no re-registration", async () => {
     // Fresh round + invite (single-use token) for the redeem itself.
     const r2 = await call("POST", "/api/rounds", {
-      userId, body: { companyId, name: "N6 Round 2", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      userId, body: withRoundDates({ companyId, name: "N6 Round 2", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     const inv = await call("POST", `/api/rounds/${r2.body?.id}/invitations`, {
       userId, body: { investorEmail: "aisha@greenwood.capital", investorFirstName: "Aisha", investorLastName: "Patel" },
@@ -473,7 +512,7 @@ describe("v25.53 N6 — re-invited existing user is not forced to re-register", 
 
   it("brand-new invitee still goes through the password-set path", async () => {
     const r3 = await call("POST", "/api/rounds", {
-      userId, body: { companyId, name: "N6 Round 3", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      userId, body: withRoundDates({ companyId, name: "N6 Round 3", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     const newEmail = `n6new_${Date.now()}@example.com`;
     const inv = await call("POST", `/api/rounds/${r3.body?.id}/invitations`, {
@@ -509,7 +548,7 @@ describe("v25.53 REVISE B5 (7a) — First/Last mandatory at the API boundary", (
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "B5 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      body: withRoundDates({ companyId, name: "B5 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();
@@ -563,7 +602,7 @@ describe("v25.53 REVISE NB-b — server-side priced (preferred) completeness", (
   it("preferred with a target but pricePerShare<=0 is rejected (fail-closed)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Pref No PPS", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 0, sharesAuthorized: 1_000_000 },
+      body: withRoundDates({ companyId, name: "Pref No PPS", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 0, sharesAuthorized: 1_000_000 }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -573,7 +612,7 @@ describe("v25.53 REVISE NB-b — server-side priced (preferred) completeness", (
   it("preferred with a target but sharesAuthorized<=0 is rejected (fail-closed)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Pref No Shares", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 0 },
+      body: withRoundDates({ companyId, name: "Pref No Shares", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 0 }),
     });
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("validation_failed");
@@ -583,7 +622,7 @@ describe("v25.53 REVISE NB-b — server-side priced (preferred) completeness", (
   it("preferred with a target AND pps>0 AND shares>0 still creates", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Pref Complete", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 },
+      body: withRoundDates({ companyId, name: "Pref Complete", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 }),
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);
@@ -594,7 +633,7 @@ describe("v25.53 REVISE B4 — warrant/common target is EXACT Decimal (no float 
   it("warrant strike 0.1 × 3 shares yields exactly 0.3 (not 0.30000000000000004)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Warrant Exact", type: "seed", instrument: "warrant", strikePrice: 0.1, sharesAuthorized: 3, expiryYears: 5 },
+      body: withRoundDates({ companyId, name: "Warrant Exact", type: "seed", instrument: "warrant", strikePrice: 0.1, sharesAuthorized: 3, expiryYears: 5 }),
     });
     expect(res.status).toBe(200);
     // The authoritative exact value round-trips through extras_json as a string.
@@ -607,7 +646,7 @@ describe("v25.53 REVISE B4 — warrant/common target is EXACT Decimal (no float 
   it("common pps 0.07 × 1,000,001 shares is exact (string, no drift)", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Common Exact", type: "foundation", instrument: "common", pricePerShare: 0.07, sharesAuthorized: 1_000_001 },
+      body: withRoundDates({ companyId, name: "Common Exact", type: "foundation", instrument: "common", pricePerShare: 0.07, sharesAuthorized: 1_000_001 }),
     });
     expect(res.status).toBe(200);
     // 0.07 × 1,000,001 = 70000.07 exactly under Decimal.
@@ -619,7 +658,7 @@ describe("v25.53 REVISE B2 — N6 existing-account token consumed + associated",
   let roundId: string;
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
-      userId, body: { companyId, name: "B2 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      userId, body: withRoundDates({ companyId, name: "B2 Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();
@@ -682,7 +721,7 @@ describe("v25.53 REVISE NB-a (8a) — optional fields update an EXISTING CRM con
 
   beforeAll(async () => {
     const res = await call("POST", "/api/rounds", {
-      userId, body: { companyId, name: "CRM Update Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 },
+      userId, body: withRoundDates({ companyId, name: "CRM Update Round", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000 }),
     });
     roundId = res.body?.id;
     expect(roundId).toBeTruthy();

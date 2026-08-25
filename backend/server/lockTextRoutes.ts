@@ -43,6 +43,10 @@ export function registerLockTextRoutes(app: Express): void {
           // the client has no text of its own to fall back on, by design.
           text: notice.text,
           copy: notice.copy,
+          // WAVE 126 / FINDING 1 — what the pipeline surface renders. `copy` is
+          // still returned unchanged for the admin register and for the
+          // assertions that pin it.
+          clientCopy: notice.clientCopy,
           setAt: notice.setAt,
         });
       } catch (err) {

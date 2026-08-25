@@ -9,6 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+/* WAVE 125 · FINDING 2 — a snapshot sent to investors must not carry a holder count
+   nobody computed; `null` reads as an em dash plus a plain-English reason. */
+import {
+  CAP_TABLE_HOLDERS_UNDERIVED,
+  CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT,
+} from "@/lib/captable/capTableHolderCount";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { StateBadge, EmptyState } from "@/components/common";
@@ -26,7 +32,10 @@ type Report = {
   id: string; companyId: string; template: string; title: string; period: string;
   status: "draft" | "scheduled" | "sent"; sentAt: string | null;
   recipients: string[]; recipientsCount: number;
-  metricsSnapshot: { raisedToDateUsd: number; capTableHolders: number; softCirclePipelineUsd: number; activeRounds: number };
+  /* WAVE 125 · FINDING 2 — `number | null`. The server now DERIVES this from the
+     cap-table engine at report-creation time and sends `null` where it could not
+     be derived; until this wave every non-demo report carried the literal `0`. */
+  metricsSnapshot: { raisedToDateUsd: number; capTableHolders: number | null; softCirclePipelineUsd: number; activeRounds: number };
   sections: Section[];
   readReceipts: Recipient[];
   schedule: { cron: string; cadence: string; nextSendAt: string; enabled: boolean } | null;
@@ -232,7 +241,7 @@ function PreviewDialog({ report, onClose }: { report: Report; onClose: () => voi
           {report.metricsSnapshot && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 rounded-md bg-secondary/30 p-3 text-xs">
               <div><div className="text-muted-foreground">Raised to date</div><div className="font-semibold">${(report.metricsSnapshot.raisedToDateUsd / 1_000_000).toFixed(2)}M</div></div>
-              <div><div className="text-muted-foreground">Cap-table holders</div><div className="font-semibold">{report.metricsSnapshot.capTableHolders}</div></div>
+              <div><div className="text-muted-foreground">Cap-table holders</div><div className="font-semibold">{report.metricsSnapshot.capTableHolders == null ? CAP_TABLE_HOLDERS_UNDERIVED : report.metricsSnapshot.capTableHolders}</div>{report.metricsSnapshot.capTableHolders == null && <div className="text-[10px] text-muted-foreground">{CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT}</div>}</div>
               <div><div className="text-muted-foreground">Soft-circle pipeline</div><div className="font-semibold">${(report.metricsSnapshot.softCirclePipelineUsd / 1_000_000).toFixed(2)}M</div></div>
               <div><div className="text-muted-foreground">Active rounds</div><div className="font-semibold">{report.metricsSnapshot.activeRounds}</div></div>
             </div>

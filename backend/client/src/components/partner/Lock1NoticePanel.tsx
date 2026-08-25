@@ -36,6 +36,13 @@ interface LockNoticeResponse {
   text: string | null;
   /** Server-authored sentence: the text itself when supplied, the not-supplied notice otherwise. */
   copy: string;
+  /**
+   * WAVE 126 / FINDING 1 — the client-facing form of the same sentence. This is
+   * what this panel renders. `copy` is still in the payload because the admin
+   * lock register wants it, but a paying client's screen must not be told whose
+   * wording is outstanding or what a future release will do.
+   */
+  clientCopy: string;
   setAt: string | null;
 }
 
@@ -51,7 +58,12 @@ export default function Lock1NoticePanel() {
     <div className="rounded border p-4 space-y-3" data-testid="lock1-notice-panel">
       <div>
         <h3 className="font-medium" data-testid="lock1-notice-title">
-          LOCK 1 — soft-circle provenance
+          {/* WAVE 126 / FINDING 1 — "LOCK 1" is our own internal register's
+              numbering and means nothing to a client. The subject of the rule
+              stays, and stays as "soft-circle", which is this ladder's own
+              vocabulary (R91: soft-circle and soft-circled are DIFFERENT
+              ladders and are not harmonised). */}
+          Soft-circle provenance
         </h3>
         <p className="text-xs text-[var(--cv-color-text-muted)]" data-testid="lock1-notice-intro">
           A partner-sourced soft circle records the sourcing partner and the attribution behind it
@@ -93,9 +105,10 @@ export default function Lock1NoticePanel() {
           className="text-sm border-l-2 border-[var(--cv-color-border)] pl-3"
           data-testid="lock1-notice-not-supplied"
         >
-          {/* Server-authored, printed verbatim. This is the visible gap, and it
-              is deliberate. */}
-          {q.data.copy}
+          {/* Server-authored, printed verbatim — the CLIENT-facing sentence
+              (WAVE 126 / FINDING 1). Still one server-owned string, still no
+              client-side fallback, so the two cannot drift. */}
+          {q.data.clientCopy}
         </div>
       )}
     </div>

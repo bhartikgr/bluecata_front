@@ -12,7 +12,7 @@ import { CAPAVATE_LOGO_URL } from "@/components/CapavateLogo";
 import {
  Download, Plus, PieChart as PieIcon, Layers, TrendingUp, Cpu, Info,
  FileText as FileIcon, Printer, Shield, Calendar, ChevronDown, ChevronRight,
- FileSpreadsheet, Send as SendIcon, X as XIcon,
+ FileSpreadsheet, Send as SendIcon, X as XIcon, Users,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -34,6 +34,9 @@ import { MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
 import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — interim (pro-forma) additive view */
+/* WAVE 130 — record a shareholder with no round, both first-run starting points,
+   and explicit cap-table visibility. */
+import { ShareholderRegisterPanel } from "@/components/founder/ShareholderRegisterPanel";
 import type { ApiRound } from "@/lib/types";
 import type { CompanyProfile } from "@/lib/profile/types";
 import { useEffect } from "react";
@@ -45,6 +48,8 @@ import { resolveCoMemberLabel } from "@/lib/privacy/visibility";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
 import { isPhantomHolderRow } from "@/lib/captable/phantomHolder"; /* W-CAP LW-1 — phantom holder suppression */
+/* WAVE 125 · FINDING 1 — "no founder row on record" is not "the founder owns 0%". */
+import { founderHoldingVerdict } from "@/lib/captable/founderHoldingOnRecord";
 import { describeRawActor, looksLikeRawKey } from "@/lib/actorLabel"; /* WAVE 93 · ITEM 1 — never a key where a holder NAME belongs */
 import { regionConventionLabel, regionConventionName } from "@/lib/profile/region"; /* WAVE 108 · FINDING 2 — the convention in words, not a version string */
 /* WAVE 110 · FINDING 1 + FINDING 4 — the denominator and the company name travel
@@ -316,6 +321,10 @@ export default function CapTable() {
     longer reachable (both entry points route to /founder/rounds). State kept as
     a permanently-false const so the dead dialog code below never mounts. */
  const [showAddSecurity, setShowAddSecurity] = useState(false);
+ /* WAVE 130 — the shareholder register / first-run / visibility panel. Unlike
+     `showAddSecurity` above (which is only ever set false, so its dialog is
+     unreachable) this one is opened by a control the founder can actually see. */
+ const [showShareholderRegister, setShowShareholderRegister] = useState(false);
  /* v25.45.4 3c (APD-013) — Anti-Dilution control removed (showAntiDil state +
     canAccessAntiDil entitlement gate deleted). Cap-table page is informative only. */
  const [showBulkMsg, setShowBulkMsg] = useState(false);
@@ -432,6 +441,23 @@ export default function CapTable() {
  totalInvested,
  };
  }, [rows, securitiesAsOf]);
+
+ /* WAVE 125 · FINDING 1 — THE FOUNDER TILE'S REFUSAL, decided by ROW PRESENCE and
+    not by the value of `totals.founderShares`. `sumByType("founder")` above sums an
+    EMPTY founder set to `0n`, which this screen then published as `0.00% · 0 shares`
+    for a company that has 150 recorded shares and NO founder row on record. The rule
+    is the cap-table engine's own — `server/lib/founderOwnershipEngine.ts:158-171`,
+    reason `no_founder_holding_on_record` — restated once for renderers in
+    `@/lib/captable/founderHoldingOnRecord`; it is READ here, not re-implemented.
+    It reads `totals.totalShares` rather than re-summing, so no second share
+    aggregation and no new `0n` literal enter this file. Hoisted into a `useMemo` so
+    the four `<Stat>` siblings below keep their static positional shape for the drop
+    gate (build_log/wave116/W116_TESTS.md §3.1). A founder row RECORDING zero still
+    publishes `0.00%` and `0 shares`. */
+ const founderHolding = useMemo(
+   () => founderHoldingVerdict(rows, totals.totalShares),
+   [rows, totals.totalShares],
+ );
 
  const sym = currencySymbol(region);
 
@@ -665,6 +691,22 @@ export default function CapTable() {
  <Button onClick={() => setLocation("/founder/rounds")} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
  <Plus className="h-4 w-4 mr-2" /> Add security in Rounds
  </Button>
+ {/* ══════════════════════════════════════════════════════════
+     WAVE 130 — A SECOND CONTROL, BESIDE THE FIRST. THE FIRST IS UNCHANGED.
+     ══════════════════════════════════════════════════════════
+     The v25.48.3 Q-F1 route-to-Rounds button above keeps its copy and its
+     `button-add-security` test id byte-for-byte: issuing equity through a round
+     remains the cleaner audit trail and is still the recommended path.
+
+     But it is not the only true statement about a cap table. A company that
+     arrives on Capavate having already incorporated — or having already raised
+     — has shareholders that predate anything Capavate witnessed, and until this
+     wave the ONLY way to record them was to invent a round with a fabricated
+     pre-money valuation, share count and price per share (W130_PREFLIGHT.md
+     §1.2). This control records what is already true instead. */}
+ <Button variant="outline" onClick={() => setShowShareholderRegister(true)} data-testid="button-record-shareholder">
+ <Users className="h-4 w-4 mr-2" /> Record shareholder
+ </Button>
  </>
  }
  />
@@ -827,9 +869,20 @@ export default function CapTable() {
      So the hint is now gated on the SAME condition as the value it sits under.
      A genuine zero still prints `0 shares`; a refusal prints nothing. The
      `Total shares` hint is untouched — it carries the view and denominator, not
-     a figure. */}
+     a figure.
+
+     WAVE 125 · FINDING 1 — WAVE 118 CLOSED THE LOAD-FAILURE REFUSAL AND MISSED
+     THE OTHER ONE. `viewRefusal` covers "the engine published nothing". It does
+     NOT cover "the engine published a cap table that contains no founder row",
+     which is what `BluePrint Catalyst Limited` is: 150 shares on record, one
+     investor holding all 150, no founder row. Both the value and the hint were
+     gated on conditions that were all TRUE there, so this tile printed
+     `0.00%` over `0 shares` while /founder/dashboard printed `—` for the same
+     quantity from the same data. `founderHolding.refuse` (see the `useMemo`
+     above) is the third gate; it fires on ROW PRESENCE, so a founder row that
+     RECORDS zero is untouched and still prints `0.00%` / `0 shares`. */}
  <Stat label="Total shares" value={securities.isSuccess && !viewRefusal ? fmtNum(totalSharesNum) : MONEY_UNAVAILABLE} hint={`${VIEW_LABEL[view]} view · ${VIEW_DENOMINATOR_LABEL[view]}`} icon={Layers} testid="stat-total-shares" />
- <Stat label="Founder ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
+ <Stat label="Founder ownership" value={founderHolding.refuse ? MONEY_UNAVAILABLE : securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={founderHolding.refuse ? founderHolding.statement ?? MONEY_UNAVAILABLE : securities.isSuccess && !viewRefusal ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
  <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(investorSharesNum)} shares` : MONEY_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
  <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(optionSharesNum)} options` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
  </div>
@@ -1198,6 +1251,16 @@ export default function CapTable() {
 
  {/* Sprint 11 D3 — Bulk message */}
  <BulkMessageDialog open={showBulkMsg} onClose={() => setShowBulkMsg(false)} rows={enrichedRows} toast={toast} />
+
+ {/* WAVE 130 — the shareholder register, both first-run starting points, and the
+     explicit “who can see this cap table” list. Mounted unconditionally and driven
+     by its own `open` prop, so the dialog is genuinely reachable and the founder
+     can return to a part-finished first run at any time. */}
+ <ShareholderRegisterPanel
+   companyId={companyId}
+   open={showShareholderRegister}
+   onOpenChange={setShowShareholderRegister}
+ />
 
  {/* v25.11 NC-1 fix — the AddSecurityDialog component existed (line 991+) but was
   * never mounted in the JSX tree, so clicking "Add security" set state but no

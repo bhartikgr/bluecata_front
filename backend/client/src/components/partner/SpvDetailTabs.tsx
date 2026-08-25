@@ -25,6 +25,14 @@ import {
   summariseCommittedCapital,
   pendingSubscriptionsStatement,
   SPV_COMMITTED_FIGURE_LABEL,
+  /* WAVE 127 · FINDING 3 — the stage label, the named denominator and the
+     count basis, taken from the same module as the committed predicate so this
+     tab and the Fund Commitment Register cannot describe one row differently. */
+  spvSubscriptionStageLabel,
+  spvRegisterRowIsPreCommitment,
+  SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+  SPV_REGISTER_ALL_STAGES_BASIS,
+  SPV_INVESTOR_COUNT_BASIS,
 } from "@shared/spvCommittedCapital";
 import { displayCompanyMinor } from "@/lib/money/companyMoneyOnRecord";
 /* WAVE 115 · FINDING 6 — the wave-106 field-refusal helper, reused. */
@@ -83,14 +91,25 @@ import {
   SPV_JURISDICTION_GENERIC_NOTICE,
   spvJurisdictionDisplay, /* WAVE 40 / F-3 — single jurisdiction precedence */
 } from "@shared/spvEngine";
+/* WAVE 126 / FINDING 2 — whole-currency-unit entry at the edge, exact minor
+   units on the wire. See partnerMoneyInput.ts for why this is bigint-only. */
+import {
+  parseWholeUnits,
+  wholeUnitsLabel,
+  wholeUnitsLabelNoCurrency,
+  wholeUnitsPlaceholder,
+  toWireMinor,
+  isImplausiblyLarge,
+  minorToWholeUnitsInput,
+} from "./partnerMoneyInput";
 
 /* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
  * exponent notation ("1e7" → NaN), decimals, and non-numeric strings.
  * Returns a finite non-negative integer or throws. */
 function parseMinor(v: string): number {
   const s = (v ?? "").trim();
-  if (!s) throw new Error("Enter a whole amount in the currency's smallest unit (cents)");
-  if (!/^\d+$/.test(s)) throw new Error("Amount must be a whole number in the currency's smallest unit (cents) - no decimals, no scientific notation");
+  if (!s) throw new Error("Enter an amount.");
+  if (!/^\d+$/.test(s)) throw new Error("Enter the amount as an ordinary figure, using digits.");
   const n = Number(s);
   if (!Number.isSafeInteger(n) || n < 0) throw new Error("Amount is out of range");
   return n;
@@ -112,6 +131,46 @@ function parseMinor(v: string): number {
  * handlers — and, unlike the old copy, it reports the field name and the
  * permitted range in the message the operator actually sees.
  */
+/* WAVE 126 / FINDING 3 — WHAT A HURDLE IS, AND THEREFORE WHAT BOUNDS IT.
+ *
+ * The field is the SPV's PREFERRED RETURN threshold: the return LPs receive on
+ * contributed capital before any carry is taken. It is not a participation cap
+ * and it is not a multiple, and that distinction is the whole reason this bound
+ * can be stated at all — a 2x participation cap legitimately reads as 200%, so
+ * bounding EVERY percentage field at 100 would be wrong. This one is different:
+ *
+ *   - UPPER BOUND 100. A preferred return of 250% would mean the LPs must be
+ *     returned 3.5x their capital before the GP participates at all. No SPV is
+ *     written that way, and the value the owner typed (250) was plainly meant as
+ *     "2.5x" or was a slip for 25. Both readings are refused rather than
+ *     silently modelled, because the waterfall this field feeds produces a split
+ *     that reads as authoritative.
+ *   - LOWER BOUND above 0. A 0% hurdle is not a hurdle; the field is optional
+ *     and leaving it BLANK is how the client says "no hurdle" (blank is not
+ *     sent, so the SPV's agreed term applies). A typed 0 is ambiguous between
+ *     "no hurdle" and an unfinished entry, so it is refused with that sentence.
+ *   - NOT BOUNDED to whole numbers. 8.5% is an ordinary preferred return.
+ *
+ * The refusal is RENDERED next to the field and the Preview button is disabled,
+ * because the pre-existing behaviour — a submit-time toast with the button left
+ * enabled — is what let 250 through with no message and no red border. */
+function hurdleRefusal(raw: string): string | null {
+  const t = (raw ?? "").trim();
+  if (t === "") return null;
+  if (!/^\d+(\.\d+)?$/.test(t)) {
+    return "Enter the hurdle as a percentage, using digits — for example 8 or 8.5. Leave it blank to use this SPV's agreed term.";
+  }
+  const r = parsePercentInputToFraction(t, { label: "Hurdle rate" });
+  if (!r.ok) return r.error;
+  if (r.fraction <= 0) {
+    return "A hurdle of 0% is not a hurdle. Leave the field blank to preview on this SPV's agreed term, or enter the preferred return the LPs are owed before carry.";
+  }
+  if (r.fraction > 1) {
+    return "A hurdle is the preferred return the LPs receive before any carry is taken, so it cannot exceed 100%. If you meant a return multiple, enter the preferred return itself — 25 for 25%, not 250.";
+  }
+  return null;
+}
+
 function parsePercent(v: string, label = "Percentage"): number {
   const r = parsePercentInputToFraction(v, { label });
   if (!r.ok) throw new Error(r.error);
@@ -139,13 +198,13 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
   INVALID_UNITS_PCT: "Units percentage must be a fraction greater than 0 and at most 1 (0.25 = 25%).",
   SPV_WOUND_DOWN: "This SPV has been wound down. No further transfers can be recorded against it.",
   // WAVE 25 / FE-1 — mandate check-size bounds.
-  INVALID_CHECK_MIN: "Minimum check must be a whole, non-negative number, entered in the currency's smallest unit (cents).",
-  INVALID_CHECK_MAX: "Maximum check must be a whole, non-negative number, entered in the currency's smallest unit (cents).",
+  INVALID_CHECK_MIN: "Minimum check must be a positive amount, or left blank.",
+  INVALID_CHECK_MAX: "Maximum check must be a positive amount, or left blank.",
   INVALID_CHECK_RANGE: "Minimum check cannot be greater than maximum check.",
   // WAVE 25 / FE-7 — the compliance write path.
   INVALID_COMPLIANCE_PROFILE_PATCH: "Some compliance fields were not accepted. Check the KYC and accreditation values.",
   INVESTOR_NOT_RELATED_TO_PARTNER: "That investor is not in your partner workspace, so their compliance profile cannot be read or edited here.",
-  INVALID_AMOUNT: "Amount must be greater than zero, entered in the currency's smallest unit (cents).",
+  INVALID_AMOUNT: "Amount must be greater than zero.",
   INVALID_GROSS: "Gross proceeds must be a non-negative number.",
   EVENT_REQUIRED: "Please pick an event type.",
   DISTRIBUTION_BASIS_REQUIRED: "Cost basis is required for every distribution (never assumed).",
@@ -177,6 +236,68 @@ function fmt(minor: number | null | undefined, currency: string) {
 }
 
 /* ==========================================================================
+ * WAVE 126 / FINDING 2 + FINDING 3 — the one notice that sits under every
+ * partner money field.
+ *
+ * It does three jobs that used to be done nowhere, or done only after the
+ * client had already pressed the button:
+ *   1. CONFIRMS the amount, formatted, so "5,000,000.00 USD" is unmistakable
+ *      before anything is submitted.
+ *   2. REFUSES an impossible value inline, in a sentence, as the client types,
+ *      instead of a toast arriving after the fact with the control still
+ *      enabled behind it.
+ *   3. ASKS, in amber, about an amount large enough to be a slipped decimal,
+ *      without ever blocking it. There is no defensible universal maximum on a
+ *      private-market amount, and a hard cap would eventually refuse a real one.
+ *
+ * It is ONE element in ONE sibling position and it ALWAYS renders, so it does
+ * not change a panel's positional child shape and cannot trip the drop gate.
+ * ========================================================================== */
+/* WAVE 126 / FINDING 2 — the edge conversion.
+ *
+ * The client types the amount they mean, in whole currency units. This turns it
+ * into the exact minor-unit integer the wire has always carried, as a STRING,
+ * and `parseMinor` then runs on that string. So wave C's strict-integer gate is
+ * not weakened by the change: it is now the LAST check instead of the only one,
+ * and it can no longer be the thing that silently reinterprets a client's
+ * dollars as cents.
+ *
+ * `allowZero` is true because zero is a legitimate figure for several of these
+ * fields (a zero-cost basis, a zero minimum check); the panels that require a
+ * positive amount say so themselves. */
+function wholeUnitsToWire(raw: string, currency: string, label: string): string {
+  const r = parseWholeUnits(raw, currency, { label, allowZero: true });
+  if (!r.ok) throw new Error(r.message);
+  return toWireMinor(r.minor);
+}
+
+function MoneyEntryNotice({
+  raw,
+  currency,
+  label,
+  testid,
+}: { raw: string; currency: string; label: string; testid: string }) {
+  const state = useMemo(() => parseWholeUnits(raw, currency, { label }), [raw, currency, label]);
+  const untouched = (raw ?? "").trim() === "";
+  const large = state.ok && isImplausiblyLarge(state.minor, currency);
+  return (
+    <div className="text-[10px] leading-relaxed mt-0.5" data-testid={testid}>
+      {untouched ? (
+        <span className="text-[var(--cv-color-text-faint)]">Enter the amount in {currency}.</span>
+      ) : state.ok ? (
+        <span className={large ? "text-amber-700" : "text-[var(--cv-color-text-secondary)]"}>
+          {large
+            ? `This will be recorded as ${state.formatted}. That is an unusually large amount — please confirm it is the figure you mean.`
+            : `This will be recorded as ${state.formatted}.`}
+        </span>
+      ) : (
+        <span className="text-rose-600" data-testid={`${testid}-refusal`}>{state.message}</span>
+      )}
+    </div>
+  );
+}
+
+/* ==========================================================================
  * WAVE 106 - FINDING 3: money fields that asked a human for "minor units".
  *
  * "Gross proceeds (minor)" accepted 100000 and meant $1,000.00, with nothing on
@@ -198,6 +319,17 @@ function fmt(minor: number | null | undefined, currency: string) {
  * than a re-scaled one.
  * ========================================================================== */
 
+/* WAVE 128 · FINDING 2 — THESE TWO HELPERS NOW HAVE NO CALL SITE ANYWHERE IN THE
+   CLIENT. Wave 126 converted six fields on this file away from them; Wave 128
+   converted the seventh and last (`FeePanel`'s fixed amount, ~line 2469), so no
+   rendered label on the partner surface asks a client for cents any more.
+
+   They are NOT deleted, for one reason stated plainly: `minorUnitsLabel` and
+   `minorUnitsLabelNoCurrency` are imported and asserted by
+   client/src/lib/__tests__/w106_partner_facing_copy.test.ts:32, which is outside
+   this wave's ownership. Deleting them would break a passing test belonging to
+   another wave to remove code that renders nothing. `w128_partner_cents_fields`
+   asserts they have no caller, which is the property that actually matters. */
 /** e.g. minorLabel("Gross proceeds", "USD") -> "Gross proceeds - in USD cents, not whole USD" */
 export function minorUnitsLabel(name: string, currency: string): string {
   const unit = minorUnitName(currency);
@@ -269,7 +401,12 @@ function Edu({ children, testid }: { children: React.ReactNode; testid?: string 
 }
 
 type Sub = { investorId: string; commitmentMinor: number; status: string };
-type RegisterRow = { investorId: string; commitmentMinor: number; ownershipPct: number };
+/* WAVE 127 · FINDING 3 — `status` added. The server's `investorRegister` always
+   knew each row's stage and simply did not send it, so this tab printed a
+   `review` subscription as `$2,500.00 (100.0%)` with nothing to say it was not a
+   commitment. Optional because older cached payloads may predate the field, and
+   an absent stage is reported as unrecorded rather than assumed committed. */
+type RegisterRow = { investorId: string; commitmentMinor: number; ownershipPct: number; status?: string | null };
 type Fee = { layer: string; feeType: string; carryPct: number | null; fixedAmountMinor: number | null };
 type Deployment = { companyId: string; amountMinor: number; status: string };
 /* WAVE 32 / CP-SPV-30 capability 2 — the waterfall now records a
@@ -604,6 +741,17 @@ export function SpvDetailTabs({
           <div data-testid="spv-detail-lpcount">
             <div className="font-medium">Investors</div>
             <div className="text-xs">{lpCount}</div>
+            {/* WAVE 127 · FINDING 3 — the count and the raise figure above it were
+                read as a contradiction on the live site: `Raise progress $0.00`
+                beside `Investors: 1`. Both were CORRECT and they answer different
+                questions — the raise figure is committed-only, this count is every
+                non-withdrawn subscription at any stage. Nothing on screen said so,
+                which is the defect. The number does not change; its basis is now
+                stated, as a sibling line rather than by rewording the figure. */}
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-lpcount-basis">
+              This {SPV_INVESTOR_COUNT_BASIS}. The raise figure above counts committed capital only, so the two can
+              legitimately differ.
+            </div>
           </div>
           {/* WAVE 10 / EN-1 + EN-2 — the way in to the performance surface.
               WITHOUT THIS THE PAGE IS UNREACHABLE, which is trap #1 exactly:
@@ -661,7 +809,7 @@ export function SpvDetailTabs({
           <div><span className="font-medium">Stage:</span> {detail.mandate?.stage?.length ? detail.mandate.stage.join(", ") : detail.mandate ? "Any" : "—"}</div>
           <MandateEmptyState mandate={detail.mandate ?? null} canWrite={canWrite} />
         </div>
-        {canWrite && <MandatePanel spvId={spvId} mandate={detail.mandate ?? null} onChanged={onChanged} />}
+        {canWrite && <MandatePanel spvId={spvId} currency={currency} mandate={detail.mandate ?? null} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Fees ─────────────────────────────────────────────────────────── */}
@@ -712,6 +860,12 @@ export function SpvDetailTabs({
       {/* ── LPs / Subscriptions + funds confirmation + capital accounts (D10) ── */}
       <TabsContent value="lps">
         <Edu testid="spv-edu-confirm">{SPV_EDU.confirmingInvestments}</Edu>
+        {/* WAVE 127 · FINDING 3 — the roster's basis, stated once above the rows.
+            Each row also carries its own stage; this says what the LIST is, so an
+            amount here is not mistaken for money raised. */}
+        <div className="text-[10px] text-[var(--cv-color-text-faint)] mb-1" data-testid="spv-detail-roster-basis">
+          {SPV_REGISTER_ALL_STAGES_BASIS}
+        </div>
         <div data-testid="spv-detail-roster" className="space-y-2">
           {register.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">no LPs yet</div>
@@ -738,9 +892,14 @@ export function SpvDetailTabs({
           <div className="font-medium text-sm mb-1">Capital accounts</div>
           <Edu testid="spv-edu-capital-accounts">{SPV_EDU.capitalAccounts}</Edu>
           <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-capital-accounts-source">
+            {/* WAVE 135 · FINDING 1 — "the SPV detail payload" is the name of an API
+                response. The client's question is only ever "how current is this?",
+                and the honest answer on this branch is that the figures came with the
+                page rather than being re-read. Two literal branches stay two literal
+                branches (the guard reads a collapsed pair as a removal). */}
             {capitalAccountsSource === "endpoint"
               ? "Read live from this vehicle's capital accounts."
-              : "Showing the figures carried on the SPV detail payload."}
+              : "Showing the figures as they stood when this page was opened, not re-read just now."}
           </div>
           {capitalAccountRows.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">not yet reported</div>
@@ -1140,36 +1299,127 @@ function EsignaturePanel({
     onSuccess: () => { void refetch(); toast({ title: "Envelope voided" }); },
   });
 
-  if (isLoading) {
-    return <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-loading">Loading…</div>;
-  }
-  if (isError) {
-    return (
-      <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="spv-esign-error">
-        {error instanceof Error ? error.message : "Could not load e-signature envelopes."}
-      </div>
-    );
-  }
-  if (data && data.schemaInstalled === false) {
-    return (
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" data-testid="spv-esign-schema-missing">
-        {data.message ?? "The e-signature tables are not installed on this database yet."}
-      </div>
-    );
-  }
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 127 · FINDING 1 — THE EARLY RETURNS ARE GONE. THIS WAS THE LAUNCH
+                            BLOCKER, AND IT WAS THREE LINES OF CONTROL FLOW.
+     ══════════════════════════════════════════════════════════════════════════
+     WHAT THIS CODE USED TO DO:
 
+         if (isError) {
+           return <div data-testid="spv-esign-error">{error.message}</div>;
+         }
+
+     An EARLY RETURN. One failed GET of the envelope LIST deleted the entire
+     panel — the signing-method line, the envelope list, AND the "Send a
+     document for signature" form below, which does not depend on that read at
+     all and would have worked. So a partner opened the tab that gets LP
+     subscription documents signed and saw one sentence and nothing else, and
+     the vehicle could not take money. One failed READ deleted the whole WRITE
+     capability.
+
+     E-SIGNATURE IS BUILT AND IT RUNS. server/lib/esignatureStore.ts is the
+     engine, server/lib/esignatureRoutes.ts is its HTTP surface, registered at
+     server/routes.ts:1470, and this panel is its UI. Nothing here is a stub.
+     The sentence the live site showed —
+     "An unexpected error occurred. Please try again." — occurs exactly once in
+     this codebase, as the default fallback of sanitizeErrorMessage()
+     (server/lib/sanitize.ts:68), which substitutes it only under
+     NODE_ENV=production. It reached this component because throwIfResNotOk
+     (client/src/lib/queryClient.ts) prefers a server-supplied human message.
+     So the list read returned HTTP 500 ESIGN_FAILED and the panel deleted
+     itself in response.
+
+     WHAT IT DOES NOW. The three states are HOISTED into derived values and
+     rendered as SIBLING banners above a tree that stays whole, so the send
+     form survives a failed list read. Nothing is swallowed: the server's own
+     message is still shown, and the route still answers 500. The loading and
+     schema-missing copy and test ids are carried across byte-for-byte — the
+     shape changed, the copy did not.
+
+     AND IT NO LONGER LIES ABOUT AN EMPTY REGISTER. On a failed read `envelopes`
+     is [], which used to fall through to "No documents have been sent for
+     signature on this vehicle yet" — a false statement about a legal record.
+     That slot now carries a distinct unavailable line, and the empty copy is
+     kept for when it is actually true. */
+  const esignReadFailure = useMemo<string | null>(() => {
+    if (!isError) return null;
+    const detail = error instanceof Error ? error.message.trim() : "";
+    return detail.length > 0 ? detail : "Could not load e-signature envelopes.";
+  }, [isError, error]);
+  const esignSchemaMissing = !!data && data.schemaInstalled === false;
   const envelopes = data?.envelopes ?? [];
 
   return (
     <div className="space-y-4" data-testid="spv-detail-esignature">
+      {isLoading && (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-loading">Loading…</div>
+      )}
+      {esignReadFailure !== null && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900"
+          data-testid="spv-esign-error"
+          data-esign-failure-reference="ESIGN_LIST_READ"
+        >
+          <div className="font-medium">The list of documents already sent for signature could not be loaded.</div>
+          <div className="mt-1">
+            This vehicle and its existing envelopes are unaffected — nothing has been lost, voided or cancelled, and no
+            signature has been altered. Only the list read failed, so the list is not shown rather than shown
+            incomplete. You can still send a new document for signature using the form below, and you can retry the
+            list at any time. If it keeps failing, send support the reference below together with this vehicle's
+            name and the time you saw it, and they will be able to find exactly what went wrong.
+          </div>
+          {/* WAVE 135 · FINDING 1 + CLASS B — two defects in one block. "so an operator
+              can trace the failure server-side" described OUR process, and the line
+              below rendered `esignReadFailure` verbatim in a monospace face: a raw
+              machine failure string, presented to a client as if it were something to
+              read. The support instruction survives, because asking for a reference is
+              a genuinely useful thing to ask for; the value is now labelled as a
+              REFERENCE, which is what a client does with it. The element and its
+              testid stay exactly where they were so no positional shape moves, and
+              `data-esign-failure-reference="ESIGN_LIST_READ"` above is untouched — a
+              machine value in an attribute no user reads is explicitly allowed (R77). */}
+          <div className="mt-1 font-mono text-[10px]" data-testid="spv-esign-error-detail">Reference: {esignReadFailure}</div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-2"
+            data-testid="spv-esign-retry-btn"
+            onClick={() => void refetch()}
+          >
+            Retry loading the list
+          </Button>
+        </div>
+      )}
+      {esignSchemaMissing && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" data-testid="spv-esign-schema-missing">
+          {/* WAVE 135 · FINDING 1 — the fallback named our tables and our database. The
+              operative fact for the client is that signing is not available on their
+              vehicle yet and that nothing they have done is lost by it. */}
+          {data?.message ?? "Electronic signature is not available on this vehicle yet. Nothing you have already sent is affected, and no signature has been lost."}
+        </div>
+      )}
       <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-esign-provider">
-        Signing method: <span className="font-mono">{data?.provider ?? "unknown"}</span>
+        {/* WAVE 135 · CLASS B + FINDING 1 — the provider key reached the client raw,
+            with `"unknown"` as its fallback, in a monospace face. Through the shared
+            `humanizeMachineKey` like every other machine key on this surface, with a
+            sentence rather than a word when there is nothing on record.
+
+            "not configured" and "downgraded" are ours. The operative fact is the one
+            that protects the client and it is kept in full: we will REFUSE to send
+            rather than send by some lesser means they did not agree to. That is a
+            promise, and it is worth saying plainly. */}
+        Signing method: <span className="font-mono">{humanizeMachineKey(data?.provider, "Not on record")}</span>
         {data?.providerConfigMissing
-          ? " — not configured; sends will be refused rather than downgraded."
+          ? " — not available for this vehicle yet. A document will be refused rather than sent by any other means."
           : ""}
       </div>
 
-      {envelopes.length === 0 ? (
+      {esignReadFailure !== null ? (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-list-unavailable">
+          The envelope list is not shown because it could not be read. This does NOT mean no documents have been sent —
+          it means we do not currently know, and this panel will not guess about a signing record.
+        </div>
+      ) : envelopes.length === 0 ? (
         <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-empty">
           No documents have been sent for signature on this vehicle yet.
         </div>
@@ -1342,7 +1592,15 @@ function LpRow({
 }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
-  const [received, setReceived] = useState(String(row.commitmentMinor));
+  /* WAVE 126 · FINDING 2 — THIS PRE-FILL MUST BE CONVERTED TOO.
+     The submit path below now reads this box as WHOLE currency units. This
+     initializer used to seed it with `String(row.commitmentMinor)` — a raw
+     minor-unit integer. A $50,000 commitment therefore pre-filled as "5000000",
+     and a client who accepted the pre-filled amount without editing it would
+     have confirmed $5,000,000.00 of received funds. Converting the submit side
+     without converting the seed does not remove the 100x error, it just moves
+     it to the default value, which is the likeliest value to be submitted. */
+  const [received, setReceived] = useState(minorToWholeUnitsInput(row.commitmentMinor, currency));
   const [reference, setReference] = useState("");
   const [result, setResult] = useState<{ status: string; deltaMinor: number; note: string } | null>(null);
 
@@ -1352,7 +1610,7 @@ function LpRow({
       // exponent notation ("1e7" → 1 under-submit) and non-integer input.
       const j = await (
         await apiRequest("POST", `/api/partner/me/spv/${spvId}/subscriptions/${encodeURIComponent(row.investorId)}/confirm-funds`, {
-          receivedMinor: parseMinor(received),
+          receivedMinor: parseMinor(wholeUnitsToWire(received, currency, "Amount received")),
           reference: reference.trim() || null,
         })
       ).json();
@@ -1369,7 +1627,31 @@ function LpRow({
   return (
     <div className="text-xs border rounded p-2" data-testid={`spv-lp-row-${row.investorId}`}>
       <div className="flex justify-between items-center gap-2">
-        <span className="truncate">{partyReferenceLabel(row.investorId)}: {fmt(row.commitmentMinor, currency)} ({(row.ownershipPct * 100).toFixed(1)}%)</span>
+        {/* WAVE 127 · FINDING 3 — THE ROW NOW STATES ITS OWN STAGE, AND THE
+            PERCENTAGE NAMES WHAT IT IS A PERCENTAGE OF.
+
+            This line used to read exactly
+              `{ref}: {amount} ({pct}%)`
+            and nothing more. On the live vehicle that rendered a subscription
+            whose stage is `review` as `$2,500.00 (100.0%)`, which reads as a
+            commitment, while the Close and K-1 tabs correctly said nothing was
+            committed. Those tabs were RIGHT; this row was wrong in its framing.
+
+            The `100.0%` was not a percentage of the $30.00 target either — the
+            denominator is the sum of all non-withdrawn subscriptions at any
+            stage, so one row over one row is 100%. An unnamed denominator is not
+            a fact, so it is named here. */}
+        <span className="truncate">
+          {partyReferenceLabel(row.investorId)}: {fmt(row.commitmentMinor, currency)} ({(row.ownershipPct * 100).toFixed(1)}%
+          {" "}— {SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL})
+          {" "}
+          <span
+            className={spvRegisterRowIsPreCommitment(row.status) ? "text-amber-900" : "text-emerald-800"}
+            data-testid={`spv-lp-row-stage-${row.investorId}`}
+          >
+            [{spvSubscriptionStageLabel(row.status)}]
+          </span>
+        </span>
         {canWrite && (
           <Button variant="outline" size="sm" data-testid={`spv-confirm-funds-open-${row.investorId}`} onClick={() => setOpen((o) => !o)}>
             {open ? "Cancel" : "Confirm funds"}
@@ -1379,8 +1661,9 @@ function LpRow({
       {open && (
         <div className="mt-2 space-y-2" data-testid={`spv-confirm-funds-panel-${row.investorId}`}>
           <div>
-            <Label className="text-[10px]">{minorUnitsLabel("Amount received", currency)}</Label>
-            <Input value={received} onChange={(e) => setReceived(e.target.value)} type="number" data-testid={`spv-confirm-received-${row.investorId}`} />
+            <Label className="text-[10px]">{wholeUnitsLabel("Amount received", currency)}</Label>
+            <Input value={received} onChange={(e) => setReceived(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} data-testid={`spv-confirm-received-${row.investorId}`} />
+            <MoneyEntryNotice raw={received} currency={currency} label="Amount received" testid={`spv-confirm-received-notice-${row.investorId}`} />
           </div>
           <div>
             <Label className="text-[10px]">Wire reference (optional)</Label>
@@ -1430,7 +1713,7 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
     mutationFn: async () => {
       // Wave C v3 hardening (GPT-5 v2 finding): use parseMinor to reject
       // exponent notation and non-integer input on the gross proceeds field.
-      const body: Record<string, unknown> = { grossProceedsMinor: parseMinor(gross) };
+      const body: Record<string, unknown> = { grossProceedsMinor: parseMinor(wholeUnitsToWire(gross, currency, "Gross proceeds")) };
       if (hurdle.trim()) body.hurdleRatePct = parsePercent(hurdle, "Hurdle rate"); // WAVE 4A: hurdleRatePct is a FRACTION.
       /* Blank field is deliberately NOT sent, so the server applies the SPV's
          stored term. Sending null would mean "explicitly no hurdle". */
@@ -1461,22 +1744,32 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
     },
   });
 
+  const hurdleProblem = useMemo(() => hurdleRefusal(hurdle), [hurdle]);
+  const grossProblem = useMemo(() => {
+    const r = parseWholeUnits(gross, currency, { label: "Gross proceeds" });
+    return r.ok ? null : r.message;
+  }, [gross, currency]);
+
   return (
     <div className="mt-3 border-t pt-3" data-testid="spv-distribution-preview">
       <div className="font-medium text-sm mb-1">Distribution preview (offline)</div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <Label className="text-[10px]">{minorUnitsLabel("Gross proceeds", currency)}</Label>
-          <Input value={gross} onChange={(e) => setGross(e.target.value)} type="number" aria-describedby="spv-preview-gross-echo" data-testid="spv-preview-gross" />
-          <div id="spv-preview-gross-echo" className="text-[10px] mt-0.5 text-[var(--cv-color-text-faint)]" data-testid="spv-preview-gross-echo">
-            {minorUnitsEcho(gross, currency)
-              ? `= ${minorUnitsEcho(gross, currency)}`
-              : `Enter the amount in ${currency} ${minorUnitName(currency)}. The amount appears here as you type.`}
+          <Label className="text-[10px]">{wholeUnitsLabel("Gross proceeds", currency)}</Label>
+          <Input value={gross} onChange={(e) => setGross(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} aria-describedby="spv-preview-gross-echo" data-testid="spv-preview-gross" />
+          <div id="spv-preview-gross-echo" className="mt-0.5" data-testid="spv-preview-gross-echo">
+            <MoneyEntryNotice raw={gross} currency={currency} label="Gross proceeds" testid="spv-preview-gross-notice" />
           </div>
         </div>
         <div>
           <Label className="text-[10px]">Hurdle % (optional)</Label>
-          <Input value={hurdle} onChange={(e) => setHurdle(e.target.value)} type="number" placeholder="e.g. 8" data-testid="spv-preview-hurdle" />
+          <Input value={hurdle} onChange={(e) => setHurdle(e.target.value)} inputMode="decimal" placeholder="e.g. 8" aria-invalid={hurdleProblem !== null} data-testid="spv-preview-hurdle" />
+          {/* WAVE 126 / FINDING 3 — one element, always present, so the panel's
+              sibling shape does not change with the field's validity
+              (build_log/wave116/W116_TESTS.md §3.1). */}
+          <div className="text-[10px] mt-0.5 text-rose-600" data-testid="spv-preview-hurdle-refusal">
+            {hurdleProblem ?? ""}
+          </div>
         </div>
       </div>
       {termHurdle !== null && (
@@ -1494,7 +1787,7 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
           </button>
         </div>
       )}
-      <Button size="sm" className="mt-2" disabled={preview.isPending || !gross.trim()} onClick={() => preview.mutate()} data-testid="spv-preview-run">
+      <Button size="sm" className="mt-2" disabled={preview.isPending || !gross.trim() || grossProblem !== null || hurdleProblem !== null} onClick={() => preview.mutate()} data-testid="spv-preview-run">
         {preview.isPending ? "Computing…" : "Preview split"}
       </Button>
       {/* WAVE 26 / S-3 SECOND PATH — SIBLING of the result block, never nested
@@ -1923,8 +2216,8 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
       const rid = companyRoundId.trim();
       if (!cid) throw new Error("Company ID required");
       if (!rid) throw new Error("Company round ID required");
-      const amt = parseMinor(amount);
-      if (amt <= 0) throw new Error("Amount must be greater than zero");
+      const amt = parseMinor(wholeUnitsToWire(amount, currency, "Amount"));
+      if (amt <= 0) throw new Error("Amount must be greater than zero.");
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/deployments`, {
         companyId: cid,
         companyRoundId: rid,
@@ -1933,7 +2226,7 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
       })).json();
     },
     onSuccess: () => {
-      toast({ title: "Capital deployed", description: `${fmt(parseMinor(amount), currency)} allocated.` });
+      toast({ title: "Capital deployed", description: `${fmt(parseMinor(wholeUnitsToWire(amount, currency, "Amount")), currency)} allocated.` });
       setOpen(false);
       setCompanyId(""); setCompanyRoundId(""); setAmount(""); setEligibility(null);
       onChanged();
@@ -1965,9 +2258,9 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">Instrument is sourced from this round automatically.</div>
           </div>
           <div>
-            <Label htmlFor={`${id}-amount`} className="text-[10px]">{minorUnitsLabel("Amount", currency)} (whole number only)</Label>
-            <Input id={`${id}-amount`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-deploy-amount" placeholder="e.g. 5000000 = $50,000" />
-            {amount && /^\d+$/.test(amount) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(amount), currency)}</div>}
+            <Label htmlFor={`${id}-amount`} className="text-[10px]">{wholeUnitsLabel("Amount", currency)}</Label>
+            <Input id={`${id}-amount`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" data-testid="spv-deploy-amount" placeholder={wholeUnitsPlaceholder(currency)} />
+            <MoneyEntryNotice raw={amount} currency={currency} label="Amount" testid="spv-deploy-amount-notice" />
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => checkElig.mutate()} disabled={checkElig.isPending || !companyId.trim()} data-testid="spv-deploy-check-eligibility">
@@ -2030,7 +2323,7 @@ function MandateEmptyState({ mandate, canWrite }: { mandate: unknown; canWrite: 
 
 /* C2 v2 — Update SPV mandate. Uses canonical SPV_MANDATE_MODES enum;
  *          exposes companyIds/checkMin/checkMax (no more silent drops). */
-function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[]; companyIds?: string[]; checkMinMinor?: number | null; checkMaxMinor?: number | null; ruleTree?: unknown } | null; onChanged: () => void }) {
+function MandatePanel({ spvId, currency, mandate, onChanged }: { spvId: string; currency: string; mandate: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[]; companyIds?: string[]; checkMinMinor?: number | null; checkMaxMinor?: number | null; ruleTree?: unknown } | null; onChanged: () => void }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<string>((mandate?.mode as string) ?? SPV_MANDATE_MODES[0]);
@@ -2038,8 +2331,15 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
   const [geography, setGeography] = useState((mandate?.geography ?? []).join(", "));
   const [stage, setStage] = useState((mandate?.stage ?? []).join(", "));
   const [companyIds, setCompanyIds] = useState((mandate?.companyIds ?? []).join(", "));
-  const [checkMin, setCheckMin] = useState(mandate?.checkMinMinor != null ? String(mandate.checkMinMinor) : "");
-  const [checkMax, setCheckMax] = useState(mandate?.checkMaxMinor != null ? String(mandate.checkMaxMinor) : "");
+  /* WAVE 126 / F2 — the stored value is minor units; the field shows and takes
+     whole currency units. Converted by string surgery, never by dividing. */
+  const [checkMin, setCheckMin] = useState(minorToWholeUnitsInput(mandate?.checkMinMinor, currency));
+  /* WAVE 126 · FINDING 2 — same conversion as `checkMin` on the line above.
+     This seed was left as a raw minor-unit integer, so a stored maximum cheque
+     of $50,000 pre-filled as "5000000" into a box that now means whole units
+     and would have been saved back as $5,000,000.00 by any client who edited
+     the minimum and re-saved without touching the maximum. */
+  const [checkMax, setCheckMax] = useState(minorToWholeUnitsInput(mandate?.checkMaxMinor, currency));
   const id = useId();
 
   const save = useMutation({
@@ -2055,8 +2355,8 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
         stage: stage.split(",").map((s) => s.trim()).filter(Boolean),
         companyIds: companyIds.split(",").map((s) => s.trim()).filter(Boolean),
       };
-      if (checkMin.trim()) body.checkMinMinor = parseMinor(checkMin);
-      if (checkMax.trim()) body.checkMaxMinor = parseMinor(checkMax);
+      if (checkMin.trim()) body.checkMinMinor = parseMinor(wholeUnitsToWire(checkMin, currency, "Minimum check"));
+      if (checkMax.trim()) body.checkMaxMinor = parseMinor(wholeUnitsToWire(checkMax, currency, "Maximum check"));
       /* WAVE 25 / FE-1 — validation. An inverted range was accepted by BOTH
          sides and persisted: nothing in `setMandate` (spvEngineStore.ts:530)
          nor here ever compared the two. The server-side check is the real
@@ -2115,12 +2415,12 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <Label htmlFor={`${id}-checkMin`} className="text-[10px]">{minorUnitsLabelNoCurrency("Minimum check")}</Label>
-              <Input id={`${id}-checkMin`} value={checkMin} onChange={(e) => setCheckMin(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-min" placeholder="optional" />
+              <Label htmlFor={`${id}-checkMin`} className="text-[10px]">{wholeUnitsLabel("Minimum check", currency)}</Label>
+              <Input id={`${id}-checkMin`} value={checkMin} onChange={(e) => setCheckMin(e.target.value)} inputMode="decimal" data-testid="spv-mandate-check-min" placeholder="optional" />
             </div>
             <div>
-              <Label htmlFor={`${id}-checkMax`} className="text-[10px]">{minorUnitsLabelNoCurrency("Maximum check")}</Label>
-              <Input id={`${id}-checkMax`} value={checkMax} onChange={(e) => setCheckMax(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-max" placeholder="optional" />
+              <Label htmlFor={`${id}-checkMax`} className="text-[10px]">{wholeUnitsLabel("Maximum check", currency)}</Label>
+              <Input id={`${id}-checkMax`} value={checkMax} onChange={(e) => setCheckMax(e.target.value)} inputMode="decimal" data-testid="spv-mandate-check-max" placeholder="optional" />
             </div>
           </div>
           <div className="flex gap-2">
@@ -2157,7 +2457,16 @@ function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: str
       };
       if (showFixed) {
         if (!fixed.trim()) throw new Error(feeType === "fixed" ? "Fixed amount required for a fixed fee" : "Fixed amount required for a hybrid fee");
-        body.fixedAmountMinor = parseMinor(fixed);
+        /* WAVE 128 · FINDING 2 — a SEVENTH field asking for cents, found by this
+           wave's scan: the GP fee mandate's fixed amount. It was labelled
+           `minorUnitsLabel("Fixed amount", currency)` ("in USD cents, not whole
+           USD") and posted the typed integer as `fixedAmountMinor`, so a GP
+           entering a $50,000 fixed fee recorded $500.00. It now takes whole
+           currency units through the SAME converter as this file's other six
+           fields, and `parseMinor` still runs last on the resulting digit
+           string, so POST /api/partner/me/spv/:spvId/fees receives the exact
+           minor-unit integer it always did. */
+        body.fixedAmountMinor = parseMinor(wholeUnitsToWire(fixed, currency, "Fixed amount"));
       }
       if (showCarry) {
         if (!carry.trim()) throw new Error(feeType === "carry" ? "Carry % required for a carry fee" : "Carry % required for a hybrid fee");
@@ -2195,9 +2504,15 @@ function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: str
           </div>
           {showFixed && (
             <div>
-              <Label htmlFor={`${id}-fixed`} className="text-[10px]">{minorUnitsLabel("Fixed amount", currency)}</Label>
-              <Input id={`${id}-fixed`} value={fixed} onChange={(e) => setFixed(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-fee-fixed" />
-              {fixed && /^\d+$/.test(fixed) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(fixed), currency)}</div>}
+              <Label htmlFor={`${id}-fixed`} className="text-[10px]">{wholeUnitsLabel("Fixed amount", currency)}</Label>
+              <Input id={`${id}-fixed`} value={fixed} onChange={(e) => setFixed(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} data-testid="spv-fee-fixed" />
+              {/* WAVE 128 · FINDING 2 — the old approximate echo ("≈ $500.00",
+                  rendered only when the field held nothing but digits, and
+                  computed with `Number(fixed)`) is replaced by this file's own
+                  ratified notice: it renders ALWAYS, states the exact figure
+                  that will be recorded rather than an approximation, and refuses
+                  an impossible entry in a sentence. */}
+              <MoneyEntryNotice raw={fixed} currency={currency} label="Fixed amount" testid="spv-fee-fixed-notice" />
             </div>
           )}
           {showCarry && (
@@ -2594,7 +2909,7 @@ function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency
         toInvestorId: t,
         currency,
       };
-      if (amount.trim()) body.amountMinor = parseMinor(amount);
+      if (amount.trim()) body.amountMinor = parseMinor(wholeUnitsToWire(amount, currency, "Amount"));
       if (unitsPct.trim()) body.unitsPct = parsePercent(unitsPct, "Units");
       if (!body.amountMinor && !body.unitsPct) throw new Error("Enter an amount OR a units percentage");
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/transfers`, body)).json();
@@ -2625,8 +2940,8 @@ function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency
             <Input id={`${id}-to`} value={toId} onChange={(e) => setToId(e.target.value)} data-testid="spv-transfer-to" />
           </div>
           <div>
-            <Label htmlFor={`${id}-amt`} className="text-[10px]">{minorUnitsLabel("Amount", currency)}</Label>
-            <Input id={`${id}-amt`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-transfer-amount" placeholder="or leave blank and use % below" />
+            <Label htmlFor={`${id}-amt`} className="text-[10px]">{wholeUnitsLabel("Amount", currency)}</Label>
+            <Input id={`${id}-amt`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" data-testid="spv-transfer-amount" placeholder="or leave blank and use % below" />
           </div>
           <div>
             <Label htmlFor={`${id}-pct`} className="text-[10px]">Units % (0–100)</Label>
@@ -2649,8 +2964,11 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [event, setEvent] = useState("exit");
-  const [gross, setGross] = useState("");
-  const [costBasis, setCostBasis] = useState("");
+  /* WAVE 126 / F2 — these hold what the client TYPED, in whole currency units.
+     The minor-unit figures are derived in the mutation below and are the only
+     values that reach the wire. */
+  const [grossEntered, setGrossEntered] = useState("");
+  const [costBasisEntered, setCostBasisEntered] = useState("");
   // WAVE 1A / S-2 — the `collectionOutcome` selector is GONE. A partner may not
   // declare that carry was collected; the server rejects the key outright
   // (SETTLEMENT_NOT_CLIENT_SUPPLIED) and derives settlement from the gateway or a
@@ -2659,6 +2977,8 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
 
   const submit = useMutation({
     mutationFn: async () => {
+      const gross = wholeUnitsToWire(grossEntered, currency, "Gross proceeds");
+      const costBasis = wholeUnitsToWire(costBasisEntered, currency, "Cost basis");
       const g = parseMinor(gross);
       const cb = parseMinor(costBasis); // REQUIRED — server rejects if missing.
       const body: Record<string, unknown> = {
@@ -2672,7 +2992,7 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
     onSuccess: () => {
       toast({ title: "Distribution recorded" });
       setOpen(false);
-      setGross(""); setCostBasis("");
+      setGrossEntered(""); setCostBasisEntered("");
       onChanged();
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Could not record distribution", description: spvErrorMessage(e) }),
@@ -2697,14 +3017,14 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
             </select>
           </div>
           <div>
-            <Label htmlFor={`${id}-gross`} className="text-[10px]">{minorUnitsLabel("Gross proceeds", currency)}</Label>
-            <Input id={`${id}-gross`} value={gross} onChange={(e) => setGross(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-gross" />
-            {gross && /^\d+$/.test(gross) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(gross), currency)}</div>}
+            <Label htmlFor={`${id}-gross`} className="text-[10px]">{wholeUnitsLabel("Gross proceeds", currency)}</Label>
+            <Input id={`${id}-gross`} value={grossEntered} onChange={(e) => setGrossEntered(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} data-testid="spv-distribution-gross" />
+            <MoneyEntryNotice raw={grossEntered} currency={currency} label="Gross proceeds" testid="spv-distribution-gross-notice" />
           </div>
           <div>
-            <Label htmlFor={`${id}-cb`} className="text-[10px]">{minorUnitsLabel("Cost basis", currency)} <span className="text-red-700">(required)</span></Label>
-            <Input id={`${id}-cb`} value={costBasis} onChange={(e) => setCostBasis(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-cost-basis" />
-            {costBasis && /^\d+$/.test(costBasis) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(costBasis), currency)}</div>}
+            <Label htmlFor={`${id}-cb`} className="text-[10px]">{wholeUnitsLabel("Cost basis", currency)} <span className="text-red-700">(required)</span></Label>
+            <Input id={`${id}-cb`} value={costBasisEntered} onChange={(e) => setCostBasisEntered(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} data-testid="spv-distribution-cost-basis" />
+            <MoneyEntryNotice raw={costBasisEntered} currency={currency} label="Cost basis" testid="spv-distribution-cost-basis-notice" />
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">The total capital originally deployed (used to compute profit for carry).</div>
           </div>
           <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-distribution-settlement-note">
@@ -2787,8 +3107,11 @@ function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currenc
     mutationFn: async () => {
       const iid = investorId.trim();
       if (!iid) throw new Error("Investor ID required");
-      const amt = parseMinor(commitment);
-      if (amt <= 0) throw new Error("Commitment must be greater than zero");
+      /* WAVE 126 / F2 — the client types the commitment they mean, in whole
+         currency units. The wire value is still exact minor units. */
+      const parsed = parseWholeUnits(commitment, currency, { label: "Commitment" });
+      if (!parsed.ok) throw new Error(parsed.message);
+      const amt = parseMinor(toWireMinor(parsed.minor));
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/subscriptions`, {
         investorId: iid,
         commitmentMinor: amt,
@@ -2804,6 +3127,12 @@ function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currenc
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Could not add subscription", description: spvErrorMessage(e) }),
   });
+
+  /* WAVE 126 / F3 — the refusal is computed as the client types, so the control
+     is never enabled on a value the platform has already decided to refuse.
+     Hoisted into a useMemo rather than inlined so the rendered sibling shape of
+     the panel is unchanged. */
+  const commitState = useMemo(() => parseWholeUnits(commitment, currency, { label: "Commitment" }), [commitment, currency]);
 
   const personaLabels: Record<string, string> = {
     collective: "Collective member (Capavate-managed)",
@@ -2824,9 +3153,9 @@ function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currenc
             <Input id={`${id}-inv`} value={investorId} onChange={(e) => setInvestorId(e.target.value)} data-testid="spv-subscription-investor-id" placeholder="inv_…" />
           </div>
           <div>
-            <Label htmlFor={`${id}-commit`} className="text-[10px]">{minorUnitsLabel("Commitment", currency)}</Label>
-            <Input id={`${id}-commit`} value={commitment} onChange={(e) => setCommitment(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-subscription-commitment" />
-            {commitment && /^\d+$/.test(commitment) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(commitment), currency)}</div>}
+            <Label htmlFor={`${id}-commit`} className="text-[10px]">{wholeUnitsLabel("Commitment", currency)}</Label>
+            <Input id={`${id}-commit`} value={commitment} onChange={(e) => setCommitment(e.target.value)} inputMode="decimal" placeholder={wholeUnitsPlaceholder(currency)} data-testid="spv-subscription-commitment" />
+            <MoneyEntryNotice raw={commitment} currency={currency} label="Commitment" testid="spv-subscription-commitment-notice" />
           </div>
           <div>
             <Label htmlFor={`${id}-persona`} className="text-[10px]">Investor persona</Label>
@@ -2835,7 +3164,7 @@ function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currenc
             </select>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-subscription-submit">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending || !commitState.ok} data-testid="spv-subscription-submit">
               {submit.isPending ? "Adding…" : "Add subscription"}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-subscription-cancel">Cancel</Button>

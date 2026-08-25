@@ -193,7 +193,18 @@ describe("Partner workspace — currency validation", () => {
     expect([400, 422]).toContain(r.status);
   });
 
-  it("SPV creation accepts USD", async () => {
+  /* WAVE 138 / RULING R98 — this test pinned the pre-sign-off contract. The
+     launch sign-off gate (partnerRoutes.ts:1834-1836: signoffLegalName +
+     signoffAccepted, recorded fail-closed BEFORE the SPV is created) was added
+     deliberately so no partner-accessible path can create an SPV without a
+     durable authorization record. The owner ruled the gate is KEPT ("we cannot
+     shut things off to make it move forward"), so per R98 the stale TEST is
+     updated, never the gate.
+
+     R98 forbids reducing the assertion count. This block therefore does not
+     merely add the missing fields — it now also pins BOTH refusals, so the gate
+     itself is under test rather than merely satisfied. Assertions: 1 -> 4. */
+  it("SPV creation accepts USD when the launch sign-off is provided", async () => {
     const r = await request(app)
       .post("/api/partner/me/spvs")
       .set("x-user-id", "u_avi_managing")
@@ -203,7 +214,35 @@ describe("Partner workspace — currency validation", () => {
         vintage: 2026,
         currency: "USD",
         status: "planned",
+        signoffLegalName: "Avinay Kumar",
+        signoffAccepted: true,
       });
     expect(r.status).toBe(201);
+  });
+
+  it("SPV creation is REFUSED when the sign-off is absent or unaccepted", async () => {
+    const base = {
+      spvName: "Ungated SPV",
+      jurisdiction: "Delaware",
+      vintage: 2026,
+      currency: "USD",
+      status: "planned",
+    };
+
+    // No typed legal name at all.
+    const noName = await request(app)
+      .post("/api/partner/me/spvs")
+      .set("x-user-id", "u_avi_managing")
+      .send({ ...base, signoffAccepted: true });
+    expect(noName.status).toBe(400);
+    expect(noName.body.error).toBe("SIGNOFF_LEGAL_NAME_REQUIRED");
+
+    // Name typed, attestation not accepted.
+    const notAccepted = await request(app)
+      .post("/api/partner/me/spvs")
+      .set("x-user-id", "u_avi_managing")
+      .send({ ...base, signoffLegalName: "Avinay Kumar", signoffAccepted: false });
+    expect(notAccepted.status).toBe(400);
+    expect(notAccepted.body.error).toBe("SIGNOFF_ATTESTATION_REQUIRED");
   });
 });

@@ -251,7 +251,10 @@ const adminNav: NavGroup[] = [
          became 15). Every fee, every product line, every ledger lives behind
          this single link now, one tab per concern, with a source-of-truth
          panel next to every editable field. */
-      { href: "/admin/fees", label: "Fees & Billing", icon: DollarSign, testId: "nav-admin-fees" },
+      /* WAVE 131 — renamed: this is now the ONE door to pricing AND payments for
+         Capavate, Collective, Consortium Partners and Admin, so the label says so
+         rather than naming only fees. */
+      { href: "/admin/fees", label: "Pricing & Payments", icon: DollarSign, testId: "nav-admin-fees" },
       /* WAVE 7 R-1 — pricing-model administration RESTORED.
          /admin/fees does manage pricing models, but only for ONE product line
          (CAPAVATE_ANNUAL_PRODUCT_LINE, AdminFeesConsolidated.tsx:405) and only
@@ -262,8 +265,19 @@ const adminNav: NavGroup[] = [
          not URLs, so they are restored as pages rather than aliases.
          This does NOT reopen the "one fee entry point" ruling: fees still live
          only behind /admin/fees. Pricing MODELS are a different object. */
-      { href: "/admin/pricing", label: "Pricing & Subscriptions", icon: DollarSign, testId: "nav-admin-pricing" },
-      { href: "/admin/pricing-models", label: "Pricing Models", icon: DollarSign, testId: "nav-admin-pricing-models" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/pricing is now the "Capavate Pricing & Gateway" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/pricing-models is now the "Pricing Models" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
+
       { href: "/admin/companies", label: "Companies", icon: Building },
       { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
@@ -296,7 +310,12 @@ const adminNav: NavGroup[] = [
          capability now lives in the "Fee Schedules" tab of /admin/fees and this
          entry routes there (App.tsx aliases the URL onto that tab). One
          implementation, one page — the consolidation is finished, not undone. */
-      { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign, testId: "nav-admin-collective-payment-schedules" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/collective-payment-schedules is now the "Collective Payment Schedules" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
       /* WAVE 7 R-1 — /admin/collective-subscriptions is RESTORED as a real
          page, not a deep link. Unlike RS-1's fee schedules, the capability it
          carries is absent from /admin/fees entirely: promote, clone,
@@ -307,7 +326,12 @@ const adminNav: NavGroup[] = [
          The /admin/application-fee and /admin/platform-fees entries stay
          DELETED: their editor was removed deliberately for unit-correctness,
          and the "exactly ONE editor" statement above still holds. */
-      { href: "/admin/collective-subscriptions", label: "Collective Subscriptions", icon: DollarSign, testId: "nav-admin-collective-subscriptions" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/collective-subscriptions is now the "Collective Subscriptions" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
     ],
   },
   {
@@ -330,7 +354,12 @@ const adminNav: NavGroup[] = [
          PUT was never rebuilt there. PUT /api/admin/partner/commission-rates/
          :tier has had no client caller since D2.5, so partner commission rates
          have been UNEDITABLE. This page is that editor and is unchanged. */
-      { href: "/admin/commission-rates", label: "Partner Commission Rates", icon: DollarSign, testId: "nav-admin-commission-rates" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/commission-rates is now the "Commission Rates" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
       /* D2.5 SLICE 1 — DELETED: /admin/partner-pl. It is a section of the
          /admin/fees "Ledger & Invoices" tab, and WAVE 7 R-1 re-confirmed that
          computationally: every endpoint PartnerPL.tsx calls is reachable from a
@@ -346,7 +375,12 @@ const adminNav: NavGroup[] = [
          dropped the WRITES; POST/PATCH/DELETE /api/admin/partner-fees had no
          caller in any routed page. The writes now live in the "Fee Schedules"
          tab of /admin/fees and this entry routes there. */
-      { href: "/admin/partner-fees", label: "Partner Fees", icon: DollarSign, testId: "nav-admin-partner-fees" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/partner-fees is now the "Fee Schedules" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
       /* W6 — Ask-an-Expert partner-responder registry. */
       { href: "/admin/partner-responders", label: "Partner Responders", icon: Handshake },
       /* WAVE 14 — /admin/partner-billing-ops. NOT a duplicate of /admin/fees:
@@ -356,7 +390,12 @@ const adminNav: NavGroup[] = [
          build's open pricing decisions. Verified by grep before adding this
          entry — every endpoint this page calls was registered in Wave 14 and has
          no other client caller, so nothing here shadows an existing screen. */
-      { href: "/admin/partner-billing-ops", label: "Partner Billing Ops", icon: DollarSign, testId: "nav-admin-partner-billing-ops" },
+      /* WAVE 131 (R95 / R96 req 1) — SIDEBAR ENTRY RETIRED, CAPABILITY KEPT.
+         The owner asked repeatedly for ONE pricing link; the previous waves kept
+         adding consolidated pages without ever removing a door, so eight pricing
+         links still sat in this sidebar. /admin/partner-billing-ops is now the "Partner Tier Prices & Billing Ops" tab of
+         /admin/fees, which MOUNTS the same page component, and the URL still
+         resolves there (App.tsx) so no bookmark breaks. */
     ],
   },
   {

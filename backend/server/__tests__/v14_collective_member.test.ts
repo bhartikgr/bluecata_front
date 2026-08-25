@@ -11,6 +11,7 @@ import express, { type Express } from "express";
 import http from "node:http";
 import { registerRoutes } from "../routes";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture"; /* WAVE 134 cause 1 */
 
 let app: Express;
 let server: http.Server;
@@ -22,7 +23,12 @@ beforeAll(async () => {
   server = http.createServer(app);
   await registerRoutes(server, app);
   // Activate aisha as a Collective member (positive control).
-  collectiveMembershipStore.activate("u_aisha_patel", "u_admin");
+  // WAVE 134 cause 1 (R98) — activation alone no longer admits: requireCollectiveMember
+  // step 4 (W2-A1) refuses an active member with no accreditation self-declaration.
+  // The ONE shared helper seats a fully compliant investor via the production capture
+  // primitive; the gate itself is unchanged and still refuses an undeclared member
+  // (w134_collective_accreditation_fixture.test.ts).
+  seatCompliantInvestor("u_aisha_patel", { activatedBy: "u_admin" });
   // Ensure maya_chen (a known founder persona) is NOT an active Collective
   // member — she should be denied with 403 NOT_COLLECTIVE_MEMBER.
   try {

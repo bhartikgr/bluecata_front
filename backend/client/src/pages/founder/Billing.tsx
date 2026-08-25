@@ -590,7 +590,19 @@ export default function FounderBilling() {
             <div className="flex items-baseline justify-between flex-wrap gap-2">
               <div>
                 <div className="text-xl font-semibold font-mono tabular-nums" data-testid="text-collective-application-fee">
-                  {appFeeData ? `$${Number(appFeeData.amountMinor).toLocaleString("en-US")} ${appFeeData.currency || "USD"}` : "—"}
+                  {/* WAVE 131 · R97 — THE ONE AUTHORISED EDIT IN THIS SACRED FILE.
+                      Was: `$${Number(appFeeData.amountMinor).toLocaleString("en-US")}`.
+                      `amountMinor` is TRUE minor units (the seed default is 30000
+                      for a $300 fee), so prefixing a dollar sign to the raw cents
+                      rendered $300 as "$30,000" — the fee overstated a hundredfold
+                      on the founder's own billing page. formatMinor applies the
+                      currency's ISO-4217 exponent and does no arithmetic on money
+                      here; no Number()/parseInt/parseFloat remains on this value.
+                      When the fee is ABSENT no figure is rendered at all and the
+                      reason is stated, rather than a dash that reads as zero. */}
+                  {appFeeData
+                    ? `${formatMinor(appFeeData.amountMinor, appFeeData.currency || "USD")} ${appFeeData.currency || "USD"}`
+                    : "Not available — the application fee has not been published yet."}
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
                   One-time fee charged when you apply to the Capavate Collective.

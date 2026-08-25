@@ -43,7 +43,7 @@
  *     server returns PAYMENT_GATEWAY_UNAVAILABLE (503) until a gateway is
  *     wired, and that is surfaced as readable copy, not a raw code.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -52,11 +52,36 @@ import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+/* WAVE 128 · FINDING 2 — the partner money-entry contract (Wave 126) and its
+   shared confirmation line. This panel's commitment field is one of the five
+   that still asked a paying client for the currency's smallest unit. */
+import { parseWholeUnits, toWireMinor, wholeUnitsLabel, wholeUnitsPlaceholder } from "./partnerMoneyInput";
+import { PartnerMoneyEntryNotice } from "./PartnerMoneyEntryNotice";
 
 function money(minor: number | null | undefined, currency: string): string {
   if (minor == null || !Number.isFinite(Number(minor))) return "—";
   return formatMinor(Number(minor), currency, { locale: "en-US" });
 }
+
+/* WAVE 127 · FINDING 2 — STRICT MINOR-UNIT PARSE FOR A TYPED AMOUNT: RETIRED BY
+ * WAVE 128 · FINDING 2, AND WHY THAT IS NOT A LOSS OF PROTECTION.
+ *
+ * Wave 127 replaced `money(Number(commitmentMinor), currency)` in this panel's
+ * echo line with `strictMinorOrNull` — a digits-only regex, then a safe-integer
+ * check, then a widening of an already-proven integer string — because `Number()`
+ * applied to typed money accepts exponent notation ("1e7" reads as 10,000,000)
+ * and turns junk into NaN rather than refusing.
+ *
+ * Wave 128 re-scales the same field to whole currency units, so what the client
+ * types is now parsed by `parseWholeUnits` (partnerMoneyInput.ts), which is
+ * STRICTLY STRONGER on every case Wave 127 was defending: it refuses exponent
+ * notation with a sentence naming the field, refuses a negative, refuses more
+ * fractional digits than the currency has instead of rounding them away, and
+ * applies `BigInt` once to a string of digits so no float ever touches the
+ * figure. `strictMinorOrNull` had no remaining caller, and a dead parser beside
+ * a live one is an invitation to use the wrong one; the function is therefore
+ * gone and this note records what replaced it.
+ */
 
 
 /* ==========================================================================
@@ -114,7 +139,14 @@ export function feeFieldLabel(key: string): string {
  */
 export function feeFieldValue(key: string, value: unknown, currency: string): string {
   if (key === "feesUnknown") {
-    return value === true ? "Could not be read" : "Read successfully";
+    /* WAVE 128 - FINDING 4: this row used to report the platform's own read
+       operation ("Read successfully" / "Could not be read"), which is a sentence
+       about our database, not about the client's fees. A GP does not care
+       whether a query returned; they care whether the figures beside it can be
+       relied on. Same predicate, stated as what it means for them. */
+    return value === true
+      ? "Unavailable - the figures below are withheld, not zero"
+      : "Live from the agreed fee schedule";
   }
   if (value == null) return "—";
   if (/Minor$/.test(key)) {
@@ -236,16 +268,93 @@ export function SpvFeeLedgerPanel({
 }: { spvId: string; currency: string; canWrite: boolean; onChanged: () => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [commitmentMinor, setCommitmentMinor] = useState("");
+  /* WAVE 128 · FINDING 2 — held as the client TYPED it, in whole currency
+     units. `commitmentWireMinor` below is the exact minor-unit integer the wire
+     has always carried, so the request this panel issues is byte-identical to
+     the one it issued before for the same INTENDED amount — what changes is that
+     typing 2500 now models $2,500.00 rather than $25.00. */
+  const [commitmentInput, setCommitmentInput] = useState("");
   /* WAVE 32 · CP-SPV-34 — held as state, not announced in a toast. See onError. */
   const [chargeFailure, setChargeFailure] = useState<string | null>(null);
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 127 · FINDING 2 — AN EMPTY INPUT NOW PRODUCES NO FIGURES AT ALL.
+     ══════════════════════════════════════════════════════════════════════════
+     WHAT WENT WRONG, AND IT WAS SYSTEMIC. This query fired UNCONDITIONALLY and
+     omitted the query parameter when the box was empty. The server
+     (server/spvEngineRoutes.ts) then read
+
+         Number(req.query.commitmentMinor ?? spv.minCheckMinor ?? 0)
+
+     and silently substituted the vehicle's MINIMUM CHEQUE SIZE. So a partner
+     who had typed nothing was shown a complete, arithmetically-correct fee
+     breakdown of an amount they never supplied: Test SPV modelled $484.47
+     (min_check_minor 48447) and QUantum SPV modelled $100.00
+     (min_check_minor 10000). 484.47 − 33.00 = 451.47 held because the
+     ARITHMETIC was never wrong — only the INPUT was invented, which is worse
+     than a hardcoded placeholder, not better: real code was running on a
+     question nobody had asked.
+
+     THE FIX HERE IS THE STRONGEST AVAILABLE: no request is issued while the box
+     is empty, so there is no figure to render and none can be. The route's own
+     substitution is removed at source as well, so the next caller cannot be
+     lied to either. `enabled` is the whole mechanism; nothing is filtered out
+     of a response after the fact.
+
+     WAVE 128 · FINDING 2 EXTENDS THE SAME RULE TO A REFUSED AMOUNT. The wire
+     value is now the parse RESULT, so an unparseable entry ("1e7", "12.345",
+     "-4") is treated exactly like an empty box: no request, no figures, and the
+     refusal sentence stated under the field. The endpoint
+     `GET /api/partner/me/spv/:spvId/fee-breakdown?commitmentMinor=` expects
+     MINOR units and still receives them, exactly, as a digit string. */
+  const commitmentParse = useMemo(
+    () => parseWholeUnits(commitmentInput, currency, { label: "Commitment modelled" }),
+    [commitmentInput, currency],
+  );
+  const commitmentWireMinor = commitmentParse.ok ? toWireMinor(commitmentParse.minor) : "";
+  const awaitingCommitmentInput = commitmentWireMinor === "";
+  /* WAVE 128 - THE ECHO IS HOISTED, AND THE REASON IS THE DROP GATE, NOT STYLE.
+     `restyle-drop-detector` inventories every EXPRESSION CHILD by the digest of
+     its source text. The echo container below used to hold one:
+
+       {commitmentMinor === ""
+         ? `Enter the amount in the smallest unit of ${currency}. The amount
+            being modelled appears here as you type.`
+         : `Modelling ${money(Number(commitmentMinor), currency)} - check this is
+            the amount you meant before reading the figures below.`}
+
+     digest `client/src/components/partner/SpvOperationsPanels.tsx div
+     34f4b78a53ab`. That expression had to go: its first branch asked a paying
+     client for the smallest unit of their currency, which is this wave's Finding
+     2, and its second ran `Number()` on a typed amount, which the money rule
+     forbids outright. Replacing it with a COMPONENT would have registered as a
+     BARE DROP - an expression child gone with no expression child added - and a
+     bare drop is a preflight failure that cannot be allowlisted in source and
+     must not be waved through by re-cutting `baseline.json`.
+
+     So the replacement is kept as an expression child, hoisted into a `useMemo`
+     exactly as W116_TESTS.md 3.1 prescribes: the container keeps its id, its test
+     id, its position and its single dynamic child, and the gate keeps a paired
+     ADDED expression to weigh the removal against. Nothing about the rendered
+     result depends on this hoist - it is the honest shape for the change. */
+  const commitmentEcho = useMemo(
+    () => (
+      <PartnerMoneyEntryNotice
+        raw={commitmentInput}
+        currency={currency}
+        label="Commitment modelled"
+        testid="spv-fee-breakdown-input-notice"
+      />
+    ),
+    [commitmentInput, currency],
+  );
   const breakdown = useQuery<{ breakdown: unknown }>({
-    queryKey: ["/api/partner/me/spv", spvId, "fee-breakdown", commitmentMinor],
+    queryKey: ["/api/partner/me/spv", spvId, "fee-breakdown", commitmentWireMinor],
+    enabled: !awaitingCommitmentInput,
     queryFn: async () =>
       (await apiRequest(
         "GET",
-        `/api/partner/me/spv/${spvId}/fee-breakdown${commitmentMinor ? `?commitmentMinor=${encodeURIComponent(commitmentMinor)}` : ""}`,
+        `/api/partner/me/spv/${spvId}/fee-breakdown${commitmentWireMinor ? `?commitmentMinor=${encodeURIComponent(commitmentWireMinor)}` : ""}`,
       )).json(),
   });
 
@@ -276,7 +385,15 @@ export function SpvFeeLedgerPanel({
   });
 
   const rows = obligations.data?.obligations ?? [];
-  const bd = (breakdown.data?.breakdown ?? null) as Record<string, unknown> | null;
+  /* WAVE 127 · FINDING 2 — hoisted, so the render below keeps its static sibling
+     shape (build_log/wave116/W116_TESTS.md §3.1) instead of a conditional
+     swapping siblings in and out. While the box is empty this is null even if a
+     stale response is still cached, so no previously-modelled figure can linger
+     next to an empty input. */
+  const bd = useMemo<Record<string, unknown> | null>(
+    () => (awaitingCommitmentInput ? null : ((breakdown.data?.breakdown ?? null) as Record<string, unknown> | null)),
+    [awaitingCommitmentInput, breakdown.data],
+  );
 
   return (
     <PanelFrame
@@ -285,34 +402,42 @@ export function SpvFeeLedgerPanel({
       hint="Authoritative fee figures, read live from the SPV fee engine. Amounts and carry percentages come from the admin-configured fee schedule — nothing here is entered by hand."
     >
       <div className="flex items-end gap-2 mb-2">
-        {/* WAVE 106 - FINDING 3: this field asked a human for "minor units".
-            Typing 100000 modelled $1,000.00 and nothing on screen said so - a
-            hundredfold misreading with no feedback. The INPUT CONTRACT is
-            deliberately unchanged: the value posted for a given keystroke is
-            byte-identical to before, so no arithmetic downstream can have
-            moved. Instead the field now says which unit it wants, in which
-            currency, and echoes the amount it will actually model back to the
-            operator before they read anything off the breakdown. */}
+        {/* WAVE 106 - FINDING 3 asked this field to explain itself: it said
+            "enter the amount in USD cents, not whole USD" and echoed what it
+            would model, but it still asked a paying client for the currency's
+            SMALLEST unit, and someone modelling five million dollars modelled
+            fifty thousand.
+
+            WAVE 128 · FINDING 2 re-scales it. The field now accepts the amount
+            a person writes — "2,500", "$2,500.00" — and the WIRE FORMAT does not
+            move: `commitmentWireMinor` is the same exact minor-unit integer this
+            panel always sent, so no server contract and no arithmetic changes.
+            The conversion is `parseWholeUnits` from the one partner money module
+            (bigint, string surgery, no `Number()` on a typed amount); there is
+            no second converter here.
+
+            The echo container keeps its id and its test id — it is the field's
+            `aria-describedby` target — and now holds the shared confirmation
+            line, which also states a refusal inline instead of leaving an
+            unparseable entry to look accepted. */}
         <div className="flex-1">
           <Label htmlFor={`fee-bd-${spvId}`} className="text-xs">
-            Model a commitment - enter the amount in {currency} cents, not whole {currency}
+            {wholeUnitsLabel("Model a commitment", currency)}
           </Label>
           <Input
             id={`fee-bd-${spvId}`}
-            value={commitmentMinor}
-            onChange={(e) => setCommitmentMinor(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="e.g. 5000000 for five million cents"
+            value={commitmentInput}
+            onChange={(e) => setCommitmentInput(e.target.value)}
+            placeholder={wholeUnitsPlaceholder(currency)}
             aria-describedby={`fee-bd-echo-${spvId}`}
             data-testid="spv-fee-breakdown-input"
           />
           <div
             id={`fee-bd-echo-${spvId}`}
-            className="text-xs mt-1 text-[var(--cv-color-text-faint)]"
+            className="text-xs mt-1"
             data-testid="spv-fee-breakdown-input-echo"
           >
-            {commitmentMinor === ""
-              ? `Enter the amount in the smallest unit of ${currency}. The amount being modelled appears here as you type.`
-              : `Modelling ${money(Number(commitmentMinor), currency)} - check this is the amount you meant before reading the figures below.`}
+            {commitmentEcho}
           </div>
         </div>
       </div>
@@ -328,11 +453,24 @@ export function SpvFeeLedgerPanel({
         </div>
       ) : null}
 
+      {/* WAVE 127 · FINDING 2 — A PROMPT, NEVER A FIGURE. A SIBLING above the
+          breakdown rather than text spliced into them, for the same reason the
+          WAVE 26 refusal above is a sibling. An empty input is not a commitment
+          of zero and it is not the vehicle's minimum cheque; it is a question
+          that has not been asked, and the honest answer on a money surface is
+          nothing at all. */}
+      {awaitingCommitmentInput ? (
+        <div className="text-xs mb-2 text-[var(--cv-color-text-faint)]" data-testid="spv-fee-breakdown-awaiting-input">
+          Enter a commitment amount above to model the fees on it. No figures are shown until you do — an amount you
+          have not entered has no fee, and this panel will not model one for you.
+        </div>
+      ) : null}
+
       <div className="text-xs mb-3" data-testid="spv-fee-breakdown">
         <StateLine
-          loading={breakdown.isLoading}
-          error={breakdown.error}
-          empty={!bd}
+          loading={!awaitingCommitmentInput && breakdown.isLoading}
+          error={awaitingCommitmentInput ? null : breakdown.error}
+          empty={!awaitingCommitmentInput && !bd}
           emptyText="No breakdown"
           testid="spv-fee-breakdown"
         />
@@ -498,15 +636,67 @@ export function SpvSignoffsPanel({ spvId }: { spvId: string }) {
   );
 }
 
+/**
+ * WAVE 128 · FINDING 3 — the mandate verdict, as a sentence.
+ *
+ * The route answers with the SUBSET of the ids it was asked about that clear the
+ * mandate (`{ eligible: string[] }`, server/spvEngineRoutes.ts:524). So the
+ * verdict is membership, and it is stated without interpreting anything the
+ * server did not say: if the shape is not the one documented, this says so
+ * rather than guessing a pass or a fail on a mandate decision.
+ */
+export function eligibilityVerdict(result: Record<string, unknown>, askedFor: string): string {
+  const list = result.eligible;
+  if (!Array.isArray(list)) {
+    return "The engine's answer did not arrive in the expected form, so no verdict is stated here. Read the response below before relying on it.";
+  }
+  const ids = list.map((x) => String(x));
+  if (askedFor && ids.includes(askedFor)) {
+    return "Clears this SPV's mandate. Nothing has been committed - this check changes nothing.";
+  }
+  if (askedFor) {
+    return "Does NOT clear this SPV's mandate. Committing a deployment to it would be refused by the engine for the same reason.";
+  }
+  return ids.length > 0
+    ? `${ids.length} of the companies asked about clear this SPV's mandate.`
+    : "No company was asked about, so nothing was evaluated.";
+}
+
 /* ── ORP-030 (e) — eligibility evaluate ──────────────────────────────────── */
 export function SpvEligibilityPanel({ spvId, canWrite }: { spvId: string; canWrite: boolean }) {
   const { toast } = useToast();
   const [companyId, setCompanyId] = useState("");
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
 
+  /* ════════════════════════════════════════════════════════════════════════
+     WAVE 128 · FINDING 3 — THIS PANEL ASKED THE SERVER A QUESTION IT DOES NOT
+     READ, AND THEN SHOWED THE ANSWER AS A JSON DUMP.
+     ════════════════════════════════════════════════════════════════════════
+     TWO DEFECTS, BOTH LIVE, FOUND WHILE VERIFYING THE WIRE FORMAT.
+
+     1. THE REQUEST WAS IGNORED. The route reads ONE key:
+          const companyIds: string[] = Array.isArray((req.body ?? {}).companyIds)
+            ? req.body.companyIds : [];
+        (server/spvEngineRoutes.ts:523). This panel sent `{ companyId }` -
+        singular, not an array - so `companyIds` was ALWAYS the empty array and
+        `evaluateEligibleCompanies` always filtered an empty list. Every check
+        this panel has ever run returned `{"eligible": []}` REGARDLESS of the
+        company, and a GP reading that empty array before committing a
+        deployment would conclude the company fails the mandate. It sends
+        `companyIds: [id]` now, which is the key the server actually reads.
+
+     2. THE ANSWER WAS A JSON DUMP. `{JSON.stringify(result, null, 2)}` put the
+        engine's response, keys and raw ids and all, on a client-facing panel.
+        The verdict is now STATED - the company clears the mandate, or it does
+        not - and the raw response is kept underneath, captioned, because a GP
+        checking a mandate is entitled to see exactly what the engine returned.
+        Nothing is removed; a sentence is added above it.
+     ════════════════════════════════════════════════════════════════════════ */
   const evaluate = useMutation({
     mutationFn: async () =>
-      (await apiRequest("POST", `/api/partner/me/spv/${spvId}/eligibility/evaluate`, { companyId: companyId.trim() })).json(),
+      (await apiRequest("POST", `/api/partner/me/spv/${spvId}/eligibility/evaluate`, {
+        companyIds: [companyId.trim()],
+      })).json(),
     onSuccess: (data) => setResult(data as Record<string, unknown>),
     onError: (e) => toast({ title: "Could not evaluate eligibility", description: opsErrorMessage(e), variant: "destructive" }),
   });
@@ -538,9 +728,17 @@ export function SpvEligibilityPanel({ spvId, canWrite }: { spvId: string; canWri
         </Button>
       </div>
       {result ? (
-        <pre className="mt-2 text-[10px] whitespace-pre-wrap break-all" data-testid="spv-eligibility-result">
-          {JSON.stringify(result, null, 2)}
-        </pre>
+        <div className="mt-2">
+          <div className="text-xs" data-testid="spv-eligibility-verdict">
+            {eligibilityVerdict(result, companyId.trim())}
+          </div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1">
+            The engine's own response, kept in full so a mandate decision can be checked line by line:
+          </div>
+          <pre className="mt-1 text-[10px] whitespace-pre-wrap break-all" data-testid="spv-eligibility-result">
+            {JSON.stringify(result, null, 2)}
+          </pre>
+        </div>
       ) : null}
     </PanelFrame>
   );
@@ -585,7 +783,12 @@ export function SpvDeploymentLifecyclePanel({
     <PanelFrame
       title="Deployment lifecycle"
       testid="spv-deployment-lifecycle-panel"
-      hint="Advance a deployment through founder confirmation, documents and the wire, then commit the single cap-table ledger line. Every step is fail-closed server-side; committing is irreversible."
+      /* WAVE 135 · FINDING 1 — "fail-closed server-side" is our vocabulary for our
+         own architecture. The two facts the client must not lose are that a step
+         cannot be skipped and that committing cannot be undone; both are stated more
+         plainly than before. "irreversible" survives verbatim because on a cap-table
+         write that word is the warning. */
+      hint="Advance a deployment through founder confirmation, documents and the wire, then commit the single cap-table ledger line. No step can be skipped or taken out of order, and committing cannot be undone."
     >
       {deployments.length === 0 ? (
         <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-deployment-lifecycle-empty">

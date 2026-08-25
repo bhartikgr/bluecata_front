@@ -242,10 +242,49 @@ KNOWN_DRIFT=(
 # PROOF: server/__tests__/w58g_waiver7_single_conversion_authority.test.ts,
 # through the HTTP route above, both poles. Pre-/post-waiver hashes recorded in
 # build_log/wave58g/gates/.
+#
+# WAVE 136 · R100 RE-FREEZE (owner-ratified: "Move forward.", recorded verbatim in
+# spec/OWNER_RULINGS_2026_08_13.md R100). TWO further edits were authorised in this
+# file, both of them the removal of an INVENTED TERM, and neither of them a
+# calculation:
+#   • ITEM 2 — `buildPricedEquityCarryForward` read `examplePref?.liquidationPreference`
+#     off a SECURITY. No security in this tree carries that field, so the read was
+#     always `undefined`, `liqPref` was always 1, the `liqPref === 1` branch was
+#     UNCONDITIONAL, and the engine published `source: "prev_round"`,
+#     `confidence: "high"` and a sentence naming the round as a statement of fact
+#     about a term it had not read. It now calls `readLiquidationTerms` in
+#     shared/liquidationTermsReader.ts — the ONE reader Wave 111 established — on the
+#     ROUND's own `liquidationPreference` / `termsSummary` and `capParticipation`, and
+#     where the term is not on record it emits NO FIELD and states the reason in that
+#     reader's words. The printed `market_standard` "1x non-participating" default in
+#     the no-prior-priced-round branch is REMOVED for the same reason.
+#   • ITEM 3 (`SACRED_DOC` §5.3) — FOUR sites computed MFN as
+#     `sideLetter?.toLowerCase().includes("mfn") ?? mfn ?? false`. A side letter that
+#     EXISTS and is silent about MFN yields boolean `false`, and `??` falls through on
+#     null/undefined only, so a STORED `mfn: true` was unreachable. All four now call
+#     `readMfnOnRecord` in the same shared reader, where the flag-truthiness rules
+#     moved FROM server/lib/roundStoredTerms.ts:392-403 — so this wave SUBTRACTS two
+#     inline interpretations rather than adding a sixteenth.
+# NO ARITHMETIC IN THIS FILE CHANGED, and `computeConversionProjections` REMAINS
+# UNTOUCHED (R69 — it is out of R100's scope; reading it and concluding it is broken
+# is the trap five agents have fallen into). Recorded against the EXISTING WAIVER-7
+# row, NOT a new row: a second row for the same path aborts the check, so the
+# ratified-waiver COUNT REMAINS NINE. §4.2 of the sacred doc is explicit that a tenth
+# waiver is structurally impossible and a re-freeze is the only route.
+# PROOF: server/__tests__/w136_sacred_batch.test.ts (items 2 and 3, both poles, plus
+# W136-R69a/b asserting this file's R69 function is still unedited and uncalled);
+# transcript in build_log/wave136/W136_TESTS.md.
+#
 # HASH LINEAGE (nothing erased):
 #   pre-WAIVER-7  d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119
-#   Wave 58g      42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8  (ENFORCED)
-"server/roundCarryForwardEngine.ts|d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119|42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8|WAIVER-7|RATIFIED"
+#   Wave 58g      42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8  (superseded — R100)
+#   Wave 136      b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3  (ENFORCED — R100)
+# TO DECLINE R100 (this grant alone, leaving WAIVER-7/R34 intact): restore the Wave
+# 58g bytes of this file, put 42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8
+# back in field 3, and revert the five test enforcement points listed in
+# build_log/wave136/W136_PREFLIGHT.md §4. Declining R100 does NOT revert WAIVER-7
+# itself — field 2 and the Wave 58g lineage line above are untouched.
+"server/roundCarryForwardEngine.ts|d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119|b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3|WAIVER-7|RATIFIED"
 # WAIVER-8 — OWNER-RATIFIED 2026-08-18, ruling R70 ("Q2: Change it. Has to be
 # dynamic and real-time. No hard codes."). WAVE 75 · ITEM 1.
 #
@@ -559,7 +598,24 @@ KNOWN_DRIFT=(
 #   TO DECLINE: restore the Wave 34 bytes, put ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f
 #   back in field 3, and revert the three test enforcement points. Nothing else
 #   depends on it.
-"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7|WAIVER-5|RATIFIED"
+#
+#   WAVE 131 · R97 RE-FREEZE (owner-ratified, expressly authorised in
+#   spec/OWNER_RULINGS_2026_08_13.md R97). ONE further edit was authorised in this
+#   file and only in this file: line 593 rendered
+#   `$${Number(appFeeData.amountMinor).toLocaleString("en-US")}`, printing the raw
+#   MINOR units behind a dollar sign, so the $300 collective application fee
+#   (seed default 30000 minor) displayed as "$30,000" on the founder's billing
+#   page. It now renders through formatMinor() with the row's own currency, and an
+#   ABSENT fee renders no figure at all with the reason stated. No other line of
+#   this file changed and no other sacred file was touched. This is recorded
+#   against the EXISTING WAIVER-5 row rather than a new one, because a second row
+#   for the same path aborts the check: the ratified-waiver COUNT therefore
+#   remains NINE.
+#     Wave 131      ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6  (ENFORCED — R97)
+#   TO DECLINE R97: restore the Wave 89 bytes and put
+#   bad47bfdb6a30c4fafefaeb046caff4951af0266db19a17573b1bc5c2e7c3dd7 back in
+#   field 3.
+"client/src/pages/founder/Billing.tsx|813de79077e1e0f73ee6572091826cb6e2bec7aa520dee31df588640cf66d692|ee77fbbda1918411b49d149cfed24a0eac74b403166e333117c68dbac723cff6|WAIVER-5|RATIFIED"
 )
 
 # ---------------------------------------------------------------------------

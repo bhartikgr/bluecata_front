@@ -39,6 +39,8 @@ import { __clearTransactionPrep, createChannel } from "../transactionPrepStore";
 import { emitMutation } from "../lib/eventBus";
 import * as collectiveMembershipStore from "../collectiveMembershipStore"; /* v14 Tier-1 Fix 3 */
 import { upsertCapTablePositionForTests } from "../membershipStore"; /* W3-C — C-5 cap-table sub-check seam */
+import { seatCompliantInvestor } from "./_fixtures/collectiveInvestorFixture"; /* WAVE 134 cause 1 */
+import { getAccreditationGateStatus } from "../investorComplianceRoutes"; /* WAVE 134 cause 1 */
 
 /* ============================================================
  * Test app factory
@@ -59,9 +61,26 @@ function makeApp() {
     }
     // W3-C — the C-5 individual-membership gate now also requires an active
     // cap-table position (hard sub-check). Seed one for the resolved user so
-    // these member-gated route tests continue to admit. (Accreditation stays a
-    // SOFT default — no COLLECTIVE_C5_ACCRED_ENFORCE here — so it never blocks.)
-    upsertCapTablePositionForTests(headerId);
+    // these member-gated route tests continue to admit.
+    //
+    // WAVE 134 cause 1 (R98) — the comment that used to sit here said
+    // "Accreditation stays a SOFT default … so it never blocks". That is no longer
+    // true and had not been for some time: `requireCollectiveMember` step 4 is
+    // fail-closed, so an active member with no W2-A1 self-declaration is refused
+    // 403 ACCREDITATION_DECLARATION_REQUIRED and none of the 29 assertions in this
+    // file were ever reached — they were ABSENT from CI, not failing. The gate is
+    // CORRECT and unchanged; the fixture now seats a genuinely compliant investor
+    // through the ONE shared helper, which records a real declaration via the same
+    // production primitive the live POST route uses. Proof that the gate still
+    // refuses an undeclared member: w134_collective_accreditation_fixture.test.ts.
+    if (
+      !collectiveMembershipStore.isActive(headerId) ||
+      getAccreditationGateStatus(headerId).status === "none"
+    ) {
+      seatCompliantInvestor(headerId, { activatedBy: "u_admin_test" });
+    } else {
+      upsertCapTablePositionForTests(headerId);
+    }
     const role = String(req.headers["x-role"] ?? "");
     (req as express.Request & { userContext?: unknown }).userContext = {
       userId: headerId,

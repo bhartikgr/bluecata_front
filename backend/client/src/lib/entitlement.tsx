@@ -35,7 +35,13 @@ export interface FounderCompany {
   sector: string;
   hq: string;
   lastActiveAt: string;
-  capTableHolders: number;
+  /* WAVE 136 · ITEM 1 (R100) — `capTableHolders: number` WAS HERE. This interface
+     is the CLIENT MIRROR of the sacred `server/lib/userContext.ts` `FounderCompany`;
+     the field was removed from the server contract because it had no writer, so it
+     is removed here too or the two halves of one contract disagree. The last reader,
+     `SelectCompany.tsx`, already moved to the derived `capTableHoldersOnRecord` in
+     wave 125. `activeRoundsCount` below carries the same defect (OQ-W136-1) and is
+     deliberately left alone. */
   activeRoundsCount: number;
 }
 export interface InvitedRound {

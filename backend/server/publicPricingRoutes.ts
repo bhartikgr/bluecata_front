@@ -193,10 +193,13 @@ function cacheIsFresh(): boolean {
 
 /**
  * Called by pricing-model / collective-subscription admin write paths so an
- * admin save propagates immediately instead of waiting out the TTL. Wiring
- * this call into the admin PATCH/POST handlers is OPTIONAL (5-minute staleness
- * is an accepted tradeoff per the task's Constraint section) — if not wired,
- * the cache still self-heals within 5 minutes with zero code changes.
+ * admin save propagates immediately instead of waiting out the TTL.
+ *
+ * WAVE 131 (R95 — pricing is real-time): wiring this in is NO LONGER OPTIONAL.
+ * It was optional, and unwired: `grep` for callers returned none, so a price the
+ * owner changed could keep being quoted on the public pricing surface for up to
+ * five minutes. It is now called from `server/lib/pricingCacheBus.ts`, which
+ * every admin pricing write goes through.
  */
 export function invalidatePublicPricingCache(): void {
   cachedPayload = null;
@@ -346,7 +349,13 @@ export default function registerPublicPricingRoutes(app: Express): void {
     // Serve from cache when fresh — this is the "fast public endpoint" /
     // 5-minute TTL requirement.
     if (cacheIsFresh() && cachedPayload) {
-      res.set("Cache-Control", "public, max-age=300");
+      /* WAVE 131 — NO BROWSER/CDN CACHE ON A PRICE. This used to send
+       * `public, max-age=300`, which is a five-minute cache nobody can
+       * invalidate: an admin price change could not reach a browser that had
+       * already fetched, at any speed. The server-side TTL is retained (it IS
+       * invalidated on every admin write, see invalidatePublicPricingCache), so
+       * the endpoint stays fast without quoting a stale number. */
+      res.set("Cache-Control", "no-store");
       res.json(cachedPayload);
       return;
     }
@@ -355,7 +364,7 @@ export default function registerPublicPricingRoutes(app: Express): void {
       const payload = resolvePublicPricingPayload();
       cachedPayload = payload;
       cachedAt = clock();
-      res.set("Cache-Control", "public, max-age=300");
+      res.set("Cache-Control", "no-store");
       res.json(payload);
     } catch (err) {
       // Fail-soft: a public marketing endpoint must never 500 the homepage.
@@ -369,7 +378,7 @@ export default function registerPublicPricingRoutes(app: Express): void {
       // refusal, because a real price read a minute ago is better information
       // than "unavailable"; what is gone is the hardcoded number underneath it.
       const degraded = cachedPayload ?? refusalPayload();
-      res.set("Cache-Control", "public, max-age=60"); // shorter TTL while degraded
+      res.set("Cache-Control", "no-store"); // WAVE 131 — never cache a degraded price
       res.json(degraded);
     }
   });

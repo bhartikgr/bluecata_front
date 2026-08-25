@@ -57,6 +57,73 @@ export const SPV_UNCOMMITTED_PENDING_STATUSES: readonly SpvSubscriptionStatus[] 
 export const SPV_COMMITTED_FIGURE_LABEL =
   "committed capital only — review, soft-circled, founder-confirmed and wire-funded subscriptions are excluded";
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 127 · FINDING 3 — THE HONEST LABEL FOR A ROW THAT IS NOT A COMMITMENT.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * Wave 120 stopped the OVERVIEW tile summing the all-stages register. It did not
+ * touch the two surfaces that legitimately RENDER that register row by row — the
+ * SPV detail LPs tab and the Fund Commitment Register — and both printed an
+ * amount and a percentage with no status whatsoever. On the live `Test SPV` a
+ * subscription under `review` therefore read `$2,500.00 (100.0%)`, which a
+ * partner can only read as a commitment, while the Close tab, the K-1 tab and
+ * the Overview correctly reported nothing committed.
+ *
+ * The repair is a LABEL, not a filter: hiding the row would be a silent drop of
+ * a real record, and the all-stages view is needed. The two helpers below are
+ * stated ONCE here — next to the committed predicate they qualify — so the LPs
+ * tab and the Fund Register cannot describe the same row differently.
+ *
+ * RULING R91 IS RESPECTED. Nothing is renamed, no vocabulary is harmonised, and
+ * `soft_circle` / `soft_circled` remain SEPARATE strings: this maps a stored key
+ * to human words for display and does not rewrite, merge or alias any key. R91's
+ * other half is the reason the mapper exists at all — a raw KEY rendered to a
+ * customer IS a defect — so an UNMAPPED status is humanised (underscores to
+ * spaces) rather than printed as a code, and a status added upstream can never
+ * reach a partner as `founder_confirmed`.
+ */
+
+/** What the LPs-tab / Fund-Register ownership percentage is divided BY, in words.
+ *  It is NOT the target raise and it is NOT committed capital: the denominator is
+ *  the sum of every non-withdrawn subscription on the vehicle, at any stage
+ *  (`investorRegister`, `server/spvEngineStore.ts`). A percentage without its
+ *  denominator is not a fact — this is the denominator, named. */
+export const SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL =
+  "share of all non-withdrawn subscriptions on this vehicle at any stage — not of the target raise, and not of committed capital";
+
+/** One sentence a register surface can print above its rows so the amounts below
+ *  are read for what they are. */
+export const SPV_REGISTER_ALL_STAGES_BASIS =
+  "This register lists every non-withdrawn subscription at ANY stage, so amounts here include pre-commitment stages and are NOT the amount raised. Each row shows its own stage.";
+
+/** What the all-stages investor COUNT counts, for a surface that prints it next
+ *  to a committed-only money figure. Without this the two read as a
+ *  contradiction when they are simply two different questions. */
+export const SPV_INVESTOR_COUNT_BASIS =
+  "counts every non-withdrawn subscription at any stage, including pre-commitment stages — so it can be non-zero while committed capital is nil";
+
+/** A stored subscription status as words a partner can read. Never returns a raw
+ *  key: an unmapped value is humanised instead (R91 — a raw key on a customer
+ *  surface is a defect). An absent status is reported as unrecorded rather than
+ *  silently presented as committed. */
+export function spvSubscriptionStageLabel(status: string | null | undefined): string {
+  const key = String(status ?? "").trim();
+  if (key === "") return "stage not recorded";
+  switch (key) {
+    case "committed": return "committed";
+    case "review": return "under review — not a commitment";
+    case "soft_circled": return "soft-circled — not a commitment";
+    case "founder_confirmed": return "founder-confirmed — not a commitment";
+    case "wire_funded": return "wire received, not yet committed";
+    case "withdrawn": return "withdrawn";
+    default: return key.replace(/_/g, " ");
+  }
+}
+
+/** True when a register row's amount must NOT be read as raised capital. */
+export function spvRegisterRowIsPreCommitment(status: string | null | undefined): boolean {
+  return String(status ?? "").trim() !== SPV_COMMITTED_SUBSCRIPTION_STATUS;
+}
+
 /** The minimum shape this module needs of a subscription row. Both the engine
  *  DTO (`shared/spvEngine.ts`) and the client's local `Sub` type satisfy it. */
 export interface CommittedCapitalRow {

@@ -189,9 +189,15 @@ export function SpvSideLetterPanel({ spvId, canWrite }: { spvId: string; canWrit
               <Input id="sl-notes" data-testid="spv-side-letter-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
           </div>
+          {/* WAVE 126 / FINDING 1 — the storage model is ours, not the client's.
+              "Integer billionths", the 200,000,000 example and "floating-point
+              round trip" describe our implementation. The GUARANTEE the client
+              cares about is the same either way and is what is now said: the
+              rate they enter is the rate that is held and applied, exactly. */}
           <div className="text-[11px] mt-2 text-[var(--cv-color-text-muted)]">
-            Rates are stored as exact integer billionths of a fraction — 20% is stored as 200,000,000, not as 0.2 — so a
-            rate never drifts through a floating-point round trip.
+            A rate is held exactly as entered and is applied exactly as entered.
+            It is not rounded on the way in and does not drift over the life of
+            the side letter.
           </div>
           {formError && (
             <div className="text-xs mt-2 leading-relaxed" style={{ color: "#9b1c1c" }} data-testid="spv-side-letter-form-error">

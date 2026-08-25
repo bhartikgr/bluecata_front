@@ -30,6 +30,18 @@ import { getDb, rawDb } from "../db/connection";
 import { registerFounderUser, registerPersona } from "../lib/userContext";
 import { addCompanyForFounder } from "../multiCompanyStore";
 import { createInvitation, _testAccessInvitations } from "../roundInvitationsStore";
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 import {
   upsertCrmContactForInvitation,
   listContactsForCompany,
@@ -157,14 +169,14 @@ describe("v24.1 — Bug B: round creation validation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send({
+      .send(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "   ",
         type: "seed",
         targetAmount: 0,
         currency: "USD",
         region: "US",
-      });
+      }));
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("validation_failed");
     expect(r.body.fieldErrors).toBeTruthy();
@@ -176,14 +188,14 @@ describe("v24.1 — Bug B: round creation validation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send({
+      .send(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "v24.1 Valid Round",
         type: "seed",
         targetAmount: 1_000_000,
         currency: "USD",
         region: "US",
-      });
+      }));
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
   });
@@ -196,7 +208,7 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send({
+      .send(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "v24.1 PostMoney Round",
         type: "seed",
@@ -213,7 +225,7 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
         currency: "USD",
         region: "US",
         // postMoney intentionally omitted
-      });
+      }));
     expect(r.status).toBe(200);
     const id = r.body.id as string;
     const db = rawDb();

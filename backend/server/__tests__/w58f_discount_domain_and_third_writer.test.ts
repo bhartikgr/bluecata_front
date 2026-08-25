@@ -675,7 +675,8 @@ describe("W58F-F2 — the carry-forward engine's own percent→fraction conversi
    * thing this file exists to prevent. What each one now asserts:
    *   F2a — the division is GONE and the delegation is in place (the CORRECTION
    *         about `computeConversionProjections` is UNCHANGED and still checked).
-   *   F2c — the file is at its ONE waived state, 42d04653…, not the pre-waiver
+   *   F2c — the file is at its ONE waived state (42d04653… when this block was
+   *         written; b8627df8… since WAVE 136 · R100 re-pinned it), not the pre-waiver
    *         d7fa53f0… — so it is still a hash pin, still one legal state.
    *   F2d — there is no longer a SECOND implementation to compare, so the
    *         tripwire becomes: the engine has no private conversion at all.
@@ -729,10 +730,16 @@ describe("W58F-F2 — the carry-forward engine's own percent→fraction conversi
        serves as the F4 non-modification proof for this file. */
     const h = createHash("sha256").update(fs.readFileSync(path.join(ROOT, ENGINE))).digest("hex");
     /* WAVE 58g: lineage d7fa53f0… (58f, quarantined) → 42d04653… (58g, WAIVER-7).
-       Still ONE legal state, enforced in three places: here, scripts/sacred_check.sh
-       and waveB_retirement_guard.test.ts. */
+       RE-PINNED 2026-08-25 · WAVE 136 · R100 → b8627df8…: items 2 and 3 were
+       authorised in this file (fabricated liquidation preference; mfn `?? false`)
+       and recorded against the EXISTING WAIVER-7 row, so the waiver count is still
+       NINE. Still ONE legal state, enforced in three places: here,
+       scripts/sacred_check.sh and waveB_retirement_guard.test.ts. The quarantine this
+       test is about is unaffected — R100 did not grant an edit to
+       `computeConversionProjections` (R69) and none was made. */
     expect(h).not.toBe("d7fa53f0fb8c41d0acba5ee7184ec11e169aa23530b90d49860533f27c786119");
-    expect(h).toBe("42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8");
+    expect(h).not.toBe("42d04653278caefe85093fff778bdc1c8f0aabc0916a9deec29b1862729212a8");
+    expect(h).toBe("b8627df86962a012c0122649854b715c240acfb463f174e291f124316769ffc3");
   });
 
   it("W58F-F2d — TRIPWIRE, RE-AIMED: there is no private conversion left to agree or disagree with (58g)", () => {

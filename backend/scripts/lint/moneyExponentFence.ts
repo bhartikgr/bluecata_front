@@ -161,66 +161,24 @@ interface BaselineEntry {
  * nine entries to one. The single survivor is not code.
  */
 export const BASELINE: BaselineEntry[] = [
-  {
-    file: "client/src/pages/admin/AdminFeesConsolidated.tsx",
-    /* WAVE 44 re-pin: 1501 → 1505. The site did not change; four lines of
-       comment were added ABOVE it when the broken "Payment ledger entries"
-       counter was fixed in the same file. Text byte-identical, justification
-       unchanged, no pattern/vocabulary/directory relaxed, baseline still ONE
-       entry, and that entry is still prose rather than code.
+  /* WAVE 131 — THE ONLY BASELINE ENTRY IS GONE BECAUSE THE PROSE IT PINNED WAS
+     FALSE AND HAS BEEN DELETED, NOT RE-PINNED.
 
-       WAVE 46 re-pin: 1505 → 1549. Same site, byte-identical text (verified),
-       moved DOWN by 44 lines because R21/R22 appended two disclosure paragraphs
-       to the SPV-deployment-fee card ABOVE it (the "no fee configured" refusal
-       and the override-divergence notice). WAVE 46 did NOT enter, extend or
-       touch the lossy legacy mirror this prose DESCRIBES
-       (server/adminPlatformFeesRoutes.ts) — the prose is the only reason the
-       fence sees a `/ 100` here at all. The fence is UNCHANGED: no pattern
-       removed, no vocabulary token removed, no directory excluded, nothing
-       newly allowlisted, and the baseline is still exactly ONE entry that is
-       still prose rather than code. The fence's own BASELINE-STALE branch
-       demands this re-pin-with-justification rather than silence.
-
-       WAVE 56 re-pin: 1549 → 1551. Same site, byte-identical text (verified by
-       the fence's own `text` match, which is what made it report BASELINE-STALE
-       rather than pass). It moved DOWN by exactly TWO lines because Wave 56
-       added ONE import plus ONE comment line at the top of this file for the
-       new tier-catalogue admin panel (R36 / 56-Q9). WAVE 56 did not touch the
-       prose, the legacy mirror it describes, or any money conversion anywhere in
-       this file. The fence is UNCHANGED: no pattern removed, no vocabulary token
-       removed, no directory excluded, nothing newly allowlisted, and the
-       baseline is still exactly ONE entry that is still prose rather than code.
-
-       WAVE 80 re-pin: 1551 -> 1550. Same site, byte-identical text (verified by
-       the fence's own `text` match, which is what made it report BASELINE-STALE
-       rather than pass). It moved UP by exactly ONE line because WAVE 80 ITEM 1
-       removed the source-file name `server/adminPlatformFeesRoutes.ts` from the
-       rendered prose two lines ABOVE it under owner ruling Q25 ("no exposure of
-       our internal process"), and the replacement sentence is one line shorter.
-       WAVE 80 did not touch the prose this entry pins, the legacy mirror it
-       describes, or any money conversion anywhere in this file — the `/ 100`
-       inside the <code> element is the same documentation of the same lossy
-       legacy write. The fence is UNCHANGED: no pattern removed, no vocabulary
-       token removed, no directory excluded, nothing newly allowlisted, and the
-       baseline is still exactly ONE entry that is still prose rather than code.
-
-       WAVE 83 re-pin: 1550 -> 1567. Same site, byte-identical text (again proved
-       by the fence's own `text` match, which is why it reported BASELINE-STALE
-       instead of a new violation). It moved DOWN by exactly SEVENTEEN lines
-       because WAVE 83 ITEM 1 added the `UNIT_IN_PLAIN_ENGLISH` mapping and its
-       comment ABOVE the SourceOfTruth component in this file, so that the Units
-       row reads "Whole cents (integer)" instead of the column type
-       `currency_minor (cents)` under owner ruling Q25. WAVE 83 did not touch the
-       prose this entry pins, the legacy mirror it describes, or any money
-       conversion anywhere in this file — the `/ 100` inside the <code> element is
-       the same documentation of the same lossy legacy write. The fence is
-       UNCHANGED: no pattern removed, no vocabulary token removed, no directory
-       excluded, nothing newly allowlisted, and the baseline is still exactly ONE
-       entry that is still prose rather than code. */
-    line: 1567,
-    text: "<code>Math.round(amountMinor / 100)</code> because that legacy table stores",
-    why: "Not code — JSX documentation prose inside a <code> element, describing the legacy mirror write that WAVE 34 fixed at adminPlatformFeesRoutes.ts.",
-  },
+     The entry excused one line of JSX documentation inside a <code> element:
+     "<code>Math.round(amountMinor / 100)</code> because that legacy table stores
+     DISPLAY dollars". Wave 131's enumeration proved the claim wrong — the
+     resolver's own default, DEFAULT_APPLICATION_FEE_MINOR = 30000 at
+     server/lib/collectiveApplicationFeeResolver.ts:30, shows
+     collective_application_fee_config.amount_minor is TRUE minor units on every
+     path. The mirror write was therefore understating the fee 100x, and the
+     warning on screen was documenting a bug as a design. Wave 131 removed the
+     conversion in server/adminPlatformFeesRoutes.ts and replaced the warning with
+     the corrected unit contract (ratified in the silent-drop allowlist under
+     removedCopy). The site the entry pinned is GONE, so per this fence's own
+     BASELINE-STALE instruction the entry is DELETED rather than re-pinned. The
+     fence itself is UNCHANGED: no pattern, vocabulary token or directory was
+     touched — the baseline is simply empty, which is the strongest state it can
+     be in. */
 ];
 
 /* ── Scan ────────────────────────────────────────────────────────────────── */

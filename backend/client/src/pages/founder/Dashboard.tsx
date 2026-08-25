@@ -59,6 +59,12 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fmtUSD, fmtPct, timeAgo } from "@/lib/format";
+/* WAVE 125 · FINDING 2 — the derived holder count, and the words for when it is
+   not derived. Never `?? 0`: that printed a figure nobody had computed. */
+import {
+  CAP_TABLE_HOLDERS_UNDERIVED,
+  CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT,
+} from "@/lib/captable/capTableHolderCount";
 import CapitalizationJourney from "@/components/CapitalizationJourney";
 import { GlossaryLink } from "@/components/Glossary";
 import { MessagesWidget } from "@/components/comms/MessagesWidget";
@@ -314,6 +320,31 @@ export default function FounderDashboard() {
   const ownershipPctRaw = company?.kpi?.ownershipPct;
   const ownershipPctDisplay = ownershipPctRaw == null ? null : Number(ownershipPctRaw) * 100;
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 125 · FINDING 2 — THE HOLDER COUNT NOBODY EVER COMPUTED.
+     ═══════════════════════════════════════════════════════════════════════════
+     Both tiles below used `company?.kpi?.capTableHolders ?? 0`. That field has NO
+     WRITER anywhere in live code — 29 live occurrences, of which 7 are type
+     declarations, 16 integer literals, 2 passthroughs and 6 renderers, and 0 are
+     computations (`build_log/wave125/enum_captable_holders.py`). So this page
+     printed `0` as a fact while `CapitalizationJourney`, mounted a few hundred
+     pixels below, derived the SAME quantity from the cap-table engine and printed
+     `1`. The page contradicted itself about how many people hold its own shares.
+
+     `capTableHoldersOnRecord` is the derived field, added at read time by
+     `server/multiCompanyStore.ts::withComputedOwnership` from the same engine call
+     the ownership figure above uses. `null` means NOT DERIVED and is rendered as a
+     plain-English statement; a derived `0` is a fact and is printed, because a
+     holder count is not money and a company whose securities were read and
+     contained no holder genuinely has none. There is no `?? 0` here. */
+  const capTableHoldersRaw = company?.kpi?.capTableHoldersOnRecord;
+  const capTableHoldersDerived: number | null =
+    typeof capTableHoldersRaw === "number" ? capTableHoldersRaw : null;
+  const capTableHoldersText =
+    capTableHoldersDerived === null ? CAP_TABLE_HOLDERS_UNDERIVED : String(capTableHoldersDerived);
+  const capTableHoldersHint =
+    capTableHoldersDerived === null ? CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT : "fully-diluted";
+
   // Wave B1 (3a) addendum — "Led by <Consortium Partner>" attribution, resolved
   // read-only from the additive /api/companies/:id/attribution endpoint (does
   // NOT touch the sacred company-profile endpoint). Shown on the founder hero.
@@ -554,8 +585,15 @@ export default function FounderDashboard() {
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Cap-table holders</div>
                 <Users className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
-              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{company?.kpi?.capTableHolders ?? 0}</div>
-              <div className="text-xs text-muted-foreground mt-1">fully-diluted</div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{capTableHoldersText}</div>
+              {/* WAVE 125 · FINDING 2 — the caption follows the figure. Where the count
+                  WAS derived the words name what was counted and over which
+                  denominator; where it was not, the caption is the reason and there is
+                  no denominator to name, because there is no figure. The div and its
+                  single expression child are unchanged in position and count. */}
+              <div className="text-xs text-muted-foreground mt-1">
+                {capTableHoldersDerived === null ? CAP_TABLE_HOLDERS_NOT_DERIVED_STATEMENT : <>distinct holders, fully-diluted</>}
+              </div>
             </CardContent>
           </Card>
 
@@ -680,7 +718,7 @@ export default function FounderDashboard() {
           {/* WAVE 73 · ITEM 8 — same one derivation as the bento tile above, so the
               two renders of one quantity cannot disagree again. */}
           <Stat label="Founder ownership" value={fmtPct(ownershipPctDisplay, 2)} hint="of fully-diluted" icon={ShieldCheck} testid="stat-ownership" />
-          <Stat label="Cap-table holders" value={company?.kpi?.capTableHolders ?? 0} hint="fully-diluted" icon={Users} testid="stat-holders" />
+          <Stat label="Cap-table holders" value={capTableHoldersText} hint={capTableHoldersHint} icon={Users} testid="stat-holders" />
           {/* WAVE 116 · FINDING 1 — the SAME quantity as the bento tile above, from
               the SAME one reader, so the two renders of one figure cannot disagree
               (the pattern W73 established for founder ownership). Was

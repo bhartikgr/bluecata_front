@@ -17,6 +17,18 @@ import request from "supertest";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
+import { withRoundDates } from "./_fixtures/roundDatesFixture";
+/* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
+   mandatory Open date / Target close date backstop on POST /api/rounds
+   (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
+   refused 400 OPEN_DATE_REQUIRED before ANY of the assertions below ran, so the
+   behaviour this file claims to cover was not being exercised at all. Every
+   creation body now goes through the ONE shared fixture, which supplies
+   unambiguously FUTURE dates (R93: never "today", so an overnight run cannot
+   change a result) and never overwrites a date the test set deliberately. The
+   gate is unchanged and still refuses a dateless body — see
+   server/__tests__/w134_round_dates_fixture.test.ts. No assertion was weakened. */
+
 import {
   addCompanyForFounder,
   updateCompanyDetails,
@@ -87,7 +99,7 @@ describe("BUG 034 — Edit-Terms persists instrument extras", () => {
     const create = await request(app)
       .post("/api/rounds")
       .set("x-user-id", "u_maya_chen")
-      .send({
+      .send(withRoundDates({
         companyId: "co_novapay",
         name: "BUG 034 Note Round",
         instrument: "convertible_note",
@@ -95,7 +107,7 @@ describe("BUG 034 — Edit-Terms persists instrument extras", () => {
         targetAmount: 500_000,
         valuationCap: 8_000_000,
         discount: 20,
-      });
+      }));
     expect([200, 201]).toContain(create.status);
     noteRoundId = create.body?.id;
     expect(noteRoundId).toBeTruthy();
