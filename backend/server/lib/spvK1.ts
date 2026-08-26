@@ -119,8 +119,15 @@ const COPY: Record<K1RefusalCode, string> = {
     "This vehicle recorded distributions in more than one currency. Amounts in different currencies cannot be added, so no statement is produced.",
   NO_COMMITTED_REGISTER:
     "This vehicle has no committed capital on the register, so no ownership fraction can be derived.",
+  /* WAVE 141 · BATCH 1 ITEM 3 · review 1 F3.4. REWORDED, not repurposed. The
+     branch that pushes this code measures CONFIRMED CASH RECEIPTS, not
+     commitment dates — the register carries no date, so this engine cannot know
+     when a position began. The old sentence ("had no committed position in this
+     vehicle during the tax year") asserted a fact the code never checks and
+     would have been FALSE for an LP who committed in 2025 and whose funds were
+     confirmed in 2026. A false sentence is not an improvement on a false zero. */
   NOT_A_MEMBER_IN_YEAR:
-    "This partner had no committed position in this vehicle during the tax year.",
+    "Every confirmed capital receipt on record for this partner is dated after this tax year, so there is nothing this vehicle can report for the year. Left blank rather than shown as zero, which would assert a contribution of nothing.",
   UNKNOWN_REALIZED_PROFIT:
     "At least one recorded distribution does not state the realized profit it was computed from, so the allocated share of income cannot be derived. Left blank rather than estimated.",
 };
@@ -207,10 +214,36 @@ export function computeK1Statements(args: K1ComputeArgs): K1Statement[] {
     const myConfirmations = contributions.filter((c) => c.investorId === r.investorId);
     const inYear = myConfirmations.filter((c) => yearOf(c.confirmedAt) === taxYear);
     const priorYears = myConfirmations.filter((c) => yearOf(c.confirmedAt) < taxYear);
+
+    /* WAVE 141 · BATCH 1 ITEM 3. THE WRONG-YEAR LIE.
+       An LP whose every confirmed receipt post-dates the tax year has no in-year
+       rows AND no prior-year rows. Before this branch existed, the else-arm
+       below summed an EMPTY list to `0` with no refusal, and the panel printed
+       `$0.00` — a factual assertion that this partner contributed nothing —
+       directly beneath its own printed promise that a non-derivable figure "is
+       never shown as zero".
+
+       Derived FROM the year filter above; the filter itself is untouched
+       (fence A10, wave32_k1_falsification :297).
+
+       NOT the same case as `myConfirmations.length === 0` (fence A1): that is
+       "no receipt at all", this is "no receipt YET as at this year". Mutually
+       exclusive by the `> 0` term.
+
+       A PRIOR-YEAR MEMBER IS NOT CAUGHT HERE. An LP who contributed in 2025 and
+       nothing in 2026 has `priorYears.length > 0`, so they keep
+       `contributions = 0` as a TRUE zero and roll their capital forward. That
+       distinction is the whole point: "no data for this year" must never render
+       as `$0.00` as though it were fact, and a real zero must never be hidden. */
+    const notYetAMember = myConfirmations.length > 0 && inYear.length === 0 && priorYears.length === 0;
+
     let contributionsMinor: number | null;
     if (myConfirmations.length === 0) {
       contributionsMinor = null;
       refusals.push(refusal("contributionsMinor", "NO_FUNDS_CONFIRMATION"));
+    } else if (notYetAMember) {
+      contributionsMinor = null;
+      refusals.push(refusal("contributionsMinor", "NOT_A_MEMBER_IN_YEAR"));
     } else {
       contributionsMinor = inYear.reduce((a, c) => a + Math.trunc(c.receivedMinor), 0);
     }
@@ -246,7 +279,14 @@ export function computeK1Statements(args: K1ComputeArgs): K1Statement[] {
     let beginningCapitalMinor: number | null;
     if (contributionsMinor === null) {
       beginningCapitalMinor = null;
-      refusals.push(refusal("beginningCapitalMinor", "DEPENDS_ON_UNKNOWN_CONTRIBUTIONS"));
+      /* ONE REFUSAL PER NULLED BOX — fence A11 asserts every null box appears as
+         a refusal `field`, so three nulls need three refusals. And the reason
+         must be the true one: on the not-yet-a-member branch the contributions
+         are not "unknown", they are known to be none yet, so
+         DEPENDS_ON_UNKNOWN_CONTRIBUTIONS is suppressed here. */
+      refusals.push(
+        refusal("beginningCapitalMinor", notYetAMember ? "NOT_A_MEMBER_IN_YEAR" : "DEPENDS_ON_UNKNOWN_CONTRIBUTIONS"),
+      );
     } else {
       const priorContrib = priorYears.reduce((a, c) => a + Math.trunc(c.receivedMinor), 0);
       beginningCapitalMinor = priorContrib + priorIncome - priorDistributions;
@@ -261,7 +301,9 @@ export function computeK1Statements(args: K1ComputeArgs): K1Statement[] {
     let endingCapitalMinor: number | null;
     if (beginningCapitalMinor === null) {
       endingCapitalMinor = null;
-      refusals.push(refusal("endingCapitalMinor", "DEPENDS_ON_UNKNOWN_CONTRIBUTIONS"));
+      refusals.push(
+        refusal("endingCapitalMinor", notYetAMember ? "NOT_A_MEMBER_IN_YEAR" : "DEPENDS_ON_UNKNOWN_CONTRIBUTIONS"),
+      );
     } else if (anyIncomeUnknown) {
       endingCapitalMinor = null;
       refusals.push(refusal("endingCapitalMinor", "UNKNOWN_REALIZED_PROFIT"));
@@ -293,4 +335,42 @@ export function computeK1Statements(args: K1ComputeArgs): K1Statement[] {
       sourceIds,
     };
   });
+}
+
+/**
+ * WAVE 141 · BATCH 1 ITEM 3 · R108.4 item 4 — WHICH YEAR THE GP IS SHOWN FIRST.
+ *
+ * A K-1 is prepared for a **CLOSED** tax year. "The most recent year that has
+ * any data" is therefore the wrong default: the moment a single receipt is
+ * confirmed in the current year, that rule would open the panel on a year that
+ * is still running, and the surface would state it confidently.
+ *
+ * So the suggestion is the most recent year with recorded activity that is at or
+ * before `currentYear - 1`, and **`null`** when no closed year has any. Null is
+ * not a failure — it is the honest answer, and the caller decides what to say
+ * about the absence. NOTHING HERE INVENTS A YEAR: the open current year stays
+ * listed and selectable (a GP legitimately previews an in-progress year) but it
+ * is never auto-selected.
+ */
+export function suggestClosedTaxYear(years: ReadonlyArray<number>, currentYear: number): number | null {
+  const closed = years.filter((y) => Number.isInteger(y) && y <= currentYear - 1);
+  if (closed.length === 0) return null;
+  return closed.reduce((a, b) => (b > a ? b : a));
+}
+
+/** The distinct years, DESCENDING, that a vehicle has any recorded activity in. */
+export function k1ActivityYears(
+  contributions: ReadonlyArray<K1ContributionInput>,
+  distributions: ReadonlyArray<{ createdAt: string }>,
+): number[] {
+  const set = new Set<number>();
+  for (const c of contributions) {
+    const y = yearOf(c.confirmedAt);
+    if (Number.isInteger(y) && y >= 1900 && y <= 2999) set.add(y);
+  }
+  for (const d of distributions) {
+    const y = yearOf(d.createdAt);
+    if (Number.isInteger(y) && y >= 1900 && y <= 2999) set.add(y);
+  }
+  return Array.from(set).sort((a, b) => b - a);
 }

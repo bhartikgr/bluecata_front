@@ -64,6 +64,7 @@ import { useToast } from "@/hooks/use-toast";
  * (major → minor) and the read side (minor → display) use the SAME ISO
  * exponent table and cannot disagree. */
 import { formatMinor, currencyExponent as currencyExponentFor } from "@/lib/currency";
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
 import { formatPercentValue } from "@/lib/percentDisplay";
 /* WAVE 124 · FINDING 1 — Reviewer C (C-25) measured server field names rendered
    as human content in a partner-facing CRM: a raw `company_id` under a column
@@ -515,7 +516,12 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
                   <tr key={r.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-acct-rebill-${r.id}`}>
                     <td className="py-1.5">{partyReferenceLabel(r.company_id)}</td>
                     <td className="py-1.5">{r.description}</td>
-                    <td className="py-1.5" data-testid={`mfcrm-acct-rebill-amount-${r.id}`}>{formatMinor(Number(r.amount_minor) || 0, (r.currency || "USD").toUpperCase())}</td>
+                    <td className="py-1.5" data-testid={`mfcrm-acct-rebill-amount-${r.id}`}>{/* WAVE 147 · R111 Q13 — `Number(x) || 0` turned a rebill with no amount on
+                        record into a billed $0.00. It also swallowed a stored `"0"`
+                        (falsy after Number) into the same branch, so the two were
+                        indistinguishable. The helper refuses only genuinely-absent
+                        values and still formats a real zero. */}
+                    {formatMinorOrUnavailable(r.amount_minor as number | null | undefined, (r.currency || "USD").toUpperCase())}</td>
                     <td className="py-1.5">{humanizeMachineKey(r.status)}</td>
                   </tr>
                 ))}

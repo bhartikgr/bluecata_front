@@ -131,10 +131,60 @@ export function pendingOwnerDecisions(viewerRole?: string): AudienceRule[] {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   WAVE 144 · ITEM 5 — AN EXPLICIT CONFIRMATION FOR THE ONE RULE THAT EXPOSES
+   ANOTHER ORGANISATION'S PEOPLE.                       R108.1 items 2 and 3
+
+   `setAudienceRuleEnabled` is the ONLY write path to `comms_audience_rules`, and
+   before this wave every rule was one identical call away from live. One of the
+   six is not like the others: `partner_engaged_company_people` opens the ACTIVE
+   members of a partner's CLIENT companies — people at another organisation — and
+   R108.1 holds it off pending the payload scoping done in ITEM 4 of this wave.
+
+   R108.1 item 3 is explicit that the owner must be able to operate BOTH partner
+   rules without a developer, so this is NOT a block. It is a stated warning plus
+   a deliberate second act: the caller must pass `EXPOSURE_CONFIRMATION_TOKEN`,
+   which cannot be produced by a stray `true`, a replayed request, or a
+   mis-click. Turning the rule OFF never requires it — a safety catch that makes
+   it harder to CLOSE an exposure would be backwards.
+
+   Deliberately enforced HERE and not only in the HTTP route: a confirmation that
+   lives in one route is bypassed by the next caller, which is the same defect
+   moved. --------------------------------------------------------------------- */
+
+/** The rules whose exposure crosses an organisation boundary. */
+export const RULES_REQUIRING_EXPLICIT_CONFIRMATION: readonly string[] = [
+  "partner_engaged_company_people",
+];
+
+/** The exact string a caller must state to enable such a rule. */
+export const EXPOSURE_CONFIRMATION_TOKEN = "I_UNDERSTAND_THIS_EXPOSES_CLIENT_COMPANY_PEOPLE";
+
+/**
+ * What enabling the rule actually exposes, and what is still outstanding, in the
+ * server's own words so the client cannot soften it.
+ */
+export function exposureWarningFor(key: string): string | null {
+  if (key !== "partner_engaged_company_people") return null;
+  return (
+    "ENABLING THIS OPENS ANOTHER ORGANISATION'S PEOPLE. A Consortium Partner will be able to " +
+    "message the ACTIVE members of every client company they hold a live engagement for, and " +
+    "those people will appear in the partner's recipient directory. OUTSTANDING PREREQUISITE: " +
+    "R108.1 item 2 requires the messaging directory payload to be scoped to identity for " +
+    "addressing before this rule is enabled. WAVE 144 item 4 removed capTables, location and " +
+    "capavateAngelNetwork from that payload; the ruling itself has not been revisited, so the " +
+    "owner — not this code — decides whether the prerequisite is now satisfied. Turning it off " +
+    "again is immediate and needs no confirmation."
+  );
+}
+
 export interface SetRuleResult {
   ok: boolean;
-  error?: "unknown_rule" | "write_failed";
+  error?: "unknown_rule" | "write_failed" | "confirmation_required";
   rule?: AudienceRule;
+  /** Present with `confirmation_required`: what the caller must state, and why. */
+  requiredConfirmation?: string;
+  warning?: string;
 }
 
 /**
@@ -146,9 +196,24 @@ export function setAudienceRuleEnabled(
   key: string,
   enabled: boolean,
   decidedBy: string,
+  /* WAVE 144 · ITEM 5 — required ONLY to ENABLE a rule listed in
+     RULES_REQUIRING_EXPLICIT_CONFIRMATION. Every other call is unchanged. */
+  confirmation?: string,
 ): SetRuleResult {
   if (!AUDIENCE_RULE_KEYS.includes(key as AudienceRuleKey)) {
     return { ok: false, error: "unknown_rule" };
+  }
+  if (
+    enabled &&
+    RULES_REQUIRING_EXPLICIT_CONFIRMATION.includes(key) &&
+    confirmation !== EXPOSURE_CONFIRMATION_TOKEN
+  ) {
+    return {
+      ok: false,
+      error: "confirmation_required",
+      requiredConfirmation: EXPOSURE_CONFIRMATION_TOKEN,
+      warning: exposureWarningFor(key) ?? undefined,
+    };
   }
   try {
     const db: any = rawDb();

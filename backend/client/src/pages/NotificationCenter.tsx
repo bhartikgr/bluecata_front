@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useRole } from "@/lib/role";
+import { notificationKindLabel } from "@/lib/notificationKindLabels";
 
 type Notification = {
   id: string;
@@ -137,7 +138,12 @@ export default function NotificationCenter() {
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium truncate">{n.title}</span>
                     {!n.read && <Badge variant="default" className="text-[9px] h-4">NEW</Badge>}
-                    <Badge variant="outline" className="text-[9px] h-4 ml-auto">{n.kind}</Badge>
+                    {/* WAVE 149 · ITEM 4 (R77) — this badge printed the persisted
+                        machine value. It is the same breach as NotificationBell's,
+                        and this is the page the bell's "View all" lands on, so
+                        fixing one without the other would only move it one click
+                        away. `data-kind` on the Card still carries the raw value. */}
+                    <Badge variant="outline" className="text-[9px] h-4 ml-auto">{notificationKindLabel(n.kind)}</Badge>
                   </div>
                   <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.body}</div>
                   <div className="text-[10px] text-muted-foreground/60 mt-1">{new Date(n.createdAt).toLocaleString()}</div>

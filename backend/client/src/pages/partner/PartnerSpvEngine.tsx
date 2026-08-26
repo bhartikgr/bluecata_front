@@ -159,7 +159,16 @@ export type WizardMoney =
   | { ok: true; minor: bigint; wire: number; display: string }
   | { ok: false; message: string };
 
-/** Blank counts as zero ONLY where the old code did (`|| "0"`); never rounds. */
+/** Blank counts as zero ONLY where the old code did (`|| "0"`); never rounds.
+ *
+ *  WAVE 140 · BATCH 1 ITEM 1 — `Hard cap` NO LONGER USES THIS HELPER. A blank
+ *  Cap must persist as SQL NULL ("no cap"), not as 0, because `subscribe()`
+ *  reads `if (s.capMinor != null)` (server/spvEngineStore.ts:1414) and a stored
+ *  0 therefore refuses EVERY subscription with EXCEEDS_CAP. The cap call site
+ *  was narrowed to `wizardMoneyWireOptional` / `wizardMoneyDisplayOptional`
+ *  rather than changing this shared helper, because Target raise, Minimum
+ *  cheque and Fixed fee amount still route through it and their
+ *  blank-counts-as-zero behaviour is deliberate and unchanged. */
 export function wizardMoney(raw: string, currency: string, label: string): WizardMoney {
   const r = parseWholeUnits(raw.trim() === "" ? "0" : raw, currency, { label, allowZero: true });
   if (!r.ok) return { ok: false, message: r.message };
@@ -359,9 +368,17 @@ const EMPTY_WIZARD: WizardState = {
      These three are CONTROLLED numeric inputs. Initialising them to the string
      "0" meant a GP who typed without clearing the box first produced "02000000",
      "025000" and "02500000" — the zero was ours, not theirs. An EMPTY string is
-     the correct initial value for an empty control; every reader below already
-     parses with `|| "0"`, so a blank field still means zero on the wire and no
-     stored value changes. */
+     the correct initial value for an empty control.
+
+     WAVE 140 · BATCH 1 ITEM 1 — THE SENTENCE THAT USED TO FOLLOW HERE IS NOW
+     FALSE FOR ONE OF THE THREE AND IS CORRECTED RATHER THAN LEFT TO ROT. It
+     read "every reader below already parses with `|| "0"`, so a blank field
+     still means zero on the wire and no stored value changes". That is still
+     true of `targetRaiseMinor` and `minCheckMinor`, which go through
+     `wizardMoneyWire`. It is NO LONGER true of `capMinor`: a blank Cap now
+     goes through `wizardMoneyWireOptional` and posts NULL, because a stored 0
+     cap made the vehicle refuse every investor (EXCEEDS_CAP,
+     server/spvEngineStore.ts:1415). Blank Cap means NO CAP. */
   targetRaiseMinor: "", minCheckMinor: "", capMinor: "", currency: "USD",
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
   mgmtFeeType: "carry", mgmtFixedMinor: "", mgmtCarryPct: "20", feeCurrency: "USD",
@@ -510,7 +527,10 @@ export default function PartnerSpvEngine() {
          parser's own sentence, which the `onError` toast shows verbatim. */
       const targetRaiseWire = wizardMoneyWire(w.targetRaiseMinor, w.currency, "Target raise");
       const minCheckWire = wizardMoneyWire(w.minCheckMinor, w.currency, "Minimum cheque");
-      const capWire = wizardMoneyWire(w.capMinor, w.currency, "Hard cap");
+      /* WAVE 140 · BATCH 1 ITEM 1 — Optional, so a BLANK Cap posts `null` and
+         is stored as SQL NULL ("no cap") instead of 0. A TYPED 0 still posts 0:
+         `wizardMoneyWireOptional` blanks only on `raw.trim() === ""`. */
+      const capWire = wizardMoneyWireOptional(w.capMinor, w.currency, "Hard cap");
       const gpCommitWire = wizardMoneyWireOptional(w.gpCommitMajor, w.currency, "GP commitment");
       const checkMinWire = wizardMoneyWireOptional(w.checkMinMajor, w.currency, "Minimum cheque (mandate)");
       const checkMaxWire = wizardMoneyWireOptional(w.checkMaxMajor, w.currency, "Maximum cheque (mandate)");
@@ -1301,7 +1321,10 @@ export default function PartnerSpvEngine() {
               />
               <ReviewRow
                 label="Cap"
-                value={wizardMoneyDisplay(w.capMinor, w.currency, "Hard cap")}
+                /* WAVE 140 · BATCH 1 ITEM 1 — a blank Cap reviews as "—", not as
+                   the false fact "$0.00". Value swap inside an existing prop on
+                   an existing element: no sibling is replaced. */
+                value={wizardMoneyDisplayOptional(w.capMinor, w.currency, "Hard cap")}
                 onEdit={() => setStep(3)}
               />
               {/* Named in its own row so no amount on this screen is unit-ambiguous.

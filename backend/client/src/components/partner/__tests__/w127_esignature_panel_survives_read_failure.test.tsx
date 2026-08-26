@@ -119,8 +119,27 @@ describe("W127 FINDING 1 · e-signature tab under a failing envelope-list read",
     await waitFor(() => {
       const banner = container.querySelector('[data-testid="spv-esign-error"]');
       expect(banner).toBeTruthy();
-      /* Not swallowed into a generic shrug: the server's message is retained. */
-      expect(container.querySelector('[data-testid="spv-esign-error-detail"]')?.textContent).toContain(LIVE_SENTENCE);
+      /* ══════════════════════════════════════════════════════════════════════════
+         PIN UPDATED UNDER R98 BY WAVE 148 — the CODE was not reverted, and no
+         assertion was removed; two were added.
+         ══════════════════════════════════════════════════════════════════════════
+         This assertion used to read the server's message out of
+         `spv-esign-error-detail`, the line labelled "Reference:". Wave 148
+         established that as a confirmed defect: the label promised an identifier
+         and delivered prose, while the real reference sat unread on
+         `ApiError.payload.incidentCode`. The detail line now carries the opaque
+         per-occurrence incident code, and the server's message moved to its own
+         sibling line — it was NOT deleted, which is what this pin exists to
+         protect. Both facts are asserted below, so the guarantee is stronger than
+         before, not weaker. */
+      expect(container.querySelector('[data-testid="spv-esign-error-message"]')?.textContent).toContain(LIVE_SENTENCE);
+      /* This mock throws a bare Error with no payload, so there is no incident
+         code to show; R111 Q13's wording is what must appear — never a dash,
+         never an empty label, never the raw internal code. */
+      const ref = container.querySelector('[data-testid="spv-esign-error-detail"]')?.textContent ?? "";
+      expect(ref).toContain("Reference:");
+      expect(ref).toContain("Not on record");
+      expect(ref).not.toContain(LIVE_SENTENCE);
     });
     /* Professional and SPECIFIC about what failed and what still works. */
     const banner = container.querySelector('[data-testid="spv-esign-error"]')!;

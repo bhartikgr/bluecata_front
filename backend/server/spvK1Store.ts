@@ -28,7 +28,14 @@ import { rawDb } from "./db/connection";
 import { isSqlite } from "./db/portable";
 import { log } from "./lib/logger";
 import { applySpvInstitutionalSchema } from "./lib/applySpvInstitutionalSchema";
-import { computeK1Statements, type K1Statement, type K1DistributionInput, type K1ContributionInput } from "./lib/spvK1";
+import {
+  computeK1Statements,
+  k1ActivityYears,
+  suggestClosedTaxYear,
+  type K1Statement,
+  type K1DistributionInput,
+  type K1ContributionInput,
+} from "./lib/spvK1";
 import { spvBasics, committedRegisterRows } from "./spvNavStore";
 
 let _schemaEnsured = false;
@@ -121,6 +128,25 @@ export function k1ContributionsForSpv(spvId: string): K1ContributionInput[] {
     out.push({ investorId, confirmedAt: String(v.confirmedAt), receivedMinor: Number(v.receivedMinor) });
   }
   return out.sort((a, b) => (a.confirmedAt < b.confirmedAt ? -1 : 1));
+}
+
+/**
+ * WAVE 141 · BATCH 1 ITEM 3. WHICH YEARS THIS VEHICLE ACTUALLY HAS FACTS FOR.
+ *
+ * The GP panel had no wire source for this at all — funds confirmations live in
+ * `spv.terms_json._fundsConfirmations` and distribution dates are server-side —
+ * so it guessed `currentYear - 1` and printed `$0.00` when it guessed wrong.
+ *
+ * `suggestedTaxYear` is the most recent **CLOSED** year with activity, or `null`
+ * (R108.4 item 4). Never a fabricated year: an empty vehicle returns
+ * `{ years: [], suggestedTaxYear: null }` and the caller says so out loud.
+ */
+export function k1ActivityYearsForSpv(spvId: string): { years: number[]; suggestedTaxYear: number | null } {
+  ensureSchema();
+  const spv = spvBasics(spvId);
+  if (!spv) throw new SpvK1NotFoundError();
+  const years = k1ActivityYears(k1ContributionsForSpv(spvId), k1DistributionsForSpv(spvId));
+  return { years, suggestedTaxYear: suggestClosedTaxYear(years, new Date().getUTCFullYear()) };
 }
 
 /** Derive every LP's K-1 for a tax year. Writes nothing. */

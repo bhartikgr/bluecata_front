@@ -36,6 +36,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { formatMinor, toMinor as toMinorUnits, fromMinor as fromMinorUnits } from "@/lib/currency";
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
 /* WAVE 41 · OWNER RULING R6 — the canonical honest-refusal placeholder, reused
    rather than re-spelled. `NOT_PROVIDED` is pinned to exactly "Not provided" by
    client/src/lib/__tests__/wave4Display.test.ts, so importing it (instead of
@@ -1094,7 +1095,12 @@ export default function Settings() {
                             <div className="text-xs text-muted-foreground">{fmtDate(inv.issuedAt)}</div>
                           </div>
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="tabular-nums">{formatMinor(inv.totalMinor ?? inv.amountMinor ?? 0, inv.currency || "USD")}</span>
+                            {/* WAVE 147 · R111 Q13 — the `?? inv.amountMinor` fallback is kept (two real
+                                field names for the same figure across invoice generations), but the
+                                trailing `?? 0` is not: an invoice whose amount the platform does not
+                                hold was being shown to a founder as a $0.00 invoice. A genuine 0
+                                still renders `$0.00`. */}
+                            <span className="tabular-nums">{formatMinorOrUnavailable(inv.totalMinor ?? inv.amountMinor, inv.currency || "USD")}</span>
                             <Badge
                               /* WAVE 101 - a PAID invoice was the same red as void/refunded. Colour only. */
                               variant={inv.status === "paid" ? "positive" : inv.status === "void" || inv.status === "refunded" ? "destructive" : "secondary"}

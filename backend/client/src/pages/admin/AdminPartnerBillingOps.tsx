@@ -109,6 +109,15 @@ type CoverageResponse = {
   tiers: string[];
   unpricedPairs: Array<{ tierSlug: string; cadence: string }>;
   cadences: string[];
+  /* WAVE 152 · ITEM G · G-C1/G-C3 — all ADDITIVE, all optional so an older
+     server response still renders. `knownTiers` is what makes a tier with NO ROW
+     priceable at all; `notOnLadder` separates "no lifecycle record, therefore
+     never advertised" from "on the ladder and genuinely missing a price", which
+     the single `unpriced` count could not distinguish. */
+  knownTiers?: string[];
+  notOnLadder?: Array<{ tierSlug: string; cadence: string }>;
+  notOnLadderTiers?: string[];
+  notOnLadderNote?: string;
 };
 
 /* Mirrors `Promotion` (server/lib/partnerBillingStore.ts:252). The value fields
@@ -187,6 +196,16 @@ const FINDING_LABELS: Record<string, string> = {
 function TierPricesTab() {
   const { toast } = useToast();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  /* WAVE 152 · ITEM G · G-C1 (R116.4) — state for the ADD/EDIT form below.
+     Before this wave the tab rendered one editable field per EXISTING row and
+     nothing else, so any (tier, cadence) pair with no row was unreachable from
+     the console: an admin could not price it, and could not see that it was
+     missing. The write endpoint already upserted; only the form was absent. */
+  const [formTier, setFormTier] = useState("");
+  const [formCadence, setFormCadence] = useState("annual");
+  const [formPrice, setFormPrice] = useState("");
+  const [formFreeAttested, setFormFreeAttested] = useState(false);
+  const [formFreeReason, setFormFreeReason] = useState("");
   const coverage = useQuery<CoverageResponse>({
     queryKey: ["/api/admin/partner-billing/tier-prices"],
     retry: false,
@@ -194,8 +213,16 @@ function TierPricesTab() {
   });
 
   const save = useMutation({
-    mutationFn: async (vars: { tierSlug: string; cadence: string; priceMinor: number | null; currency: string }) =>
-      (await apiRequest("PUT", "/api/admin/partner-billing/tier-prices", vars)).json(),
+    mutationFn: async (vars: {
+      tierSlug: string;
+      cadence: string;
+      priceMinor: number | null;
+      currency: string;
+      /* WAVE 152 · ITEM G · G-C2 — an intentional zero has to be RECORDED, not
+         inferred. The server refuses a 0 without both of these (R115.3 Q6). */
+      freeAttested?: boolean;
+      freeReason?: string;
+    }) => (await apiRequest("PUT", "/api/admin/partner-billing/tier-prices", vars)).json(),
     onSuccess: (data: any, vars) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/partner-billing/tier-prices"] });
       setDrafts((d) => {
@@ -257,6 +284,136 @@ function TierPricesTab() {
           </p>
         )}
       </AppCard>
+
+      {/* WAVE 152 · ITEM G · G-C3 (R110.3) — the THIRD bucket, reported separately
+          rather than folded into the unpriced count or hidden. A tier with no
+          lifecycle record is never advertised and never purchasable, so counting
+          it as a pricing gap made the coverage figure alarming and unactionable.
+          Kept as its own static sibling card. */}
+      <div className="mt-4">
+        <AppCard title="Not on the ladder" data-testid="tier-price-not-on-ladder">
+          <p className="text-sm text-muted-foreground" data-testid="not-on-ladder-note">
+            {c.notOnLadderNote ??
+              "This tier is not on the ladder \u2014 it has no lifecycle record, so it is never advertised and never purchasable."}
+          </p>
+          <p className="mt-2 text-sm" data-testid="not-on-ladder-list">
+            {(c.notOnLadderTiers ?? []).length === 0
+              ? "Every priced tier has a lifecycle record."
+              : `${(c.notOnLadderTiers ?? []).join(", ")} \u2014 ${(c.notOnLadder ?? []).length} tier/cadence rows.`}
+          </p>
+        </AppCard>
+      </div>
+
+      {/* WAVE 152 · ITEM G · G-C1 (R116.4) — ADD OR EDIT A PRICE. */}
+      <div className="mt-4">
+        <AppCard title="Add or edit a price" data-testid="tier-price-form">
+          <p className="mb-3 text-xs text-muted-foreground" data-testid="tier-price-form-note">
+            Pick any tier, including one that has no price row yet. Amounts are entered in major
+            units (dollars) and converted once, at this edge. Leave the amount blank to record the
+            tier as deliberately unpriced — that is not the same as zero, and a checkout against an
+            unpriced tier is refused rather than charged at a guessed amount.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <div>
+              <Label htmlFor="tier-price-form-tier">Tier</Label>
+              <select
+                id="tier-price-form-tier"
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                value={formTier}
+                onChange={(e) => setFormTier(e.target.value)}
+                data-testid="select-tier-price-form-tier"
+              >
+                <option value="">Choose a tier…</option>
+                {(c.knownTiers ?? c.tiers).map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="tier-price-form-cadence">Cadence</Label>
+              <select
+                id="tier-price-form-cadence"
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                value={formCadence}
+                onChange={(e) => setFormCadence(e.target.value)}
+                data-testid="select-tier-price-form-cadence"
+              >
+                {(c.cadences ?? []).map((cad) => (
+                  <option key={cad} value={cad}>
+                    {cad}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="tier-price-form-price">Price (major units)</Label>
+              <Input
+                id="tier-price-form-price"
+                value={formPrice}
+                placeholder="blank = unpriced"
+                onChange={(e) => setFormPrice(e.target.value)}
+                data-testid="input-tier-price-form-price"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button
+                disabled={
+                  !formTier ||
+                  majorToMinorStrict(formPrice) === undefined ||
+                  save.isPending ||
+                  (majorToMinorStrict(formPrice) === 0 && !(formFreeAttested && formFreeReason.trim().length > 0))
+                }
+                onClick={() =>
+                  save.mutate({
+                    tierSlug: formTier,
+                    cadence: formCadence,
+                    priceMinor: majorToMinorStrict(formPrice) as number | null,
+                    currency: "USD",
+                    freeAttested: formFreeAttested,
+                    freeReason: formFreeReason.trim(),
+                  })
+                }
+                data-testid="button-tier-price-form-save"
+              >
+                Save price
+              </Button>
+            </div>
+          </div>
+          {/* WAVE 152 · ITEM G · G-C2 — the attestation fields. `free_attested` and
+              `free_reason` have existed in the schema since migration 0187 and no
+              writer ever set them, so a deliberately free tier saved successfully
+              and was then rejected on read. Recording the intent is the fix. */}
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="flex items-center gap-2 text-sm" htmlFor="tier-price-form-free-attested">
+              <input
+                id="tier-price-form-free-attested"
+                type="checkbox"
+                checked={formFreeAttested}
+                onChange={(e) => setFormFreeAttested(e.target.checked)}
+                data-testid="checkbox-tier-price-form-free-attested"
+              />
+              This is a real free price, not a missing one
+            </label>
+            <div>
+              <Label htmlFor="tier-price-form-free-reason">Why is it free?</Label>
+              <Input
+                id="tier-price-form-free-reason"
+                value={formFreeReason}
+                placeholder="Required to save a price of zero"
+                onChange={(e) => setFormFreeReason(e.target.value)}
+                data-testid="input-tier-price-form-free-reason"
+              />
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="tier-price-form-zero-note">
+            A price of zero has to be declared deliberately. Tick the box and write the reason, or
+            enter the real amount, or leave the amount blank to record the tier as deliberately
+            unpriced.
+          </p>
+        </AppCard>
+      </div>
 
       <div className="mt-4">
         <AppCard title={`Tier prices (${c.rows.length})`} data-testid="tier-prices">

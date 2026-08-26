@@ -32,6 +32,7 @@ import { useToast } from "@/hooks/use-toast";
 /* WAVE 17 ORP-039 — member-facing fees, charges and invoices. */
 import { MemberBillingPanel } from "@/components/collective/MemberBillingPanel";
 import { minorToMajorString } from "@/lib/moneyDisplay";
+import { MONEY_NOT_ON_RECORD } from "@/lib/currency"; /* WAVE 152 · G-C8 — one agreed absence wording (R111 Q13) */
 /* WAVE 24 · ITEM 3a — a failed price fetch must not render a buyable card. */
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
 import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
@@ -46,9 +47,11 @@ interface FeatureFlagsResponse {
 interface MemberTierDTO {
   slug: string;
   key: string;
-  amountMinor: number;
-  currency: string;
-  billingPeriod: string;
+  /* WAVE 152 · ITEM G · G-C8 — nullable. The server reports an unconfigured
+   * price as `null` rather than substituting a compiled-in amount (R95). */
+  amountMinor: number | null;
+  currency: string | null;
+  billingPeriod: string | null;
   fromDb: boolean;
 }
 
@@ -91,7 +94,12 @@ interface MeChaptersResponse {
 // ----- Helpers ------------------------------------------------------------
 
 function formatMoneyMinor(amountMinor: number | null, currency: string | null): string {
-  if (amountMinor === null || currency === null) return "—";
+  /* WAVE 152 · ITEM G · G-C8 (R111 Q13). An em dash reads as decoration; a member
+   * looking at it cannot tell whether the price is free, still loading, or simply
+   * not configured. Now that GET /api/collective/member-tier can report
+   * `amountMinor: null` instead of the deleted compiled-in $249.00, the page says
+   * which — in the platform's one agreed wording. */
+  if (amountMinor === null || currency === null) return MONEY_NOT_ON_RECORD;
   /* WAVE 21 ITEM 5: hardcoded /100; the currency was already in scope. */
   const dollars = Number(minorToMajorString(amountMinor, currency));
   try {
@@ -121,7 +129,11 @@ function formatIsoDate(iso: string | null): string {
   }
 }
 
-function periodLabel(billingPeriod: string | undefined): string {
+/* WAVE 152 · ITEM G · G-C8 — `| null` accepted. The server now reports an
+   unconfigured price as `billingPeriod: null`, and a cadence that is not on
+   record must not be silently relabelled; the callers suppress the suffix
+   entirely in that case. */
+function periodLabel(billingPeriod: string | undefined | null): string {
   switch (billingPeriod) {
     case "monthly":
       return "month";
@@ -379,9 +391,12 @@ export default function MembershipPage(): JSX.Element | null {
               <div>
                 <dt className="text-muted-foreground">Amount</dt>
                 <dd className="font-medium" data-testid="membership-amount">
-                  {tier
+                  {/* WAVE 152 · ITEM G · G-C8 — "Not on record / month" would be
+                      nonsense, so the cadence is suppressed when there is no
+                      amount to attach it to. */}
+                  {tier && tier.amountMinor !== null
                     ? `${formatMoneyMinor(tier.amountMinor, tier.currency)} / ${periodLabel(tier.billingPeriod)}`
-                    : "—"}
+                    : MONEY_NOT_ON_RECORD}
                 </dd>
               </div>
               <div>
@@ -500,11 +515,14 @@ export default function MembershipPage(): JSX.Element | null {
               <span>Collective Membership</span>
               {isCurrent && <Badge>Current</Badge>}
             </CardTitle>
-            <p className="text-2xl font-bold">
+            <p className="text-2xl font-bold" data-testid="membership-tier-price">
               {formatMoneyMinor(tier?.amountMinor ?? null, tier?.currency ?? null)}
+              {/* WAVE 152 · ITEM G · G-C8 — the cadence span is kept as a STATIC
+                  sibling and empties its own text, rather than being swapped for
+                  a conditional element, so the panel/copy shape the drop gate
+                  counts is unchanged. */}
               <span className="text-sm font-normal text-muted-foreground">
-                {" "}
-                / {periodLabel(tier?.billingPeriod)}
+                {tier && tier.amountMinor !== null ? ` / ${periodLabel(tier.billingPeriod)}` : ""}
               </span>
             </p>
             <p className="text-sm text-muted-foreground">

@@ -42,6 +42,14 @@ import { AlertTriangle, ShieldCheck, Network, Columns3, ListTree, Scale } from "
    admin area is what lost RS-1 and RS-2 in July. */
 import { MarkOverrideReviewPanel } from "@/components/admin/MarkOverrideReviewPanel";
 import { LockTextAdminPanel } from "@/components/admin/LockTextAdminPanel"; /* WAVE 33 · CP-PIPE-10 */
+/* WAVE 143 · BATCH 1 · ITEM 4 (R108.1 item 3) — the messaging audience rules
+   switch. Mounted HERE for the same reason WAVE 24 and WAVE 33 mounted theirs
+   here: this page is the declared "functionality that exists must be visible"
+   surface, it is already admin-gated and routed (App.tsx), and re-fragmenting the
+   admin area is what lost RS-1 and RS-2 in July. A new /admin/... route would
+   also have to touch App.tsx, which this item does not need. */
+import { MessagingAudienceRulesPanel } from "@/components/admin/MessagingAudienceRulesPanel";
+import { Link } from "wouter"; /* WAVE 157 — R124.3, the alarm must name its remedy */
 import { asArray } from "@/lib/safeArray";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -262,6 +270,22 @@ export default function PlatformSurfaces() {
             <span className="block" data-testid="text-audit-banner-consequence">
               Audit-derived figures should be treated as unattested until this is cleared.
             </span>
+            {/* WAVE 157 · R124.3 — NAVIGATION ONLY. This banner reported an open
+                incident on admin pages without ever naming where it is repaired.
+                An alarm that does not name its remedy is the defect, so the link
+                is added and NOTHING else changes: not the trigger condition
+                (`banner?.incident`), not the re-anchor logic, not the incident
+                state machine. The destination is the existing screen at
+                /admin/audit-chain-verify (client/src/App.tsx). */}
+            <span className="block mt-1">
+              <Link
+                href="/admin/audit-chain-verify"
+                className="font-medium underline"
+                data-testid="link-audit-incident-resolve"
+              >
+                Go to Audit chain verification to check and repair the chain
+              </Link>
+            </span>
           </div>
         )}
         {banner && !banner.incident && (
@@ -301,6 +325,13 @@ export default function PlatformSurfaces() {
                 path and the guard reads that as a drop). */}
             <TabsTrigger value="lock-text" data-testid="tab-surfaces-lock-text">
               <Scale className="h-4 w-4 mr-1.5" /> Lock wording
+            </TabsTrigger>
+            {/* WAVE 143 · BATCH 1 · ITEM 4 — APPENDED as the LAST trigger for the
+                same reason CP-PIPE-10 was: inserting mid-list renumbers a
+                sibling's positional path and the drop guard reads that as a
+                removal. No existing trigger is replaced or reworded. */}
+            <TabsTrigger value="audience-rules" data-testid="tab-surfaces-audience-rules">
+              <Network className="h-4 w-4 mr-1.5" /> Messaging audience
             </TabsTrigger>
           </TabsList>
 
@@ -656,6 +687,11 @@ export default function PlatformSurfaces() {
           {/* ══ WAVE 33 · CP-PIPE-10 (OQ-5) ══════════════════════════════ */}
           <TabsContent value="lock-text" className="mt-4">
             <LockTextAdminPanel />
+          </TabsContent>
+
+          {/* ══ WAVE 143 · BATCH 1 · ITEM 4 (R108.1 item 3) ═══════════════ */}
+          <TabsContent value="audience-rules" className="mt-4">
+            <MessagingAudienceRulesPanel />
           </TabsContent>
         </Tabs>
       </PageBody>

@@ -465,6 +465,8 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
         actor,
       );
       appendAdminAudit(actor, `partner_spv:${spv.id}`, "partner_spv.created", { partnerId, spvId: spv.id, spvName: spv.name, status: spv.status });
+      /* The advisory rides along on success; `undefined` spreads to nothing, so a
+         fully eligible create returns EXACTLY the body it returned before. */
       res.status(201).json({ ok: true, spv });
     } catch (err) {
       res.status(500).json({ ok: false, error: "create_failed", message: sanitizeErrorMessage(err) });

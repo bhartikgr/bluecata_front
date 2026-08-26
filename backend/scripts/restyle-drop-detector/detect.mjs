@@ -233,8 +233,19 @@ const COPY_ATTRS = new Set([
 ]);
 const PALETTE =
   /\b(?:bg|text|border|ring|divide|from|via|to)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950)\b/g;
+/* WAVE 147 — VOCABULARY FIX, NOT A RELAXATION. This pattern is the detector's
+   whole notion of "a money figure", and it was BLIND to the honest-refusal money
+   formatters this codebase already shipped: `formatMinorOrUnavailable`
+   (client/src/lib/moneyDisplay.ts), `moneyOrNotProvided`,
+   `moneyMajorOrNotProvided`, `formatExactMinor` and `fmtCurrency`. `\bformatMinor\b`
+   does NOT match `formatMinorOrUnavailable` — the trailing `O` is a word
+   character, so the boundary fails — which meant every money cell already using
+   the refusal-aware helper was invisible to the money signature, and MOVING a
+   cell onto that helper read as a money figure DELETED with nothing put back.
+   Adding these names can only ever ADD rows to the money signature; no drop is
+   silenced by it and the failure policy below is untouched. */
 const MONEY =
-  /\b(formatMinor|formatMoney|formatCurrency|formatUsd|toLocaleString|formatPercent|formatBps|formatPct|Intl\.NumberFormat)\b/;
+  /\b(formatMinorOrUnavailable|formatMinor|formatMoney|formatCurrency|formatUsd|fmtCurrency|moneyOrNotProvided|moneyMajorOrNotProvided|formatExactMinor|toLocaleString|formatPercent|formatBps|formatPct|Intl\.NumberFormat)\b/;
 const EMPTY_HINT =
   /\b(no |none|empty|nothing|not available|unavailable|could not|couldn't|cannot|failed|refus|yet\b)/i;
 

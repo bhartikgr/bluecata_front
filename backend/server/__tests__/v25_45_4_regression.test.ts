@@ -335,9 +335,23 @@ describe("v25.45.4 L-2 — platformFeesStore unit invariants", () => {
     rawDb().prepare(`DELETE FROM platform_fees WHERE key = ?`).run("test_fee_clamp");
   });
 
-  it("getFee returns a safe default for an unknown key (never throws)", () => {
-    const f = getFee("totally_unknown_key_zzz");
+  /* WAVE 144 · ITEM 2 · R98 RE-PIN. This case previously asserted
+     `typeof f.amountMinor === "number"` under the title "returns a safe default",
+     i.e. it PINNED the defect R108.2 forbids: a key with no row resolving to a
+     number (0, or the fabricated 30000 for the application-fee key). "Never
+     throws" is still the property worth holding — the store must fail SOFT — so
+     the fail-soft half is kept and strengthened, and the fabrication half is
+     inverted: absence must be REPORTED. Assertions: 2 -> 6. */
+  it("getFee REPORTS ABSENCE for an unknown key — no number, no zero, never throws", () => {
+    let f!: ReturnType<typeof getFee>;
+    expect(() => {
+      f = getFee("totally_unknown_key_zzz");
+    }).not.toThrow();
     expect(f.key).toBe("totally_unknown_key_zzz");
-    expect(typeof f.amountMinor).toBe("number");
+    expect(f.amountMinor).toBeNull();
+    expect(f.currency).toBeNull();
+    expect(f.source).toBe("missing");
+    /* A confident 0 would read as "this fee is nil", which is a different lie. */
+    expect(f.amountMinor).not.toBe(0);
   });
 });

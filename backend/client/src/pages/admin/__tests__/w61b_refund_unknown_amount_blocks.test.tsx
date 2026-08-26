@@ -262,8 +262,13 @@ describe("W61b · R42 — no silent drops; the Wave 55 source-text pins still ho
       expect(row.querySelectorAll("td").length).toBe(6); // id, company, amount, status, issued, actions
       expect(screen.getByTestId(`button-refund-invoice-${id}`)).toBeTruthy();
     }
-    // The unknown row's amount cell keeps Wave 55's honest dash.
-    expect(screen.getByTestId("row-invoice-inv_b").textContent).toContain("—");
+    /* The unknown row's amount cell keeps its honest refusal. UPDATED BY WAVE 147
+       UNDER R111 Q13 (per R98): the dash this pin recorded is the wording the
+       ruling replaced with the sentence "Not on record". The no-silent-drop
+       assertions above (six cells, refund button present) are untouched, and the
+       negative below is new, so the dash cannot silently return. */
+    expect(screen.getByTestId("row-invoice-inv_b").textContent).toContain("Not on record");
+    expect(screen.getByTestId("row-invoice-inv_b").textContent).not.toContain("—");
   });
 
   it("SOURCE PINS — the Wave 55 assertions on this exact row are still satisfiable", () => {

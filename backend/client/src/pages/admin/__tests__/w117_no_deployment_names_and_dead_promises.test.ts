@@ -256,9 +256,22 @@ describe("W117 F4c — the refused-view figure, now FIXED by the file's owner", 
         `securities.isSuccess && !viewRefusal ? \`\${fmtNum(`,
       );
       /* The hint's own fallback, matched together with its unit so this cannot
-         be satisfied by the VALUE's `: MONEY_UNAVAILABLE` earlier on the line. */
+         be satisfied by the VALUE's `: FIGURE_UNAVAILABLE` earlier on the line.
+
+         UPDATED BY WAVE 147 UNDER R111 Q13 (per R98) — NAME ONLY, NOT BEHAVIOUR.
+         Q13 fixed the wording for unknown MONEY, so `MONEY_UNAVAILABLE` now reads
+         "Not on record". These three tiles are a share count and two
+         PERCENTAGES, which Q13 does not govern, so wave 147 gave them their own
+         constant `FIGURE_UNAVAILABLE` (still the em dash) rather than re-wording
+         non-money surfaces on the strength of a money ruling. The property this
+         pin exists for — the hint falls back to the unavailable marker and never
+         to a figure — is unchanged, and an extra assertion below keeps the
+         fallback from being replaced by anything that could contain a digit. */
       expect(hint, `${testid} must fall back to the unavailable marker, never a figure`).toContain(
-        `${unit}\` : MONEY_UNAVAILABLE}`,
+        `${unit}\` : FIGURE_UNAVAILABLE}`,
+      );
+      expect(hint, `${testid} must not fall back to a money-worded refusal`).not.toContain(
+        `${unit}\` : \"`,
       );
       if (testid === "stat-founders") {
         /* WAVE 125 · FINDING 1 — the row-presence refusal must come FIRST, so a

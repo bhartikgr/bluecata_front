@@ -189,6 +189,18 @@ describe("WAVE 129 §3 — FENCE: no compiled-in price or period on a pricing re
     "server/lib/pricingConsoleRoutes.ts",
     "server/lib/pricingDisplaySourceRepoint.ts",
     "server/lib/wave15FeeScheduleAggregate.ts",
+    /* WAVE 152 · ITEM G · G-C10 — the PUBLIC marketing homepage was the one
+       pricing render path this fence did not cover, and it held the worst
+       instance in the tree: `price_minor: 84000` plus the string
+       "$840/year per company", compiled into the client bundle and served to
+       anonymous visitors whenever /api/pricing-public was unreachable. A price
+       that requires a deploy to correct is exactly what R95 forbids. Fencing
+       the hook stops the literal coming back. */
+    "client/src/lib/usePublicPricing.ts",
+    /* WAVE 152 · ITEM G · G-C8 — held `CANONICAL_MEMBER_FALLBACK_MINOR = 24900`,
+       a compiled-in Collective membership price served with HTTP 200 whenever
+       platform_fees could not be read. */
+    "server/lib/collectiveMemberSubscriptionResolver.ts",
   ];
 
   it("contains no hardcoded period suffix beside a money figure", () => {
@@ -215,7 +227,13 @@ describe("WAVE 129 §3 — FENCE: no compiled-in price or period on a pricing re
        because they are how a /100 or a ÷12 sneaks in, and 24000/240/1000 are the
        specific figures this wave traced. Tailwind numbers cannot appear here
        because we only look at non-className positions. */
-    const MONEY = /(?<![\w.$-])(240|1000|2400|24000|60000|50000|500000|250000|30000|2500)(?![\w.])/;
+    /* WAVE 152 · ITEM G · G-C10/G-C8 — 84000, 150000 and 24900 added. 84000 is the
+       figure R115.1 warns about twice over: it is BOTH the Consortium Partner
+       annual account fee AND the Capavate founder annual price, so a literal of
+       it on a render path is indistinguishable from the other product's price.
+       150000 was the Academy figure beside it in the same object literal, and
+       24900 was the deleted Collective member fallback. */
+    const MONEY = /(?<![\w.$-])(240|1000|2400|24000|24900|60000|50000|500000|250000|30000|2500|84000|150000)(?![\w.])/;
     const offenders: string[] = [];
     for (const rel of FENCED) {
       const lines = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8")).split("\n");

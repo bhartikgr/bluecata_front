@@ -62,7 +62,7 @@ import { getUserContext } from "./lib/userContext"; /* B12 (v24.0) tenant filter
 import { rawDb } from "./db/connection"; /* v25.36 — chapter-scoped reads for /members */
 import { log } from "./lib/logger"; /* v25.42 R8 — partners/public fail-closed logging */
 import { getApplicationFeeMinor } from "./lib/collectiveApplicationFeeResolver"; /* v25.38 — DB-driven application fee */
-import { resolveCanonicalMemberTier } from "./lib/collectiveMemberSubscriptionResolver"; /* v25.47 APD-019 — single canonical member tier */
+import { resolveCanonicalMemberTier, CANONICAL_MEMBER_TIER_SLUG } from "./lib/collectiveMemberSubscriptionResolver"; /* v25.47 APD-019 — single canonical member tier */
 import { resolveConsortiumPricing } from "./lib/partnerTiers"; /* v25.47 APD-020/030 — 5-tier consortium pricing */
 import { isDscMember } from "./adminDscRoutes"; /* v25.48 DSC-1a — dsc_roles source of truth; a granted DSC member may compute/score, same gate the vote route uses */
 import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
@@ -283,7 +283,19 @@ export function registerCollectiveRoutes(app: Express): void {
    *
    * DB-driven founder application fee (promotes the former hardcoded
    * ApplyToCollective.tsx literal `const APPLICATION_FEE = 2_500`). Reads via
-   * collectiveApplicationFeeResolver (config table → seed default fallback).
+   * collectiveApplicationFeeResolver (the config table — and NOTHING else).
+   *
+   * BATCH 1 · ITEM 2 (R108.2 / R95 / R104). The resolver's seed-default fallback
+   * is GONE: when no row is on record the body is
+   * `{ amountMinor: null, currency: null, source: "missing" | "unreadable" }`.
+   *
+   * THIS ENDPOINT STILL ANSWERS 200 IN THAT CASE — DELIBERATELY, AND IT MUST NOT
+   * BE "IMPROVED" INTO A 503. R108.2 ruled that a missing price must not take the
+   * founder application page down: the page renders normally and shows its
+   * existing unavailable state, and submission is already gated on `feeReady`
+   * (client/src/pages/founder/ApplyToCollective.tsx), so nothing can be submitted
+   * or charged against an amount that is not on record. A 503 here would turn a
+   * pricing gap into a total outage of the application funnel.
    * Read-only this wave; NO admin write endpoint (out of scope). Open to any
    * authed founder applying — not gated to existing collective members — since
    * non-members apply through this surface.
@@ -293,6 +305,41 @@ export function registerCollectiveRoutes(app: Express): void {
       ? req.query.currency
       : "USD";
     const fee = getApplicationFeeMinor(currency);
+    /* ═══ WAVE 145 · RULING R109 — THE FOUNDER-FACING BODY IS FALSY WHEN THE FEE
+       IS ABSENT. DO NOT "RESTORE" THE DIAGNOSTIC OBJECT HERE. ═══
+
+       Wave 144/142 made absence honest at the RESOLVER (`amountMinor: null`,
+       `source: "missing" | "unreadable"`), and this route passed that object
+       straight through. The founder's own page,
+       `client/src/pages/founder/Billing.tsx` — a SACRED file (manifest row 20,
+       WAIVER-5) — guards on the PRESENCE OF THE OBJECT, not the amount:
+
+           {appFeeData ? `${formatMinor(appFeeData.amountMinor, …)} …`
+                       : "Not available — the application fee has not been published yet."}
+
+       An object carrying a null amount is TRUTHY, so that already-correct refusal
+       branch never ran and `formatMinor`'s `(Number(minor) || 0)` coercion
+       rendered **"$0.00 USD"** — a founder told their application fee is zero.
+       That is the platform's signature failure (unknown money as a confident
+       zero) and R109 fixes it HERE, at the endpoint, because:
+         · the sacred file's logic is right and must not spend a waiver, and
+         · `formatMinor` is used by 54 files with 20 nullable call sites and is
+           scheduled for batch 2 ITEM B with its own sweep — R109 rejected both
+           of those edits explicitly.
+
+       So: absent -> a 200 whose body is `null` (FALSY). Still 200, never 503 —
+       R108.2 keeps the application funnel up. The founder page renders its own
+       refusal sentence, and `ApplyToCollective.tsx` renders its `feeAbsent`
+       notice (its guard was widened in the same wave to accept a falsy body).
+
+       The ADMIN route (`GET /api/admin/collective/application-fee`,
+       server/adminCollectiveFeeRoutes.ts) is UNCHANGED and still carries
+       `amountMinor`, `currency`, `source` and provenance: R108.2 requires the
+       OPERATOR to see the condition. The asymmetry is deliberate and is pinned by
+       server/__tests__/wave145_founder_fee_falsy_body.test.ts (G1–G4, I1–I4). */
+    if (fee.amountMinor === null) {
+      return res.json(null);
+    }
     res.json(fee);
   });
 
@@ -306,7 +353,28 @@ export function registerCollectiveRoutes(app: Express): void {
    * Reads DB via the canonical resolver; never hardcodes the amount.
    * ----------------------------------------------------------------- */
   app.get("/api/collective/member-tier", (_req: Request, res: Response) => {
+    /* WAVE 152 · ITEM G · G-C8 (R95). The resolver may now report ABSENCE rather
+     * than fabricating $249.00 from a compiled-in constant. Absence is returned
+     * as an explicit shape, not as `null`, because `res.json(null)` gives the
+     * client nothing to distinguish "price not configured" from "request failed"
+     * — and the membership page has to say which. `amountMinor: null` is the
+     * signal; the page renders "Not on record" (client/src/lib/currency.ts:108).
+     * HTTP stays 200: an unset price is a state of the platform, not an error in
+     * the request. */
     const tier = resolveCanonicalMemberTier();
+    if (!tier) {
+      return res.json({
+        slug: CANONICAL_MEMBER_TIER_SLUG,
+        key: `collective.member_subscription.${CANONICAL_MEMBER_TIER_SLUG}`,
+        amountMinor: null,
+        currency: null,
+        billingPeriod: null,
+        fromDb: false,
+        source: "unconfigured",
+        message:
+          "The Collective membership price is not on record yet. An administrator sets it in Admin → Fees.",
+      });
+    }
     res.json(tier);
   });
 

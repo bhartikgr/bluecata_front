@@ -3,6 +3,7 @@
  *
  * Backed by:
  *   GET  /api/partner/me/spv/:spvId/k1?taxYear=YYYY   live derivation
+ *   GET  /api/partner/me/spv/:spvId/k1/years          years with recorded activity
  *   GET  /api/partner/me/spv/:spvId/k1/stored         persisted statements
  *   POST /api/partner/me/spv/:spvId/k1/generate       write drafts
  *   POST /api/partner/me/spv/:spvId/k1/:k1Id/issue    issue a draft to an LP
@@ -24,7 +25,7 @@
  * OWNERSHIP IS A FRACTION on the wire (0.25 = 25%) and is multiplied by 100
  * HERE, at the render boundary, and nowhere else.
  */
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 /* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
 import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -116,8 +117,10 @@ function StatementCard({
         <div className="font-medium text-sm" data-testid="spv-k1-investor">{partyReferenceLabel(s.investorId)}</div>
         {/* WAVE 128 - FINDING 4: "Tax year 2025" alone reads like a filter that
             has been applied to the list, or a default nobody chose. It is the
-            tax year THIS statement covers, so it says so. The value and the
-            default (last completed year) are unchanged - only the words. */}
+            tax year THIS statement covers, so it says so. Only the words changed
+            there. WAVE 141 then changed the DEFAULT itself: it is no longer
+            "last calendar year" but the most recent CLOSED year this vehicle has
+            recorded activity in, chosen from `/k1/years`. */}
         <div className="text-xs text-[var(--cv-color-text-muted)]">Covers tax year {s.taxYear}</div>
         {s.status && (
           <span
@@ -181,7 +184,14 @@ function StatementCard({
 export function SpvK1Panel({ spvId, canWrite }: { spvId: string; canWrite: boolean }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [taxYear, setTaxYear] = useState(String(new Date().getUTCFullYear() - 1));
+  /* WAVE 141 · BATCH 1 ITEM 3. NO GUESSED YEAR ON MOUNT.
+     This used to open on `getUTCFullYear() - 1`. When the vehicle's facts were in
+     some other year, the server correctly returned an in-year sum of zero and
+     this panel printed `$0.00` — directly beneath its own policy line promising
+     that a non-derivable figure is never shown as zero. Start EMPTY: `yearValid`
+     is then false, both queries below are `enabled`-gated, and nothing is derived
+     against a period the GP has not chosen. */
+  const [taxYear, setTaxYear] = useState("");
 
   const yearNum = Number(taxYear);
   const yearValid = Number.isInteger(yearNum) && yearNum >= 1900 && yearNum <= 2999;
@@ -196,6 +206,37 @@ export function SpvK1Panel({ spvId, canWrite }: { spvId: string; canWrite: boole
     queryFn: () => apiRequest("GET", `/api/partner/me/spv/${spvId}/k1/stored?taxYear=${yearNum}`).then((r) => r.json()),
     enabled: yearValid,
   });
+
+  /* Which years this vehicle actually has facts for, and the most recent CLOSED
+     one (R108.4 item 4 — a K-1 is prepared for a year that has ended, so an open
+     year stays listed and selectable but is never auto-selected). */
+  const yearsQ = useQuery<{ years: number[]; suggestedTaxYear: number | null }>({
+    queryKey: ["/api/partner/me/spv", spvId, "k1", "years"],
+    queryFn: () => apiRequest("GET", `/api/partner/me/spv/${spvId}/k1/years`).then((r) => r.json()),
+  });
+
+  /* ONE-WAY, AND ONLY INTO AN EMPTY FIELD. Guarded on `taxYear === ""` so a GP
+     who has already typed a year is never overwritten by a late response. */
+  useEffect(() => {
+    if (taxYear !== "" || !yearsQ.data) return;
+    const suggested = yearsQ.data.suggestedTaxYear;
+    setTaxYear(String(suggested ?? new Date().getUTCFullYear() - 1));
+  }, [yearsQ.data, taxYear]);
+
+  /* Says which year is on screen and WHY it is on screen. Computed here and
+     rendered as a static sibling of the year input below — never as a conditional
+     replacing an existing sibling. */
+  const yearSourceNote = useMemo(() => {
+    if (!yearsQ.data) return "Checking which years this vehicle has recorded activity in…";
+    const { years, suggestedTaxYear } = yearsQ.data;
+    if (suggestedTaxYear !== null) {
+      return `Showing the most recent closed tax year with recorded activity (${suggestedTaxYear}). Recorded activity: ${years.join(", ")}.`;
+    }
+    if (years.length > 0) {
+      return `No closed tax year has recorded activity on this vehicle yet — recorded activity: ${years.join(", ")}. Showing last year by default; a still-open year can be selected but is never chosen for you.`;
+    }
+    return "This vehicle has no recorded activity, so no year could be suggested; showing last year by default.";
+  }, [yearsQ.data]);
 
   function refresh() {
     qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "k1"] });
@@ -246,6 +287,12 @@ export function SpvK1Panel({ spvId, canWrite }: { spvId: string; canWrite: boole
             onChange={(e) => setTaxYear(e.target.value)}
             className="w-28"
           />
+        </div>
+        <div
+          className="text-[11px] leading-relaxed text-[var(--cv-color-text-muted)] max-w-md"
+          data-testid="spv-k1-year-source"
+        >
+          {yearSourceNote}
         </div>
         {canWrite && (
           <Button

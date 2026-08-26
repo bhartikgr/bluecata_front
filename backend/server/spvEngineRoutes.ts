@@ -29,12 +29,19 @@ import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
  * record. Reuse the ONE hardened, fail-closed resolver instead of a local copy. */
 import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+/* WAVE 154 · ITEM K — the SPV eligibility gate: every company an SPV invests
+   into must hold a current paid Capavate membership before the vehicle may be
+   created/launched or take money in (R116.3). */
 import { getUserContext } from "./lib/userContext";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 // WAVE 1A / S-2 — the fee self-mark fix. See server/lib/feeSettlementAuthority.ts.
 import { authorizeGatewaySettlement, authorizePlatformAdminSettlement } from "./lib/feeSettlementAuthority";
 import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
+/* WAVE 151 · ITEM C · R105 — the cap arithmetic and the canonical committed sum
+   live in the store; this route computes no rival figure of its own. */
+import { computeCapImpact, canonicalCommittedMinorForSpv } from "./spvEngineStore";
+import { appendAdminAudit, isAuditWriteFailure } from "./adminPlatformStore";
 import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNKNOWN } from "./lib/percentPolicy";
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
@@ -1370,6 +1377,20 @@ export function registerSpvEngineRoutes(app: Express): void {
         entry = result.entry;
       }
 
+      /* ══ WAVE 151 · ITEM C · R105 — CAP IMPACT, MEASURED BEFORE THE PROJECTION.
+       *
+       * Read-only. Computed here, BEFORE `projectLpCommitted` mutates the roster,
+       * because `committedBeforeMinor` is by definition the total as it stood
+       * before this commit; reading it afterwards would compare the new state with
+       * itself. The overlap correction inside `computeCapImpact` is the actual
+       * defect fixed by this wave — see its docblock at spvEngineStore.ts.
+       *
+       * R105 IS A WARN-AND-RECORD RULING, NOT A NEW GATE. Nothing below refuses
+       * the commit: the sacred ledger line already exists at this point, and the
+       * subscribe() cap gate (spvEngineStore.ts:1444) is untouched and unrelaxed on
+       * its own path. This surfaces and records; it does not block. */
+      const capImpact = computeCapImpact(spvId, investorId, amountMinor, spv.capMinor);
+
       // PROJECTION — reflect the authoritative commit onto the SPV roster.
       // `amountMinor` was converted and validated ABOVE, before the ledger
       // write, so this can no longer fall back to a zero that would leave a
@@ -1384,11 +1405,101 @@ export function registerSpvEngineRoutes(app: Express): void {
         });
       } catch (e) { return err(res, e); }
 
+      /* ══ WAVE 151 · ITEM C · R105(2) and R105(3) — THE RECORD.
+       *
+       * Written only when the cap was ACTUALLY breached, and only for a commit
+       * that actually happened (`!existing`): a replayed request writes no second
+       * record, so the compliance surface cannot accumulate phantom breaches for
+       * an idempotent retry. A commit that stays within cap writes nothing at all.
+       *
+       * Both halves are best-effort AFTER the fact and neither can undo the
+       * ledger line, which is why the failure is DISCLOSED in the response rather
+       * than swallowed or turned into a 5xx for an operation that succeeded. */
+      let capOverrideRecorded = false;
+      let capOverrideRecordFailed = false;
+      if (capImpact.overCap && !existing && capImpact.capMinor != null) {
+        try {
+          spvEngineStore.recordCapOverride(
+            ctx.partnerId,
+            spvId,
+            {
+              investorId,
+              capMinor: capImpact.capMinor,
+              committedBeforeMinor: capImpact.committedBeforeMinor,
+              resultingTotalMinor: capImpact.resultingTotalMinor,
+              overageMinor: capImpact.overageMinor,
+              currency,
+            },
+            String(ctx.userId ?? ""),
+          );
+          capOverrideRecorded = true;
+        } catch {
+          capOverrideRecordFailed = true;
+        }
+        /* R105(2) — the durable, timestamped audit record. `audit_log` via the
+           EXISTING `appendAdminAudit`; no new storage is invented. It names the
+           operator, the SPV, the cap, the resulting total and the overage.
+
+           EVERY VALUE IN THIS PAYLOAD IS A `number`. `appendAudit` does
+           `JSON.stringify(payload)` (adminPlatformStore.ts:1333) and
+           `JSON.stringify` THROWS a TypeError on a bigint, so a `bigint` here
+           would not merely serialise oddly — it would abort the audit write
+           inside the very path that exists to make this event provable. That is
+           why `canonicalCommittedMinor` below is narrowed through an explicit
+           safe-integer check and is `null` rather than a bigint when it cannot be
+           represented. */
+          const auditEntry = appendAdminAudit(
+            String(ctx.userId ?? ""),
+            `spv:${spvId}`,
+            "spv.cap_override_recorded",
+            {
+              partnerId: ctx.partnerId,
+              spvId,
+              spvName: spv.name,
+              investorId,
+              investorEmail,
+              capMinor: capImpact.capMinor,
+              committedBeforeMinor: capImpact.committedBeforeMinor,
+              resultingTotalMinor: capImpact.resultingTotalMinor,
+              overageMinor: capImpact.overageMinor,
+              currency,
+              capBasis: "status !== withdrawn",
+              durableRecordWritten: capOverrideRecorded,
+            },
+          );
+        if (isAuditWriteFailure(auditEntry)) capOverrideRecordFailed = true;
+      }
+
+      /* The committed-only (MONEY basis) figure, for disclosure beside the
+         capacity-basis totals above. `canonicalCommittedMinorForSpv` returns a
+         `bigint`; it is narrowed here at the route boundary and NEVER placed in a
+         JSON body as a bigint. */
+      const canonicalBig = canonicalCommittedMinorForSpv(spvId);
+      const canonicalCommittedMinor =
+        canonicalBig <= BigInt(Number.MAX_SAFE_INTEGER) && Number.isSafeInteger(Number(canonicalBig))
+          ? Number(canonicalBig)
+          : null;
+
       return res.status(existing ? 200 : 201).json({
         ok: true,
         idempotent: !!existing,
         ledger: entry ? { hash: entry.hash, seq: entry.seq } : null,
         subscription,
+        /* R105(1)/(3) — the figures a GP must be able to see, named. `overCap`
+           false is reported too, so a caller can tell "within cap" from "cap not
+           evaluated" (`capMinor: null` — no cap set on this vehicle). */
+        cap: {
+          capMinor: capImpact.capMinor,
+          committedBeforeMinor: capImpact.committedBeforeMinor,
+          resultingTotalMinor: capImpact.resultingTotalMinor,
+          overageMinor: capImpact.overageMinor,
+          overCap: capImpact.overCap,
+          currency,
+          basis: "status !== withdrawn",
+          canonicalCommittedMinor,
+          overrideRecorded: capOverrideRecorded,
+          overrideRecordFailed: capOverrideRecordFailed,
+        },
         /* WAVE 106 — the commitment now names its holder in the response, so a
          * caller can see WHO it was attributed to and whether an existing
          * invited LP was matched rather than duplicated. */

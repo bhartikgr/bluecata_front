@@ -28,6 +28,17 @@
  *                        `company_members` + a live `soft_circles` row
  *   location           → D4 owner decision, see `durableAuthorLocation`
  *
+ * ── WAVE 144 · ITEM 4 — WHAT THE MESSAGING DIRECTORY ROUTE EMITS ────────────
+ * This ref is the internal, FULL view of a user and is read at ~13 sites (feed
+ * bylines, role badges, cap-table peer derivation). It is NOT the wire shape.
+ * `GET /api/comms/users` (server/commsStore.ts:3382) used to serialise
+ * `capTables`, `location` and `capavateAngelNetwork` straight out of this ref;
+ * as of WAVE 144 it emits identity for addressing only (`id`, privacy-resolved
+ * `legalName`, reduced `visibility`, `roles`, `isPrivate`). The fields below
+ * therefore stay available to server-side logic that legitimately needs them and
+ * no longer cross the wire to a messaging picker. If you add a field here, it
+ * does NOT automatically become part of that payload — and it must not.
+ *
  * ── NOTHING IS CACHED, DELIBERATELY ─────────────────────────────────────────
  * There is NO module-level memo. Stage D's hard rule is that nothing canonical
  * lives in memory, and several of these fields (chapter membership, follow

@@ -76,6 +76,9 @@ import {
 import { ensureWave5MoneySchema } from "./applyWave5MoneySchema";
 import { applyWave38EventLedgerSchemaOnce } from "./applyWave38EventLedgerSchema";
 import { assertReusedEventName } from "./wave5EventNames";
+// WAVE 152 · ITEM G · G-C6 — one attested-free rule, imported rather than re-authored.
+// `partnerTiers` does not import this module, so there is no cycle.
+import { tierPriceIsAttestedFree } from "./partnerTiers";
 
 /* ── errors ─────────────────────────────────────────────────────────────── */
 
@@ -147,11 +150,30 @@ export function listTierPrices(): TierPrice[] {
     );
 }
 
+/**
+ * WAVE 152 · ITEM G · G-C6 (R115.2 #2, R115.3 Q3).
+ *
+ * Three readers resolve a partner tier price and, before this wave, they applied
+ * THREE DIFFERENT SAFETY RULES:
+ *   - `partnerTiers.classifyPriceRows` rejects an unattested `0` (:395);
+ *   - `resolveTierPrice` (here) returned it raw;
+ *   - `partnerTiers.resolveHistoricalTier` returned it raw.
+ * So the advertised catalogue refused a $0 partner price while the BILLING
+ * lookup — the one that reaches `createPaymentIntent` — happily returned it.
+ * `founder_free` (a Capavate FOUNDER slug living in the PARTNER price table) is
+ * exactly that shape: `price_minor = 0`, `active = 1`, no attestation.
+ *
+ * The rule is now imported from `./partnerTiers` rather than re-authored, so all
+ * three readers agree by construction. An ATTESTED zero (free_attested = 1 with a
+ * written free_reason) is a real free price and still answers. Non-zero and NULL
+ * behaviour is unchanged.
+ */
 export function resolveTierPrice(tierSlug: string, cadence: Cadence): TierPrice | null {
   const r = db()
     .prepare(`SELECT * FROM partner_tier_price WHERE tier_slug = ? AND cadence = ? AND active = 1`)
     .get(tierSlug, cadence);
   if (!r) return null;
+  if (Number(r.price_minor) === 0 && !tierPriceIsAttestedFree(r as any)) return null;
   return {
     tierSlug: String(r.tier_slug),
     cadence: r.cadence,
@@ -162,30 +184,69 @@ export function resolveTierPrice(tierSlug: string, cadence: Cadence): TierPrice 
   };
 }
 
-/** CP-SUB-12 — admin sets a price. Rejects non-integer and negative amounts. */
+/** Thrown when an admin tries to save a `0` price without attesting it free.
+ *  WAVE 152 · ITEM G · G-C2. The message is a plain sentence, never a bare code
+ *  on screen (R77); the code travels beside it for logs. */
+export const ZERO_PRICE_NEEDS_ATTESTATION = "ZERO_PRICE_NEEDS_ATTESTATION";
+
+/** CP-SUB-12 — admin sets a price. Rejects non-integer and negative amounts.
+ *
+ *  WAVE 152 · ITEM G · G-C2 (R116.4). `partner_tier_price.free_attested` and
+ *  `free_reason` have existed since migration 0187 and NOTHING WROTE THEM, so an
+ *  administrator could not record an intentional zero at all: the write succeeded
+ *  and then `partnerTiers.ts:395` rejected the row it had just saved. Both columns
+ *  are now writable, and a `0` without an attestation is refused at the writer
+ *  rather than accepted and then quietly unusable.
+ *
+ *  AND `active = 1` IS NOW SET ON THE CONFLICT BRANCH TOO. The INSERT branch
+ *  always wrote `active = 1`; the UPDATE branch did not, so writing a price onto
+ *  an existing INACTIVE row left it inactive, and `resolveTierPrice` — which
+ *  requires `active = 1` — kept returning null. The administrator saw the save
+ *  succeed and the price never appeared anywhere. That was latent while every
+ *  row happened to be active; wave 152 retires the `one_time` and `founder_free`
+ *  rows by setting `active = 0`, which makes it reachable. An admin who types a
+ *  price into a tier has, by that act, put the tier back in service. */
 export function setTierPrice(
   tierSlug: string,
   cadence: Cadence,
   priceMinor: number | null,
-  opts: { currency?: string; updatedBy?: string; notes?: string } = {},
+  opts: {
+    currency?: string;
+    updatedBy?: string;
+    notes?: string;
+    freeAttested?: boolean;
+    freeReason?: string | null;
+  } = {},
 ): TierPrice {
   if (priceMinor !== null) {
     assertIntegerMinor(priceMinor, `tier_price:${tierSlug}:${cadence}`);
     if (priceMinor < 0) throw new Error(`${NON_INTEGER_MINOR}:negative:${priceMinor}`);
   }
+  const freeReason = typeof opts.freeReason === "string" ? opts.freeReason.trim() : "";
+  const freeAttested = opts.freeAttested === true && freeReason.length > 0;
+  if (priceMinor === 0 && !freeAttested) {
+    throw new Error(
+      `${ZERO_PRICE_NEEDS_ATTESTATION}: a price of zero has to be declared deliberately. ` +
+        `Tick "This is a real free price" and write the reason, or enter the real amount, ` +
+        `or leave the price blank to record the tier as deliberately unpriced.`,
+    );
+  }
   const now = nowIso();
   const h = db();
   h.prepare(
     `INSERT INTO partner_tier_price
-       (id, tier_slug, cadence, price_minor, currency, derivation, active, notes, created_at, updated_at, updated_by)
-     VALUES (?,?,?,?,?,?,1,?,?,?,?)
+       (id, tier_slug, cadence, price_minor, currency, derivation, active, notes, created_at, updated_at, updated_by, free_attested, free_reason)
+     VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)
      ON CONFLICT(tier_slug, cadence) DO UPDATE SET
-       price_minor = excluded.price_minor,
-       currency    = excluded.currency,
-       derivation  = excluded.derivation,
-       notes       = excluded.notes,
-       updated_at  = excluded.updated_at,
-       updated_by  = excluded.updated_by`,
+       price_minor   = excluded.price_minor,
+       active        = 1,
+       currency      = excluded.currency,
+       derivation    = excluded.derivation,
+       notes         = excluded.notes,
+       updated_at    = excluded.updated_at,
+       updated_by    = excluded.updated_by,
+       free_attested = excluded.free_attested,
+       free_reason   = excluded.free_reason`,
   ).run(
     newId("ptp"),
     tierSlug,
@@ -197,6 +258,8 @@ export function setTierPrice(
     now,
     now,
     opts.updatedBy ?? null,
+    freeAttested ? 1 : 0,
+    freeAttested ? freeReason : null,
   );
   return resolveTierPrice(tierSlug, cadence)!;
 }
@@ -1301,11 +1364,46 @@ export function tierPriceCoverage(): {
   unpriced: number;
   tiers: string[];
   unpricedPairs: Array<{ tierSlug: string; cadence: Cadence }>;
+  /** WAVE 152 · ITEM G · G-C3 (R110.3, R116.4). ADDITIVE third bucket. */
+  notOnLadder: Array<{ tierSlug: string; cadence: Cadence }>;
+  notOnLadderTiers: string[];
+  notOnLadderNote: string;
 } {
   const rows = listTierPrices();
   const unpricedPairs = rows
     .filter((r) => r.priceMinor === null)
     .map((r) => ({ tierSlug: r.tierSlug, cadence: r.cadence }));
+
+  // WAVE 152 · ITEM G · G-C3 (R110.3, R116.4).
+  //
+  // R110.3 keeps the ladder and populates ONE tier, which leaves most annual
+  // rows legitimately unpriced. Eight of the thirteen slugs in this table have
+  // no `partner_tier_lifecycle` row at all, so they are never advertised and
+  // never purchasable. Counting those as ordinary "unpriced gaps" makes the
+  // coverage number look alarming while telling the admin nothing actionable;
+  // HIDING them would be worse. They are therefore reported SEPARATELY.
+  //
+  // `total`, `priced`, `unpriced` and `unpricedPairs` keep their existing
+  // meanings and shapes, so every current consumer renders unchanged. This is
+  // purely additive.
+  let ladderSlugs: Set<string>;
+  try {
+    ladderSlugs = new Set(
+      (
+        db()
+          .prepare(`SELECT tier_slug FROM partner_tier_lifecycle`)
+          .all() as any[]
+      ).map((r) => String(r.tier_slug)),
+    );
+  } catch {
+    // An unreadable lifecycle table must not invent a ladder. With no ladder
+    // known, nothing is claimed to be off it.
+    ladderSlugs = new Set(rows.map((r) => r.tierSlug));
+  }
+  const notOnLadder = rows
+    .filter((r) => !ladderSlugs.has(r.tierSlug))
+    .map((r) => ({ tierSlug: r.tierSlug, cadence: r.cadence }));
+
   return {
     rows,
     total: rows.length,
@@ -1313,6 +1411,11 @@ export function tierPriceCoverage(): {
     unpriced: unpricedPairs.length,
     tiers: Array.from(new Set(rows.map((r) => r.tierSlug))).sort(),
     unpricedPairs,
+    notOnLadder,
+    notOnLadderTiers: Array.from(new Set(notOnLadder.map((r) => r.tierSlug))).sort(),
+    notOnLadderNote:
+      "This tier is not on the ladder \u2014 it has no lifecycle record, so it is never " +
+      "advertised and never purchasable. Price it here and add a lifecycle record to publish it.",
   };
 }
 

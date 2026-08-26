@@ -22544,6 +22544,7 @@ var init_roundCarryForwardEngine = __esm({
     init_companyProfileStore();
     init_multiCompanyStore();
     init_roundMathEngineAdapter();
+    init_liquidationTermsReader();
     init_src();
     rounds3 = new Proxy(rounds2, {
       get(target, prop, receiver) {
@@ -26572,7 +26573,10 @@ function buildFounderCompanies(userId) {
     sector: c.sector,
     hq: c.hq,
     lastActiveAt: c.lastActiveAt,
-    capTableHolders: c.kpi.capTableHolders,
+    /* WAVE 136 · ITEM 1 (R100) — the writer for the removed `capTableHolders`
+       was here: `capTableHolders: c.kpi.capTableHolders`. The source it copied
+       has no writer of its own, so this line propagated a constant into the
+       user context on every request. */
     activeRoundsCount: c.kpi.activeRoundsCount
   }));
 }

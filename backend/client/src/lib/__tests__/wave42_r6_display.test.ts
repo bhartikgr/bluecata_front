@@ -47,7 +47,26 @@
  *
  * A RATIO IS NOT A PERCENT. LTV/CAC of `3` means 3x, never 300%.
  */
+/* ══════════════════════════════════════════════════════════════════════════
+   UPDATED BY WAVE 147 UNDER OWNER RULING R111 Q13 (and R98, which governs how).
+   ══════════════════════════════════════════════════════════════════════════
+   R111 Q13 fixes ONE wording for a monetary value the platform does not hold:
+   exactly "Not on record". This file pinned the two MONEY helpers to R6's older
+   "Not provided", and `formatMinorOrUnavailable` to a bare em dash. Those are
+   the strings the ruling deliberately replaced, so per R98 the PINS are updated
+   to assert the new behaviour — the code is not reverted, no assertion has been
+   removed, and assertions were ADDED (each updated pole now also states that the
+   output is NOT the superseded wording, so a silent regression to "Not provided"
+   or "—" fails here).
+
+   NOTHING about R6 itself is weakened: every POLE B (a real zero renders as a
+   zero) and every "POLE A and POLE B are DIFFERENT STRINGS" assertion is intact,
+   and the PERCENT / RATIO / COUNT helpers still pin `NOT_PROVIDED`, because Q13
+   is a ruling about money and a never-filled non-money field still reads
+   correctly as "Not provided".
+   ══════════════════════════════════════════════════════════════════════════ */
 import { describe, it, expect } from "vitest";
+import { MONEY_NOT_ON_RECORD } from "@/lib/currency"; /* WAVE 147 · R111 Q13 */
 import {
   NOT_PROVIDED,
   NOT_REPORTED,
@@ -139,7 +158,9 @@ describe("WAVE 42 · R6 — moneyOrNotProvided (minor units)", () => {
       it("POLE A — a never-entered amount renders the refusal, never a zero amount", () => {
         for (const u of UNKNOWNS) {
           const out = moneyOrNotProvided(u as number | null | undefined, cur);
-          expect(out).toBe(NOT_PROVIDED);
+          /* WAVE 147 · R111 Q13 — was `NOT_PROVIDED`. */
+          expect(out).toBe(MONEY_NOT_ON_RECORD);
+          expect(out).not.toBe(NOT_PROVIDED);
           expect(out).not.toMatch(/0/);
         }
       });
@@ -147,6 +168,7 @@ describe("WAVE 42 · R6 — moneyOrNotProvided (minor units)", () => {
       it("POLE B — a genuine zero renders as money and CONTAINS a 0", () => {
         const out = moneyOrNotProvided(0, cur);
         expect(out).not.toBe(NOT_PROVIDED);
+        expect(out).not.toBe(MONEY_NOT_ON_RECORD); /* WAVE 147 · R111 Q13 */
         expect(out, "a real zero must be visibly a zero amount").toMatch(/0/);
       });
 
@@ -176,17 +198,23 @@ describe("WAVE 42 · R6 — moneyOrNotProvided (minor units)", () => {
   it("an amount with NO KNOWN CURRENCY refuses rather than guessing a denomination", () => {
     /* Picking USD for an unknown denomination is the same class of lie as
        picking 0 for an unknown amount (Wave 21, Review A). */
-    expect(moneyOrNotProvided(1234, null)).toBe(NOT_PROVIDED);
-    expect(moneyOrNotProvided(1234, "")).toBe(NOT_PROVIDED);
+    /* WAVE 147 · R111 Q13 — three pins re-aimed at the ruling's wording. */
+    expect(moneyOrNotProvided(1234, null)).toBe(MONEY_NOT_ON_RECORD);
+    expect(moneyOrNotProvided(1234, "")).toBe(MONEY_NOT_ON_RECORD);
     /* ...and this holds even for a REAL ZERO: "0 of what?" has no honest answer */
-    expect(moneyOrNotProvided(0, null)).toBe(NOT_PROVIDED);
+    expect(moneyOrNotProvided(0, null)).toBe(MONEY_NOT_ON_RECORD);
+    expect(moneyOrNotProvided(1234, null)).not.toBe(NOT_PROVIDED);
   });
 
   it("does not disturb the pre-existing Wave 21 helper it delegates to", () => {
-    /* formatMinorOrUnavailable still defaults to the em-dash for its existing
-       ~15 call sites. R6 changes the DEFAULT ONLY for the new R6 entry points,
-       so this is an additive change and no existing screen silently changes. */
-    expect(formatMinorOrUnavailable(null, "USD")).toBe("—");
+    /* WAVE 147 · R111 Q13 — this pin recorded the OPPOSITE of what the owner has
+       now ruled: it stated that `formatMinorOrUnavailable` keeps the em dash
+       while the R6 entry points say something else, i.e. that money speaks with
+       two voices. Q13 collapses them onto one wording, so the pin now asserts
+       that BOTH paths produce it, and that the em dash is gone. */
+    expect(formatMinorOrUnavailable(null, "USD")).toBe(MONEY_NOT_ON_RECORD);
+    expect(formatMinorOrUnavailable(null, "USD")).not.toBe("—");
+    expect(formatMinorOrUnavailable(null, "USD")).toBe(moneyOrNotProvided(null, "USD"));
     expect(formatMinorOrUnavailable(0, "JPY", { locale: "en-US" })).toMatch(/0/);
   });
 });
@@ -196,9 +224,11 @@ describe("WAVE 42 · R6 — moneyOrNotProvided (minor units)", () => {
    rounds.pre_money / post_money / min_ticket are legacy MAJOR-unit columns.
    ══════════════════════════════════════════════════════════════════════════ */
 describe("WAVE 42 · R6 — moneyMajorOrNotProvided (F-4: the pre/post-money card)", () => {
-  it("POLE A — an unset pre-money renders 'Not provided', NOT '$0'", () => {
+  it("POLE A — an unset pre-money renders 'Not on record', NOT '$0'", () => {
     for (const u of UNKNOWNS) {
-      expect(moneyMajorOrNotProvided(u as number | null | undefined, "USD")).toBe(NOT_PROVIDED);
+      /* WAVE 147 · R111 Q13 — was `NOT_PROVIDED`; this is money. */
+      expect(moneyMajorOrNotProvided(u as number | null | undefined, "USD")).toBe(MONEY_NOT_ON_RECORD);
+      expect(moneyMajorOrNotProvided(u as number | null | undefined, "USD")).not.toBe(NOT_PROVIDED);
     }
     /* the exact string the live audit found on screen must be impossible here */
     expect(moneyMajorOrNotProvided(null, "USD")).not.toBe("$0");

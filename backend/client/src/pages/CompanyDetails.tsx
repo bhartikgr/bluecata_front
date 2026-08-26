@@ -68,6 +68,11 @@ type CompanyDetail = {
  canSeeSoftCircle: boolean;
  canSeeTermSheet: boolean;
  investorId: string;
+ /* WAVE 146 — WHY the gated surfaces are absent. Machine code, never
+    rendered (R77); mapped to prose below. Optional so an older payload
+    keeps today's wording. */
+ capTableAllowed?: boolean;
+ visibilityBasis?: "full" | "cap_table_grant" | "own_position_only" | "none";
  };
  rounds: Array<{ id: string; name: string; type: string; state: string; targetAmount?: number; preMoney?: number; postMoney?: number }> | null;
  dataroom: Array<{ id: string; category: string; name: string; sizeBytes: number }> | null;
@@ -163,6 +168,29 @@ function CompanyDetailsView({
  // card now states which view does show it.
  const coMembers: CoMember[] = [];
  const coMembersLoadedInThisView = false;
+
+ /* ═════════════════════════════════════════════════════════════════════════
+    WAVE 146 — DO NOT MAKE A FALSE STATEMENT TO A GRANT-ONLY VIEWER.
+    ═════════════════════════════════════════════════════════════════════════
+    The gated-surface placeholder below used to say the round, dataroom and
+    term sheet "appear here once you're invited to a round on this company".
+    For a viewer whose access comes from a founder's CAP-TABLE VISIBILITY
+    GRANT, or an SPV LP scoped to their own position, that is untrue: no
+    invitation will ever make those surfaces appear, because the founder
+    granted the cap table and nothing else. WAVE 146 stopped those three
+    surfaces leaking through one collapsed boolean, and the owner forbids a
+    silent drop — so the reason is stated here in plain prose, with no
+    internal code in the rendered text (R77). Hoisted to a constant so the
+    JSX keeps its static sibling shape (the drop gate reads siblings). */
+ const gatedAbsenceCopy =
+  data.access.visibilityBasis === "cap_table_grant"
+   ? "You can see this company's shareholder register because a founder shared it with you. Round details, the dataroom and the term sheet were not shared, so they are not shown here."
+   : data.access.visibilityBasis === "own_position_only"
+    ? "You can see your own position on this company. Round details, the dataroom, the term sheet and other holders' positions are not part of that access, so they are not shown here."
+    /* null = the ORIGINAL sentence, which is still true for a viewer who is
+       genuinely just not invited yet. It stays in the JSX below as a literal
+       sibling so no rendered copy is removed. */
+    : null;
 
  const dealBreakerLabel = (v: string) => DEAL_BREAKER_OPTIONS.find(o => o.value === v)?.label ?? v;
  const txInterestLabel = (v: string) => TRANSACTION_INTEREST_OPTIONS.find(o => o.value === v)?.label ?? v;
@@ -609,11 +637,11 @@ function CompanyDetailsView({
  </SectionCard>
  )}
 
- {!data.access.canSeeRound && !data.access.canSeeDataroom && !data.access.canSeeTermSheet && (
+ {!data.access.canSeeRound && !data.access.canSeeDataroom && !data.access.canSeeSoftCircle && !data.access.canSeeTermSheet && (
  <Card className="border-dashed" data-testid="section-no-gated">
  <CardContent className="p-4 text-xs text-muted-foreground flex items-start gap-2">
  <Shield className="h-4 w-4 shrink-0 mt-0.5" />
- <span>Round details, dataroom, and term sheet appear here once you&apos;re invited to a round on this company.</span>
+ <span data-testid="text-no-gated-reason">{gatedAbsenceCopy ?? <>Round details, dataroom, and term sheet appear here once you&apos;re invited to a round on this company.</>}</span>
  </CardContent>
  </Card>
  )}

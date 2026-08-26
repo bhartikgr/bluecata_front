@@ -25,6 +25,7 @@ import { log } from "./lib/logger";
 import {
   updateApplicationFee,
   getApplicationFeeConfig,
+  DEFAULT_APPLICATION_FEE_CURRENCY,
 } from "./lib/collectiveApplicationFeeResolver";
 import {
   updateCommissionRate,
@@ -33,6 +34,23 @@ import {
 } from "./lib/partnerCommissionRateResolver";
 /* WAVE 16 / CP-BRG-07 */
 import { publishFeeScheduleChangedForTier } from "./lib/wave15FeeScheduleAggregate";
+/* WAVE 153 · ITEM F — one writer, one transaction, one refusal sentence, shared
+   with server/adminPlatformFeesRoutes.ts. */
+import {
+  writeApplicationFeeBothSources,
+  ApplicationFeeMirrorError,
+  APPLICATION_FEE_MIRROR_FAILED,
+  APPLICATION_FEE_MIRROR_MESSAGE,
+} from "./lib/applicationFeeMirror";
+import { invalidateAllPricingCaches } from "./lib/pricingCacheBus";
+
+/* WAVE 153 · ITEM F — `platform_fees` records the actor as a USER ID, the config
+   row records it as the actor string. Both come from the same request context so
+   one edit cannot look like two different people. */
+function userIdOf(req: Request): string | null {
+  const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
+  return ctx?.userId ?? null;
+}
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -45,7 +63,14 @@ export function registerAdminCollectiveFeeRoutes(app: Express): void {
   /* -----------------------------------------------------------------
    * GET /api/admin/collective/application-fee
    * Read the current config row (incl. updated_at / updated_by) for the
-   * admin editor. Returns source="default" if the row is genuinely missing.
+   * admin editor.
+   *
+   * BATCH 1 · ITEM 2 (R108.2): `source` is now "db" | "missing" | "unreadable"
+   * and `amountMinor` is NULL for the latter two — the resolver no longer echoes
+   * the canonical reference figure back as though it were configured. This body
+   * is what the consolidated fee console renders in its resolver-state panel, so
+   * the administrator can SEE that the founder-facing figure is absent instead of
+   * inferring it from a page that looks fine.
    * ----------------------------------------------------------------- */
   app.get(
     "/api/admin/collective/application-fee",
@@ -84,14 +109,53 @@ export function registerAdminCollectiveFeeRoutes(app: Express): void {
       }
       // Capture the prior state for the audit diff.
       const prev = getApplicationFeeConfig();
+      /* BATCH 1 · ITEM 2 — `prev.currency` is NULL when no row is on record
+         (source "missing"/"unreadable"), so the denomination for the FIRST write
+         falls back to the canonical currency constant rather than to `null`. A
+         currency code is not a price: this is not the R95 shape, and the AMOUNT
+         is still whatever the administrator typed and is never defaulted. */
       const currency =
         typeof b?.currency === "string" && b.currency.trim()
           ? b.currency.trim().toUpperCase()
-          : prev.currency;
+          : (prev.currency ?? DEFAULT_APPLICATION_FEE_CURRENCY);
+      /* ═══════════════════════════════════════════════════════════════════
+       * WAVE 153 · ITEM F · F-C2 — THIS ROUTE NOW MIRRORS BACK.
+       * ═══════════════════════════════════════════════════════════════════
+       *
+       * WAS: `updateApplicationFee` alone. It wrote the founder-authoritative
+       * config row and left `platform_fees.collective_application_fee` — the row
+       * the admin Platform Fees console lists — holding the OLD figure, with no
+       * cache invalidation at all. So this route silently created exactly the
+       * divergence the platform-fees route was mirroring to prevent, in the other
+       * direction: the console showed one price, founders were charged another.
+       *
+       * NOW: both rows move in ONE verified transaction (the same helper the
+       * platform-fees route uses), and the pricing caches are invalidated after
+       * commit so the change is visible on the NEXT request. If the pair cannot be
+       * written, nothing is written and the administrator is told so plainly. */
       let updated;
       try {
-        updated = updateApplicationFee(amountMinor, currency, actorOf(req));
+        const written = writeApplicationFeeBothSources({
+          amountMinor,
+          currency,
+          actor: actorOf(req),
+          /* `platform_fees.updated_by_user_id` takes the user id when the request
+             carries one, so BOTH rows record the SAME actor for the same edit. */
+          userId: userIdOf(req),
+        });
+        updated = written.config;
       } catch (err) {
+        if (err instanceof ApplicationFeeMirrorError) {
+          log.error(
+            "[adminCollectiveFeeRoutes.application-fee] paired write REFUSED:",
+            err.detail,
+          );
+          return res.status(500).json({
+            ok: false,
+            error: APPLICATION_FEE_MIRROR_FAILED,
+            message: APPLICATION_FEE_MIRROR_MESSAGE,
+          });
+        }
         log.error(
           "[adminCollectiveFeeRoutes.application-fee] update failed:",
           (err as Error).message,
@@ -100,6 +164,10 @@ export function registerAdminCollectiveFeeRoutes(app: Express): void {
           .status(500)
           .json({ ok: false, error: "update_failed", message: sanitizeErrorMessage(err) });
       }
+      /* WAVE 153 · ITEM F — this route used to invalidate NOTHING, so a change made
+         here could be served stale from a pricing cache. One call, one place: see
+         server/lib/pricingCacheBus.ts. Only after a committed paired write. */
+      invalidateAllPricingCaches("collective_application_fee.set");
       appendAdminAudit(
         actorOf(req),
         "collective_application_fee_config:default",

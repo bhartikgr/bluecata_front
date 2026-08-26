@@ -95,6 +95,18 @@ export function currencyExponent(code: string | null | undefined): number {
   return e === undefined ? 2 : e;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 147 — UNKNOWN MONEY IS NOT ZERO.
+   ══════════════════════════════════════════════════════════════════════════════
+   Owner ruling R111 Q13 fixes the platform-wide wording for a monetary value the
+   platform does not hold: exactly **"Not on record"**. Never a bare dash, never
+   `0`, never `$0.00`, never a raw code. This is the single definition; every
+   other unavailable-money constant on the client now points at it.
+
+   A genuine numeric `0` is NOT unknown and keeps rendering `$0.00`.
+   ══════════════════════════════════════════════════════════════════════════════ */
+export const MONEY_NOT_ON_RECORD = "Not on record";
+
 /** Format an integer minor-unit amount for display, using the correct number
  * of fraction digits for the currency's ISO 4217 exponent (NOT a hardcoded
  * `/100`). Falls back to a plain `CODE 1.23` string if Intl throws on an
@@ -108,8 +120,38 @@ export function formatMinor(
   // runtime locale via Intl) so this drop-in replacement preserves prior
   // `new Intl.NumberFormat(undefined, ...)` behavior across browsers. Callers
   // that need a pinned locale can still pass `opts.locale: "en-US"`.
+  /* WAVE 147 · R111 Q13 — THE COERCION THAT PRINTED A CONFIDENT ZERO.
+     This used to be `const major = (Number(minor) || 0) / …`, so `null`,
+     `undefined` and `NaN` all became `0` and were published as `$0.00` — a
+     false statement about money, made by the one formatter every money surface
+     goes through.
+
+     The declared parameter type stays `minor: number` ON PURPOSE. Widening it to
+     `number | null` would make the ~9 non-test call sites that coerce with
+     `?? 0` compile silently and hide exactly the sites that must be audited
+     one by one (AdminFeesConsolidated.tsx:3092/:3463 are the cases the reviewer
+     named). TypeScript keeps pointing at them; this guard is the runtime
+     backstop for the `any`-typed and JSON-shaped values that reach here anyway.
+
+     `0` IS finite, so a real zero is untouched: `formatMinor(0, "USD")` is
+     still `$0.00`.
+
+     A numeric STRING is still accepted and still formatted, exactly as the old
+     `Number(minor)` did — several callers are typed `number` but carry a
+     JSON-shaped `"5000"`, and turning those into "Not on record" would be a new
+     defect, not a fix. What is refused is only genuinely-absent input: `null`,
+     `undefined`, `""`, whitespace and `NaN` / ±Infinity. (`Number("")` is `0`
+     and `0` is finite — the WAVE 42 · R6 trap — so the empty string is refused
+     explicitly rather than left to `Number.isFinite`.) */
+  const asNumber =
+    typeof minor === "number"
+      ? minor
+      : minor === null || minor === undefined || String(minor).trim() === ""
+        ? Number.NaN
+        : Number(minor);
+  if (!Number.isFinite(asNumber)) return MONEY_NOT_ON_RECORD;
   const exp = currencyExponent(currency);
-  const major = (Number(minor) || 0) / Math.pow(10, exp);
+  const major = asNumber / Math.pow(10, exp);
   const locale = opts.locale; // undefined => runtime default (matches legacy)
   try {
     return new Intl.NumberFormat(locale, {
@@ -129,6 +171,114 @@ export function toMinor(amount: number, currency: string): number {
   if (!Number.isFinite(amount)) return 0;
   const exp = currencyExponent(currency);
   return Math.round(amount * Math.pow(10, exp));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 159 · R126.5 — ONE MONEY PARSER FOR TYPED AMOUNTS.
+   ══════════════════════════════════════════════════════════════════════════════
+   `toMinor` above is correct about SCALE (it is ISO-4217 exponent aware, never
+   `* 100`) but it takes a `number`, so every caller had to turn the admin's typed
+   TEXT into a number first — and they all reached for `parseFloat` / `Number()`.
+   Both of those SALVAGE input instead of refusing it:
+
+     parseFloat("125abc")  -> 125      the trailing rubbish vanishes
+     parseFloat("125.5.5") -> 125.5    the second decimal point vanishes
+     Number("")            -> 0        an EMPTY FIELD BECOMES A ZERO PRICE
+     toMinor(10.005,"USD") -> 1001     half a cent, silently rounded UP
+
+   The independent review proved the last one live: `10.005` USD typed on the
+   consolidated fees screen was accepted and stored as `1001`, while the very same
+   amount typed on the Collective schedules screen was refused by the server — two
+   admin screens writing one table with opposite money semantics.
+
+   This is the client mirror of `server/lib/money.ts :: decimalStringToMinor`:
+   pure BigInt string arithmetic (no float ever holds the value), exponent aware
+   per currency, and a value carrying MORE fractional digits than the currency can
+   represent is REFUSED rather than rounded. It THROWS, because there is no honest
+   number to return for "125abc", and returning `0` is how blank fields became
+   free memberships in the first place.
+
+   Kept deliberately: the scaling path. USD/JPY/KWD/BHD handling is verified
+   correct and must not regress to `* 100`.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/** Same grammar as the server parser: optional sign, digits, optional fraction,
+ *  optional exponent — and NOTHING else. No thousands separators, no currency
+ *  symbols, no trailing text. */
+const CLIENT_DECIMAL_RE = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/;
+
+function clientPow10(n: number): bigint {
+  let out = BigInt(1);
+  for (let i = 0; i < n; i++) out *= BigInt(10);
+  return out;
+}
+
+/**
+ * Exact decimal string in MAJOR units -> integer MINOR units for `currency`.
+ *
+ * Use this for EVERY money value an admin types. Never `parseFloat`, never
+ * `Number()`, never `* 100`.
+ *
+ * @throws `MONEY_DECIMAL_INVALID:<label>` — empty, blank or unreadable.
+ * @throws `MONEY_DECIMAL_PRECISION_UNSUPPORTED:<label>` — more fractional digits
+ *   than the currency's ISO-4217 exponent allows. NEVER rounded.
+ * @throws `MONEY_DECIMAL_OUT_OF_RANGE:<label>` — beyond exact integer range.
+ */
+export function decimalStringToMinor(
+  s: string | null | undefined,
+  currency: string,
+  label = "amount",
+): number {
+  const m = CLIENT_DECIMAL_RE.exec(String(s ?? "").trim());
+  if (!m) throw new Error(`MONEY_DECIMAL_INVALID:${label}`);
+  const sign = m[1];
+  const intPart = m[2] ?? "";
+  const fracPart = m[3] ?? "";
+  const expRaw = m[4];
+  if (intPart === "" && fracPart === "") throw new Error(`MONEY_DECIMAL_INVALID:${label}`);
+  const exp = expRaw ? Number.parseInt(expRaw, 10) : 0;
+  if (!Number.isFinite(exp) || Math.abs(exp) > 400) {
+    throw new Error(`MONEY_DECIMAL_INVALID:${label}`);
+  }
+  const digits = BigInt((intPart === "" ? "0" : intPart) + fracPart);
+  const shift = exp - fracPart.length + currencyExponent(currency);
+  let scaled: bigint;
+  if (shift >= 0) {
+    scaled = digits * clientPow10(shift);
+  } else {
+    const divisor = clientPow10(-shift);
+    if (digits % divisor !== BigInt(0)) {
+      /* e.g. "0.005" in USD (exponent 2) — half a cent. REJECT, never round. */
+      throw new Error(`MONEY_DECIMAL_PRECISION_UNSUPPORTED:${label}`);
+    }
+    scaled = digits / divisor;
+  }
+  const signed = sign === "-" ? -scaled : scaled;
+  /* The wire carries a JSON number, so refuse anything a double cannot hold
+     exactly rather than shipping a rounded amount. */
+  if (signed > BigInt(Number.MAX_SAFE_INTEGER) || signed < -BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`MONEY_DECIMAL_OUT_OF_RANGE:${label}`);
+  }
+  return Number(signed);
+}
+
+/**
+ * WAVE 159 — the plain sentence an admin should see when `decimalStringToMinor`
+ * refuses. R77: no raw codes on screen.
+ */
+export function moneyInputRefusalMessage(err: unknown, currency: string): string {
+  const code = err instanceof Error ? err.message : String(err);
+  const exp = currencyExponent(currency);
+  if (code.startsWith("MONEY_DECIMAL_PRECISION_UNSUPPORTED")) {
+    return exp === 0
+      ? `${currency} amounts cannot have decimal places, so this amount cannot be stored exactly. Enter a whole number.`
+      : `This amount has more decimal places than ${currency} uses (${exp}), so it cannot be stored exactly. Re-enter it with at most ${exp}.`;
+  }
+  if (code.startsWith("MONEY_DECIMAL_OUT_OF_RANGE")) {
+    return "This amount is too large to record. Check it and enter a smaller amount.";
+  }
+  const example = exp > 0 ? `1500.${"0".repeat(exp)}` : "1500";
+  return `Enter the amount as digits with up to ${exp} decimal place${exp === 1 ? "" : "s"} — for example ${example}. No currency symbols, letters or thousands separators.`;
 }
 
 /** v25.38 — convert integer minor units to a major-unit NUMBER using the

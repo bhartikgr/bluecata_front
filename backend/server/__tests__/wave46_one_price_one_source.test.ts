@@ -122,7 +122,28 @@ function seededZeroPlatformBands(): { id: string; amount_minor: number }[] {
 
 /** Play the admin console: write the ONE authoritative row. */
 function setConsoleFee(amountMinor: number, currency = "USD"): void {
-  setSpvDeploymentFee({ amountMinor, currency, updatedByUserId: "u_owner_wave46" });
+  /* WAVE 152 · ITEM G · R98 PIN UPDATE (NOT A LOOSENING).
+   *
+   * When this file was written, "an operator set it" was inferred from
+   * `updated_by_user_id` being non-NULL, so passing a plain 0 through this helper
+   * meant "deliberate free fee". R115.3 Q6 retired that inference: a seed that
+   * stamps `system:seed` also has a non-NULL author, so the guess declared
+   * seeded placeholders to be real free prices. The declaration is now an
+   * explicit column an administrator writes.
+   *
+   * The helper therefore declares the zero it is asked to write, which is exactly
+   * what the console now does. The DISTINCTION being tested is unchanged and is
+   * in fact now stronger: W46-P9 below still asserts that an UNDECLARED zero
+   * refuses and a DECLARED zero charges, and additionally asserts that a non-NULL
+   * author is no longer enough on its own. No assertion was removed. */
+  setSpvDeploymentFee({
+    amountMinor,
+    currency,
+    updatedByUserId: "u_owner_wave46",
+    intentionalZero: amountMinor === 0,
+    intentionalZeroReason:
+      amountMinor === 0 ? "Wave 46 test: the owner deliberately set launches to free." : null,
+  });
 }
 
 /** Empty the authoritative row entirely (an un-seeded / de-configured deploy). */
@@ -375,7 +396,12 @@ describe("WAVE 46 / R21+R22 — the demoted and deleted sources are genuinely un
     expect(entries[0].computed_via).not.toBe("platform_default");
   });
 
-  it("W46-P8 — the deleted $5,000 fallback is unreachable, not merely unused", () => {
+  /* WAVE 152 · ITEM G · R98 PIN UPDATE. The point of this test — no read path can
+     produce the SEED amount when the row is gone — is unchanged and every
+     assertion is kept. Only the seed's VALUE moved, from $5,000.00 to the ruled
+     $240.00 (R110), because `connection.ts` and `consortiumFeesStore.ts` must
+     agree with each other about what a brand-new database is seeded with. */
+  it("W46-P8 — the seed amount is unreachable when the row is gone, not merely unused", () => {
     emptyConsoleFeeRow();
     try {
       // No read path can produce the historical seed amount when the row is gone.
@@ -392,7 +418,7 @@ describe("WAVE 46 / R21+R22 — the demoted and deleted sources are genuinely un
         String(DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR),
       );
       // The constant still EXISTS (tests name the seed by it) but nothing returns it.
-      expect(DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR).toBe(500_000);
+      expect(DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR).toBe(24_000);
     } finally {
       setConsoleFee(24_000);
     }
@@ -411,7 +437,21 @@ describe("WAVE 46 / R21+R22 — the demoted and deleted sources are genuinely un
       .run(AUTHORITATIVE_SPV_DEPLOYMENT_FEE_KEY, new Date().toISOString());
     expect(getSpvDeploymentFeeOrNull()).toBeNull();
 
-    // Deliberate zero (an operator set it) → a real, charged $0.00 fee. R6 is
+    /* WAVE 152 · ITEM G — ADDED, NOT SUBSTITUTED. A non-NULL author is no longer
+       sufficient on its own: the row above has `updated_by_user_id = NULL`, so
+       this second case writes an authored zero with NO declaration and proves it
+       still refuses. That closes the hole R115.3 Q6 describes, where a seed
+       stamping `system:seed` made a placeholder look deliberate. */
+    rawDb()
+      .prepare(
+        `UPDATE platform_fees
+            SET amount_minor = 0, updated_by_user_id = 'system:seed', intentional_zero = 0
+          WHERE key = ?`,
+      )
+      .run(AUTHORITATIVE_SPV_DEPLOYMENT_FEE_KEY);
+    expect(getSpvDeploymentFeeOrNull()).toBeNull();
+
+    // Deliberate zero (an operator DECLARED it) → a real, charged $0.00 fee. R6 is
     // explicit that a genuine zero renders as zero and MEANS it.
     setConsoleFee(0);
     const deliberate = getSpvDeploymentFeeOrNull();

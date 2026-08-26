@@ -559,7 +559,7 @@ export function resolveHistoricalTier(
   try {
     row = db
       .prepare(
-        `SELECT tier_slug, cadence, price_minor, currency, derivation, active
+        `SELECT tier_slug, cadence, price_minor, currency, derivation, active, free_attested, free_reason
            FROM partner_tier_price WHERE tier_slug = ? AND cadence = ?`,
       )
       .get(canonical, cadence) as PriceRow | undefined;
@@ -572,7 +572,17 @@ export function resolveHistoricalTier(
     label: def?.label ?? life?.displayName ?? humanizeSlug(canonical),
     // NULL stays NULL. An unpriced historical row is reported as unpriced, not
     // as zero (R6).
-    amountMinor: row?.price_minor ?? null,
+    //
+    // WAVE 152 · ITEM G · G-C6 (R115.2 #2) — an UNATTESTED zero is reported as
+    // unpriced too. This was the third of three readers applying three different
+    // rules to the same column: `classifyPriceRows` rejected an unattested zero,
+    // `partnerBillingStore.resolveTierPrice` returned it raw, and so did this. All
+    // three now share `tierPriceIsAttestedFree`. An ATTESTED zero still reports 0,
+    // because that is a real free price.
+    amountMinor:
+      row && Number(row.price_minor) === 0 && !tierPriceIsAttestedFree(row)
+        ? null
+        : (row?.price_minor ?? null),
     currency: row?.currency ?? "USD",
     lifecycleState: life?.state ?? "unknown",
     derivation: row?.derivation ?? null,

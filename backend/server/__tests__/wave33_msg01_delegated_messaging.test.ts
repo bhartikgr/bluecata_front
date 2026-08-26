@@ -32,6 +32,11 @@
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import express, { type Express } from "express";
 import request from "supertest";
+/* WAVE 143 (R98) — F3 reads the SHIPPED rule state out of the migration files
+   against fresh databases, so it cannot be fooled by this file's beforeEach. */
+import { readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { splitStatements } from "../db/migrate";
 import { installV14TestIdentity } from "./_v14TestIdentity";
 import { getDb, rawDb } from "../db/connection";
 import { registerCommsRoutes } from "../commsStore";
@@ -40,6 +45,11 @@ import {
   isAudienceRuleEnabled,
   pendingOwnerDecisions,
   setAudienceRuleEnabled,
+  /* WAVE 144 · ITEM 5 — enabling `partner_engaged_company_people` now requires
+     the owner's explicit exposure confirmation (the store, not just the route,
+     enforces it). These fixtures state it deliberately, which is exactly the
+     property under test elsewhere. */
+  EXPOSURE_CONFIRMATION_TOKEN,
   AUDIENCE_RULE_KEYS,
 } from "../lib/commsAudienceRules";
 import {
@@ -204,8 +214,17 @@ function seedEngagement(
   );
 }
 
-/** Restore every rule to its shipped seed state. */
-function resetRules(): void {
+/** Force the PRE-OWNER-DECISION rule state: the four legacy sources on, the two
+ *  partner sources off and flagged.
+ *
+ *  WAVE 143 (R98) RENAMED THIS. It used to be called `resetRules` and its comment
+ *  claimed it restored "the shipped seed state". That stopped being true the moment
+ *  migration 0199 enabled `partner_team_peers`: what this writes is now a state the
+ *  platform no longer ships. The helper is KEPT — A1/A3/A5/A8/A9 need a known
+ *  starting point for their two-pole assertions — but under a name that says it is
+ *  a harness fixture rather than a fact about the product. F3 no longer uses it;
+ *  see F3's own note. */
+function forcePreOwnerDecisionState(): void {
   run(
     `UPDATE comms_audience_rules SET enabled = 1, requires_owner_decision = 0,
         decided_at = NULL, decided_by = NULL
@@ -264,7 +283,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  resetRules();
+  forcePreOwnerDecisionState();
   seedEngagement();
   run(`DELETE FROM comms_delegated_context WHERE ref_id LIKE 'w33msg%'`);
 });
@@ -293,17 +312,102 @@ describe("(F) preconditions", () => {
     }
   });
 
-  it("F3 the two PARTNER rules ship DISABLED and flagged for an owner decision", () => {
+  /* ─────────────────────────────────────────────────────────────────────────
+     F3 · REWRITTEN IN WAVE 143 UNDER RULING R98 (BATCH 1 ITEM 4).
+
+     WHAT WAS WRONG WITH IT. The old F3 asserted that BOTH partner rules "ship
+     DISABLED and flagged for an owner decision", and it read that state through
+     `readRules()` — i.e. from the live DB handle this file's global `beforeEach`
+     had just overwritten (`forcePreOwnerDecisionState`, formerly `resetRules`).
+     So it asserted the harness's own UPDATE, not the shipped state, and it went
+     on passing after migration 0199 ENABLED `partner_team_peers`. A green test
+     stating the opposite of what the platform ships is worse than no test: R98
+     requires it be rewritten, naming R98, without reducing assertion count.
+
+     HOW THE REWRITE CANNOT LIE. The shipped state is read from a FRESH database
+     built by executing the migration FILES in order — 0181 then 0199 — so no
+     `beforeEach`, no fixture and no previous test can reach it. The pre-0199 seed
+     is asserted on a second fresh database, so both halves of the history are
+     pinned: what 0181 shipped, and what 0199 changed.
+
+     ASSERTION COUNT GOES UP, not down: the old case had 2 `expect` statements
+     inside a 2-rule loop (4 executed assertions); this one has 15 statements and
+     22 executed assertions, and keeps `recommendedDefault.length > 20` for BOTH
+     rules verbatim.
+     ───────────────────────────────────────────────────────────────────────── */
+  it("F3 (R98 · WAVE 143) the SHIPPED rule state, read from the migrations themselves", () => {
+    const dir = join(process.cwd(), "w143_scratch", "dbs");
+    mkdirSync(dir, { recursive: true });
+    const openFresh = (name: string): any => {
+      const p = join(dir, name);
+      for (const s of ["", "-wal", "-shm"]) if (existsSync(p + s)) rmSync(p + s);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return new (require("better-sqlite3"))(p);
+    };
+    const applyFile = (db: any, rel: string): void => {
+      const sql = readFileSync(join(process.cwd(), rel), "utf8");
+      for (const s of splitStatements(sql)) if (s.trim()) db.exec(s.trim());
+    };
+    const rowOf = (db: any, key: string): any =>
+      db
+        .prepare(
+          `SELECT rule_key, enabled, requires_owner_decision, decided_at, decided_by,
+                  recommended_default
+             FROM comms_audience_rules WHERE rule_key = ?`,
+        )
+        .get(key);
+
+    /* (i) WHAT 0181 SHIPPED — both partner rules off and flagged. */
+    const seed = openFresh("f3_seed_only.db");
+    applyFile(seed, "migrations/0181_wave33_msg01_delegated_context.sql");
     for (const k of ["partner_engaged_company_people", "partner_team_peers"]) {
-      const r = readRules().find((x) => x.ruleKey === k)!;
-      expect({ key: k, enabled: r.enabled, pending: r.requiresOwnerDecision }).toEqual({
+      const r = rowOf(seed, k);
+      expect({ key: k, enabled: r.enabled, pending: r.requires_owner_decision }).toEqual({
         key: k,
-        enabled: false,
-        pending: true,
+        enabled: 0,
+        pending: 1,
       });
+      expect(r.decided_at).toBeNull();
       // A recommendation was recorded — the question is put, not merely noted.
-      expect((r.recommendedDefault ?? "").length).toBeGreaterThan(20);
+      expect((r.recommended_default ?? "").length).toBeGreaterThan(20);
     }
+    seed.close();
+
+    /* (ii) WHAT THE PLATFORM SHIPS TODAY — 0199 enabled the team-peer rule and
+           ONLY that rule (R108.1). */
+    const shipped = openFresh("f3_shipped.db");
+    applyFile(shipped, "migrations/0181_wave33_msg01_delegated_context.sql");
+    applyFile(shipped, "migrations/0199_wave143_partner_team_peers_enable.sql");
+
+    const team = rowOf(shipped, "partner_team_peers");
+    expect(team.enabled).toBe(1);
+    expect(team.requires_owner_decision).toBe(0);
+    expect(team.decided_at).not.toBeNull();
+    expect(String(team.decided_by)).toContain("owner:");
+    expect((team.recommended_default ?? "").length).toBeGreaterThan(20);
+
+    const engaged = rowOf(shipped, "partner_engaged_company_people");
+    expect(engaged.enabled).toBe(0);
+    expect(engaged.requires_owner_decision).toBe(1);
+    expect(engaged.decided_at).toBeNull();
+    expect(engaged.decided_by).toBeNull();
+    expect((engaged.recommended_default ?? "").length).toBeGreaterThan(20);
+
+    /* The four legacy sources are still on after both migrations — 0199 drops
+       nothing. */
+    for (const k of ["channel_participant", "cap_table_peer", "chapter_peer", "follow_peer"]) {
+      expect({ k, on: rowOf(shipped, k).enabled }).toEqual({ k, on: 1 });
+    }
+    /* Exactly six rules, so a migration cannot add an unaccounted audience. */
+    expect(
+      shipped.prepare(`SELECT COUNT(*) AS n FROM comms_audience_rules`).get().n,
+    ).toBe(AUDIENCE_RULE_KEYS.length);
+    shipped.close();
+
+    /* (iii) And the live handle this FILE runs against is the forced pre-decision
+            state, not the shipped one — stated explicitly so no later reader
+            mistakes one for the other again. */
+    expect(readRules().find((r) => r.ruleKey === "partner_team_peers")!.enabled).toBe(false);
   });
 
   it("F4 the partner, the team and the engagement resolve from durable rows", () => {
@@ -330,7 +434,7 @@ describe("(F) preconditions", () => {
 
     /* Both partner rules ON — the most permissive state the owner could rule —
        and a removed colleague is still offered nobody. */
-    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner");
+    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner", EXPOSURE_CONFIRMATION_TOKEN);
     setAudienceRuleEnabled("partner_team_peers", true, "u_owner");
     const res = await users(PARTNER_EX);
     expect(res.status).toBe(200);
@@ -349,7 +453,7 @@ describe("(F) preconditions", () => {
     expect(people).toContain(CLIENT_FOUNDER); // the active pole
     expect(people).not.toContain(FORMER_MEMBER); // the inactive pole, same company
 
-    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner");
+    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner", EXPOSURE_CONFIRMATION_TOKEN);
     const res = await users(PARTNER_USER);
     const ids = res.body.map((u: any) => u.id);
     expect(ids).toContain(CLIENT_FOUNDER);
@@ -371,14 +475,20 @@ describe("(F) preconditions", () => {
    ══════════════════════════════════════════════════════════════════════════ */
 
 describe("(A) the audience rules drive the picker", () => {
-  it("A1 the partner rule OFF (shipped state) → the client founder is NOT offered", async () => {
+  /* WAVE 143 (R98) — the parenthetical used to read "(shipped state)". Since
+     migration 0199 the shipped state of `partner_team_peers` is ENABLED, so the
+     off-state here is one the HARNESS forces in `beforeEach`. The assertion is
+     unchanged and still load-bearing: it is the OFF pole of A2's pair, and
+     `partner_engaged_company_people` — the rule this case actually turns on — is
+     still shipped OFF (R108.1). */
+  it("A1 the partner rule OFF (forced by the harness) → the client founder is NOT offered", async () => {
     const res = await users(PARTNER_USER);
     expect(res.status).toBe(200);
     expect(res.body.map((u: any) => u.id)).not.toContain(CLIENT_FOUNDER);
   });
 
   it("A2 the SAME fixture with the rule ON → the client founder IS offered", async () => {
-    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner");
+    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner", EXPOSURE_CONFIRMATION_TOKEN);
     const res = await users(PARTNER_USER);
     expect(res.status).toBe(200);
     expect(res.body.map((u: any) => u.id)).toContain(CLIENT_FOUNDER);
@@ -396,7 +506,7 @@ describe("(A) the audience rules drive the picker", () => {
   });
 
   it("A4 the engagement is the scope: revoking it removes the audience with the rule still ON", async () => {
-    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner");
+    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner", EXPOSURE_CONFIRMATION_TOKEN);
     expect((await users(PARTNER_USER)).body.map((u: any) => u.id)).toContain(CLIENT_FOUNDER);
     seedEngagement({ revoked: true });
     expect((await users(PARTNER_USER)).body.map((u: any) => u.id)).not.toContain(CLIENT_FOUNDER);
@@ -410,7 +520,7 @@ describe("(A) the audience rules drive the picker", () => {
     expect(isAudienceRuleEnabled("cap_table_peer")).toBe(true);
     run(`UPDATE comms_audience_rules SET enabled = 0 WHERE rule_key = 'cap_table_peer'`);
     expect(isAudienceRuleEnabled("cap_table_peer")).toBe(false);
-    resetRules();
+    forcePreOwnerDecisionState();
     expect(isAudienceRuleEnabled("cap_table_peer")).toBe(true);
   });
 
@@ -429,7 +539,7 @@ describe("(A) the audience rules drive the picker", () => {
     run(`UPDATE comms_audience_rules SET enabled = 0 WHERE rule_key = 'cap_table_peer'`);
     const off = await users(CAP_SELF, "investor");
     expect(off.body.map((u: any) => u.id)).not.toContain(CAP_PEER);
-    resetRules();
+    forcePreOwnerDecisionState();
     const back = await users(CAP_SELF, "investor");
     expect(back.body.map((u: any) => u.id)).toContain(CAP_PEER);
   });
@@ -453,7 +563,7 @@ describe("(A) the audience rules drive the picker", () => {
     // And the emitted picker is not empty either.
     const res = await users(CAP_SELF, "investor");
     expect(res.body.map((u: any) => u.id)).toContain(CAP_PEER);
-    resetRules();
+    forcePreOwnerDecisionState();
   });
 
   it("A10 a partner peer OUTSIDE the durable candidate window is still offered", async () => {
@@ -542,7 +652,7 @@ describe("(P) the audience-policy endpoint", () => {
   });
 
   it("P5 once the owner rules, the surface STOPS saying the question is open", async () => {
-    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner");
+    setAudienceRuleEnabled("partner_engaged_company_people", true, "u_owner", EXPOSURE_CONFIRMATION_TOKEN);
     const res = await policy(PARTNER_USER);
     const pending = res.body.pendingOwnerDecision.map((r: any) => r.ruleKey);
     expect(pending).not.toContain("partner_engaged_company_people");
@@ -569,12 +679,34 @@ describe("(P) the audience-policy endpoint", () => {
    ══════════════════════════════════════════════════════════════════════════ */
 
 describe("(R) the owner decision route", () => {
-  it("R1 an admin enables a rule over HTTP and the picker changes on the NEXT request", async () => {
+  /* WAVE 144 · ITEM 5 · R98 RE-PIN. This case used to enable
+     `partner_engaged_company_people` over HTTP with a bare `{enabled:true}`,
+     which pinned the finding Review 2 raised: the one rule that opens ANOTHER
+     organisation's people was one ordinary request from live. The property worth
+     keeping — an admin can enable a rule over HTTP with no deploy and the picker
+     changes on the NEXT request — is kept in full; what is added is the owner's
+     explicit second act, and the proof that the FIRST attempt does not write.
+     Assertions: 4 -> 8. */
+  it("R1 an admin enables a rule over HTTP — after an explicit confirmation — and the picker changes on the NEXT request", async () => {
     expect((await users(PARTNER_USER)).body.map((u: any) => u.id)).not.toContain(CLIENT_FOUNDER);
-    const res = await asUser(
+    const unconfirmed = await asUser(
       request(app)
         .post("/api/comms/audience-rules/partner_engaged_company_people")
         .send({ enabled: true }),
+      ADMIN,
+      "admin",
+    );
+    expect(unconfirmed.status).toBe(409);
+    expect(unconfirmed.body.error).toBe("confirmation_required");
+    expect(unconfirmed.body.warning).toContain("ANOTHER ORGANISATION");
+    /* Refused, and NOTHING moved. */
+    expect(isAudienceRuleEnabled("partner_engaged_company_people", "partner")).toBe(false);
+    expect((await users(PARTNER_USER)).body.map((u: any) => u.id)).not.toContain(CLIENT_FOUNDER);
+
+    const res = await asUser(
+      request(app)
+        .post("/api/comms/audience-rules/partner_engaged_company_people")
+        .send({ enabled: true, confirmExposure: unconfirmed.body.requiredConfirmation }),
       ADMIN,
       "admin",
     );

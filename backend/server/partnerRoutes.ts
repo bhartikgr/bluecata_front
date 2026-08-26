@@ -28,6 +28,9 @@ import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure 
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, requirePartnerSelf, assertSubRole, assertTier, assertTierSeats, assertSeatCapacity } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+/* WAVE 154 · ITEM K — the SPV eligibility gate: every company an SPV invests
+   into must hold a current paid Capavate membership before the vehicle may be
+   created/launched or take money in (R116.3). */
 import { resolvePartnerEffectivePlan, EffectivePlanError } from "./lib/partnerEffectivePlan"; /* GROUP C (C5) — /api/partner/me surfaces the dynamic effective plan (price incl override, commission, report-only quota, rev-share) that drives the partner FE. */
 import { getUserContext } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
@@ -1905,9 +1908,20 @@ export function registerPartnerRoutes(app: Express): void {
       if (typeof b.spvName === "string") patch.name = b.spvName;
       if (typeof b.name === "string") patch.name = b.name;
       if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_SPV_STATUS[b.status] ?? b.status;
-      if (b.targetRaiseMinor !== undefined) patch.targetRaiseMinor = b.targetRaiseMinor;
-      if (b.minCheckMinor !== undefined) patch.minCheckMinor = b.minCheckMinor;
-      if (b.capMinor !== undefined) patch.capMinor = b.capMinor;
+      /* WAVE 140 · BATCH 1 ITEM 1 — THE OTHER WRITER OF `cap_minor`, AND IT WAS
+         UNTYPED. This legacy PATCH accepted whatever arrived. A blank field from
+         any legacy caller arrives as `""`, and `""` stored through this door
+         became a 0 cap — the exact defect ITEM 1 repairs on the wizard path, so
+         fixing only the wizard would have left this door open. An empty string
+         (and an explicit null) now mean NO CAP / NOT GIVEN and persist as SQL
+         NULL. A DELIBERATE 0 IS NOT REWRITTEN: only `""` and null are
+         normalised, because this route carries no provenance and cannot tell a
+         typed 0 from a blank one. `server/spvTemplateStore.ts:203`
+         (`normaliseMinor`) is the house precedent: `""` → null. */
+      const blankToNull = (v: unknown) => (v === "" || v === null ? null : v);
+      if (b.targetRaiseMinor !== undefined) patch.targetRaiseMinor = blankToNull(b.targetRaiseMinor);
+      if (b.minCheckMinor !== undefined) patch.minCheckMinor = blankToNull(b.minCheckMinor);
+      if (b.capMinor !== undefined) patch.capMinor = blankToNull(b.capMinor);
       if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
       try {
         const spv = spvEngineStore.updateSpv(ctx.partnerId, String(req.params.id), patch, ctx.userId);
@@ -1964,11 +1978,24 @@ export function registerPartnerRoutes(app: Express): void {
   app.post(
     "/api/partner/me/funds",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
+    /* WAVE 150 · R111 Q11 (owner: "Yes.") — fund creation now demands the SAME
+       legal sign-off as an SPV, and MANAGING PARTNER ONLY, matching the sibling
+       SPV create route at `:1814`. `"associate"` was accepted here and is
+       deliberately removed: an associate cannot give a firm's legal
+       authorization for a new vehicle. The removal is SURFACED, not silent —
+       `client/src/pages/partner/PartnerFunds.tsx` keeps the control visible and
+       disabled with a plain sentence naming the requirement (same treatment the
+       SPV screen already gives, PartnerSpvs.tsx `spvRoleNote`). No control is
+       deleted. */
+    assertSubRole("managing_partner"),
     requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const { fundName, fundType, jurisdiction, vintage, currency, status, targetSizeMinor, externalAdminProvider, externalAdminRef, notes } = req.body ?? {};
+      /* WAVE 150 — `body` is hoisted to a const (identical to the SPV route at
+         `:1818`) so the sign-off fields below read from the same object the
+         destructure below uses. The destructured key list is UNCHANGED. */
+      const body = req.body ?? {};
+      const { fundName, fundType, jurisdiction, vintage, currency, status, targetSizeMinor, externalAdminProvider, externalAdminRef, notes } = body;
       if (!isString(fundName) || !isString(fundType) || !isString(jurisdiction) || !isNumber(vintage) || !isISOCurrency(currency) || !isString(status)) {
         return badRequest(res, "fundName, fundType, jurisdiction, vintage, ISO 4217 currency, status required");
       }
@@ -1979,6 +2006,42 @@ export function registerPartnerRoutes(app: Express): void {
       }
       if (!validFundStatus.includes(status as typeof validFundStatus[number])) {
         return badRequest(res, "status must be one of " + validFundStatus.join("|"));
+      }
+      /* WAVE 150 · R111 Q11 — the attestation gate, copied IN SHAPE from the SPV
+         create path (`:1840-1857`): same wire field names, same error codes, the
+         same `recordSignoff` call, and the same fail-closed 500. A fund is an SPV
+         with `spvType="fund"` (one canonical engine), so it gets the one shipped
+         attestation — `ATTESTATION_TEXT_V1` in `shared/spvAttestation.ts`, which
+         `recordSignoff` writes verbatim. NO new legal copy is authored here, and
+         no second version of the text exists to diverge.
+
+         ORDER MATTERS AND IS DELIBERATE: the sign-off is recorded BEFORE the fund
+         row is created, exactly as the SPV path does, so a fund can never exist
+         without its authorization record. If the durable INSERT fails the request
+         is refused with 500 SIGNOFF_PERSIST_FAILED and no fund is created.
+
+         STORAGE: the row lands in `spv_launch_signoffs` (migration 0108, self-
+         healed at server/db/connection.ts:1327). Verified DDL: NO CHECK
+         constraint on any subject kind, and `spv_id TEXT NOT NULL DEFAULT ''` —
+         so `spvId: ""` pre-create is a supported value and fund rows fit the
+         existing table. NO migration is required by this wave. */
+      const signoffLegalName = typeof body.signoffLegalName === "string" ? body.signoffLegalName.trim() : "";
+      const signoffAccepted = body.signoffAccepted === true;
+      if (!signoffLegalName) return res.status(400).json({ error: "SIGNOFF_LEGAL_NAME_REQUIRED" });
+      if (!signoffAccepted) return res.status(400).json({ error: "SIGNOFF_ATTESTATION_REQUIRED" });
+      let fundSignoff;
+      try {
+        fundSignoff = recordSignoff({
+          partnerId: ctx.partnerId,
+          spvId: "",
+          userId: ctx.userId,
+          signerLegalName: signoffLegalName,
+          signerSubRole: ctx.partnerSubRole ?? null,
+          ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
+          userAgent: (req.headers["user-agent"] as string) ?? null,
+        });
+      } catch {
+        return res.status(500).json({ error: "SIGNOFF_PERSIST_FAILED" });
       }
       try {
         /* WAVE 4A / follow-up 2 — resolveSpvJurisdiction() (Wave 3C) replaces the
@@ -1998,6 +2061,9 @@ export function registerPartnerRoutes(app: Express): void {
           },
           ctx.userId,
         );
+        /* WAVE 150 — link the pre-create sign-off to the fund now that the row
+           exists (precedent: the SPV path at `:1879`). */
+        linkSignoffToSpv(fundSignoff.id, fund.id);
         res.status(201).json({ fund });
       } catch (e) { return badRequest(res, (e as Error).message); }
     },

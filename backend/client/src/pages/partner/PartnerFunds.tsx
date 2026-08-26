@@ -2,8 +2,15 @@
  * Foundation Build — Partner Funds list page.
  * Read-only record-keeping for fund commitments. No money movement.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
+/* WAVE 150 · R111 Q11 — the ONE shipped attestation, the same constant the
+   server records verbatim (`server/spvLaunchSignoffStore.ts` re-exports it and
+   writes it as `attestationText`). Imported, never retyped: no new legal copy is
+   authored by this wave, and the text a managing partner reads is byte-identical
+   to the text the platform stores. Same import the sibling SPV screen uses
+   (`PartnerSpvs.tsx:10`). */
+import { ATTESTATION_TEXT_V1 } from "@shared/spvAttestation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -114,6 +121,11 @@ export default function PartnerFunds() {
     status: "planning",
     targetSizeMinor: "0",
     currency: "USD",
+    /* WAVE 150 — the server now REQUIRES both
+       (`server/partnerRoutes.ts:2021-2024`); each has a visible, editable
+       control below and neither is smuggled in as a hidden constant. */
+    signoffLegalName: "",
+    signoffAccepted: false,
   });
   const [showForm, setShowForm] = useState(false);
 
@@ -167,6 +179,12 @@ export default function PartnerFunds() {
            scaled exactly from what the client meant, with the wire unit unchanged. */
         targetSizeMinor: fundTargetSizeMinor,
         currency: form.currency,
+        /* WAVE 150 · R111 Q11 — the two fields the server records as a durable
+           authorization BEFORE the fund exists (`recordSignoff` at
+           `server/partnerRoutes.ts:2027`, then `linkSignoffToSpv` at `:2063`).
+           Same wire keys as the SPV path. */
+        signoffLegalName: form.signoffLegalName,
+        signoffAccepted: form.signoffAccepted,
       });
       return res.json();
     },
@@ -180,15 +198,37 @@ export default function PartnerFunds() {
         status: "planning",
         targetSizeMinor: "0",
         currency: "USD",
+        /* Assent is per-fund and is never carried over to the next one. */
+        signoffLegalName: "",
+        signoffAccepted: false,
       });
       setShowForm(false);
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Create fund failed", description: e.message }),
   });
 
+  /* WAVE 150 · R111 Q11 — an associate could create funds until this wave and
+     can no longer. That is a DELIBERATE access removal by owner ruling, so it is
+     SURFACED rather than silently failing: the form and the submit control stay
+     visible, the submit is disabled, and the REASON is stated in a plain
+     sentence. Nothing is deleted. Hoisted into `useMemo` so the note is ONE
+     always-rendered sibling and the sibling shape does not move (W116 §3.1) —
+     replacing sibling JSX with a conditional would trip the drop gate. Mirrors
+     `spvRoleNote` in PartnerSpvs.tsx. */
+  const fundRoleNote = useMemo(
+    () =>
+      role.identity && role.identity.subRole !== "managing_partner"
+        ? "Recording a fund requires a managing partner. Ask a managing partner at your firm to complete the sign-off, or ask them to change your role."
+        : "",
+    [role.identity],
+  );
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const canWrite = me.subRole === "managing_partner" || me.subRole === "associate";
+  /* Only a managing partner can complete the server's sign-off gate
+     (`assertSubRole("managing_partner")`, server/partnerRoutes.ts:1987). */
+  const canSignOff = me.subRole === "managing_partner";
   const funds = data?.funds ?? [];
 
   return (
@@ -288,9 +328,37 @@ export default function PartnerFunds() {
           <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-fund-type-note">
             {form.fundType ? "" : "Choose a fund type to record this fund. It changes the vehicle, so it is never assumed for you."}
           </div>
+          {/* WAVE 150 · R111 Q11 — the same sign-off block the SPV screen already
+              renders (PartnerSpvs.tsx:314-337), same shape, same shared text
+              constant. Nothing here is newly authored legal copy. */}
+          <div className="rounded-md border p-3 space-y-2" data-testid="partner-fund-signoff">
+            <div className="font-medium">Authorized sign-off (required)</div>
+            <div>
+              <Label>Full legal name *</Label>
+              <Input
+                value={form.signoffLegalName}
+                onChange={(e) => setForm({ ...form, signoffLegalName: e.target.value })}
+                placeholder="Type your full legal name"
+                data-testid="partner-fund-signoff-legalname"
+              />
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer" htmlFor="partner-fund-signoff-accept">
+              <input
+                id="partner-fund-signoff-accept"
+                type="checkbox"
+                className="mt-1"
+                data-testid="partner-fund-signoff-accept"
+                checked={form.signoffAccepted}
+                onChange={(e) => setForm({ ...form, signoffAccepted: e.target.checked })}
+              />
+              <span className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="partner-fund-attestation-text">{ATTESTATION_TEXT_V1}</span>
+            </label>
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">Your name, assent, and a UTC timestamp are recorded for audit (ESIGN/UETA).</div>
+          </div>
+          <div className="text-xs text-rose-700" data-testid="partner-fund-role-note">{fundRoleNote}</div>
           <Button
             onClick={() => create.mutate()}
-            disabled={!form.fundName.trim() || !form.fundType || create.isPending}
+            disabled={!form.fundName.trim() || !form.fundType || !form.signoffLegalName.trim() || !form.signoffAccepted || !canSignOff || create.isPending}
             data-testid="partner-funds-create"
           >
             {create.isPending ? "Recording…" : "Record Fund"}

@@ -37,6 +37,8 @@ import { log } from "./logger";
 import { getDb, getDbDriver, rawDb } from "../db/connection";
 import { ensureWave5MoneySchema } from "./applyWave5MoneySchema";
 import { ensureWave56TierDomainSchema } from "./applyWave56TierDomainSchema";
+import { ensureWave50MoneyDefectSchema } from "./applyWave50MoneyDefectSchema";
+import { ensureWave152PricingSchema } from "./applyWave152PricingSchema";
 
 interface DbLike {
   prepare(sql: string): {
@@ -189,6 +191,38 @@ export function ensureWave45PricingSchema(db: DbLike): void {
     ensureWave56TierDomainSchema(db);
   } catch (err) {
     log.error?.({ err }, "wave56 tier-domain install threw during wave45 ensure");
+  }
+  /* WAVE 152 · ITEM G — SAME ARGUMENT, ONE WAVE FURTHER ON.
+   *
+   * Migration 0187 adds `free_attested` and `free_reason` to the
+   * `partner_tier_price` table that 0185 creates and 0191 rebuilds. Until wave
+   * 152 NOTHING WROTE those two columns, so a suite that installed 0185/0191 but
+   * not 0187 never noticed they were missing. Wave 152 makes them writable —
+   * which is how an administrator records a deliberate £0/$0 price — so every
+   * database that has `partner_tier_price` must now also have the columns, or
+   * the admin write path fails with "table partner_tier_price has no column
+   * named free_attested" on a database that looks fully installed.
+   *
+   * Ordering is fixed and must stay: 0185 creates, 0191 rebuilds, 0187 adds
+   * columns to the rebuilt shape. Adding the columns before the rebuild would
+   * silently lose them.
+   *
+   * Thrown errors are logged, never swallowed into a pass: an install that did
+   * not happen must be visible in the run it happened in. */
+  try {
+    ensureWave50MoneyDefectSchema(db);
+  } catch (err) {
+    log.error?.({ err }, "wave50 money-defect install threw during wave45 ensure");
+  }
+  /* WAVE 152 · ITEM G — and the zero-declaration columns from migration 0200,
+     plus the five `spv.deployment_fee_*` columns migration 0160 added but the
+     (sacred, uneditable) inline bootstrap never mirrored for the engine table.
+     Chained here for the same reason wave 50's install is: any suite or dev
+     database that reaches the pricing schema at all must reach ALL of it. */
+  try {
+    ensureWave152PricingSchema(db);
+  } catch (err) {
+    log.error?.({ err }, "wave152 pricing install threw during wave45 ensure");
   }
   _installed.add(db as unknown as object);
 }

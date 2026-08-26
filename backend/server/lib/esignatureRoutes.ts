@@ -15,6 +15,7 @@
 // THIS IS NOT A CLASSIFICATION SURFACE. Nothing here reads sector/sub-sector or
 // touches permissions or navigation; the PT-5 fence is untouched.
 import type { Express, Request, Response } from "express";
+import { randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
 import { requireSignedAgreement } from "./requireSignedAgreement";
@@ -42,17 +43,65 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 148 · THE INCIDENT CODE — WHY IT EXISTS AND WHY IT IS OPAQUE.
+   ══════════════════════════════════════════════════════════════════════════════
+   The panel tells a paying partner to "send support the reference below". Until
+   this wave there was no reference to send: the generic arm logged the FIXED
+   string `ESIGN_LIST_READ`, which is the same on every occurrence and therefore
+   cannot join one ticket to one log line, and the typed arm logged NOTHING at all.
+   A support operator holding a screenshot could not find the failure.
+
+   `ESG-XXXXXXXX` is minted PER OCCURRENCE from crypto randomness, so it identifies
+   ONE throw at ONE moment. It is deliberately OPAQUE: it names no table, no
+   column, no internal code and no deployment, so rendering it to a user cannot
+   breach R77 or the owner's Q25 objection to exposing our internal process — a
+   random token carries no internal language. The internal code (ESIGN_LIST_UNAVAILABLE,
+   ESIGN_SCHEMA_COLUMN_DRIFT, …) stays where R77 permits it: `error.code`, the JSON
+   payload and the `data-*` attribute. The join is made in the LOG, which carries
+   both the opaque code and the internal one, on BOTH arms.
+   ════════════════════════════════════════════════════════════════════════════ */
+function mintEsignIncidentCode(): string {
+  return `ESG-${randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+/** Read paths whose failure means "this database cannot answer right now", not
+ *  "the caller asked for something invalid". Every one of them is a 503 with a
+ *  Retry-able meaning; answering 400 would blame the partner for our schema, and
+ *  answering 500 (the pre-wave behaviour) tells them nothing at all.
+ *
+ *  ESIGN_SCHEMA_MISSING was the only code mapped to 503 before this wave, which
+ *  meant every guard wave 148 added would have degraded a 500 into a 400 — a
+ *  different wrong answer. */
+const ESIGN_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  "ESIGN_SCHEMA_MISSING",
+  "ESIGN_SCHEMA_COLUMN_DRIFT",
+  "ESIGN_LIST_UNAVAILABLE",
+  "ESIGN_CONFIG_READ_UNAVAILABLE",
+  "ESIGN_OWNER_LOOKUP_UNAVAILABLE",
+]);
+
 function fail(res: Response, err: unknown): void {
+  const incidentCode = mintEsignIncidentCode();
   if (err instanceof EsignError) {
     const status =
       err.code === "ESIGN_ENVELOPE_NOT_FOUND" || err.code === "ESIGN_RECIPIENT_NOT_FOUND"
         ? 404
-        : err.code === "ESIGN_SCHEMA_MISSING"
+        : ESIGN_UNAVAILABLE_CODES.has(err.code)
           ? 503
           : err.code.startsWith("ESIGN_PROVIDER")
             ? 409
             : 400;
-    res.status(status).json({ error: err.code, message: err.message });
+    /* WAVE 148 — the typed arm logged NOTHING. It is the arm an operator most
+       needs, because every guard this wave added arrives here: the code, the
+       status, the opaque incident code the client is shown, and the stack are all
+       retained together so a support ticket quoting ESG-XXXXXXXX resolves to this
+       one line. */
+    log.error(
+      `[esignature] ${err.code} (incident ${incidentCode}, http ${status}) — ` +
+        `${err.message}\n${err.stack ?? "(no stack)"}`,
+    );
+    res.status(status).json({ error: err.code, message: err.message, incidentCode });
     return;
   }
   /* ══════════════════════════════════════════════════════════════════════════
@@ -78,11 +127,11 @@ function fail(res: Response, err: unknown): void {
      query — the best-effort read of the legacy `spvs` mirror — is unguarded, so
      any error there arrives here as this generic 500. */
   log.error(
-    "[esignature] ESIGN_FAILED (ref ESIGN_LIST_READ) — the client received a scrubbed 500; " +
+    `[esignature] ESIGN_FAILED (ref ESIGN_LIST_READ, incident ${incidentCode}) — the client received a scrubbed 500; ` +
     "the full error is retained here for operators: " +
     (err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? "(no stack)"}` : String(err)),
   );
-  res.status(500).json({ error: "ESIGN_FAILED", message: sanitizeErrorMessage(err) });
+  res.status(500).json({ error: "ESIGN_FAILED", message: sanitizeErrorMessage(err), incidentCode });
 }
 
 /** The owning partner of an SPV, or null if the SPV does not exist.
@@ -133,9 +182,33 @@ function spvOwner(spvId: string): { partnerId: string; name: string } | null {
     // still a hard 404.
   }
   // (2) Legacy partner-workspace mirror, for ids that only exist there.
-  const row = db
-    .prepare(`SELECT partner_id AS partnerId, name FROM spvs WHERE id = ? AND deleted_at IS NULL`)
-    .get(spvId);
+  /* WAVE 148 · UNGUARDED READ #1 — THE PRIME SUSPECT WAVE 127 NAMED AND DID NOT
+     FIX. The engine read above falls through on ANY error by design, so on a
+     database where `spvs` is absent or column-drifted this second query is the one
+     that throws, and it threw straight past the handler's catch into fail()'s
+     generic arm: HTTP 500, body "An unexpected error occurred", no code, nothing
+     an operator could act on. It gets its OWN code, distinct from every envelope
+     read, because "we cannot determine who owns this vehicle" is a different fact
+     from "we cannot read the envelope list".
+
+     IT MUST NOT BECOME A 404. `if (!row) return null` makes the handler answer
+     404 not_found, which is the correct, non-enumerating answer for an id that
+     genuinely is not there. Letting an unreadable table reach that line would
+     report an EXISTING vehicle as missing — the precise wave-44 defect this file
+     already fixed once. An unreadable ownership record is refused (503), never
+     answered as absence. The ownership fence is unchanged: nothing is granted. */
+  let row: any;
+  try {
+    row = db
+      .prepare(`SELECT partner_id AS partnerId, name FROM spvs WHERE id = ? AND deleted_at IS NULL`)
+      .get(spvId);
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_OWNER_LOOKUP_UNAVAILABLE",
+      "The record of which partner owns this vehicle could not be read, so this request is refused rather than answered from a guess. Nothing about the vehicle, its envelopes or its signatures has changed. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
   if (!row) return null;
   return { partnerId: String(row.partnerId), name: String(row.name ?? spvId) };
 }

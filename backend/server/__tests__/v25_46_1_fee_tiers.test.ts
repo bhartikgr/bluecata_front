@@ -302,7 +302,10 @@ describe("v25.46.1 — Consortium SPV deployment flat fee", () => {
     expect([401, 403]).toContain(r.status);
   });
 
-  it("GET returns the seeded $5,000 flat fee (admin)", async () => {
+  /* WAVE 152 · ITEM G · R110 — the title said $5,000; the seed is now $240.00.
+     The assertion below always read the exported constant rather than a literal,
+     so only the sentence describing it needed to change. */
+  it("GET returns the seeded $240.00 flat fee (admin)", async () => {
     const r = await ADMIN(request(app).get(SPV));
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);

@@ -3,7 +3,7 @@
  * Shows SPV summary, audit receipt, and (managing_partner-only) capital-call
  * + distribution forms wired to the v25.23 NC-A real DB-backed handlers.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { moneyOrNotProvided } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useRoute } from "wouter";
@@ -67,7 +67,7 @@ import {
   wholeUnitsToWireMinor,
   wireMinorNumber,
 } from "@/components/partner/PartnerMoneyEntryNotice";
-import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits } from "@/components/partner/partnerMoneyInput";
+import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits, formatWholeUnits } from "@/components/partner/partnerMoneyInput";
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -92,6 +92,13 @@ type SpvDetail = {
   name: string;
   jurisdiction: string;
   targetRaiseMinor: number | null;
+  /* WAVE 151 · ITEM C · R105 — the cap has ALWAYS been on the wire: this route
+     serves the whole `SpvDTO` (server/partnerRoutes.ts:1891) and `capMinor` is a
+     declared field of it (shared/spvEngine.ts:606). This page simply never
+     declared it, which is why the GP could commit past a cap with no figure in
+     front of them. `null` means NO CAP (wave 140 made a blank cap persist as NULL
+     rather than 0), and that is NOT the same as a cap of zero. */
+  capMinor?: number | null;
   currency: string;
   status: string;
   revisionHash: string;
@@ -410,6 +417,108 @@ export default function PartnerSpvDetail() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Add to CRM failed", description: e.message }),
   });
 
+  /* ═════════════════════════════════════════════════════════════════════
+     WAVE 151 · ITEM C · R105(1) — THE PRE-COMMIT CAP WARNING.
+
+     R105 requires a CLEAR warning BEFORE the commit that names the cap, the
+     current committed total and the overage. It appears as the GP types, beside
+     the amount field, from the figures already on this page — the SPV's own
+     `capMinor` and the LP roster this page already loads.
+
+     IT DOES NOT BLOCK. R105 is warn-and-record: the submit button's `disabled`
+     expression is deliberately UNCHANGED, because refusing here would be a new
+     gate the ruling did not ask for and would strand a GP whose legitimate
+     oversubscription the ledger has every right to record.
+
+     ARITHMETIC, AND WHY IT IS IN `bigint`. `parseWholeUnits` already returns
+     exact minor units as a `bigint` from string surgery — no float touches what
+     the GP typed. The roster figures arrive as JSON `number`s, so EVERY ONE is
+     checked with `Number.isSafeInteger` BEFORE any maths: a `NaN`, a fraction or
+     a value past 2^53 makes the total unknowable, and an unknowable total is
+     reported as such rather than rendered as a confident wrong number. Only after
+     that check is `BigInt()` applied — a widening of an integer, never a parse of
+     money.
+
+     THE OVERLAP. `committedBefore` ALREADY CONTAINS this LP's existing row when
+     they were invited or previously committed, and the server ASSIGNS rather than
+     adds (`projectLpCommitted`, spvEngineStore.ts:1571). So their existing
+     contribution is subtracted before the new amount is added, exactly as
+     `computeCapImpact` does on the server; otherwise a no-op re-commit would show
+     a phantom overage. The LP is matched by trimmed, lower-cased email, the same
+     normal form `lpInvestorIdForEmail` uses server-side to derive the investor id.
+
+     Hoisted into `useMemo` and rendered as ONE always-present sibling with an
+     empty string when there is nothing to warn about, so no sibling JSX is
+     swapped for a conditional and the drop gate sees no shape change. */
+  const capWarning = useMemo((): { text: string; overage: boolean } => {
+    const spv = data?.spv;
+    if (!spv) return { text: "", overage: false };
+    const capMinor = spv.capMinor ?? null;
+    // No cap set on this vehicle — there is nothing to be over.
+    if (capMinor == null || !Number.isSafeInteger(capMinor) || capMinor <= 0) return { text: "", overage: false };
+    const typed = parseWholeUnits(commitAmount, spv.currency, { label: "Commitment amount" });
+    if (!typed.ok) return { text: "", overage: false };
+    const subs = roster.data?.subscribers;
+    if (!subs) return { text: "", overage: false };
+    const occupying = subs.filter((x) => x.status !== "withdrawn");
+    if (occupying.some((x) => !Number.isSafeInteger(x.commitmentMinor))) {
+      return {
+        text:
+          "The committed total for this SPV cannot be calculated from the roster, so no cap comparison is shown. " +
+          "Check the LP roster figures before committing.",
+        overage: false,
+      };
+    }
+    let committedBefore = BigInt(0);
+    for (const x of occupying) committedBefore += BigInt(x.commitmentMinor);
+    const email = commitEmail.trim().toLowerCase();
+    let existingContribution = BigInt(0);
+    if (email) {
+      for (const x of occupying) {
+        if ((x.email ?? "").trim().toLowerCase() === email) existingContribution += BigInt(x.commitmentMinor);
+      }
+    }
+    const resulting = committedBefore - existingContribution + typed.minor;
+    const capBig = BigInt(capMinor);
+    if (resulting <= capBig) return { text: "", overage: false };
+    return {
+      overage: true,
+      text:
+        `This commitment would take ${spv.name} past its cap. ` +
+        `Cap: ${formatWholeUnits(capBig, spv.currency)}. ` +
+        `Committed now: ${formatWholeUnits(committedBefore, spv.currency)}. ` +
+        `Total after this commitment: ${formatWholeUnits(resulting, spv.currency)}. ` +
+        `Over the cap by: ${formatWholeUnits(resulting - capBig, spv.currency)}. ` +
+        "You can still record it. If you do, the overage is recorded against this SPV with your name and the time.",
+    };
+  }, [data?.spv, roster.data?.subscribers, commitAmount, commitEmail]);
+
+  /* WAVE 151 · R105(3) — THE OVERAGE, VISIBLE AFTERWARDS.
+     A warning shown once during typing satisfies R105(1) only. The recorded
+     override must still be READABLE on the SPV after the fact, so the durable
+     `terms._capOverrides` bag the server writes (spvEngineStore.recordCapOverride)
+     is rendered here from the SPV payload this page already loads. Read-only; each
+     figure is safe-integer checked before it is formatted, and a figure that is
+     not usable is named as such rather than printed. */
+  const recordedCapOverrides = useMemo(() => {
+    const bag = (data?.spv?.terms ?? {}) as Record<string, unknown>;
+    const overrides = bag._capOverrides as Record<string, Record<string, unknown>> | undefined;
+    return Object.values(overrides ?? {}).map((o) => {
+      const overage = o.overageMinor;
+      const total = o.resultingTotalMinor;
+      const cap = o.capMinor;
+      const cur = typeof o.currency === "string" ? o.currency : (data?.spv?.currency ?? "USD");
+      const fig = (v: unknown) =>
+        typeof v === "number" && Number.isSafeInteger(v) ? formatMinor(v, cur) : "not recorded";
+      return {
+        investorId: String(o.investorId ?? ""),
+        recordedAt: typeof o.recordedAt === "string" ? o.recordedAt : "",
+        actor: String(o.actor ?? ""),
+        line: `Cap ${fig(cap)} · total after ${fig(total)} · over by ${fig(overage)}`,
+      };
+    });
+  }, [data?.spv]);
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   if (isLoading) return <PartnerShell title="SPV" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}><div>Loading…</div></PartnerShell>;
@@ -660,6 +769,17 @@ export default function PartnerSpvDetail() {
       {/* W2-H — LP roster (subscribers + pending invites) + partner-gated invite. */}
       <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-lp-roster">
         <div className="font-medium">LP Roster</div>
+        {/* WAVE 151 · R105(3) — always-rendered sibling; empty when this SPV has
+            never been committed past its cap. */}
+        <div className="text-xs space-y-1" data-testid="partner-spv-cap-overrides">
+          {recordedCapOverrides.map((o) => (
+            <div key={o.investorId} className="text-amber-700" data-testid={`partner-spv-cap-override-${o.investorId}`}>
+              Recorded over-cap commitment — {o.line}
+              {o.recordedAt ? ` · ${formatTimestamp(o.recordedAt)}` : ""}
+              {o.actor ? ` · recorded by ${o.actor}` : ""}
+            </div>
+          ))}
+        </div>
         {roster.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-roster-loading">Loading…</div>}
         {roster.isError && (
           <div className="text-sm text-rose-600" data-testid="partner-spv-lp-roster-error">
@@ -820,6 +940,13 @@ export default function PartnerSpvDetail() {
               label="Commitment amount"
               testid="partner-spv-lp-commit-amount-notice"
             />
+            {/* WAVE 151 · R105(1) — always-rendered sibling; empty when within cap. */}
+            <div
+              className={capWarning.overage ? "text-xs text-amber-700" : "text-xs text-[var(--cv-color-text-muted)]"}
+              data-testid="partner-spv-lp-commit-cap-warning"
+            >
+              {capWarning.text}
+            </div>
             {commitLastTouched && !commitLast.trim() && (
               <div className="text-xs text-rose-600" data-testid="partner-spv-lp-commit-lastname-error">
                 Last name is required to commit an LP.

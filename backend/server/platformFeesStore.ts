@@ -27,31 +27,55 @@
  * intent stays greppable.
  */
 import { rawDb } from "./db/connection";
-import {
-  DEFAULT_APPLICATION_FEE_MINOR,
-  DEFAULT_APPLICATION_FEE_CURRENCY,
-} from "./lib/collectiveApplicationFeeResolver";
+/* WAVE 152 · ITEM G — the four `intentional_zero*` columns migration 0200 adds
+   live on `platform_fees`, and `server/db/connection.ts` (which mirrors numbered
+   migrations for databases opened without the runner) IS SACRED AND FROZEN. The
+   parity install therefore happens here, on the store that owns this table, the
+   first time anything reads or writes it. Memoised per driver handle. */
+import { ensureWave152PricingSchema } from "./lib/applyWave152PricingSchema";
 
 export const COLLECTIVE_APPLICATION_FEE_KEY = "collective_application_fee";
 
-/* WAVE 139 · RULINGS R101 + R102 — this fallback used to hardcode 250000
-   ($2,500.00) "so behavior never regresses". The owner ruled on 2026-08-25 that
-   the canonical Collective application fee is $300.00 = 30000 TRUE minor units,
-   so preserving the legacy figure here was preserving a DEFECT: had the seed row
-   ever been absent, this store would have quoted $2,500.00 while the resolver
-   quoted $300.00 — the exact cross-screen disagreement R101 was raised to end.
+/* `rawDb()` can throw when the process has no database open yet. A schema
+   install is never a reason to turn a read into a crash, so the handle is
+   fetched defensively and a missing handle simply skips the install; the read
+   below then fails or succeeds on its own merits. */
+function safeRawDb(): any {
+  try {
+    return rawDb();
+  } catch {
+    return null;
+  }
+}
 
-   It is no longer a literal at all. R95/R102 require ONE authoritative source per
-   price, so the value is imported from the canonical resolver constant rather
-   than re-typed here. A second copy of a price is how these defects are born.
-   Import direction is safe: the resolver imports only `rawDb`, never this store,
-   so there is no cycle. */
-const DEFAULT_FEES: Record<string, { amountMinor: number; currency: string }> = {
-  [COLLECTIVE_APPLICATION_FEE_KEY]: {
-    amountMinor: DEFAULT_APPLICATION_FEE_MINOR,
-    currency: DEFAULT_APPLICATION_FEE_CURRENCY,
-  },
-};
+/* WAVE 144 · ITEM 2 — R108.2 / R95 / R104 item 3: THERE IS NO DEFAULT FEE.
+
+   HISTORY, on the record rather than erased. This module used to carry
+   `DEFAULT_FEES`, a substitute amount returned whenever the `platform_fees` row
+   was missing or the read threw:
+
+     · originally a literal `250000` ($2,500.00) — the wrong PRODUCT's figure;
+     · WAVE 139 replaced that literal with an import of
+       `DEFAULT_APPLICATION_FEE_MINOR` (30000). That removed the wrong-product
+       number but LEFT A FABRICATED PRICE, which is precisely what R95 forbids
+       ("a `?? 240` fallback that substitutes a figure when the real one is
+       absent") and what R104 item 3 forbids ("if a fee's row is missing, the
+       surface must say so rather than silently substituting a number").
+     · Post-build Review 2 found the live consequence: `GET
+       /api/admin/platform-fees` published that substitute, so the admin console
+       could quote a fee nobody had set.
+
+   A key with NO row also used to resolve to `{ amountMinor: 0 }` — an even worse
+   answer, because a confident ZERO reads as "this fee is nil".
+
+   THE RULE NOW: absence is REPORTED, never substituted. `getFee` returns
+   `amountMinor: null` / `currency: null` with `source: "missing"` (no row) or
+   `source: "unreadable"` (the read threw). It still never throws, so every
+   caller keeps failing SOFT — R108.2's requirement is an honest unavailable
+   state, not a broken surface. The import of the resolver constant is gone with
+   the fallback it fed; the canonical figure lives in exactly one place
+   (`server/lib/collectiveApplicationFeeResolver.ts`) and is reached through the
+   database, never through this module. */
 
 // ── WAVE 131 — NO READ CACHE ───────────────────────────────────────────────
 // There is deliberately no module-scope cache here any more. A price is not a
@@ -65,12 +89,19 @@ export function invalidateFeeCache(): void {
   /* intentionally empty — see the WAVE 131 note above */
 }
 
+/** WAVE 144 · ITEM 2 — where the answer came from. `db` is the only state that
+ *  carries an amount; the other two carry `null` and MUST be rendered as an
+ *  unavailable state, never as a figure and never as zero. */
+export type PlatformFeeSource = "db" | "missing" | "unreadable";
+
 export interface PlatformFee {
   key: string;
-  amountMinor: number;
-  currency: string;
-  updatedAt: string;
+  /** WAVE 144 · ITEM 2 — NULLABLE. `null` means "not on record", not "zero". */
+  amountMinor: number | null;
+  currency: string | null;
+  updatedAt: string | null;
   updatedByUserId: string | null;
+  source: PlatformFeeSource;
 }
 
 function rowToFee(r: any): PlatformFee {
@@ -80,58 +111,133 @@ function rowToFee(r: any): PlatformFee {
     currency: r.currency,
     updatedAt: r.updated_at ?? r.updatedAt,
     updatedByUserId: r.updated_by_user_id ?? r.updatedByUserId ?? null,
+    source: "db",
   };
 }
 
-/** Read one fee by key. Falls back to the safe default if no row exists. */
-export function getFee(key: string): PlatformFee {
-  try {
-    const row: any = rawDb().prepare(`SELECT * FROM platform_fees WHERE key = ?`).get(key);
-    if (row) return rowToFee(row);
-  } catch {
-    /* fall through to default */
-  }
-  const d = DEFAULT_FEES[key] ?? { amountMinor: 0, currency: "USD" };
+/** An ABSENT fee. No amount, no currency, and the reason it is absent.
+ *  Deliberately not exported as a "default": there is nothing default about it. */
+function absentFee(key: string, source: "missing" | "unreadable"): PlatformFee {
   return {
     key,
-    amountMinor: d.amountMinor,
-    currency: d.currency,
-    updatedAt: new Date(0).toISOString(),
+    amountMinor: null,
+    currency: null,
+    updatedAt: null,
     updatedByUserId: null,
+    source,
   };
 }
 
-/** List every configured fee, DB-direct on every call (WAVE 131). */
-export function listFees(): PlatformFee[] {
+/**
+ * Read one fee by key. Reports ABSENCE instead of substituting a number:
+ * `source: "missing"` when there is no row, `source: "unreadable"` when the read
+ * threw. Never throws (fail SOFT, R108.2) and never invents an amount (R95,
+ * R104 item 3).
+ *
+ * WAVE 152 · ITEM G · G-C7 (R115.2 #7). This read used to ignore `deleted_at`,
+ * so the three `consortium.subscription.*` tiers soft-deleted on 2026-08-10 were
+ * still servable to any caller. A RETIRED PRICE MUST NOT BE SERVABLE. The filter
+ * matches the one `server/subscriptionTierStore.ts` and
+ * `server/publicPricingRoutes.ts` already use. A soft-deleted row now returns
+ * `absentFee(key, "missing")`, which is the correct meaning: there is no live row.
+ */
+export function getFee(key: string): PlatformFee {
+  ensureWave152PricingSchema(safeRawDb());
   try {
-    const rows: any[] = rawDb().prepare(`SELECT * FROM platform_fees ORDER BY key`).all();
-    return rows.map(rowToFee);
+    const row: any = rawDb()
+      .prepare(`SELECT * FROM platform_fees WHERE key = ? AND (deleted_at IS NULL OR deleted_at = '')`)
+      .get(key);
+    if (row) return rowToFee(row);
+    return absentFee(key, "missing");
   } catch {
-    return [getFee(COLLECTIVE_APPLICATION_FEE_KEY)];
+    return absentFee(key, "unreadable");
   }
 }
 
-/** Upsert one fee. amountMinor must be a non-negative integer. */
+/** List every configured fee, DB-direct on every call (WAVE 131).
+ *  WAVE 144 · ITEM 2 — when the table cannot be read this used to return a
+ *  ONE-ROW list holding the fabricated default, i.e. an unreadable table was
+ *  published to the admin editor as a real price. It now returns the absence
+ *  itself, so the console can say the row is not on record. */
+export function listFees(): PlatformFee[] {
+  ensureWave152PricingSchema(safeRawDb());
+  try {
+    // WAVE 152 · ITEM G · G-C7 (R115.2 #7) — soft-deleted rows are not listed.
+    const rows: any[] = rawDb()
+      .prepare(`SELECT * FROM platform_fees WHERE (deleted_at IS NULL OR deleted_at = '') ORDER BY key`)
+      .all();
+    return rows.map(rowToFee);
+  } catch {
+    return [absentFee(COLLECTIVE_APPLICATION_FEE_KEY, "unreadable")];
+  }
+}
+
+/** Upsert one fee. amountMinor must be a non-negative integer.
+ *
+ *  WAVE 152 · ITEM G · G-C9 (R115.3 Q6, R117.2 Q3) — `intentionalZero`.
+ *
+ *  A price of 0 is ambiguous in a way that costs money in BOTH directions: read
+ *  as a real free price, the platform charges nothing for something it meant to
+ *  charge for; read as an absence, a genuinely free product refuses to transact.
+ *  The resolver used to guess from `updated_by_user_id IS NULL` — "somebody
+ *  touched it, so they meant it" — which a seed stamping `system:seed` defeats,
+ *  and which cannot represent an admin deliberately setting a free price at all.
+ *
+ *  So the declaration is now a COLUMN an administrator writes on purpose, not an
+ *  inference. `intentionalZero` is only meaningful when the amount is 0; passing
+ *  it with a non-zero amount clears it, because a $240 price is not a declared
+ *  free one and leaving a stale flag behind would make the NEXT edit to 0 silently
+ *  free. Omitting the argument entirely leaves whatever was already recorded, so
+ *  an unrelated currency edit cannot revoke an existing declaration. */
 export function setFee(args: {
   key: string;
   amountMinor: number;
   currency?: string;
   updatedByUserId: string | null;
+  intentionalZero?: boolean;
+  intentionalZeroReason?: string | null;
 }): PlatformFee {
+  ensureWave152PricingSchema(safeRawDb());
   const amount = Math.max(0, Math.round(args.amountMinor));
   const currency = (args.currency ?? "USD").toUpperCase();
   const updatedAt = new Date().toISOString();
+  /* A declaration only exists when it was ASKED FOR, carries a reason, and the
+     amount it describes is actually zero. */
+  const reason =
+    typeof args.intentionalZeroReason === "string" ? args.intentionalZeroReason.trim() : "";
+  const declaredZero = amount === 0 && args.intentionalZero === true && reason.length > 0;
+  const touchesDeclaration = args.intentionalZero !== undefined || amount !== 0;
   rawDb()
     .prepare(
-      `INSERT INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO platform_fees
+         (key, amount_minor, currency, updated_at, updated_by_user_id,
+          intentional_zero, intentional_zero_reason, intentional_zero_by, intentional_zero_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET
          amount_minor = excluded.amount_minor,
          currency = excluded.currency,
          updated_at = excluded.updated_at,
-         updated_by_user_id = excluded.updated_by_user_id`,
+         updated_by_user_id = excluded.updated_by_user_id,
+         intentional_zero = CASE WHEN ? = 1 THEN excluded.intentional_zero ELSE platform_fees.intentional_zero END,
+         intentional_zero_reason = CASE WHEN ? = 1 THEN excluded.intentional_zero_reason ELSE platform_fees.intentional_zero_reason END,
+         intentional_zero_by = CASE WHEN ? = 1 THEN excluded.intentional_zero_by ELSE platform_fees.intentional_zero_by END,
+         intentional_zero_at = CASE WHEN ? = 1 THEN excluded.intentional_zero_at ELSE platform_fees.intentional_zero_at END`,
     )
-    .run(args.key, amount, currency, updatedAt, args.updatedByUserId);
+    .run(
+      args.key,
+      amount,
+      currency,
+      updatedAt,
+      args.updatedByUserId,
+      declaredZero ? 1 : 0,
+      declaredZero ? reason : null,
+      declaredZero ? args.updatedByUserId : null,
+      declaredZero ? updatedAt : null,
+      touchesDeclaration ? 1 : 0,
+      touchesDeclaration ? 1 : 0,
+      touchesDeclaration ? 1 : 0,
+      touchesDeclaration ? 1 : 0,
+    );
   // invalidate the read-through cache synchronously on write so
   // consumers see the new value on their next read (invalidate-on-PUT).
   invalidateFeeCache();

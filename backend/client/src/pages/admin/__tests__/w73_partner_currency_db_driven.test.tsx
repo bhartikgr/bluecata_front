@@ -124,8 +124,13 @@ describe("WAVE 73 · ITEM 2 — the admin ops screen prints the stored currency,
 
     const row = await waitFor(() => getByTestId("admin-live-subscription-sub_w73"));
     const text = row.textContent ?? "";
-    /* The honest output: no denomination known, so no money figure is asserted. */
-    expect(text).toContain("—");
+    /* The honest output: no denomination known, so no money figure is asserted.
+       UPDATED BY WAVE 147 UNDER R111 Q13 (per R98): this cell renders
+       `formatMinorOrUnavailable`, whose wording the ruling changed from the bare
+       dash to "Not on record". The two assertions that carry this test's actual
+       point — no `$`, no `USD` invented for an unknown denomination — are
+       unchanged below. */
+    expect(text).toContain("Not on record");
     expect(text).not.toContain("$");
     expect(text).not.toContain("USD");
     /* And specifically NOT the numbers with no currency attached, which would be

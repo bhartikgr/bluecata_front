@@ -256,7 +256,25 @@ export function readEsignProviderConfig(): {
   row: ConfigRow | null;
   configMissing: boolean;
 } {
-  let row = readConfigRow(ESIGN_PROVIDER_CONFIG_KEY);
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 148 · UNGUARDED READ #2 — `readConfigRow` reads `platform_config`, and
+     that read sat OUTSIDE the try/catch immediately below it. On a database
+     where `platform_config` is absent or column-drifted, better-sqlite3 throws
+     here, the throw leaves this module untyped, and every caller — including
+     GET /api/partner/me/esignature/config and the SPV envelope list — answered a
+     GENERIC 500 whose body says "An unexpected error occurred". The provider
+     configuration being unreadable is a DIFFERENT fact from an envelope read
+     failing, and it now says so with its own code. */
+  let row: ConfigRow | null;
+  try {
+    row = readConfigRow(ESIGN_PROVIDER_CONFIG_KEY);
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_CONFIG_READ_UNAVAILABLE",
+      "The e-signature provider configuration could not be read. No signing method has changed and no envelope was altered; the configuration is simply unreadable on this database right now. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
   if (!row) {
     try {
       row = ensurePlatformConfigKey({
@@ -328,50 +346,121 @@ const RECIPIENT_COLS = `id, envelope_id AS envelopeId, role, signing_order AS si
         status, signed_name AS signedName, signature_hash AS signatureHash,
         signed_at AS signedAt, declined_reason AS declinedReason, created_at AS createdAt`;
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 148 · UNGUARDED READ #3 — THE DRIFT `esignSchemaInstalled()` CANNOT SEE.
+   ══════════════════════════════════════════════════════════════════════════════
+   `esignSchemaInstalled()` asks sqlite_master for TABLE NAMES ONLY (`name IN
+   ('esign_envelope','esign_recipient','esign_event')`, `=== 3`), and it is
+   memoised for the life of the process. A database that has the three tables but
+   is missing a COLUMN this file selects — the exact state a half-applied 0168 or
+   0183 leaves behind — passes that check and then throws
+   `SQLITE_ERROR: no such column` from the SELECT below. Making the memoised
+   checker column-aware was considered and rejected for this wave: it would change
+   the meaning of a value read on many paths (and pinned by
+   server/__tests__/waveW11_en9_esignature.test.ts) in order to fix a read that can
+   be fixed where it happens. So the read itself is guarded, with its own code, and
+   the SCHEMA_MISSING code keeps meaning what it has always meant: no tables.
+   ════════════════════════════════════════════════════════════════════════════ */
+function readEnvelopeRowOrDrift(id: string): EnvelopeRow | undefined {
+  const db: any = rawDb();
+  try {
+    return db.prepare(`SELECT ${ENVELOPE_COLS} FROM esign_envelope WHERE id = ?`).get(id) as
+      | EnvelopeRow
+      | undefined;
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_SCHEMA_COLUMN_DRIFT",
+      "The e-signature tables exist on this database but do not have the columns this version reads, so the envelope record cannot be assembled. Nothing was written and no signature was altered; the record is intact and unreadable, not lost. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export function getEnvelope(id: string): EnvelopeRow | null {
   requireSchema();
-  const db: any = rawDb();
-  return (
-    (db.prepare(`SELECT ${ENVELOPE_COLS} FROM esign_envelope WHERE id = ?`).get(id) as
-      | EnvelopeRow
-      | undefined) ?? null
-  );
+  return readEnvelopeRowOrDrift(id) ?? null;
 }
 
 export function listEnvelopesForSubject(subjectKind: string, subjectId: string): EnvelopeRow[] {
   requireSchema();
   const db: any = rawDb();
-  return db
-    .prepare(
-      `SELECT ${ENVELOPE_COLS} FROM esign_envelope
+  /* WAVE 148 · UNGUARDED READ #4 — this SELECT threw straight past the caller.
+     In esignatureRoutes.ts the list call is the FIRST thing evaluated in
+     `listEnvelopesForSubject(...).map((e) => envelopeDetail(e.id))`, so a failure
+     here means NOT ONE per-envelope guard ever runs and the whole tab reports a
+     generic 500. The list being unreadable is its own fact and now carries its own
+     code, distinct from a missing schema, from column drift and from a config read
+     failure. */
+  try {
+    return db
+      .prepare(
+        `SELECT ${ENVELOPE_COLS} FROM esign_envelope
         WHERE subject_kind = ? AND subject_id = ?
         ORDER BY created_at DESC, id DESC`,
-    )
-    .all(subjectKind, subjectId) as EnvelopeRow[];
+      )
+      .all(subjectKind, subjectId) as EnvelopeRow[];
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_LIST_UNAVAILABLE",
+      "The list of e-signature envelopes for this subject could not be read. The envelopes themselves are unaffected — nothing was voided, cancelled or altered — so the list is withheld rather than shown incomplete. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 export function listRecipients(envelopeId: string): RecipientRow[] {
   requireSchema();
   const db: any = rawDb();
-  return db
-    .prepare(
-      `SELECT ${RECIPIENT_COLS} FROM esign_recipient
+  /* WAVE 148 — the same column drift as `readEnvelopeRowOrDrift`, one table over.
+     `envelopeDetail` reads the envelope, its recipients AND its events, so leaving
+     two of the three unguarded would have left the same generic 500 reachable by a
+     different column. Same code, because to a reader it is the same fact. */
+  try {
+    return db
+      .prepare(
+        `SELECT ${RECIPIENT_COLS} FROM esign_recipient
         WHERE envelope_id = ? ORDER BY signing_order ASC, created_at ASC`,
-    )
-    .all(envelopeId) as RecipientRow[];
+      )
+      .all(envelopeId) as RecipientRow[];
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_SCHEMA_COLUMN_DRIFT",
+      "The e-signature recipient table exists but does not have the columns this version reads, so the signatory list cannot be assembled. Nothing was written and no signature was altered. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 export function listEsignEvents(envelopeId: string): EsignEventRow[] {
   requireSchema();
   const db: any = rawDb();
-  return db
-    .prepare(
-      `SELECT id, envelope_id AS envelopeId, recipient_id AS recipientId,
+  /* WAVE 148 · UNGUARDED READ #5 — THE THIRD TABLE `envelopeDetail` READS.
+     `envelopeDetail` (:930) assembles an envelope from THREE reads: the envelope
+     row, its recipients and its audit trail. Waves 148's earlier steps guarded the
+     first two, which would have left the same generic 500 reachable through one
+     remaining column — `esign_event.event_kind` and the eight other aliases below
+     are named explicitly here, so a half-applied 0168/0183 throws
+     `SQLITE_ERROR: no such column` from exactly this SELECT. Guarding two of three
+     is not guarding the path. Same code as the other two drift sites because to a
+     reader it is the same fact: the tables are there and this version cannot read
+     their columns. The per-occurrence incident code emitted by
+     esignatureRoutes.fail() is what distinguishes WHICH of the three threw. */
+  try {
+    return db
+      .prepare(
+        `SELECT id, envelope_id AS envelopeId, recipient_id AS recipientId,
               event_kind AS eventKind, from_status AS fromStatus, to_status AS toStatus,
               actor, detail_json AS detailJson, created_at AS createdAt
          FROM esign_event WHERE envelope_id = ? ORDER BY created_at ASC, id ASC`,
-    )
-    .all(envelopeId) as EsignEventRow[];
+      )
+      .all(envelopeId) as EsignEventRow[];
+  } catch (err) {
+    throw new EsignError(
+      "ESIGN_SCHEMA_COLUMN_DRIFT",
+      "The e-signature audit trail table exists but does not have the columns this version reads, so the history of this envelope cannot be assembled. Nothing was written, no signature was altered and no event was lost — the trail is unreadable, not empty. " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 /* ==========================================================================

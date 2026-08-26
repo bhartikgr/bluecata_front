@@ -13,6 +13,7 @@
  */
 
 import { LegalFooterLinks } from "@/components/LegalFooterLinks";
+import { NotificationBell } from "@/components/NotificationBell";
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -33,6 +34,8 @@ import {
   /* WAVE 7 W-8 (DEF-057) / W-5 (DEF-056) — icons for the restored Tasks and
      Files nav entries. */
   ListTodo, FolderOpen,
+  /* WAVE 149 · ITEM 2 — icon for the new Notifications nav entry. */
+  Bell,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -101,6 +104,12 @@ type NavGroup = {
   items: NavItem[];
 };
 
+/* WAVE 149 · ITEM 2/3 — ONE literal for the in-shell inbox, named once. Both nav
+   entries and the bell's `viewAllHref` read it, so the nav destination and the
+   bell's "View all" cannot drift apart. The route itself is registered in
+   `App.tsx` wrapped in this same shell. */
+export const COLLECTIVE_NOTIFICATIONS_HREF = "/collective/notifications";
+
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "HUB",
@@ -162,6 +171,11 @@ const NAV_GROUPS: NavGroup[] = [
       /* v25.42 R5 — read-only requests portal. */
       { href: "/collective/portal/requests", label: "My Requests", icon: Inbox, "data-testid": "nav-collective-requests" },
       { href: "/collective/activity", label: "Activity", icon: Activity, "data-testid": "nav-collective-activity" },
+      /* WAVE 149 · ITEM 2 — reachable by NAVIGATION, not only by typing a URL. The
+         bell's dropdown is a shortcut, not a route: a member who wants their full
+         inbox needs a nav entry, and `/notifications` renders outside this shell.
+         Appended at the END of an existing group so no entry above it moves. */
+      { href: COLLECTIVE_NOTIFICATIONS_HREF, label: "Notifications", icon: Bell, "data-testid": "nav-collective-notifications" },
       { href: "/collective/settings", label: "Settings", icon: Settings, "data-testid": "nav-collective-settings" },
     ],
   },
@@ -281,6 +295,11 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          flow is merged into the Billing → Subscription tab (Phase 7). */
       { href: "/collective/partner/agreement", label: "Agreement", icon: FileSignature, "data-testid": "nav-partner-agreement" },
       { href: "/collective/partner/tax-form", label: "Tax Forms", icon: FileCheck, "data-testid": "nav-partner-tax-form" },
+      /* WAVE 149 · ITEM 2 — a partner-only session renders ONLY these groups
+         (`:359-363` before this wave), so without an entry here a partner's own
+         inbox would be reachable through the bell alone. Same route, same page;
+         which shell it renders in is decided by the route, not by the persona. */
+      { href: COLLECTIVE_NOTIFICATIONS_HREF, label: "Notifications", icon: Bell, "data-testid": "nav-partner-notifications" },
       { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
     ],
   },
@@ -556,6 +575,40 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* ═══════════════════════════════════════════════════════════════════════
+            WAVE 149 · ITEM 1 — THE BELL, AS A NEW STATIC SIBLING.
+            ═══════════════════════════════════════════════════════════════════════
+            THE DEFECT. The server writes notifications for partners and for every
+            Collective persona and `registerNotificationsRoutes` serves them — but
+            `NotificationBell` was mounted at `AppShell.tsx:715` ONLY. Partner and
+            Collective pages render inside THIS shell, and `/collective/*` is forced
+            bare at `App.tsx:457`, so AppShell never renders for them. Every one of
+            those notifications was therefore unreachable: written, stored, and
+            shown to nobody.
+
+            WHY AN EXTRA SIBLING AND NOT A CONDITION. This is an ADDITIONAL child of
+            the existing right-hand group. `ChapterSelector` below, the
+            `!partnerOnly` switch button and the `partnerOnly` logout button are
+            untouched and still evaluate exactly as before. Collapsing them into one
+            conditional would read as a removal to `drop:restyle` and would
+            restructure working chrome for no gain.
+
+            NO `useRole()` BRANCHING. There is no `collective` role to branch on
+            (`lib/role.tsx:3` — founder | investor | admin | partner, defaulting to
+            "founder"), so a role test here would be wrong for the very personas the
+            wave exists to serve. Mounting UNCONDITIONALLY is what makes every
+            persona this shell hosts — Collective member, Consortium Partner, and the
+            dual-role session — gain the bell from ONE mount. The bell already
+            renders nothing for an anonymous session (`NotificationBell.tsx`:
+            `if (!userId) return null`), so no gate is needed for that either.
+
+            THE PERSONA STAYS IN ITS OWN SHELL. This renders inside CollectiveShell's
+            OWN header. It pulls in no AppShell chrome; the AppShell mount at :715 is
+            untouched, and so is the forced-bare rule at App.tsx:457 that this shell
+            depends on. `viewAllHref` names the in-shell inbox route this wave adds,
+            so "View all notifications" no longer ejects the reader to the
+            shell-less `/notifications` through a role default that is wrong here. */}
+        <NotificationBell viewAllHref={COLLECTIVE_NOTIFICATIONS_HREF} />
         {/* v17 Phase A — chapter selector. Renders null when COLLECTIVE_ENABLED!=1
             or when the user has zero chapter memberships, so the topbar layout
             matches the v16 Friday baseline by default. */}
@@ -630,6 +683,19 @@ function isMemberGateExempt(path: string): boolean {
   return (
     path.startsWith("/collective/partner") ||
     path.startsWith("/collective/membership") ||
+    /* WAVE 149 · ITEM 2 — THE INBOX IS NOT MEMBER-ONLY, AND MUST NOT BE GATED.
+       `/api/notifications` scopes strictly to the SESSION user
+       (`server/notificationsStore.ts:246-255` — the userId comes from the auth
+       context, never from a query param) and asks nothing about Collective
+       membership; `/notifications` has always served it role-agnostically. A
+       Consortium Partner and a signed-in non-member both legitimately RECEIVE
+       notifications — partner referral, attribution, promotion and application
+       kinds are addressed to exactly them — so putting the member gate in front of
+       this page would replace their own inbox with a join-the-Collective wall and
+       re-create the unreachability this wave exists to fix, one layer down. Listed
+       explicitly rather than folded into the partner prefix because it serves EVERY
+       persona this shell hosts, not just the partner. */
+    path === COLLECTIVE_NOTIFICATIONS_HREF ||
     path === "/syndicate/apply" ||
     path.startsWith("/collective/syndicate/apply")
   );

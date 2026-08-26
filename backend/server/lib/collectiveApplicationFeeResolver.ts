@@ -11,10 +11,30 @@
  * create the table (CREATE TABLE IF NOT EXISTS) and seed the default row
  * (INSERT OR IGNORE), so a fresh deploy always has a row.
  *
- * Fallback contract: if (and only if) the config row is genuinely missing, the
- * resolver returns DEFAULT_APPLICATION_FEE_MINOR with source="default". When the
- * row exists, it returns the DB value with source="db". The contract is that
- * every caller MUST read via this resolver and NEVER hardcode the amount.
+ * FALLBACK CONTRACT — REPLACED BY BATCH 1 · ITEM 2 (R108.2, R95, R104).
+ * This resolver used to return DEFAULT_APPLICATION_FEE_MINOR with
+ * source="default" whenever the config row was missing OR the read threw. That
+ * was a FABRICATED amount: a founder could not tell a fee that is on record from
+ * one that is not, and R95 requires that a price which is not on record be
+ * REFUSED AND SAID rather than substituted — even by its own correct number. The
+ * substitution was harmless in VALUE only because 30000 happened to be right; the
+ * same code returned a confident figure for a table that had been dropped,
+ * renamed or truncated.
+ *
+ * The contract is now:
+ *   row present   -> { amountMinor: <db value>, currency: <db>, source: "db" }
+ *   row absent    -> { amountMinor: null, currency: null, source: "missing" }
+ *   read threw    -> { amountMinor: null, currency: null, source: "unreadable" }
+ * `source` distinguishes a genuinely absent price from a transient or structural
+ * read failure, because those need different operator responses. NEITHER ever
+ * carries a number. Every caller MUST read via this resolver and NEVER hardcode
+ * the amount.
+ *
+ * THE FOUNDER SURFACE MUST NOT HARD-FAIL (R108.2). GET
+ * /api/collective/application-fee still answers 200 with this body — never a 503
+ * — so the application page renders normally and shows its existing unavailable
+ * state; submission is already gated on `feeReady`, so nothing can be submitted
+ * or charged against an amount that is not on record.
  *
  * Unit note — CORRECTED BY WAVE 139 (R101). `amountMinor` and the
  * `collective_application_fee_config.amount_minor` column hold TRUE MINOR UNITS:
@@ -32,14 +52,29 @@
  */
 import { rawDb } from "../db/connection";
 
-/** APD-028 canonical fallback — $300 = 30000 TRUE minor units. */
+/** APD-028 canonical REFERENCE value — $300 = 30000 TRUE minor units (R101).
+ *
+ *  BATCH 1 · ITEM 2 — this is a REFERENCE FIGURE AND MUST NEVER BE RETURNED BY A
+ *  RESOLVER. It records what the Collective application fee is documented to be,
+ *  so migrations, tests and the admin console's "expected" display have ONE named
+ *  source instead of a re-typed literal. It is deliberately NOT a fallback any
+ *  more: substituting it for an absent row is exactly the R95 shape ("a `?? 240`
+ *  or `|| 10` fallback that substitutes a figure when the real one is absent").
+ *  If it is ever wired into a read path again, that read path is lying about what
+ *  is on record. `server/platformFeesStore.ts:51` imports it as the DOCUMENTED
+ *  default for a fee-registry row, which is a different contract; that import is
+ *  untouched by this item. */
 export const DEFAULT_APPLICATION_FEE_MINOR = 30000;
 export const DEFAULT_APPLICATION_FEE_CURRENCY = "USD";
 
+/** BATCH 1 · ITEM 2 — `amountMinor` and `currency` are null exactly when `source`
+ *  is not "db". "missing" = the table read cleanly and holds no usable row;
+ *  "unreadable" = the read threw (absent table, lock, corruption). Neither
+ *  carries a number, and no consumer may substitute one. */
 export interface ResolvedApplicationFee {
-  amountMinor: number;
-  currency: string;
-  source: "db" | "default";
+  amountMinor: number | null;
+  currency: string | null;
+  source: "db" | "missing" | "unreadable";
 }
 
 interface ConfigRow {
@@ -66,10 +101,12 @@ export function getApplicationFeeMinor(
   //   1. `collective_application_fee_config` (the ACTIVE admin editor at
   //      /admin/application-fee, wired since v25.39). When its row exists it is
   //      AUTHORITATIVE — this is what an admin edits today, so it must win.
-  //   2. DEFAULT_APPLICATION_FEE_MINOR (30000 = $300.00, true minor units) with
-  //      source='default' — the documented contract: when the config row is genuinely
-  //      MISSING the resolver reports source='default' (and the endpoint still
-  //      returns a clean 200). This MUST be preserved.
+  //   2. NOTHING. BATCH 1 · ITEM 2 (R108.2) REMOVED THE SECOND SOURCE. When the
+  //      config row is MISSING the resolver reports source='missing' with a NULL
+  //      amount, and when the read THROWS it reports source='unreadable' with a
+  //      NULL amount. The endpoint still returns a clean 200 either way — the
+  //      founder surface must not hard-fail — but it never states a price that is
+  //      not on record (R95, R104).
   //
   // L-2 BRIDGE (no resolver change to the source-precedence above): the new
   // /admin/platform-fees PUT path MIRROR-WRITES the collective_application_fee
@@ -96,16 +133,19 @@ export function getApplicationFeeMinor(
         source: "db",
       };
     }
+    /* Read succeeded and there is no usable row. BATCH 1 · ITEM 2: report the
+       ABSENCE. The application UI is not blocked — the caller returns 200 with
+       this body and the page shows its existing unavailable state — but no
+       figure is invented. */
+    return { amountMinor: null, currency: null, source: "missing" };
   } catch {
-    // Fall through — never block the application UI on a transient DB / missing-
-    // table condition. The dual bootstrap+migration path guarantees the table
-    // normally exists.
+    /* The read itself failed: absent table, lock, corruption. This is NOT the
+       same condition as "no row", and the old bare catch could not tell them
+       apart — it answered both with a confident 30000. Reported distinctly so an
+       operator knows whether to publish a price or to fix a database, and still
+       without a number. */
+    return { amountMinor: null, currency: null, source: "unreadable" };
   }
-  return {
-    amountMinor: DEFAULT_APPLICATION_FEE_MINOR,
-    currency: currency || DEFAULT_APPLICATION_FEE_CURRENCY,
-    source: "default",
-  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -153,11 +193,15 @@ export function updateApplicationFee(
 
 /** v25.39 — Read the full config row (incl. provenance) for the admin editor. */
 export interface ApplicationFeeConfigRow {
-  amountMinor: number;
-  currency: string;
+  amountMinor: number | null;
+  currency: string | null;
   updatedAt: string | null;
   updatedBy: string | null;
-  source: "db" | "default";
+  /* BATCH 1 · ITEM 2 — same three-value contract as ResolvedApplicationFee, so
+     the admin editor can SHOW the administrator which state the founder-facing
+     resolver is in (R108.2 item 1: the `source` the resolver already returns
+     must be made visible to the admin). */
+  source: "db" | "missing" | "unreadable";
 }
 
 export function getApplicationFeeConfig(): ApplicationFeeConfigRow {
@@ -179,14 +223,10 @@ export function getApplicationFeeConfig(): ApplicationFeeConfigRow {
         source: "db",
       };
     }
+    /* No row: state the absence to the admin instead of echoing the reference
+       figure back at them as though it were configured (BATCH 1 · ITEM 2). */
+    return { amountMinor: null, currency: null, updatedAt: null, updatedBy: null, source: "missing" };
   } catch {
-    // fall through to seed default
+    return { amountMinor: null, currency: null, updatedAt: null, updatedBy: null, source: "unreadable" };
   }
-  return {
-    amountMinor: DEFAULT_APPLICATION_FEE_MINOR,
-    currency: DEFAULT_APPLICATION_FEE_CURRENCY,
-    updatedAt: null,
-    updatedBy: null,
-    source: "default",
-  };
 }

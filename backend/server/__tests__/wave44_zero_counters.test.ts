@@ -148,8 +148,15 @@ describe("WAVE 44 · DEFECT 3A — the payment-ledger counter was broken, not th
     expect(src).not.toContain("payQ.data?.entries");
     // and the KPI reports the server's pre-pagination total
     expect(src).toContain('value={paymentsTotal} testId="stat-payments"');
-    // per-row currency, never a hardcoded USD for a possibly non-USD row
-    expect(src).toContain("formatMinor(p.amountCents ?? 0, p.currency ?? \"USD\")");
+    /* per-row currency, never a hardcoded USD for a possibly non-USD row.
+       UPDATED BY WAVE 147 UNDER R111 Q13 (per R98): the `?? 0` this pin recorded
+       was the defect the ruling removed — it published `$0.00` for a payment
+       amount the platform does not hold — so the pin now records the refusing
+       helper. The per-row-currency invariant this test exists for is UNCHANGED
+       and still asserted, and an extra assertion forbids the coercion coming
+       back. */
+    expect(src).toContain("formatMinorOrUnavailable(p.amountCents, p.currency ?? \"USD\")");
+    expect(src).not.toContain("formatMinor(p.amountCents ?? 0, p.currency ?? \"USD\")");
   });
 });
 

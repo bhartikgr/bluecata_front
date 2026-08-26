@@ -67,22 +67,26 @@ export { SpvDeploymentFeeUnconfiguredError };
 /**
  * ⚠️ **NOT A FALLBACK AND NOT A DEFAULT — A DOCUMENTED HISTORICAL FACT.**
  *
- * `500000` ($5,000) is the amount of the SEED row written by
+ * WAVE 152 · ITEM G · R110 — THIS CONSTANT WAS `500000`.
+ *
+ * `24000` ($240.00) is the amount of the SEED row written by
  * `migrations/0068_v25_46_1_consortium_fees.sql` and by the `connection.ts`
  * bootstrap. It is retained as an exported constant ONLY so that tests which
  * assert "a freshly-seeded DB serves the seeded amount" (see
  * `server/__tests__/v25_46_1_fee_tiers.test.ts` → "GET returns the seeded
- * $5,000 flat fee") can name the seed they are asserting about instead of
- * repeating a bare literal.
+ * $240.00 flat fee") can name the seed they are asserting about instead of
+ * repeating a bare literal. It is kept in step with `connection.ts`'s seed on
+ * purpose: two different numbers for "the seeded amount" is how a fresh
+ * deployment ends up charging a figure nobody chose.
  *
  * **NO READ PATH IN THIS TREE CONSULTS IT.** It is not a fallback, it cannot be
  * returned when the row is absent, and `server/__tests__/
  * wave46_one_price_one_source.test.ts` proves it: with the row deleted, every
  * read refuses and no caller can observe this number. The live production value
- * is the owner's **$240.00**, held in the DB, and no code in this build knows
- * that number either.
+ * is the owner's **$240.00**, held in the DB. Migration 0200 sets the row; this
+ * constant only describes what a brand-new database is seeded with.
  */
-export const DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR = 500000; // seed row, never a fallback
+export const DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR = 24000; // seed row, never a fallback
 
 export interface ConsortiumFee {
   amountMinor: number;
@@ -128,18 +132,38 @@ export function setSpvDeploymentFee(args: {
   amountMinor: number;
   currency?: string;
   updatedByUserId: string | null;
+  /* WAVE 152 · ITEM G · G-C9 — passed straight through so the console can record
+     a DELIBERATE free launch fee. Without it a caller could write 0 here and the
+     resolver would correctly report absence, leaving the console unable to
+     express "launches really are free right now" at all. */
+  intentionalZero?: boolean;
+  intentionalZeroReason?: string | null;
 }): ConsortiumFee {
   const fee = setFee({
     key: CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY,
     amountMinor: args.amountMinor,
     currency: args.currency,
     updatedByUserId: args.updatedByUserId,
+    intentionalZero: args.intentionalZero,
+    intentionalZeroReason: args.intentionalZeroReason,
   });
   /* Re-read raw rather than trusting the write's echo: this proves the row the
    * console just wrote is the row every reader will see. Falls back to the echo
    * only if the raw read is unavailable (e.g. no rawDb in a unit harness). */
   const readBack = resolveAuthoritativeSpvDeploymentFee();
   if (readBack) return toConsortiumFee(readBack);
+  /* WAVE 144 · ITEM 2 — CALLER OF THE RESHAPED STORE. `setFee`'s echo now comes
+     back through `getFee`, which reports ABSENCE (`amountMinor: null`) instead of
+     substituting a number. If the raw read-back is unavailable AND the echo
+     carries no amount, this store has no price to return and says so by throwing
+     the error it already exports for exactly that state — R6's honest refusal.
+     Coalescing to 0 here would be the R6 defect this module's own header
+     describes deleting. */
+  if (fee.amountMinor === null || fee.updatedAt === null) {
+    throw new SpvDeploymentFeeUnconfiguredError(
+      "the SPV deployment fee row could not be read back after the write, so no amount can be stated",
+    );
+  }
   return {
     amountMinor: fee.amountMinor,
     currency: fee.currency || "USD",

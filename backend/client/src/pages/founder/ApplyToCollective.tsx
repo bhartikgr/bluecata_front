@@ -81,6 +81,27 @@ function FeeLoading() {
   );
 }
 
+/* BATCH 1 · ITEM 2 (R108.2) — the fee is NOT ON RECORD.
+ *
+ * GET /api/collective/application-fee answered 200 with amountMinor = null,
+ * because the resolver stopped substituting the canonical $300.00 for a row that
+ * does not exist (R95: a price that is not on record is refused and said, not
+ * guessed). This page must not pretend to still be loading, and it must not print
+ * a figure or a bare "—", which a founder reads as zero. It states the situation
+ * and says nothing has been charged. Submission stays blocked by `feeReady`.
+ *
+ * Extracted as a named component deliberately: scripts/silent-drop-guard
+ * fingerprints a panel by its concatenated inline JSX text, so adding this prose
+ * inline would have re-fingerprinted two existing panels. Same technique as
+ * DistributionLedgerNote (client/src/pages/partner/PartnerSpvDetail.tsx:127). */
+function FeeNotOnRecord() {
+  return (
+    <span className="font-semibold text-amber-900" data-testid="fee-not-on-record">
+      not currently published — the application fee has not been set by the platform, so we cannot state what you would be charged. Nothing has been submitted or charged.
+    </span>
+  );
+}
+
 /* ==========================================================================
  * WAVE 59 · S4 — ONE SOURCE OF TRUTH FOR "REQUIRED" ON PATH B.
  *
@@ -557,10 +578,16 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
   // UI: show a spinner while pending, an error banner + Retry on failure, and
   // enable Submit only once a valid integer fee resolves.
   //
-  // DEFAULT_APPLICATION_FEE_MINOR is retained for DOCUMENTATION ONLY (it records
-  // the historical literal); it is intentionally NOT referenced in any JSX.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const DEFAULT_APPLICATION_FEE_MINOR = 2500;
+  // WAVE 144 · ITEM 3 — the historical literal is now a COMMENT, not a variable.
+  // A `const DEFAULT_APPLICATION_FEE_MINOR = 2500;` sat here "for documentation
+  // only", silenced with an eslint-disable and referenced by nothing: stripping
+  // comments from this file left exactly ONE occurrence of the identifier, its
+  // own declaration, and no test pinned it. Per the owner's no-dead-variables
+  // rule it is deleted. It also mis-recorded history twice over: 2500 was the
+  // v25.38 soft-fallback, and the canonical fee is 30000 minor units ($300.00,
+  // R101) — a live variable holding a superseded price is one careless edit away
+  // from becoming a fallback again. The historical fact is preserved in this
+  // sentence, where it cannot be executed.
   const {
     data: applicationFeeData,
     isPending: feePending,
@@ -569,7 +596,16 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     // while the fresh response is still in flight.
     isError: feeError,
     refetch: refetchFee,
-  } = useQuery<{ amountMinor: number; currency: string; source: string }>({
+  /* BATCH 1 · ITEM 2 (R108.2) — the server no longer substitutes a figure when
+     the fee is not on record, so `amountMinor`/`currency` are NULLABLE and
+     `source` is "db" | "missing" | "unreadable". The response is still a 200, so
+     this page renders normally; see `feeAbsent` below.
+
+     WAVE 145 (R109) — and the whole body is now NULLABLE: the founder-facing
+     route answers 200 with `null` when the fee is absent, so the type says so
+     rather than letting a presence test look sufficient (that mis-typing is
+     exactly how the sacred Billing page's `$0.00` regression happened). */
+  } = useQuery<{ amountMinor: number | null; currency: string | null; source: string } | null>({
     queryKey: ["/api/collective/application-fee"],
     staleTime: 0,
     retry: 2,
@@ -586,6 +622,29 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     Number.isFinite(APPLICATION_FEE) &&
     Number.isInteger(APPLICATION_FEE) &&
     APPLICATION_FEE >= 0;
+
+  /* BATCH 1 · ITEM 2 (R108.2) — THE THIRD STATE. Before this item the resolver
+     answered a missing row with a fabricated 30000, so this page only ever had
+     two states: loading and priced. Now a 200 can legitimately carry NO amount,
+     and the page must SAY THAT rather than spin "Loading application fee…"
+     forever — a spinner that never resolves is a dead promise (R21) and it hides
+     an operator problem behind what looks like a slow network. Submission is
+     already blocked because `feeReady` is false, so this is a copy question, not
+     a gating one. */
+  /* WAVE 145 · R109 — THE GUARD IS NO LONGER A PRESENCE TEST ON THE OBJECT.
+     R109 made the FOUNDER-FACING `GET /api/collective/application-fee` answer
+     200 with a FALSY body (`null`) when the fee is absent, so the SACRED
+     `founder/Billing.tsx` refusal branch executes instead of rendering
+     `formatMinor(null)` as "$0.00 USD". This page reads the SAME query key, so
+     `!!applicationFeeData` would now be FALSE in exactly the absent case and the
+     page would fall back to the perpetual "Loading application fee…" state that
+     R21/R108.2 forbid (a spinner that never resolves hides an operator problem).
+     `!== undefined` is what "the query has answered" actually means in react-
+     query, and it is true for BOTH the falsy body and the pre-R109 object shape,
+     so no legitimate state is lost. Submission stays gated on `feeReady`, which
+     is unchanged: nothing can be charged against a fee that is not on record. */
+  const feeAbsent =
+    !feePending && !feeFetching && !feeError && applicationFeeData !== undefined && !feeReady;
 
   const submitMut = useMutation({
     mutationFn: async () => {
@@ -712,7 +771,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>This path is for founders without a cap-table investor sponsor.</p>
-          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : <FeeLoading />} applies.</p>
+          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : feeAbsent ? <FeeNotOnRecord /> : <FeeLoading />} applies.</p>
           <p className="pt-2 text-xs italic">Reminder: this applies your COMPANY to PRESENT — it doesn't enrol you as a member.</p>
         </CardContent>
       </Card>
@@ -893,7 +952,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
 
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
             <div className="font-semibold text-amber-900 mb-1 flex items-center gap-2">
-              <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : <FeeLoading />} non-refundable
+              <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{formatMinorOrUnavailable(APPLICATION_FEE, applicationFeeData?.currency)}</> : feeAbsent ? <FeeNotOnRecord /> : <FeeLoading />} non-refundable
             </div>
             {/* v25.45.4 M-8 — Airwallex is the active payment provider (was Stripe). */}
             <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Airwallex before the application enters the queue. Demo mode does not charge.</p>
@@ -935,9 +994,14 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
               title={
                 feeError
                   ? "Application fee unavailable — retry before submitting."
-                  : feePending
-                    ? "Loading application fee…"
-                    : undefined
+                  : feeAbsent
+                    /* BATCH 1 · ITEM 2 — the button is disabled because the fee is
+                       not on record; say which of the two reasons it is, rather
+                       than leaving a disabled control with no explanation. */
+                    ? "The application fee is not published yet — nothing can be submitted or charged until it is."
+                    : feePending
+                      ? "Loading application fee…"
+                      : undefined
               }
             >
               {submitMut.isPending
@@ -946,7 +1010,9 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
                   ? "Loading application fee…"
                   : feeError
                     ? "Fee unavailable—retry"
-                    : "Submit application"} <ExternalLink className="h-3.5 w-3.5 ml-1" />
+                    : feeAbsent
+                      ? "Fee not published"
+                      : "Submit application"} <ExternalLink className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
         </CardContent>

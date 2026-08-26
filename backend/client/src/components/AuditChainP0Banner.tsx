@@ -8,6 +8,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
+import { Link } from "wouter"; /* WAVE 157 — R124.3 */
 import { apiRequest } from "@/lib/queryClient";
 
 interface AuditChainHealthRow {
@@ -67,6 +68,25 @@ export function AuditChainP0Banner() {
             has been lost and new records are still being written and verified. Do not
             clear this — the platform will refuse to clear it while the mismatch is
             real. It needs an integrity repair, not a dismissal.
+          </p>
+          {/* WAVE 157 · R124.3 — NAVIGATION ONLY, AND THE POINT OF THE WAVE.
+              This banner has said "immediate review required" on every admin page
+              without ever saying WHERE the review happens. The repair screen has
+              existed all along at /admin/audit-chain-verify (routed in
+              client/src/App.tsx, and also reachable at /admin/audit/verify-chain);
+              it was simply unreachable from the alarm. Nothing else is touched:
+              not `data.incident` — the trigger — not the re-anchor call, not the
+              incident state machine. The wording says "check and repair", not
+              "clear", because the paragraph above correctly says the platform will
+              refuse to clear a real mismatch. */}
+          <p className="mt-2 text-sm">
+            <Link
+              href="/admin/audit-chain-verify"
+              className="font-semibold underline decoration-white/70 text-white"
+              data-testid="link-audit-chain-p0-resolve"
+            >
+              Go to Audit chain verification to check and repair the chain
+            </Link>
           </p>
           <ul className="mt-1 space-y-0.5 text-sm text-white/90">
             {incidentRows.map((r) => (

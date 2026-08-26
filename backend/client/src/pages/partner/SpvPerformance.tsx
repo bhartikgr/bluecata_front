@@ -37,6 +37,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinor } from "@/lib/currency";
+import { formatMinorOrUnavailable, MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { AppCard } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
@@ -642,14 +643,22 @@ export default function SpvPerformance({
                   <tr key={p.id ?? p.periodStart} className="border-b last:border-0">
                     <td className="p-2 tabular-nums">{p.periodStart}</td>
                     <td className="p-2 text-right tabular-nums">
-                      {formatMinor(p.contributedMinor ?? 0, p.currency ?? ccy, { locale: "en-US" })}
+                      {/* WAVE 147 · R111 Q13 — a snapshot point whose contributed figure the
+                          server did not record is not a period in which nothing was
+                          contributed; `?? 0` stated the second. A real 0 still prints
+                          `$0.00`. */}
+                      {formatMinorOrUnavailable(p.contributedMinor, p.currency ?? ccy, { locale: "en-US" })}
                     </td>
                     <td className="p-2 text-right tabular-nums">
-                      {formatMinor(p.distributedMinor ?? 0, p.currency ?? ccy, { locale: "en-US" })}
+                      {/* WAVE 147 · R111 Q13 — same as the contributed column. */}
+                      {formatMinorOrUnavailable(p.distributedMinor, p.currency ?? ccy, { locale: "en-US" })}
                     </td>
                     <td className="p-2 text-right tabular-nums">
+                      {/* WAVE 147 · R111 Q13 — this column already refused, but with a bare
+                          em dash, which a reader cannot distinguish from a layout artefact.
+                          Same guard, the owner's words. */}
                       {p.residualValueMinor === null || p.residualValueMinor === undefined
-                        ? "—"
+                        ? MONEY_UNAVAILABLE
                         : formatMinor(p.residualValueMinor, p.currency ?? ccy, { locale: "en-US" })}
                     </td>
                   </tr>
@@ -957,8 +966,11 @@ export default function SpvPerformance({
                   <tr key={o.id} className="border-b last:border-0" data-testid={`spv-marks-row-${o.id}`}>
                     <td className="p-2 tabular-nums text-xs">{o.overriddenAt ?? "—"}</td>
                     <td className="p-2 text-right tabular-nums">
+                      {/* WAVE 147 · R111 Q13 — bare em dash → the owner's words. A mark with
+                          no prior fair value on record is a real state on this table (the
+                          first mark of an SPV) and it must say so. */}
                       {o.priorFairValueMinor === null || o.priorFairValueMinor === undefined
-                        ? "—"
+                        ? MONEY_UNAVAILABLE
                         : formatMinor(o.priorFairValueMinor, o.currency ?? ccy, { locale: "en-US" })}
                     </td>
                     <td className="p-2 text-right tabular-nums">

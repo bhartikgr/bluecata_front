@@ -1,0 +1,106 @@
+-- migrations/0197_wave140_spv_blank_cap_repair.sql
+--
+-- WAVE 140 — BATCH 1 · ITEM 1: A BLANK "Cap" MADE THE VEHICLE UNABLE TO ACCEPT
+-- ANY INVESTOR. This migration repairs the rows the defect already created.
+--
+-- ── THE DEFECT ───────────────────────────────────────────────────────────────
+--
+-- The SPV launch wizard sent the Hard cap through `wizardMoneyWire`
+-- (client/src/pages/partner/PartnerSpvEngine.tsx), whose helper substitutes
+-- "0" for a blank input. So a GP who left Cap empty stored `cap_minor = 0`.
+-- `subscribe()` then reads `if (s.capMinor != null)`
+-- (server/spvEngineStore.ts) and 0 is NOT null, so EVERY subscription was
+-- refused with EXCEEDS_CAP: existing(0) + commitment(anything) > 0.
+--
+-- The code half is fixed forward in WAVE 140 (the wizard now posts NULL for a
+-- blank Cap, and the legacy PATCH writer at server/partnerRoutes.ts normalises
+-- "" to NULL). This file is the DATA half.
+--
+-- ── WHAT THIS MIGRATION WILL AND WILL NOT CLAIM ──────────────────────────────
+--
+-- THERE IS NO PROVENANCE COLUMN FOR `cap_minor`. `spv.updated_by` records the
+-- last writer of ANY field, so it cannot attribute this one column. A GP who
+-- typed a literal `0` and a GP who left the box blank produced BYTE-IDENTICAL
+-- stored state. This migration therefore does NOT claim to distinguish intent.
+--
+-- It repairs ONLY rows where a 0 cap is PROVABLY SELF-CONTRADICTORY: a vehicle
+-- asserting "raise 5,000,000 (or accept a minimum cheque of 250,000) and admit
+-- at most 0" is not a state any operator can have intended, and it is exactly
+-- the shape the wizard produced. A coherent deliberate zero cap can only exist
+-- on a vehicle that is also raising nothing and accepting nothing.
+--
+-- AMBIGUOUS ROWS ARE LEFT ALONE, DELIBERATELY. The same wizard helper coerced
+-- Target raise and Minimum cheque, so a GP who left ALL THREE money fields
+-- blank stored `cap_minor = 0 AND target_raise_minor = 0 AND
+-- min_check_minor = 0`. Nothing inside such a row contradicts anything else, so
+-- a blank-input 0 and a deliberate 0 are INDISTINGUISHABLE there. Rewriting it
+-- would risk destroying a deliberate value, which this migration will not do.
+-- Those rows are REPORTED to the owner instead. The count is obtained with:
+--
+--     SELECT COUNT(*) FROM spv
+--      WHERE cap_minor = 0
+--        AND COALESCE(target_raise_minor, 0) = 0
+--        AND COALESCE(min_check_minor, 0) = 0;
+--
+-- and the rows themselves with:
+--
+--     SELECT id, name, status, cap_minor, target_raise_minor, min_check_minor,
+--            currency, created_at, updated_by
+--       FROM spv
+--      WHERE cap_minor = 0
+--        AND COALESCE(target_raise_minor, 0) = 0
+--        AND COALESCE(min_check_minor, 0) = 0;
+--
+-- On this workspace's data.db (6 spv rows) and test.db (0 spv rows) BOTH counts
+-- are ZERO — every local row already carries `cap_minor` NULL — so this
+-- migration is a verified LOCAL NO-OP and its repair is exercised by fixtures,
+-- not by local data. Recorded rather than glossed.
+--
+-- ── NO created_at CUTOFF, AND WHY ────────────────────────────────────────────
+--
+-- An earlier draft guarded on `created_at < '2026-08-25...'`. That bound was
+-- ALREADY IN THE PAST when it was written, so every vehicle created earlier the
+-- same day by unfixed code would have escaped repair permanently, and
+-- migrations are forward-only and never re-run. The contradiction test above is
+-- the guard; no date bound is used. A vehicle created AFTER this migration by
+-- fixed code cannot reach the repaired shape, because the wizard now posts NULL.
+--
+-- ── HASHES ARE DELIBERATELY NOT RECOMPUTED ───────────────────────────────────
+--
+-- `spv.curr_hash` / `prev_hash` are NOT touched. `chain()` in
+-- server/spvEngineStore.ts maintains a PROCESS-LOCAL running tip, not a
+-- per-row verifiable chain; the only stored-row chain verifier in the tree is
+-- for `spv_fee` (server/lib/spvFeeChainRebuild.ts). No migration has ever
+-- updated the `spv` table. Recomputing a sha256 over a sorted JSON body is not
+-- expressible in SQL in any case. A stale hash here is not damage.
+--
+-- ── MONEY ────────────────────────────────────────────────────────────────────
+--
+-- This statement writes the literal NULL and nothing else. There is no `/100`,
+-- no `*100`, no float literal and no CAST anywhere in this file. The WAVE48 /
+-- 0186 triggers `w48_money_typefloor_ins_spv_cap_minor` and
+-- `w48_money_typefloor_upd_spv_cap_minor` accept an INTEGER or NULL and refuse
+-- anything else; NULL is accepted and the trigger body is skipped
+-- (`WHEN NEW."cap_minor" IS NOT NULL AND typeof(...) <> 'integer'`).
+--
+-- ── IDEMPOTENCY ──────────────────────────────────────────────────────────────
+--
+-- Predicated on `cap_minor = 0`, which the statement itself removes, so a
+-- second and third run match zero rows. Asserted by test in
+-- server/__tests__/wave140_migration_0197_spv_blank_cap.test.ts.
+--
+-- DATA REPAIR ONLY. No CREATE TABLE, no ALTER, no DROP, no new row.
+--
+-- MIRROR: a byte-identical copy of this file lives at
+-- server/db/migrations/0197_wave140_spv_blank_cap_repair.sql, as
+-- server/__tests__/w9_migration_mirror_drift.test.ts requires of every
+-- migration with id >= 0068.
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- §1 · spv.cap_minor — a self-contradictory 0 becomes NULL ("no cap")
+-- ═══════════════════════════════════════════════════════════════════════════
+
+UPDATE spv
+   SET cap_minor = NULL
+ WHERE cap_minor = 0
+   AND (COALESCE(target_raise_minor, 0) > 0 OR COALESCE(min_check_minor, 0) > 0);

@@ -100,11 +100,28 @@ export const CANONICAL_MEMBER_TIER_SLUG = "standard";
 /** Legacy slugs that all collapse onto the canonical `standard` tier. */
 const LEGACY_MEMBER_TIER_SLUGS = new Set(["basic", "pro", "enterprise"]);
 
-/** Seed fallback amount if the row is somehow absent (matches connection.ts). */
-const CANONICAL_MEMBER_FALLBACK_MINOR = 24900;
+/* WAVE 152 · ITEM G · G-C8 (R95, R104 item 3, R115.2 #6).
+ *
+ * DELETED: `const CANONICAL_MEMBER_FALLBACK_MINOR = 24900;`
+ *
+ * That constant was a PRICE COMPILED INTO THE BUILD, and R95 forbids exactly
+ * that. Its comment said it "matches connection.ts", which made it look
+ * harmless; it was not. The moment `platform_fees` could not be read — a
+ * soft-deleted row, a failed migration, a locked database — this resolver
+ * answered $249.00 with `fromDb: false`, the route returned it with HTTP 200,
+ * and the membership page advertised a price no administrator had set and none
+ * could change without a deploy. A stale price served confidently is worse than
+ * a page that says it does not know.
+ *
+ * The function now returns `null` for that case. Absence is reported, never
+ * substituted. Note $249.00 was itself a duplicate: `basic`/`pro`/`enterprise`
+ * all collapse onto `standard`, and `pro` held 24900 as well.
+ */
 
 export interface CanonicalMemberTier extends ResolvedMemberSubscriptionTier {
-  /** True when a live DB row backed this result; false on seed fallback. */
+  /** True when a live DB row backed this result. Always true now that the
+   *  fabricated seed fallback is gone; retained so existing consumers and their
+   *  pinned assertions keep compiling and passing. */
   fromDb: boolean;
   /** W5.3 — which source of truth backed this result. */
   source?: "admin" | "platform_fees" | "seed_fallback";
@@ -129,7 +146,7 @@ export function resolveCanonicalMemberTierSlug(slug: unknown): string {
  * (never null) — falls back to the canonical seed amount if the row is missing
  * so the membership surface can always render.
  */
-export function resolveCanonicalMemberTier(): CanonicalMemberTier {
+export function resolveCanonicalMemberTier(): CanonicalMemberTier | null {
   // W5.3 — PREFER the W4 live admin catalog (single source of truth). Project the
   // first live published package (lowest sortOrder) onto the canonical member-tier
   // shape. `interval` maps to a legacy billingPeriod string. On any error or when
@@ -163,13 +180,9 @@ export function resolveCanonicalMemberTier(): CanonicalMemberTier {
 
   const t = resolveCollectiveMemberSubscriptionTier(CANONICAL_MEMBER_TIER_SLUG);
   if (t) return { ...t, fromDb: true, source: "platform_fees" };
-  return {
-    slug: CANONICAL_MEMBER_TIER_SLUG,
-    key: `${COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX}${CANONICAL_MEMBER_TIER_SLUG}`,
-    amountMinor: CANONICAL_MEMBER_FALLBACK_MINOR,
-    currency: "USD",
-    billingPeriod: "monthly",
-    fromDb: false,
-    source: "seed_fallback",
-  };
+  /* WAVE 152 · ITEM G · G-C8 — no row, no price. `null` means "the platform does
+   * not currently know this price", which the caller renders as "Not on record"
+   * (client/src/lib/currency.ts:108). It does NOT mean free, and it must never be
+   * replaced by a compiled-in number (R95). */
+  return null;
 }

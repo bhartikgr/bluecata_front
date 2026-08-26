@@ -2,6 +2,7 @@
  * WAVE 32 · CP-SPV-30 · CAPABILITY 3 — K-1 ROUTES.
  *
  *   GP  GET  /api/partner/me/spv/:spvId/k1?taxYear=YYYY     derive (live preview)
+ *       GET  /api/partner/me/spv/:spvId/k1/years            years with activity
  *       GET  /api/partner/me/spv/:spvId/k1/stored           persisted statements
  *       POST /api/partner/me/spv/:spvId/k1/generate         write drafts
  *       POST /api/partner/me/spv/:spvId/k1/:k1Id/issue      issue a draft
@@ -33,6 +34,7 @@ import { spvEngineStore } from "./spvEngineStore";
 import { spvBasics, committedRegisterRows } from "./spvNavStore";
 import {
   deriveK1s,
+  k1ActivityYearsForSpv,
   generateK1Drafts,
   issueK1,
   listK1s,
@@ -74,6 +76,26 @@ export function registerSpvK1Routes(app: Express): void {
       const taxYear = parseTaxYear(req.query.taxYear);
       if (taxYear === null) return res.status(400).json({ error: "TAX_YEAR_REQUIRED" });
       res.json({ taxYear, statements: deriveK1s(spvId, taxYear) });
+    } catch (e) { fail(res, e); }
+  });
+
+  /* ── GP: which years this vehicle has facts for (WAVE 141 · BATCH 1 ITEM 3) ─
+     A SEPARATE ROUTE ON PURPOSE. `/k1` above must keep refusing a request with
+     no `taxYear` (400 TAX_YEAR_REQUIRED, fence B8 at
+     wave32_k1_falsification :478): a derivation that silently picks a period is
+     how a statement ends up filed against the wrong year. So the suggestion
+     lives here, where it is plainly a SUGGESTION and the caller still has to ask
+     for a year explicitly.
+
+     `suggestedTaxYear` is the most recent CLOSED year with activity, or `null`
+     — never a guessed year (R108.4 item 4). Same ownership gate as `/k1`:
+     404 for a vehicle this partner does not own, so there is no existence leak. */
+  app.get("/api/partner/me/spv/:spvId/k1/years", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
+      const partnerId = req.partnerContext!.partnerId;
+      const spvId = String(req.params.spvId);
+      if (!spvEngineStore.getSpv(partnerId, spvId)) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      res.json(k1ActivityYearsForSpv(spvId));
     } catch (e) { fail(res, e); }
   });
 

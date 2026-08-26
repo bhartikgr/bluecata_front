@@ -262,17 +262,23 @@ describe("W138 pin 1 — SPV create payload satisfies the server contract", () =
 describe("W138 pin 2 — fund create payload satisfies the server contract", () => {
   it("sends every key server/partnerRoutes.ts requires, with the types it checks", async () => {
     const required = serverRequiredKeys("/api/partner/me/funds");
+    /* WAVE 150 · R98 UPDATE — this pin previously asserted the fund route was
+       NOT sign-off gated. R111 Q11 (owner: "Yes.") deleted that behaviour, so the
+       old assertion pinned a removed defect and is UPDATED to pin the correct
+       contract, not reduced: the required key set now INCLUDES both sign-off
+       fields, and both poles are still asserted below. */
     expect(required.sort()).toEqual(
-      ["currency", "fundName", "fundType", "jurisdiction", "status", "vintage"].sort(),
+      ["currency", "fundName", "fundType", "jurisdiction", "signoffAccepted", "signoffLegalName", "status", "vintage"].sort(),
     );
-    // The fund route is NOT sign-off gated — do not invent policy the server has not.
-    expect(required).not.toContain("signoffLegalName");
-    expect(required).not.toContain("signoffAccepted");
+    expect(required).toContain("signoffLegalName");
+    expect(required).toContain("signoffAccepted");
 
     mount(<PartnerFunds />);
     fireEvent.click(screen.getByTestId("partner-funds-new-toggle"));
     setValue("partner-fund-name", "W138 Growth Fund I");
     setValue("partner-fund-type", "closed_end");
+    setValue("partner-fund-signoff-legalname", "Ada Managing Partner");
+    fireEvent.click(screen.getByTestId("partner-fund-signoff-accept"));
     fireEvent.click(screen.getByTestId("partner-funds-create"));
 
     await waitFor(() => expect(sent.length).toBe(1));
@@ -289,12 +295,19 @@ describe("W138 pin 2 — fund create payload satisfies the server contract", () 
     expect(serverEnum("/api/partner/me/funds", "validFundStatus")).toContain(body.status as string);
     // The dead key is gone: `vintageYear` was never read by the server.
     expect(Object.keys(body)).not.toContain("vintageYear");
+    // WAVE 150 — the sign-off the server now records, sent by this screen.
+    expect(String(body.signoffLegalName).trim().length).toBeGreaterThan(0);
+    expect(body.signoffAccepted).toBe(true);
   });
 
   it("fundType has NO default — the partner must choose before the button works", async () => {
     mount(<PartnerFunds />);
     fireEvent.click(screen.getByTestId("partner-funds-new-toggle"));
     setValue("partner-fund-name", "Unchosen Type Fund");
+    /* WAVE 150 — the sign-off is now also required, so it is satisfied here to
+       keep this pin about `fundType` alone. */
+    setValue("partner-fund-signoff-legalname", "Ada Managing Partner");
+    fireEvent.click(screen.getByTestId("partner-fund-signoff-accept"));
     expect((screen.getByTestId("partner-fund-type") as HTMLSelectElement).value).toBe("");
     expect(isDisabled(screen.getByTestId("partner-funds-create"))).toBe(true);
     fireEvent.click(screen.getByTestId("partner-funds-create"));
@@ -357,13 +370,45 @@ describe("W138 pin 4 — associate sees a disabled control with a reason", () =>
     expect((screen.getByTestId("partner-spv-role-note").textContent ?? "").trim()).toBe("");
   });
 
-  it("associates may still create FUNDS — the server allows it, so the client must not block it", async () => {
+  /* WAVE 150 · R98 UPDATE — this test asserted "associates may still create
+     FUNDS". R111 Q11 removed that access deliberately, so the assertion pinned a
+     defect that no longer exists. It is UPDATED (never reduced: 3 assertions
+     became 7) to pin the new, correct behaviour AND both poles — the control is
+     still rendered and disabled with a stated reason for an associate, and the
+     identical form state is accepted for a managing partner. */
+  it("associates may NO LONGER create funds — control visible, disabled, reason stated (R111 Q11)", async () => {
     subRole = "associate";
+    mount(<PartnerFunds />);
+    const toggle = screen.getByTestId("partner-funds-new-toggle");
+    expect(toggle).toBeTruthy();
+    fireEvent.click(toggle);
+    setValue("partner-fund-name", "Associate Fund");
+    setValue("partner-fund-type", "rolling");
+    setValue("partner-fund-signoff-legalname", "Bea Associate");
+    fireEvent.click(screen.getByTestId("partner-fund-signoff-accept"));
+    const btn = screen.getByTestId("partner-funds-create");
+    expect(isDisabled(btn)).toBe(true);
+    const note = screen.getByTestId("partner-fund-role-note").textContent ?? "";
+    expect(note.toLowerCase()).toContain("managing partner");
+    expect(note).not.toContain("PARTNER_SUB_ROLE_INSUFFICIENT");
+    expect(note.trim().length).toBeGreaterThan(20);
+    fireEvent.click(btn);
+    expect(sent.length).toBe(0);
+  });
+
+  it("managing partner: the SAME fund form state is accepted (opposite pole)", async () => {
+    subRole = "managing_partner";
     mount(<PartnerFunds />);
     fireEvent.click(screen.getByTestId("partner-funds-new-toggle"));
     setValue("partner-fund-name", "Associate Fund");
     setValue("partner-fund-type", "rolling");
+    setValue("partner-fund-signoff-legalname", "Ada Managing Partner");
+    fireEvent.click(screen.getByTestId("partner-fund-signoff-accept"));
     expect(isDisabled(screen.getByTestId("partner-funds-create"))).toBe(false);
+    /* The note is asserted BEFORE submitting: a successful create collapses the
+       form (`setShowForm(false)` in onSuccess), so the note leaves the DOM with
+       the rest of the form. */
+    expect((screen.getByTestId("partner-fund-role-note").textContent ?? "").trim()).toBe("");
     fireEvent.click(screen.getByTestId("partner-funds-create"));
     await waitFor(() => expect(sent.length).toBe(1));
   });

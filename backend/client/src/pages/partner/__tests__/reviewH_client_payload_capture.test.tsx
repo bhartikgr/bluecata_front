@@ -101,6 +101,11 @@ describe("REVIEW H — capture real client payloads", () => {
     setValue("partner-fund-name", "Review H Capture Fund I");
     setValue("partner-fund-type", "closed_end");
     setValue("partner-fund-target", "5,000,000");
+    /* WAVE 150 · R111 Q11 — the shipped fund form now carries the same recorded
+       sign-off as the SPV form, so the captured payload must include it or the
+       server replay would be exercising a body the client can no longer send. */
+    setValue("partner-fund-signoff-legalname", "Ada Managing Partner");
+    fireEvent.click(screen.getByTestId("partner-fund-signoff-accept"));
     fireEvent.click(screen.getByTestId("partner-funds-create"));
     await waitFor(() => expect(sent.length).toBe(1));
     const prev = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, "utf8")) : {};

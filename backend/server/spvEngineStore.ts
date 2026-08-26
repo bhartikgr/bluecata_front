@@ -1410,13 +1410,40 @@ export const spvEngineStore = {
       // cross-tenant investors.
       throw new Error("INVESTOR_TENANT_CHECK_FAILED");
     }
-    // Enforce cap across existing committed + this commitment.
-    if (s.capMinor != null) {
-      const existing = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn").reduce((a, x) => a + x.commitmentMinor, 0);
-      if (existing + data.commitmentMinor > s.capMinor) throw new Error("EXCEEDS_CAP");
-    }
+    /* WAVE 140 · BATCH 1 ITEM 1 — THE DUPLICATE CHECK NOW RUNS FIRST.
+       It used to sit BELOW the cap block, so an investor who was already
+       subscribed to a full vehicle was told "this would push the SPV over its
+       cap" (400 EXCEEDS_CAP) when the truthful answer is "you are already
+       subscribed" (409 ALREADY_SUBSCRIBED) — their own existing row is inside
+       `existing` and their new amount was then added on top of it. Both are
+       pure guards with no side effects between them, so the set of ACCEPTED
+       subscriptions is byte-identical; only which of two refusals is reported
+       changes, and it changes from wrong to right. NEITHER refusal is removed
+       or weakened. */
     const dup = (subsBySpv.get(spvId) ?? []).find((x) => x.investorId === data.investorId && x.status !== "withdrawn");
     if (dup) throw new Error("ALREADY_SUBSCRIBED");
+    /* Enforce cap across existing committed + this commitment.
+       THE DENOMINATOR, NAMED (nothing on the line below says which population
+       it sums): EVERY non-`withdrawn` subscription of this SPV — `review`,
+       `approved` and `committed` alike. A `review` row is a SEAT ALREADY TAKEN
+       in the vehicle, so excluding it would let a GP over-subscribe with
+       pending rows and only discover the breach at commit. This is deliberately
+       ASYMMETRIC with the MONEY gates, which count only `committed` rows via
+       committedSubscriptionsForSpv / canonicalCommittedMinorForSpv — capacity
+       and capital are different questions. Same disclosure pattern as the
+       `investorRegister` denominator note.
+       `s.capMinor == null` means NO CAP (WAVE 140 · BATCH 1 ITEM 1: a blank Cap
+       in the wizard now persists as NULL rather than 0). */
+    if (s.capMinor != null) {
+      /* WAVE 151 · R105/R115.4 — the summation is UNCHANGED in behaviour; it now
+         goes through `capBasisCommittedMinorForSpv`, the ONE spelling of the
+         `status !== "withdrawn"` capacity basis, so the warn-and-record path added
+         by this wave cannot drift from the gate it warns about. Same filter, same
+         reduce, same refusal — this gate is NOT relaxed (R105: "Path A's gates are
+         not relaxed"). */
+      const existing = capBasisCommittedMinorForSpv(spvId);
+      if (existing + data.commitmentMinor > s.capMinor) throw new Error("EXCEEDS_CAP");
+    }
     const now = nowIso();
     const sub: SpvSubscriptionDTO = {
       id: newId("spvsub"),
@@ -2424,6 +2451,89 @@ export const spvEngineStore = {
     this.updateSpv(partnerId, spvId, { terms }, actor);
     emit("spv.funds_confirmed", spvId, { partnerId, spvId, investorId, status: conf.status, mismatch: conf.mismatch });
     return conf;
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════ *
+   *  WAVE 151 · ITEM C · R105 — CAP OVERRIDE, RECORDED.
+   *
+   *  R105 requires three things of the path that can seat an LP beyond an SPV's
+   *  cap (`POST .../lp-commit` → `projectLpCommitted`, which deliberately does
+   *  NOT re-run the subscribe() cap gate because the sacred ledger has already
+   *  recorded the commit): (1) a clear PRE-COMMIT warning naming the cap, the
+   *  current committed total and the overage; (2) a DURABLE timestamped audit
+   *  record naming operator, SPV, cap, resulting total and overage; (3) the
+   *  overage VISIBLE afterwards on the SPV.
+   *
+   *  (2) is `audit_log` via `appendAdminAudit` at the route. (3) is this method:
+   *  the override is persisted inside the SPV's own `terms` JSON, the same
+   *  durable surface `_fundsConfirmations` uses, so no new storage is invented.
+   *
+   *  THE MERGE, AND WHY IT IS SPELLED OUT. `updateSpv` (:502) assigns
+   *  `s.terms = patch.terms` — a WHOLESALE REPLACE. Writing a freshly-built
+   *  `{ _capOverrides }` object through it would DELETE `_fundsConfirmations`,
+   *  and `confirmedByInvestor` (which every K-1 / funds-received surface reads)
+   *  would silently return `{}` for every LP on the vehicle. So this copies the
+   *  precedent set by `confirmFundsReceived` above: read `s.terms`, shallow-copy
+   *  THE TOP LEVEL, mutate only this wave's own key, write back.
+   *
+   *  ACCURATE LABEL: that is a ONE-LEVEL copy, NOT a deep merge. Sibling
+   *  top-level keys (`_fundsConfirmations`, mandate text, legacy shim fields)
+   *  survive because they are carried by the spread; nested objects are shared by
+   *  reference with the pre-write `terms`, which is safe here only because this
+   *  method mutates nothing below its own key. Do not describe it as a deep merge.
+   * ══════════════════════════════════════════════════════════════════════ */
+
+  /** WAVE 151 · R105(3) — record a cap override durably on the SPV.
+   *
+   *  `_capOverrides` is a NEW key and did not exist anywhere in the tree before
+   *  this wave; it follows the EXISTING `_fundsConfirmations` shape — a BAG keyed
+   *  by investor id, not an array. Keying by investor makes a replayed commit for
+   *  the same LP overwrite its own entry with identical values instead of growing
+   *  an unbounded list, which matches `projectLpCommitted`'s own idempotence. */
+  recordCapOverride(
+    partnerId: string,
+    spvId: string,
+    rec: {
+      investorId: string;
+      capMinor: number;
+      committedBeforeMinor: number;
+      resultingTotalMinor: number;
+      overageMinor: number;
+      currency: string;
+    },
+    actor: string,
+  ): SpvCapOverrideRecord {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    if (!rec.investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    const entry: SpvCapOverrideRecord = {
+      investorId: rec.investorId,
+      capMinor: rec.capMinor,
+      committedBeforeMinor: rec.committedBeforeMinor,
+      resultingTotalMinor: rec.resultingTotalMinor,
+      overageMinor: rec.overageMinor,
+      currency: rec.currency,
+      actor: actor ?? "",
+      recordedAt: nowIso(),
+    };
+    // ONE-LEVEL copy of `terms`, then only this wave's own key is touched.
+    const terms = { ...(s.terms ?? {}) } as Record<string, unknown>;
+    const bag = { ...((terms._capOverrides as Record<string, unknown>) ?? {}) };
+    bag[rec.investorId] = entry;
+    terms._capOverrides = bag;
+    this.updateSpv(partnerId, spvId, { terms }, actor);
+    return entry;
+  },
+
+  /** WAVE 151 · R105(3) — the durable cap overrides recorded on this SPV, so the
+   *  overage is readable AFTER the fact and not only in the commit response. */
+  capOverridesForSpv(partnerId: string, spvId: string): SpvCapOverrideRecord[] {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) return [];
+    const bag = ((s.terms ?? {}) as Record<string, unknown>)._capOverrides as
+      | Record<string, SpvCapOverrideRecord>
+      | undefined;
+    return Object.values(bag ?? {});
   },
 
   /** SPV-CORE-1 — the durable confirmed-received amounts keyed by investor. */
@@ -3755,6 +3865,130 @@ export const COMMITTED_SUBSCRIPTION_STATUS = "committed" as const;
  *  there is no second copy of the status test in the committed path. */
 export function committedSubscriptionsForSpv(spvId: string): SpvSubscriptionDTO[] {
   return (subsBySpv.get(spvId) ?? []).filter((x) => x.status === COMMITTED_SUBSCRIPTION_STATUS);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 151 · ITEM C · R105 / R115.4 — THE CAPACITY BASIS, NAMED ONCE.
+
+   R115.4 decides the basis for "the current committed total" in a cap warning:
+   `status !== "withdrawn"`. That is DELIBERATELY the same population the
+   subscribe() cap gate at :1444 counts, and DELIBERATELY NOT the same as
+   `committedSubscriptionsForSpv` (`status === "committed"`), which answers the
+   MONEY question. The two are different questions — capacity versus capital —
+   and the existing note at :1428 already says so. Naming the capacity basis here
+   means the gate and the warning about the gate read one function, so they
+   cannot drift into telling a GP two different totals.
+
+   `commitmentMinor` is a `number` on the DTO; these helpers therefore sum in
+   `number`. No `Number()`, `parseInt` or `parseFloat` is applied to money — the
+   values are already integer minor-unit counts on the DTO.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** WAVE 151 — every subscription that OCCUPIES CAPACITY in the vehicle (R115.4). */
+export function capBasisSubscriptionsForSpv(spvId: string): SpvSubscriptionDTO[] {
+  return (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
+}
+
+/** WAVE 151 — the committed total on the capacity basis, in minor units. */
+export function capBasisCommittedMinorForSpv(spvId: string): number {
+  let total = 0;
+  for (const sub of capBasisSubscriptionsForSpv(spvId)) total += sub.commitmentMinor;
+  return total;
+}
+
+/** WAVE 151 — what ONE investor already contributes to that total. */
+export function capBasisContributionMinor(spvId: string, investorId: string): number {
+  const existing = capBasisSubscriptionsForSpv(spvId).find((x) => x.investorId === investorId);
+  return existing ? existing.commitmentMinor : 0;
+}
+
+/** The durable record of a commit that pushed a vehicle past its cap (R105). */
+export type SpvCapOverrideRecord = {
+  investorId: string;
+  capMinor: number;
+  committedBeforeMinor: number;
+  resultingTotalMinor: number;
+  overageMinor: number;
+  currency: string;
+  actor: string;
+  recordedAt: string;
+};
+
+/** The arithmetic a cap warning and a cap-override record are both built from. */
+export type SpvCapImpact = {
+  capMinor: number | null;
+  committedBeforeMinor: number;
+  existingContributionMinor: number;
+  effectiveNewCommitmentMinor: number;
+  resultingTotalMinor: number;
+  overageMinor: number;
+  overCap: boolean;
+};
+
+/**
+ * WAVE 151 · ITEM C — THE IN-CALL OVERLAP, DIAGNOSED AND FIXED.
+ *
+ * THE DEFECT (this is the real one; see below for the one that does not exist).
+ * The obvious way to decide whether an `lp-commit` breaches the cap is
+ *
+ *     resultingTotal = capBasisCommittedMinorForSpv(spvId) + amountMinor
+ *
+ * and that is WRONG WITHIN A SINGLE CALL whenever the LP being committed ALREADY
+ * has a non-withdrawn subscription on this SPV — which is the normal case, because
+ * `POST .../lp-commit` is the path used to commit an LP who was INVITED first, and
+ * the invited/`review`/re-committed row is already inside the sum. `projectLpCommitted`
+ * (:1560-1599) then ASSIGNS the new figure onto that very row
+ * (`existing.commitmentMinor = data.commitmentMinor`, :1571) — it does not add to it.
+ * So the naive expression counts that LP's capacity TWICE: once as their pre-existing
+ * row inside `committedBefore`, and again as `amountMinor`. The overlap is between two
+ * terms of the same expression in the same call, not between two calls.
+ *
+ * Consequences if shipped: an LP raised from 100k to 150k against a 1M cap on a
+ * vehicle already at 1M would be reported as a 150k overage instead of a 50k one,
+ * and a NO-OP re-commit at the identical amount would raise a spurious cap
+ * override, writing a durable audit record of a breach that never happened. Both
+ * are false records on a compliance surface, which is worse than no surface.
+ *
+ * THE FIX. Subtract the term that is already counted, then add the amount that
+ * will actually replace it:
+ *
+ *     resultingTotal = committedBefore − existingContribution + effectiveNew
+ *
+ * `effectiveNew` MIRRORS `projectLpCommitted`'s own rule at :1571/:1583 exactly:
+ * that method assigns the incoming amount only when it is finite and > 0, and
+ * otherwise leaves the existing figure untouched. Predicting a different number
+ * from the one the projection will write is how a warning becomes a lie, so the
+ * same condition is spelled here and nowhere else.
+ *
+ * WHAT IS **NOT** A DEFECT, stated so it is not "fixed" later. A prior review
+ * claimed `projectLpCommitted` DOUBLE-COUNTS across replays. It does not:
+ * :1571 is an ASSIGNMENT (`=`), not `+=`, so re-projecting the same LP at the
+ * same amount is idempotent and the committed total does not move. That claim is
+ * false and nothing here compensates for it.
+ */
+export function computeCapImpact(
+  spvId: string,
+  investorId: string,
+  amountMinor: number,
+  capMinor: number | null,
+): SpvCapImpact {
+  const committedBeforeMinor = capBasisCommittedMinorForSpv(spvId);
+  const existingContributionMinor = capBasisContributionMinor(spvId, investorId);
+  const effectiveNewCommitmentMinor =
+    Number.isFinite(amountMinor) && amountMinor > 0 ? amountMinor : existingContributionMinor;
+  const resultingTotalMinor =
+    committedBeforeMinor - existingContributionMinor + effectiveNewCommitmentMinor;
+  const overageMinor =
+    capMinor != null && resultingTotalMinor > capMinor ? resultingTotalMinor - capMinor : 0;
+  return {
+    capMinor,
+    committedBeforeMinor,
+    existingContributionMinor,
+    effectiveNewCommitmentMinor,
+    resultingTotalMinor,
+    overageMinor,
+    overCap: overageMinor > 0,
+  };
 }
 
 /** The ONE authoritative committed figure for a vehicle, in minor units.

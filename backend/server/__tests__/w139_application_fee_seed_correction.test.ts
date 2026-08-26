@@ -315,17 +315,58 @@ describe("W139 — resolver comment truth (Review G item 18), logic untouched", 
     expect(s).toMatch(/formatMinor/);
   });
 
-  it("the executable logic is byte-identical to the wave-138 baseline (comment-only edit)", () => {
-    // Strip line comments and block comments, then compare the code that remains
-    // against the pinned digest of the pre-wave-139 code. A logic edit breaks this.
-    const stripped = src()
+  /* R98 · BATCH 1 · ITEM 2 (WAVE 142) — THIS PIN WAS STALE AND IS RE-FROZEN.
+   *
+   * WAVE 139 froze the resolver's executable logic to prove its own edit was
+   * comment-only. WAVE 142 changes that logic DELIBERATELY under R108.2: the
+   * seed-default fallback that returned DEFAULT_APPLICATION_FEE_MINOR for a
+   * missing row is deleted, and the resolver now reports `source: "missing"` /
+   * "unreadable" with a NULL amount. A frozen digest of the OLD logic therefore
+   * asserts something the owner ruled must no longer be true.
+   *
+   * Under R98 the pin is re-frozen rather than deleted, and the assertion count
+   * GOES UP: the digest still guards against an unintended logic edit, and three
+   * new assertions pin WHY it moved, so the fallback cannot creep back in without
+   * failing here as well as in batch1_item2_*.
+   *
+   * PREVIOUS DIGEST (pre-WAVE-142 logic, WAVE 139's value), kept on the record:
+   *   5b437df53a92bc0b7f7e515a1991de712ec7c61983dcac30bb620d8fdcef3d5b
+   * That value was independently re-derived from the reconstructed pre-142 source
+   * in w142_scratch/before/, which is how the WAVE 142 fail-before evidence was
+   * proven to be byte-exact. Nothing about migration 0196 is touched by this
+   * change (R103): every 0196 assertion in this file is unchanged. */
+  const strippedResolver = () =>
+    src()
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^[ \t]*\/\/.*$/gm, "")
       .replace(/\/\/[^\n"'`]*$/gm, "")
       .replace(/\s+/g, " ")
       .trim();
-    expect(createHash("sha256").update(stripped).digest("hex"))
-      .toBe("5b437df53a92bc0b7f7e515a1991de712ec7c61983dcac30bb620d8fdcef3d5b");
+
+  it("the executable logic matches the WAVE 142 re-freeze (R98 — was the wave-138 baseline)", () => {
+    expect(createHash("sha256").update(strippedResolver()).digest("hex"))
+      .toBe("8f7026472b555526d5f484e0a5dfc43d0b9207f6a544943de3a5835311b24bf6");
+    /* And it is NOT the pre-142 logic any more: the fallback really did go. */
+    expect(createHash("sha256").update(strippedResolver()).digest("hex"))
+      .not.toBe("5b437df53a92bc0b7f7e515a1991de712ec7c61983dcac30bb620d8fdcef3d5b");
+  });
+
+  it("R108.2 — no read path returns DEFAULT_APPLICATION_FEE_MINOR any more", () => {
+    const code = strippedResolver();
+    /* The constant survives as a documented reference figure… */
+    expect(code).toContain("export const DEFAULT_APPLICATION_FEE_MINOR = 30000;");
+    /* …but it is never handed back as a resolved amount. */
+    expect(code).not.toContain("amountMinor: DEFAULT_APPLICATION_FEE_MINOR");
+    expect(code).not.toContain('source: "default"');
+  });
+
+  it("R108.2 — absence and unreadability are reported as distinct, amount-free states", () => {
+    const code = strippedResolver();
+    expect(code).toContain('source: "missing"');
+    expect(code).toContain('source: "unreadable"');
+    /* Every non-"db" return states a NULL amount rather than a number. */
+    expect(code).toContain('{ amountMinor: null, currency: null, source: "missing" }');
+    expect(code).toContain('{ amountMinor: null, currency: null, source: "unreadable" }');
   });
 
   it("DEFAULT_APPLICATION_FEE_MINOR is still exactly 30000", () => {

@@ -72,6 +72,7 @@
  * other sacred file are read-only to this wave and untouched.
  */
 import { rawDb } from "../db/connection";
+import { ensureWave152PricingSchema } from "./applyWave152PricingSchema";
 import { resolvePartnerFee, FeeResolutionError, type ResolvedFee } from "./partnerFeeResolver";
 import type { PartnerTier } from "../adminContactsStoreShim";
 
@@ -122,6 +123,11 @@ interface PlatformFeeRow {
   updated_at: string | null;
   updated_by_user_id: string | null;
   deleted_at?: string | null;
+  /** WAVE 152 · ITEM G · G-C9 — added by migration 0200. Optional on the type
+   *  because a database that has not yet run 0200 has no such column, and a
+   *  missing column must read as "not declared", never as "declared". */
+  intentional_zero?: number | null;
+  intentional_zero_reason?: string | null;
 }
 
 /**
@@ -143,6 +149,27 @@ export function readAuthoritativeSpvDeploymentFeeRow(raw?: any): PlatformFeeRow 
       return null;
     }
   }
+  /* WAVE 152 · R121.2 / R121.4 — THE INSTALL HAPPENS ON THE READ THE CHARGE PATH
+     PERFORMS, not somewhere upstream that a charge might not pass through.
+
+     Two things must be true before this row is resolved on a database that never
+     ran the numbered migrations:
+       · the five `spv.deployment_fee_*` columns must exist, or the charge fails
+         with `CHARGE_FAILED — no such column: deployment_fee_paid_at` and the
+         launch fee cannot be collected AT ALL (R121.4);
+       · the untouched $5,000 seed must have been corrected to the ruled $240.00,
+         and an ADMIN-SET price must have been left alone (R121.2).
+     `server/db/connection.ts` is sacred and frozen, so both are done by the
+     non-sacred installer, and calling it here makes the guarantee direct rather
+     than a side effect of whichever store happened to be touched first. It is
+     memoised per database handle, so this costs one WeakSet lookup per read. */
+  try {
+    ensureWave152PricingSchema(handle);
+  } catch {
+    /* An install that cannot run must not turn a price read into a crash; the
+       read below then fails or succeeds on its own merits and the installer has
+       already logged the reason. */
+  }
   try {
     const row = handle
       .prepare(`SELECT * FROM platform_fees WHERE key = ?`)
@@ -163,8 +190,8 @@ export function readAuthoritativeSpvDeploymentFeeRow(raw?: any): PlatformFeeRow 
  * A row answers when it exists, is not soft-deleted, and carries an integer
  * amount. **A genuine, deliberately-entered `0` DOES answer** and means free —
  * R6 is explicit that a real zero renders as `0` and means it. What does NOT
- * answer is a `0` that no human ever entered (`updated_by_user_id IS NULL`),
- * which is the shape of an untouched placeholder rather than a decision.
+ * answer is a `0` carrying no `intentional_zero = 1` declaration (WAVE 152 ·
+ * G-C9), which is the shape of an untouched placeholder rather than a decision.
  */
 export function resolveAuthoritativeSpvDeploymentFee(
   raw?: any,
@@ -176,8 +203,20 @@ export function resolveAuthoritativeSpvDeploymentFee(
   if (amount === null || amount === undefined) return null;
   if (typeof amount !== "number" || !Number.isFinite(amount) || !Number.isInteger(amount)) return null;
   if (amount < 0) return null;
-  if (amount === 0 && (row.updated_by_user_id === null || row.updated_by_user_id === undefined)) {
-    // An untouched zero is an absence wearing a number's clothes.
+  // WAVE 152 · ITEM G · G-C9 (R115.3 Q6, R117.2 Q2/Q3).
+  //
+  // WAS: `amount === 0 && updated_by_user_id IS NULL`. That is a HEURISTIC, not a
+  // record of intent, and it is wrong in both directions. A migration or seed that
+  // stamps `updated_by_user_id = 'system:seed'` makes an accidental zero look
+  // deliberate; a deliberate free price entered before the column was populated
+  // looks accidental. Migration 0200 adds `intentional_zero`, which is an actual
+  // recorded decision, so the question is now answered by data rather than
+  // inferred from an unrelated column.
+  //
+  // A zero WITHOUT the flag is an absence wearing a number's clothes and renders
+  // "Not on record" (currency.ts:108) rather than $0.00. A zero WITH the flag is a
+  // real free price and answers.
+  if (amount === 0 && Number(row.intentional_zero ?? 0) !== 1) {
     return null;
   }
   return {
@@ -204,9 +243,10 @@ export function requireAuthoritativeSpvDeploymentFee(
       throw new SpvDeploymentFeeUnconfiguredError("holds no amount");
     }
     if (row.amount_minor === 0) {
+      // WAVE 152 · ITEM G · G-C9 — wording follows the flag, not the heuristic.
       throw new SpvDeploymentFeeUnconfiguredError(
-        "holds an untouched zero that no operator has ever entered, so it is an " +
-          "unset placeholder rather than a deliberate free fee",
+        "holds a zero that has not been declared an intentional free fee, so it is " +
+          "an unset placeholder rather than a deliberate decision",
       );
     }
     throw new SpvDeploymentFeeUnconfiguredError("holds a value that is not a non-negative integer of minor units");

@@ -49,12 +49,16 @@ import { Plus, Search, MessageSquare } from "lucide-react";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
+/* WAVE 144 · ITEM 4 — the messaging directory payload is SCOPED to identity for
+   addressing (server/commsStore.ts:3382). `location?: string` was declared here
+   and never read; the server no longer sends it, along with the subject's
+   `capTables` and `capavateAngelNetwork`. A field declared on a wire type is an
+   invitation to render it, so the declaration goes with the field. */
 type CommsUser = {
   id: string;
   legalName: string;
   visibility?: { screenName?: string };
   roles?: string[];
-  location?: string;
 };
 
 export default function Messages() {

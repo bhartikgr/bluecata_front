@@ -241,6 +241,96 @@ export function scopeCapTableRows<T>(
   return rows.filter((r) => String(investorIdOf(r) ?? "") === self);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   WAVE 146 — ONE DECISION, ONE SURFACE.
+   ══════════════════════════════════════════════════════════════════════════
+   `GET /api/companies/:id` used to read `access.outcome !== "refuse"` into a
+   single `invited` boolean and assign it to FOUR unrelated surface flags
+   (`canSeeRound`, `canSeeDataroom`, `canSeeSoftCircle`, `canSeeTermSheet`).
+   Two confidentiality consequences followed:
+
+     (a) a founder who granted CAP-TABLE visibility silently also granted the
+         dataroom, the soft circles and the term sheet; and
+     (b) an SPV LP decided as `scope_to_self` / `spv_lp_own_only` — entitled to
+         their OWN position only — was not "refuse", so the LP received the
+         company-wide gated surfaces.
+
+   This helper is the ONLY place that maps a cap-table decision onto the gated
+   surfaces, so the five `decideCapTableSinkAccess` sites cannot drift apart
+   again. It takes nothing away from the cap table itself: `capTableAllowed`
+   reproduces the old `invited` boolean exactly, so the 404 at `routes.ts`
+   is unchanged and no cap-table access is removed.
+
+   `visibilityBasis` is a MACHINE code carried in the API payload only. R77
+   forbids internal identifiers in RENDERED text: the client maps this code to
+   plain prose so a viewer is told WHY a surface is absent rather than being
+   shown a false statement.
+   ══════════════════════════════════════════════════════════════════════════ */
+export type CapTableVisibilityBasis =
+  /** Genuine counterparty (or admin/founder): every gated surface is open. */
+  | "full"
+  /** An explicit, expiring founder grant of the CAP TABLE — and only that. */
+  | "cap_table_grant"
+  /** An SPV LP who may see their own position only. */
+  | "own_position_only"
+  /** Refused. */
+  | "none";
+
+export interface GatedSurfaceAccess {
+  /** Exactly the old `invited` boolean: is the cap-table sink reachable at all? */
+  capTableAllowed: boolean;
+  canSeeRound: boolean;
+  canSeeDataroom: boolean;
+  canSeeSoftCircle: boolean;
+  canSeeTermSheet: boolean;
+  visibilityBasis: CapTableVisibilityBasis;
+}
+
+export function gatedSurfaceAccessFor(access: CapTableSinkAccess): GatedSurfaceAccess {
+  const capTableAllowed = access.outcome !== "refuse";
+  if (!capTableAllowed) {
+    return {
+      capTableAllowed: false,
+      canSeeRound: false,
+      canSeeDataroom: false,
+      canSeeSoftCircle: false,
+      canSeeTermSheet: false,
+      visibilityBasis: "none",
+    };
+  }
+  /* A grant is a cap-table grant. It is not a dataroom grant, a soft-circle
+     grant or a term-sheet grant, and this platform does not infer consent. */
+  if (access.reason === "founder_granted_visibility") {
+    return {
+      capTableAllowed: true,
+      canSeeRound: false,
+      canSeeDataroom: false,
+      canSeeSoftCircle: false,
+      canSeeTermSheet: false,
+      visibilityBasis: "cap_table_grant",
+    };
+  }
+  /* `scope_to_self` is, by construction, NOT a company-wide view. */
+  if (access.outcome === "scope_to_self") {
+    return {
+      capTableAllowed: true,
+      canSeeRound: false,
+      canSeeDataroom: false,
+      canSeeSoftCircle: false,
+      canSeeTermSheet: false,
+      visibilityBasis: "own_position_only",
+    };
+  }
+  return {
+    capTableAllowed: true,
+    canSeeRound: true,
+    canSeeDataroom: true,
+    canSeeSoftCircle: true,
+    canSeeTermSheet: true,
+    visibilityBasis: "full",
+  };
+}
+
 /**
  * The single refusal shape for this class. **404, not 403** — see F9 above.
  * Exported as a constant so the three sibling routes cannot drift apart again.

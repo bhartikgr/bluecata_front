@@ -85,6 +85,8 @@ import {
   type EntryKind,
 } from "./partnerBillingStore";
 import { getByPaymentIntent, listForSubject } from "./partnerSubscriptionStore";
+/* WAVE 152 · ITEM G · G-C1 — tier IDENTITY only; PARTNER_TIERS carries no amount. */
+import { PARTNER_TIERS } from "./partnerTiers";
 import { renewalWorkerConfig } from "./collectiveRenewalWorker";
 import { spvEngineStore } from "../spvEngineStore";
 
@@ -459,7 +461,19 @@ export function registerWave14MoneyRoutes(app: Express): void {
   /** CP-SUB-13 — tier price COVERAGE, so the unpriced tiers are visible. */
   app.get("/api/admin/partner-billing/tier-prices", requireAdmin, (_req: Request, res: Response) => {
     try {
-      res.json({ ok: true, ...tierPriceCoverage(), cadences: CADENCES });
+      /* WAVE 152 · ITEM G · G-C1 (R116.4). `knownTiers` is ADDED so the admin
+       * console can offer a tier that has NO ROW YET. Without it the Tier Prices
+       * tab could only edit rows that already existed, which is why four tier
+       * slugs on the ladder were unpriceable from the UI: there was nothing to
+       * render a field against, and no way to create one. Identity comes from
+       * `PARTNER_TIERS` (which deliberately carries no amount) unioned with the
+       * slugs already present in the table, so an admin-created tier outside the
+       * canonical five is still offered. */
+      const coverage = tierPriceCoverage();
+      const knownTiers = Array.from(
+        new Set([...PARTNER_TIERS.map((t) => t.slug), ...coverage.rows.map((r) => r.tierSlug)]),
+      ).sort();
+      res.json({ ok: true, ...coverage, cadences: CADENCES, knownTiers });
     } catch (e) {
       fail(res, e, "GET /api/admin/partner-billing/tier-prices");
     }
@@ -497,10 +511,42 @@ export function registerWave14MoneyRoutes(app: Express): void {
         }
         priceMinor = n;
       }
+      /* WAVE 152 · ITEM G · G-C2 (R116.4, R115.3 Q6).
+       *
+       * `partner_tier_price.free_attested` / `free_reason` have existed since
+       * migration 0187 and NO WRITER EVER SET THEM. The consequence was not a
+       * missing nicety: `partnerTiers.ts:395` REJECTS a zero without an
+       * attestation, so an administrator who deliberately wanted a free tier
+       * saved it successfully and then found it unusable, with no way to record
+       * the intent. Both fields are now accepted here, and `setTierPrice`
+       * refuses an unattested zero outright rather than storing a row that
+       * cannot be read back. */
+      const freeAttested = b.freeAttested === true || b.freeAttested === 1 || b.freeAttested === "true";
+      const freeReason = typeof b.freeReason === "string" ? b.freeReason.trim() : "";
+      if (priceMinor === 0 && !(freeAttested && freeReason.length > 0)) {
+        return res.status(400).json({
+          ok: false,
+          error: "ZERO_PRICE_NEEDS_ATTESTATION",
+          message:
+            "A price of zero has to be declared deliberately. Tick \u201cThis is a real free price\u201d " +
+            "and write the reason, or enter the real amount, or leave the price blank to record the " +
+            "tier as deliberately unpriced.",
+        });
+      }
+      if (freeAttested && priceMinor !== 0) {
+        return res.status(400).json({
+          ok: false,
+          error: "FREE_ATTESTATION_ON_PRICED_TIER",
+          message:
+            "A free attestation only applies to a price of zero. Clear the free-price tick, or set the price to 0.",
+        });
+      }
       const row = setTierPrice(tierSlug, cadence, priceMinor, {
         currency: typeof b.currency === "string" ? b.currency : undefined,
         updatedBy: actorOf(req),
         notes: typeof b.notes === "string" ? b.notes : undefined,
+        freeAttested,
+        freeReason: freeReason.length > 0 ? freeReason : null,
       });
       /* WAVE 131 (R95) — `partner_tier_price` is the AUTHORITATIVE subscription
        * price. Every cache in front of a price is dropped here so the number the

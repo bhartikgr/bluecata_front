@@ -65,10 +65,16 @@
  * does exactly. There is no configuration here to get wrong.
  */
 
-/** Rendered where a figure does not exist. Deliberately the same glyph
+/** Rendered where a figure does not exist. Deliberately the same words
  *  `client/src/lib/moneyDisplay.ts` already uses, so two screens never disagree
- *  about what "we do not have this number" looks like. */
-export const EXACT_MONEY_UNAVAILABLE = "—";
+ *  about what "we do not have this number" looks like.
+ *
+ *  WAVE 147 · R111 Q13 — was the bare em dash `"—"`; the owner fixed the
+ *  platform-wide unknown-money wording as exactly "Not on record". This module
+ *  deliberately imports nothing (see the header), so the words are repeated here
+ *  rather than imported — the two definitions are pinned equal by
+ *  `client/src/lib/__tests__/w147_unknown_money_not_zero.test.ts`. */
+export const EXACT_MONEY_UNAVAILABLE = "Not on record";
 
 /** ISO-4217 minor-unit exponents that are not 2. Everything absent from this map
  *  is 2, which is the overwhelming majority and the only case this screen's test

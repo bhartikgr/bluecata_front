@@ -4647,6 +4647,17 @@ function readCompanyConvertibleRows(
       instrument: inst,
       /* Major units, exactly as the provider holds them. Carried as TEXT so no
          float ever touches a money figure on this path. */
+      /* WAVE 147 · R111 Q13 — NOT A DEFECT, FENCED AS A LATENT TRAP. The V2 spec
+         listed this `?? "0"` as a money-zero coercion to fix. It is not one: this
+         `purchaseAmount` field is never read by the waterfall. The figure the
+         waterfall actually prices from is `purchaseMinor` at `:1878`, built from
+         the LEDGER's own `cv.investedMinor` with the round's currency exponent.
+         Writing a refusal SENTENCE into this field would therefore change no
+         rendered figure, while putting a non-numeric string into a field typed as
+         a numeric-text money value — the exact shape of defect that produces
+         `parseFloat("...") -> NaN` downstream if a future reader is added.
+         Left byte-identical on purpose; fenced so the next sweep does not re-file
+         it, and so that whoever DOES add a reader is warned first. */
       purchaseAmount: String(r.investmentAmount ?? "0"),
       cap: r.cap == null ? null : String(r.cap),
     });

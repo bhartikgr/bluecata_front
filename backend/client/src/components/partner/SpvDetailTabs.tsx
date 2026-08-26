@@ -16,7 +16,7 @@
  */
 import { useState, useId, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor as formatMinorLib } from "@/lib/currency";
 /* WAVE 120 · FINDING 2 — the shared committed-capital predicate (one spelling of
@@ -1212,6 +1212,13 @@ type EsignDetail = {
   documentHashBound: boolean;
 };
 
+/* WAVE 148 / R111 Q13 — the platform-wide wording for a value that is not known.
+   Never a bare dash, never `0`, never a raw internal code. Written as a literal
+   rather than imported from @/lib/currency's MONEY_NOT_ON_RECORD because this is a
+   support reference, not money, and a money constant must not become the source of
+   truth for non-money copy (the scope error wave 147 §4 had to unwind). */
+const ESIGN_REFERENCE_NOT_ON_RECORD = "Not on record";
+
 function EsignaturePanel({
   spvId,
   documents,
@@ -1346,6 +1353,37 @@ function EsignaturePanel({
     const detail = error instanceof Error ? error.message.trim() : "";
     return detail.length > 0 ? detail : "Could not load e-signature envelopes.";
   }, [isError, error]);
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 148 · THE LINE LABELLED "Reference:" DID NOT CARRY A REFERENCE.
+     ══════════════════════════════════════════════════════════════════════════
+     `esignReadFailure` is `error.message`, and for a 500 that is the sanitized
+     human sentence — on live, "Something went wrong on our side. Please try
+     again." (client/src/lib/queryClient.ts friendlyMessageForStatus). So the panel
+     asked the partner to quote a reference to support and then printed a sentence
+     that identifies nothing, in a monospace face that made it look like an
+     identifier. Support received screenshots of an apology.
+
+     The real reference now exists: server/lib/esignatureRoutes.ts fail() mints an
+     opaque per-occurrence `ESG-XXXXXXXX` on BOTH arms, puts it in the JSON body
+     and logs it beside the internal code and the stack. It arrives here on
+     `ApiError.payload`, which is why `ApiError` is now imported at :19 — it was
+     unimported, so this fact sat unread.
+
+     R77: the INTERNAL code (ESIGN_LIST_UNAVAILABLE, ESIGN_SCHEMA_COLUMN_DRIFT, …)
+     is NEVER rendered. It stays in the payload and in the untouched
+     `data-esign-failure-reference` attribute, both of which R77 explicitly allows.
+     What the user sees is the opaque token, which names nothing internal.
+     R111 Q13: when no incident code came back, the value is "Not on record" —
+     never a bare dash, never a raw code, never an empty label. */
+  const esignIncidentReference = useMemo<string>(() => {
+    if (!isError) return ESIGN_REFERENCE_NOT_ON_RECORD;
+    const payload =
+      error instanceof ApiError && error.payload && typeof error.payload === "object"
+        ? (error.payload as Record<string, unknown>)
+        : null;
+    const code = payload && typeof payload.incidentCode === "string" ? payload.incidentCode.trim() : "";
+    return code.length > 0 ? code : ESIGN_REFERENCE_NOT_ON_RECORD;
+  }, [isError, error]);
   const esignSchemaMissing = !!data && data.schemaInstalled === false;
   const envelopes = data?.envelopes ?? [];
 
@@ -1378,7 +1416,8 @@ function EsignaturePanel({
               testid stay exactly where they were so no positional shape moves, and
               `data-esign-failure-reference="ESIGN_LIST_READ"` above is untouched — a
               machine value in an attribute no user reads is explicitly allowed (R77). */}
-          <div className="mt-1 font-mono text-[10px]" data-testid="spv-esign-error-detail">Reference: {esignReadFailure}</div>
+          <div className="mt-1" data-testid="spv-esign-error-message">{esignReadFailure}</div>
+          <div className="mt-1 font-mono text-[10px]" data-testid="spv-esign-error-detail">Reference: {esignIncidentReference}</div>
           <Button
             size="sm"
             variant="outline"

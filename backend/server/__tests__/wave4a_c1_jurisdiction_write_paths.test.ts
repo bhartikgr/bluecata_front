@@ -216,6 +216,10 @@ describe("C-1 site 4 — legacy FUND create route stores the real jurisdiction",
       vintage: 2026,
       currency: "USD",
       status: "raising",
+      /* WAVE 150 · R111 Q11 — the fund route is now sign-off gated, exactly like
+         the SPV route. Added, not relaxed. */
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     expect(r.status).toBe(201);
     const stored = spvEngineStore.getSpv(PARTNER_A, r.body.fund.id as string)!;
@@ -232,6 +236,9 @@ describe("C-1 site 4 — legacy FUND create route stores the real jurisdiction",
       vintage: 2026,
       currency: "USD",
       status: "raising",
+      /* WAVE 150 · R111 Q11 — see the sibling case above. */
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     expect(r.status).toBe(201);
     const stored = spvEngineStore.getSpv(PARTNER_A, r.body.fund.id as string)!;

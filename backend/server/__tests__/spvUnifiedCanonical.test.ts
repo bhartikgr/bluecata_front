@@ -188,6 +188,11 @@ describe("Blocker 1 (4D) — no live route creates a non-canonical SPV/fund", ()
       currency: "USD",
       status: "raising",
       targetSizeMinor: 5000000,
+      /* WAVE 150 · R111 Q11 — fund creation now requires the same recorded legal
+         sign-off as an SPV (server/partnerRoutes.ts:2021-2038). Added, not
+         relaxed: no assertion in this test is weakened. */
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     expect(r.status).toBe(201);
     const fundId = r.body.fund.id as string;

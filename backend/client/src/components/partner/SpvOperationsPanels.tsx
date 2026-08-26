@@ -48,6 +48,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor } from "@/lib/currency";
+import { MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,7 +60,11 @@ import { parseWholeUnits, toWireMinor, wholeUnitsLabel, wholeUnitsPlaceholder } 
 import { PartnerMoneyEntryNotice } from "./PartnerMoneyEntryNotice";
 
 function money(minor: number | null | undefined, currency: string): string {
-  if (minor == null || !Number.isFinite(Number(minor))) return "—";
+  /* WAVE 147 · R111 Q13 — this local helper already refused an absent amount, but
+     it printed a bare em dash. The words are now the platform's single
+     unknown-money wording, imported so a future rename cannot leave this panel
+     behind. The guard itself is unchanged, so a genuine 0 still formats. */
+  if (minor == null || !Number.isFinite(Number(minor))) return MONEY_UNAVAILABLE;
   return formatMinor(Number(minor), currency, { locale: "en-US" });
 }
 
@@ -504,7 +509,11 @@ export function SpvFeeLedgerPanel({
         {rows.map((o) => {
           const id = String(o.id ?? "");
           const state = String(o.state ?? o.status ?? "");
-          const amt = Number(o.amountMinor ?? 0);
+          /* WAVE 147 · R111 Q13 — `?? 0` here made a fee obligation with no amount
+             on record indistinguishable from a $0.00 obligation. `amt` stays a
+             number for the arithmetic below; the DISPLAY goes through `money()`,
+             which refuses `NaN`. */
+          const amt = Number(o.amountMinor ?? Number.NaN);
           const cur = String(o.currency ?? currency);
           return (
             <div key={id} className="flex items-center justify-between gap-2 text-xs py-1 border-b last:border-0" data-testid={`spv-fee-obligation-${id}`}>

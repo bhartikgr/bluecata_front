@@ -133,6 +133,11 @@ import {
   isAudienceRuleEnabled,
   pendingOwnerDecisions,
   setAudienceRuleEnabled,
+  /* WAVE 144 · ITEM 5 — the exposure warning and the confirmation contract are
+     the server's, so the client cannot soften or skip either. */
+  exposureWarningFor,
+  EXPOSURE_CONFIRMATION_TOKEN,
+  RULES_REQUIRING_EXPLICIT_CONFIRMATION,
 } from "./lib/commsAudienceRules";
 import {
   engagementFor,
@@ -3468,10 +3473,38 @@ export function registerCommsRoutes(app: Express): void {
         visibility: isSelf
           ? u.visibility
           : { screenName: displayName === u.legalName ? u.visibility?.screenName : displayName },
-        capTables: u.capTables,
+        /* WAVE 144 · ITEM 4 — PAYLOAD SCOPED TO WHAT MESSAGING NEEDS.
+
+           REMOVED from every entry: `capTables` (which cap tables the subject
+           holds a position on), `location` (their whereabouts) and
+           `capavateAngelNetwork` (an investment affiliation). None of the three
+           is needed to ADDRESS a message: the picker filters and renders on
+           `legalName` + `visibility.screenName` only
+           (client/src/pages/investor/Messages.tsx:52-58,
+           client/src/pages/partner/PartnerMessages.tsx:32-38 — both declare
+           `location?` and neither ever reads it), and no server caller or test
+           reads these fields off this response.
+
+           WHY THIS IS A CONFIDENTIALITY FIX AND NOT TIDYING. Privacy resolution
+           on this route covers the legal NAME and the visibility flags only
+           (`resolveDisplayName`, `readUserPrivacyRaw`). So a subject correctly
+           rendered as "Private Investor" was, in the SAME object, shipping the
+           list of cap tables they sit on. That is the precise harm R108.1 named
+           as its reason for holding `partner_engaged_company_people` off, and
+           R108.1 item 2 makes scoping this payload the PREREQUISITE for ever
+           enabling it. The fields are dropped for EVERY viewer — not just
+           partners, not just non-self entries — because a messaging directory
+           has no business carrying positions or affiliations at all, and a
+           per-viewer exception is the shape that leaks the next time a rule
+           widens the audience.
+
+           `roles` is KEPT: the coarse platform role the picker labels a
+           recipient with ("investor", "founder"). It is not a position and not
+           an affiliation, and the two clients declare and use it.
+
+           DELIBERATELY NOT DONE: `partner_engaged_company_people` remains
+           DISABLED (R108.1). This removes the blocker; it does not open a door. */
         roles: u.roles,
-        location: u.location,
-        capavateAngelNetwork: (u as { capavateAngelNetwork?: boolean }).capavateAngelNetwork ?? false,
         /* Additive, non-PII: lets the picker mark opted-out investors. */
         isPrivate: priv?.visibleToCoMembers === false,
       });
@@ -3502,6 +3535,14 @@ export function registerCommsRoutes(app: Express): void {
         requiresOwnerDecision: r.requiresOwnerDecision,
         description: r.description,
         recommendedDefault: r.recommendedDefault,
+        /* WAVE 144 · ITEM 5 — what enabling this rule would expose, and whether
+           the owner must confirm it explicitly. Server-authored and rendered
+           verbatim, so the panel cannot invent or dilute the warning. */
+        exposureWarning: exposureWarningFor(r.ruleKey),
+        requiresExplicitConfirmation: RULES_REQUIRING_EXPLICIT_CONFIRMATION.includes(r.ruleKey),
+        confirmationToken: RULES_REQUIRING_EXPLICIT_CONFIRMATION.includes(r.ruleKey)
+          ? EXPOSURE_CONFIRMATION_TOKEN
+          : null,
       })),
       pendingOwnerDecision: pendingOwnerDecisions(viewerRole).map((r) => ({
         ruleKey: r.ruleKey,
@@ -3527,14 +3568,22 @@ export function registerCommsRoutes(app: Express): void {
      privileged comms routes use. */
   app.post("/api/comms/audience-rules/:key", requireAdmin, (req, res) => {
     const key = String(req.params.key ?? "");
-    const body = req.body as { enabled?: unknown } | undefined;
+    /* WAVE 144 · ITEM 5 — `confirmExposure` is the owner's explicit second act
+       for a rule that opens another organisation's people. It is validated in
+       the store (the only write path), not only here. */
+    const body = req.body as { enabled?: unknown; confirmExposure?: unknown } | undefined;
     if (typeof body?.enabled !== "boolean") {
       return res.status(400).json({ ok: false, error: "enabled_required" });
     }
+    const confirmExposure =
+      typeof body?.confirmExposure === "string" ? body.confirmExposure : undefined;
     let decidedBy = "admin";
     try { decidedBy = actorOf(req).actorId || "admin"; } catch { /* keep default */ }
-    const result = setAudienceRuleEnabled(key, body.enabled, decidedBy);
+    const result = setAudienceRuleEnabled(key, body.enabled, decidedBy, confirmExposure);
     if (!result.ok) {
+      /* 409, not 403: the owner is NOT forbidden from doing this — the request
+         conflicts with a stated precondition they can satisfy on the spot. */
+      if (result.error === "confirmation_required") return res.status(409).json(result);
       return res.status(result.error === "unknown_rule" ? 404 : 500).json(result);
     }
     return res.json(result);

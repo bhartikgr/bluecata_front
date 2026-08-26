@@ -38,10 +38,17 @@
  * env-gated we surface the ENV VAR NAME, read-only, and say so.
  *
  * UNIT CONTRACT: `platform_fees`, `pricing_models.*PriceMinor`,
- * `collective_subscription_configs.amount_minor` are all TRUE minor units
- * (cents). `collective_application_fee_config.amount_minor` stores DISPLAY
- * dollars (documented legacy quirk; see the Application Fee tab panel).
- * Inputs on this page accept MAJOR units and convert.
+ * `collective_subscription_configs.amount_minor` AND
+ * `collective_application_fee_config.amount_minor` are ALL TRUE minor units
+ * (cents). Inputs on this page accept MAJOR units and convert.
+ *
+ * CORRECTED BY BATCH 1 · ITEM 2 (pre-flight review 1, F2.6). This header used to
+ * assert that `collective_application_fee_config.amount_minor` stored DISPLAY
+ * DOLLARS as a "documented legacy quirk". That is FALSE, and has been since WAVE
+ * 131 removed the ÷100 on the mirror-write and WAVE 137 repointed every display
+ * onto `formatMinor`; R101 pins $300.00 = 30000 minor units, which is what the
+ * live row holds. Leaving the false sentence in the header of the file that edits
+ * this fee is how a 100× error gets "restored" by the next reader.
  */
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -85,7 +92,14 @@ import {
 /* WAVE 3A (P-1) — the ONE shared fraction→percent display helper. Storage is
    unchanged and stays fractional; only the render gains the missing ×100. */
 import { formatFractionAsPercent } from "@/lib/percentDisplay";
-import { currencyExponent, formatMinor, fromMinor, toMinor } from "@/lib/currency";
+import {
+  currencyExponent,
+  decimalStringToMinor,
+  formatMinor,
+  fromMinor,
+  moneyInputRefusalMessage,
+  toMinor,
+} from "@/lib/currency";
 import { minorToMajorString, formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 /* WAVE 56 (R36 / 56-Q9) — the create/freeze/archive tier surface. */
 import { PartnerTierLifecycleAdmin } from "@/components/admin/PartnerTierLifecycleAdmin";
@@ -139,6 +153,20 @@ export function majorToMinor(s: string, currency = "USD"): number | null {
   if (!Number.isSafeInteger(cents) || cents < 0) return null;
   return cents;
 }
+
+/* WAVE 144 · ITEM 7 — STABLE ALIASES for the two helpers above.
+ *
+ * A component that must convert in a currency OTHER than USD binds these once
+ * and keeps a local helper of the SAME NAME (see `ApplicationFeeTab`). That is
+ * deliberate, not accidental shadowing: `scripts/silent-drop-guard` fingerprints
+ * an inline event handler by the DIGEST OF ITS TEXT, so adding a `, currency`
+ * argument at the call site is reported as a REMOVED event handler (rule #8,
+ * a hard failure) for what is a pure correctness fix. Binding the currency once
+ * per component leaves every handler byte-identical while the exponent actually
+ * used is the row's. Do not delete these aliases to "tidy up" — the call sites
+ * that shadow them depend on the indirection. */
+export const minorToMajorIn = minorToMajor;
+export const majorToMinorIn = majorToMinor;
 
 /* ==========================================================================
  * <SourceOfTruth> — the signage.
@@ -516,13 +544,20 @@ function SectionTitle({ children, hint }: { children: React.ReactNode; hint?: st
  * Wire types — mirror the EXISTING endpoint payloads. No new endpoints.
  * ======================================================================== */
 
+/* WAVE 144 · ITEM 2 — `GET /api/admin/platform-fees` no longer substitutes a
+   figure when the row is missing or the table is unreadable
+   (server/platformFeesStore.ts). The wire shape is therefore NULLABLE and
+   carries the reason. Declaring `amountMinor: number` here while the wire can
+   send null is how a `$0.00` reaches a screen: the type says it cannot happen,
+   so nobody writes the branch. */
 interface PlatformFeeRow {
   key: string;
-  amountMinor: number;
-  currency: string;
+  amountMinor: number | null;
+  currency: string | null;
   billingPeriod?: string | null;
   updatedAt?: string | null;
   updatedByUserId?: string | null;
+  source?: "db" | "missing" | "unreadable";
 }
 
 interface DiscountCodeRow {
@@ -1490,14 +1525,152 @@ function ConsortiumPromotionsTab() {
 
 const COLLECTIVE_APPLICATION_FEE_KEY = "collective_application_fee";
 
+/* BATCH 1 · ITEM 2 (R108.3) — THE FALSE PROMISE, REMOVED.
+ *
+ * This note used to end: "…so the amount an admin types here is the amount a
+ * founder is shown and charged." That was FALSE, and it was false in the worst
+ * possible direction: the founder-facing figure is resolved from
+ * `collective_application_fee_config`, which this page reaches only through the
+ * MIRROR-WRITE in server/adminPlatformFeesRoutes.ts:113-140, and that mirror is
+ * wrapped in a NON-FATAL catch that logs a warning (:134-140). So an
+ * administrator could type $300.00, be told "Application fee updated", and leave
+ * the founder page quoting the old number — with the page's own banner asserting
+ * that could not happen. A surface that certifies its own correctness is worse
+ * than one that says nothing.
+ *
+ * R108.3 DEFERRED the structural fix (retiring one of the two writable tables) to
+ * batch 2 and kept the mirror, so this copy must describe the mechanism honestly
+ * rather than promise an invariant the code does not enforce. The panel below
+ * (`application-fee-resolver-state`) shows the administrator what the founder
+ * actually resolves, which is the only trustworthy confirmation available today.
+ *
+ * Extracted into a named component on purpose: scripts/silent-drop-guard
+ * fingerprints a panel by its concatenated inline JSX text, so rewriting this
+ * prose in place reads as a removal. Same technique as DistributionLedgerNote
+ * (client/src/pages/partner/PartnerSpvDetail.tsx:127-146). `data-testid` is
+ * unchanged — renaming a testid is how a surface silently leaves a suite. */
+function ApplicationFeeStoreNote() {
+  return (
+    <span>
+      Unit contract: this fee is held in <strong>minor units</strong> (cents for
+      USD) in both stores — no path scales it. Saving here writes{" "}
+      <code>platform_fees.collective_application_fee</code>, which is the row this
+      editor owns, and then MIRRORS the same integer into{" "}
+      <code>collective_application_fee_config</code>, which is the row the founder
+      application screen actually resolves. That mirror is deliberately{" "}
+      <strong>non-fatal</strong>: if it fails, this page still reports success and
+      the founder-facing figure does not move. Confirm the resolved figure below
+      before relying on it. Consolidating the two stores into one authoritative
+      source is a separate, scheduled change and has not happened yet.
+    </span>
+  );
+}
+
+/* BATCH 1 · ITEM 2 — R108.2 item 1: "the `source` the resolver already returns
+ * must be made visible to the admin". Until this panel existed, `source` was
+ * computed on every read of the founder-facing fee and shown to NOBODY, so the
+ * one signal that distinguishes "published", "not on record" and "database
+ * unreadable" died inside a JSON body. It also renders the divergence between the
+ * two stores, which is the live defect this item was raised for (R104). */
+function ApplicationFeeResolverState(props: {
+  isLoading: boolean;
+  isError: boolean;
+  source: string | null;
+  amountMinor: number | null;
+  currency: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  editorMinor: number | null;
+}) {
+  const { isLoading, isError, source, amountMinor, currency, updatedAt, updatedBy, editorMinor } = props;
+  const diverged =
+    typeof amountMinor === "number" &&
+    typeof editorMinor === "number" &&
+    amountMinor !== editorMinor;
+  return (
+    <div
+      className="mt-4 rounded border border-slate-300 bg-slate-50 p-3 text-xs text-slate-800"
+      data-testid="application-fee-resolver-state"
+    >
+      <div className="font-semibold">What a founder resolves right now</div>
+      <p className="mt-1" data-testid="application-fee-resolver-source">
+        {isLoading
+          ? "Reading the founder-facing resolver…"
+          : isError
+            ? "The founder-facing resolver could not be read from this console, so this panel is not stating a figure or a status."
+            : source === "db"
+              ? `Published (source: db) — ${formatMinorOrUnavailable(amountMinor, currency)} from collective_application_fee_config.`
+              : source === "missing"
+                ? "NOT ON RECORD (source: missing) — the config row does not exist, so the founder application screen states that the fee is not published and no application can be submitted or charged. It shows no figure."
+                : source === "unreadable"
+                  ? "DATABASE UNREADABLE (source: unreadable) — the config table could not be read. This is a database fault, not an unpublished price, and it needs an operator rather than an edit here."
+                  : "The resolver returned a status this console does not recognise, so nothing is being asserted about the founder-facing fee."}
+      </p>
+      <p className="mt-1" data-testid="application-fee-resolver-provenance">
+        {source === "db"
+          ? `Last written ${updatedAt ?? "at an unrecorded time"} by ${updatedBy ?? "an unrecorded actor"}.`
+          : "No provenance, because there is no row to have provenance."}
+      </p>
+      <p className="mt-1 font-semibold" data-testid="application-fee-store-agreement">
+        {diverged
+          ? `THE TWO STORES DISAGREE: this editor holds ${formatMinorOrUnavailable(editorMinor, currency)} and the founder resolves ${formatMinorOrUnavailable(amountMinor, currency)}. The founder figure wins on the application screen. Re-save above to re-run the mirror.`
+          : source === "db" && typeof editorMinor === "number"
+            ? "Both stores hold the same figure."
+            : "Store agreement cannot be stated until both figures are on record."}
+      </p>
+    </div>
+  );
+}
+
 function ApplicationFeeTab() {
   const { toast } = useToast();
   const q = useAdminQuery<{ ok?: boolean; fees?: PlatformFeeRow[] }>(
     "/api/admin/platform-fees",
   );
+  /* BATCH 1 · ITEM 2 — the founder-facing resolver's own answer, including the
+     `source` R108.2 requires the admin to see. */
+  const resolved = useAdminQuery<{
+    ok?: boolean;
+    amountMinor: number | null;
+    currency: string | null;
+    updatedAt: string | null;
+    updatedBy: string | null;
+    source: "db" | "missing" | "unreadable";
+  }>("/api/admin/collective/application-fee");
   const row =
     (q.data?.fees ?? []).find((f) => f.key === COLLECTIVE_APPLICATION_FEE_KEY) ?? null;
   const [draft, setDraft] = useState<string | null>(null);
+
+  /* WAVE 144 · ITEM 7 — the ONE currency this editor converts with, read from
+     the row itself. Every one of the THREE values that must agree uses it:
+     the PRE-FILLED input (minor→major), the TYPED value (major→minor) and the
+     WIRE value (minor units in the PUT body). Before this wave the two helpers
+     were called with the default "USD" exponent while the LABEL beside them
+     showed `row?.currency`, so a JPY row (exponent 0) pre-filled 300000 as
+     "3000.00" and parsed a typed "300000" back as 30000000 — the 100x class of
+     defect the money rule names. `?? "USD"` is not a substituted PRICE; it is
+     the denomination of a value that is only rendered when it exists. */
+  const feeCurrency = useMemo(() => row?.currency ?? "USD", [row?.currency]);
+  /* The THREE values the money rule requires to agree — the PRE-FILLED input,
+     the TYPED value and the WIRE value — now all pass through these two, bound
+     to `feeCurrency`. Same names as the module helpers on purpose (see the
+     alias note beside their definitions). */
+  const minorToMajor = (minor: number | null | undefined): string =>
+    minorToMajorIn(minor, feeCurrency);
+  const majorToMinor = (v: string): number | null => majorToMinorIn(v, feeCurrency);
+
+  /* WAVE 144 · ITEM 2 / R108.2 — absence is STATED, in one hoisted string, so
+     the JSX keeps a static sibling shape (a conditional that swaps siblings is
+     what the drop gate flags). Never "0", never "$0.00". */
+  const storedLine = useMemo(() => {
+    if (row && typeof row.amountMinor === "number") {
+      return `Stored as ${row.amountMinor} minor units (${feeCurrency}). Founders read it from the public application screen.`;
+    }
+    if (row?.source === "unreadable") {
+      return "NOT ON RECORD — the stored fee could not be read, so no amount is shown rather than a figure that may be wrong. Nothing has been charged or changed. Saving a value here will record one.";
+    }
+    return "NOT ON RECORD — no amount has ever been stored for this fee, so there is nothing to show. This is not a fee of zero. Saving a value here will record one.";
+  }, [row, feeCurrency]);
 
   const save = useMutation({
     mutationFn: async (amountMinor: number) => {
@@ -1513,6 +1686,13 @@ function ApplicationFeeTab() {
       toast({ title: "Application fee updated" });
       setDraft(null);
       queryClient.invalidateQueries({ queryKey: ["/api/admin/platform-fees"] });
+      /* BATCH 1 · ITEM 2 — the resolver-state panel must re-read after a save, or
+         it would keep asserting the PREVIOUS founder-facing figure and the
+         divergence line would be stale exactly when it matters. Additive: the
+         existing invalidation above is unchanged. */
+      queryClient.invalidateQueries({
+        queryKey: ["/api/admin/collective/application-fee"],
+      });
     },
     onError: (e: Error) =>
       toast({ title: "Update failed", description: e.message, variant: "destructive" }),
@@ -1544,7 +1724,7 @@ function ApplicationFeeTab() {
             ) : (
               <>
                 <div className="space-y-1.5 max-w-xs">
-                  <Label htmlFor="app-fee-input">Amount ({row?.currency ?? "USD"})</Label>
+                  <Label htmlFor="app-fee-input">Amount ({feeCurrency})</Label>
                   <Input
                     id="app-fee-input"
                     data-testid="input-application-fee"
@@ -1552,9 +1732,18 @@ function ApplicationFeeTab() {
                     value={draft ?? minorToMajor(row?.amountMinor)}
                     onChange={(e) => setDraft(e.target.value)}
                   />
+                  {/* WAVE 144 · ITEM 2 — the ORIGINAL unit line is kept verbatim
+                      (it already printed an em dash, never a zero, for a missing
+                      amount, and the drop gate fingerprints its text). The honest
+                      absence statement is an ADDITIONAL always-rendered sibling
+                      below it, hoisted into `storedLine`, so no sibling is ever
+                      swapped out. */}
                   <p className="text-xs text-muted-foreground">
                     Stored as {row?.amountMinor ?? "—"} cents. Founders read it from{" "}
                     <code>Read by the public application screen</code>.
+                  </p>
+                  <p className="text-xs text-muted-foreground" data-testid="application-fee-stored">
+                    {storedLine}
                   </p>
                 </div>
                 <Button
@@ -1582,14 +1771,18 @@ function ApplicationFeeTab() {
           data-testid="application-fee-mirror-warning"
         >
           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span>
-            Unit contract, corrected: this fee is stored and mirrored in{" "}
-            minor units (cents for USD) on every path, and the founder-facing page
-            reads the same figure. It is no longer scaled down on the way into the
-            second table, so the amount an admin types here is the amount a founder
-            is shown and charged.
-          </span>
+          <ApplicationFeeStoreNote />
         </div>
+        <ApplicationFeeResolverState
+          isLoading={resolved.isLoading}
+          isError={resolved.isError}
+          source={resolved.data?.source ?? null}
+          amountMinor={resolved.data?.amountMinor ?? null}
+          currency={resolved.data?.currency ?? row?.currency ?? null}
+          updatedAt={resolved.data?.updatedAt ?? null}
+          updatedBy={resolved.data?.updatedBy ?? null}
+          editorMinor={row?.amountMinor ?? null}
+        />
       </AppCard>
 
       <AppCard>
@@ -1612,10 +1805,17 @@ function ApplicationFeeTab() {
                 <TableCell>
                   <code>{f.key}</code>
                 </TableCell>
+                {/* WAVE 144 · ITEM 1 CLASS, FOUND HERE BY TRACING ITEM 2's
+                    CALLERS. `formatMinor` coerces its input with
+                    `(Number(minor) || 0)` (client/src/lib/currency.ts:112), so a
+                    null amount rendered as "$0.00" — a confident price for a fee
+                    that is not on record. The absence is now STATED. */}
                 <TableCell className="text-right">
-                  {formatMinor(f.amountMinor, f.currency || "USD")}
+                  {f.amountMinor === null || f.amountMinor === undefined
+                    ? "Not on record"
+                    : formatMinor(f.amountMinor, f.currency || "USD")}
                 </TableCell>
-                <TableCell>{f.currency}</TableCell>
+                <TableCell>{f.currency ?? "—"}</TableCell>
                 <TableCell>{f.billingPeriod ?? "—"}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {(f.updatedAt ?? "").slice(0, 19).replace("T", " ")}
@@ -1953,14 +2153,27 @@ function LedgerInvoicesTab() {
                         <code>{p.id}</code>
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMinor(p.amountCents ?? 0, p.currency ?? "USD")}
+                        {/* WAVE 147 · R111 Q13 — `?? 0` published a confident $0.00 for a
+                            payment row whose amount the platform does not hold. A payment
+                            always HAS an amount, so `null` here is missing data, never a
+                            real zero; a stored `0` is still a finite number and still
+                            renders `$0.00` through this helper. */}
+                        {formatMinorOrUnavailable(p.amountCents, p.currency ?? "USD")}
                       </TableCell>
                       <TableCell className="text-right">
+                        {/* WAVE 147 · R111 Q13 — DELIBERATELY LEFT COERCING, and this is the
+                            one site in the sweep where `?? 0` is CORRECT. An absent
+                            discount means no coupon was applied, i.e. a discount of zero;
+                            the sibling `p.couponCode` on the next line is the evidence.
+                            Printing "Not on record" here would replace a true zero with a
+                            refusal — the mirror of the defect this wave fixes. */}
                         {formatMinor(p.discountCents ?? 0, p.currency ?? "USD")}
                         {p.couponCode ? ` (${p.couponCode})` : ""}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMinor(p.netCents ?? 0, p.currency ?? "USD")}
+                        {/* WAVE 147 · R111 Q13 — net is derived from amount and discount; if
+                            the server did not compute it there is no zero to state. */}
+                        {formatMinorOrUnavailable(p.netCents, p.currency ?? "USD")}
                       </TableCell>
                       <TableCell>{p.state ?? "—"}</TableCell>
                     </TableRow>
@@ -2579,11 +2792,38 @@ function fmtBand(min: number | null, max: number | null, currency: string): stri
   return `${lo} – ${hi}`;
 }
 
-/** major-unit string → integer minor units, or throw a legible error. */
+/** major-unit string → integer minor units, or throw a legible error.
+ *
+ *  WAVE 158 · R119 — this helper carried the same blank-price hazard the wave was
+ *  raised for: `parseFloat(major || "0")` turned an untouched amount box into a
+ *  real, saved 0. It is reached from SIX call sites on this page (the live
+ *  Collective schedule section at :2832/:2856 and the partner fee section at
+ *  :3236/:3264, plus the two size-band sites, which are already guarded against
+ *  blank by their callers). A blank amount is now REFUSED in a plain sentence.
+ *  The currency-aware `toMinor` conversion is unchanged — no return to `* 100`. */
 function majorStringToMinor(major: string, currency: string): number {
-  const n = parseFloat(major || "0");
-  if (!Number.isFinite(n) || n < 0) throw new Error("invalid_amount");
-  return toMinor(n, currency);
+  const typed = String(major ?? "").trim();
+  if (typed === "") {
+    throw new Error(
+      "Enter the amount. Nothing was saved — a blank amount is not read as zero. To make something free, set it deliberately where the free-of-charge reason can be recorded.",
+    );
+  }
+  /* WAVE 159 · R126.5 — `parseFloat` SALVAGED input instead of refusing it, so
+     "125abc" became 125 and `10.005` USD became 1001 (half a cent, rounded up and
+     STORED — the reviewer proved it live). The exact-decimal parser refuses both
+     and keeps the currency-aware scaling. */
+  let minor: number;
+  try {
+    minor = decimalStringToMinor(typed, currency);
+  } catch (err) {
+    throw new Error(`${moneyInputRefusalMessage(err, currency)} Nothing was saved.`);
+  }
+  if (minor < 0) {
+    throw new Error(
+      "An amount cannot be negative. Enter the amount to charge, for example 1500.00. Nothing was saved.",
+    );
+  }
+  return minor;
 }
 
 /* ---------- RS-1: Collective payment schedules ------------------------- */
@@ -2646,8 +2886,13 @@ function CollectiveScheduleSection() {
 
   const updateMut = useMutation({
     mutationFn: async (row: CollectiveScheduleRow) => {
+      /* WAVE 159 · R126.1 — `amountMinor` is NO LONGER SENT. This control used to
+         PATCH the amount in place, which rewrote what a member was recorded as
+         being charged with no superseding row (R120.3). The server now refuses any
+         amount on PATCH; the edit box is read-only and the row explains that a
+         price is changed by ending this schedule and creating a new one. Cadence
+         and the end date remain editable — those are lifecycle, not price. */
       const body: Record<string, unknown> = {
-        amountMinor: majorStringToMinor(editDraft.amountMajor, row.currency),
         cadence: editDraft.cadence,
         effectiveTo: editDraft.effectiveTo ? editDraft.effectiveTo : null,
       };
@@ -2892,12 +3137,26 @@ function CollectiveScheduleSection() {
                         {editing ? (
                           <Input
                             value={editDraft.amountMajor}
+                            readOnly
+                            aria-readonly="true"
+                            title="The amount cannot be changed here."
+                            className="bg-muted"
                             onChange={(e) => setEditDraft({ ...editDraft, amountMajor: e.target.value })}
                             data-testid={`input-cps-edit-amount-${r.id}`}
                           />
                         ) : (
                           formatMinor(r.amount_minor, r.currency)
                         )}
+                        {editing ? (
+                          <p
+                            className="text-xs text-muted-foreground mt-1"
+                            data-testid={`text-cps-edit-amount-locked-${r.id}`}
+                          >
+                            The amount stays as recorded. To charge a different
+                            amount, end this schedule and create a new one — what
+                            members were already charged remains on the record.
+                          </p>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         {editing ? (

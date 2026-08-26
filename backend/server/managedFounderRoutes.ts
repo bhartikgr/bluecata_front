@@ -23,6 +23,10 @@
  */
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
+/* WAVE 154 · ITEM K.7 (R116.3) — see the SPV-on-behalf route below: this create
+   path was the only partner SPV-create path in the tree with NO signed-agreement
+   check. Non-sacred, fail-closed middleware, already used by the other three. */
+import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { partnerAttributionStore } from "./partnerWorkspaceStore";
 import {
@@ -328,11 +332,38 @@ export function registerMfcrmRoutes(app: Express): void {
     },
   );
 
-  /* ---- Money path 2: SPV-on-behalf (GATE 3 / D-9; transactional §3.3) ---- */
+  /* ---- Money path 2: SPV-on-behalf (GATE 3 / D-9; transactional §3.3) ----
+   *
+   * WAVE 154 · ITEM K.7 — A MISSING SIGNED-AGREEMENT CHECK, FIXED ON ITS OWN.
+   *
+   * This is one of the five paths that create an SPV (they all funnel into
+   * `spvEngineStore.createSpv`). The other three PARTNER paths all require a
+   * signed Consortium Partner Agreement before they will write:
+   *   · server/spvEngineRoutes.ts:319   POST /api/partner/me/spv
+   *   · server/partnerRoutes.ts:1815    POST /api/partner/me/spvs
+   *   · server/partnerRoutes.ts:1979    POST /api/partner/me/funds
+   * This one carried `requirePartnerAuth` and `assertSubRole` and nothing else, so
+   * a partner who had NEVER signed the agreement could create an SPV on a
+   * founder's behalf — committing the platform on behalf of a founder without the
+   * agreement that governs it. R116.3.
+   *
+   * `requireSignedAgreement` is positioned AFTER `assertSubRole`, exactly as at
+   * `partnerRoutes.ts:1815`, and it depends on `req.partnerContext`, so it must
+   * stay after `requirePartnerAuth`. It refuses with
+   * `403 {error:"AGREEMENT_NOT_SIGNED", message, redirect:"/collective/partner/agreement"}`
+   * and never gates a read route, so nobody is bricked: an unsigned partner keeps
+   * full read access and signs once.
+   *
+   * THIS FIX IS DELIBERATELY INDEPENDENT of the membership eligibility gate built
+   * in the same wave. If that gate is ever reverted, this check must survive — it
+   * is a different defect with a different cause. Pinned by
+   * server/__tests__/wave154_k7_spv_on_behalf_signed_agreement.test.ts.
+   */
   app.post(
     "/api/partner/me/mfcrm/spv-on-behalf",
     requirePartnerAuth,
     assertSubRole(...WRITE_ROLES),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const actor = req.partnerContext!.userId;

@@ -50,6 +50,9 @@ import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 expone
    runtime where it was tested. See server/lib/capTableSinkScope.ts. */
 import {
   decideCapTableSinkAccess,
+  /* WAVE 146 — the ONE mapping from a cap-table decision onto the gated
+     surfaces. Never re-derive these flags inline again. */
+  gatedSurfaceAccessFor,
   scopeCapTableRows,
   CAP_TABLE_SINK_NOT_FOUND,
   CAP_TABLE_SINK_NOT_FOUND_STATUS,
@@ -290,6 +293,12 @@ import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /* v25.39 — admin write endpoints for fee/commission config */
 import { registerPartnerTierAdminRoutes } from "./partnerTierAdminRoutes"; /* WAVE 56 (R36 / 56-Q9) — the create/freeze/archive tier write path, which did not exist */
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
+/* WAVE 154 · ITEM K (R114.3) — the SPV launch gate's admin lever. The gate is a
+   hard refusal on money-in, so the override ledger + a dry-run "why is this
+   blocked" endpoint are a RELEASE CONDITION, not a follow-up. */
+import { registerAdminSpvLaunchGateRoutes } from "./adminSpvLaunchGateRoutes";
+import { registerAdminCompedMembershipRoutes } from "./adminCompedMembershipRoutes";
+import { installLaunchGateSettings } from "./lib/spvEligibilityGate";
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
 import { registerPartnerClassificationRoutes } from "./partnerClassificationRoutes"; /* WAVE 4B PT-2 — partner classification read/write + admin CRUD over the DB-driven Sector // Sub-sector taxonomy (reporting/filtering only) */
 import { registerCollectiveSubscriptionAdminRoutes } from "./collectiveSubscriptionAdminRoutes"; /* W4 — Collective dynamic subscription-package admin CRUD */
@@ -1647,6 +1656,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
      server/ was a read: "add a tier" was an ABSENT capability, not a blocked one. */
   registerPartnerTierAdminRoutes(app);
   registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
+  /* WAVE 154 · ITEM K — /api/admin/spv-launch-gate/{settings,overrides,evaluate}.
+     The three settings are seeded HERE, from TypeScript, because
+     `trg_pc_no_direct_insert` rejects a migration INSERT into platform_config
+     that carries no genesis hash. Idempotent, and it never resets a value an
+     admin has since changed. */
+  installLaunchGateSettings();
+  registerAdminSpvLaunchGateRoutes(app);
+  /* WAVE 155 — /api/admin/comped-memberships{,/:id/revoke,/standing}. The
+     admin-granted membership path R124.4.3 found missing: `capavate_subscriptions`
+     is written only by the payment flow and the gateway webhook, so with zero
+     rows and an unconfigured payment path R123.1's lockout had no way out. Writes
+     a SEPARATE ledger table (migration 0206) — the sacred subscription store is
+     called, never modified, and a comp never enters the billing table. */
+  registerAdminCompedMembershipRoutes(app);
   registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
   /* ------------ WAVE 4B PT-2 — partner classification (Sector // Sub-sector) ------------
      /api/partner-taxonomy, /api/admin/partners/:id/classifications,
@@ -2310,6 +2333,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     let canSeeDataroom = canSeeRound;
     let canSeeSoftCircle = canSeeRound;
     let canSeeTermSheet = canSeeRound;
+    /* WAVE 146 — WHY a gated surface is absent, as a machine code the client
+       maps to prose (R77: no internal identifier is ever rendered). Founders
+       and admins see everything, so their basis is `full`. */
+    let visibilityBasis: import("./lib/capTableSinkScope").CapTableVisibilityBasis = "full";
 
     if (role === "investor") {
       /* WAVE 35 · F6/F7/F8 — the FOURTH `capTablePositions.some` site. This one
@@ -2319,11 +2346,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
          because each site re-derived its own authorisation from this predicate.
          Sharing the decision is what stops a seventh. */
       const access = decideCapTableSinkAccess(ctx as any, String(req.params.id));
-      const invited = access.outcome !== "refuse";
-      canSeeRound = invited;
-      canSeeDataroom = invited;
-      canSeeSoftCircle = invited;
-      canSeeTermSheet = invited;
+      /* WAVE 146 — FOUR SURFACES, FOUR DECISIONS. This used to be
+         `const invited = access.outcome !== "refuse"` assigned to all four
+         flags, which meant a CAP-TABLE visibility grant silently also handed
+         over the dataroom, the soft circles and the term sheet, and an SPV LP
+         scoped to their own position received the company-wide view.
+         `capTableAllowed` is byte-for-byte the old `invited` predicate, so the
+         404 below is unchanged and no cap-table access is removed. */
+      const surfaces = gatedSurfaceAccessFor(access);
+      const invited = surfaces.capTableAllowed;
+      visibilityBasis = surfaces.visibilityBasis;
+      canSeeRound = surfaces.canSeeRound;
+      canSeeDataroom = surfaces.canSeeDataroom;
+      canSeeSoftCircle = surfaces.canSeeSoftCircle;
+      canSeeTermSheet = surfaces.canSeeTermSheet;
 
       // v24.3 E2E-discovered P0: tenant isolation gap. Prior to this guard,
       // ANY authenticated user (e.g. founder B) could GET /api/companies/A's-id
@@ -2391,7 +2427,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...companyShared,
       ...(extra ?? {}),
       profile: liveProfile,
-      access: { role, canSeeRound, canSeeDataroom, canSeeSoftCircle, canSeeTermSheet, investorId },
+      access: {
+        role,
+        canSeeRound,
+        canSeeDataroom,
+        canSeeSoftCircle,
+        canSeeTermSheet,
+        investorId,
+        /* WAVE 146 — the cap table is reachable whenever we got this far. */
+        capTableAllowed: true,
+        visibilityBasis,
+      },
       rounds: canSeeRound ? roundsForCompany : null,
       dataroom: canSeeDataroom ? dataroomForCompany : null,
       softCircles: canSeeSoftCircle

@@ -229,7 +229,25 @@ describe("W82 ITEM 3 · Review & Launch shows every field the wizard collects", 
      specific float expressions were PRESENT. ═════════════════════════════════ */
   it("money on the new rows goes through the ONE partner money module — the SAME formatter and currency as the existing rows (R98 / wave 128)", () => {
     expect(review).toContain('value={wizardMoneyDisplay(w.minCheckMinor, w.currency, "Minimum cheque")}');
-    expect(review).toContain('value={wizardMoneyDisplay(w.capMinor, w.currency, "Hard cap")}');
+    /* WAVE 140 · BATCH 1 ITEM 1 — RE-PINNED AGAIN, UNDER THE SAME RULING (R98:
+       "a test that pins a DELETED DEFECT is stale and must be updated to pin the
+       CORRECT behaviour"). This line used to demand
+       `wizardMoneyDisplay(w.capMinor, ...)`. That expression rendered a BLANK
+       Cap as "$0.00" on the Review screen — a false statement of fact about a
+       limit the GP never set — and its wire twin stored the blank as 0, which
+       made `subscribe()` refuse every investor with EXCEEDS_CAP
+       (server/spvEngineStore.ts). Wave 140 moved the Cap onto the OPTIONAL
+       formatter, so a blank Cap reviews as "—". The old pin therefore demanded
+       the defect back. NOT WEAKENED: the pin is re-expressed against the live
+       path AND a strictly stronger negative pin is added below, so this test
+       gains an assertion rather than losing one. The behavioural proof that the
+       rendered output is now "—" and not "$0.00" lives in
+       client/src/pages/partner/__tests__/wave140_spv_blank_cap.test.tsx. */
+    expect(review).toContain('value={wizardMoneyDisplayOptional(w.capMinor, w.currency, "Hard cap")}');
+    expect(
+      review,
+      "the Cap row must NOT go back to the blank-means-zero formatter (WAVE 140)",
+    ).not.toContain('value={wizardMoneyDisplay(w.capMinor,');
     expect(review).toContain('value={wizardMoneyDisplayOptional(w.checkMinMajor, w.currency, "Minimum cheque (mandate)")}');
     expect(review).toContain('value={wizardMoneyDisplayOptional(w.checkMaxMajor, w.currency, "Maximum cheque (mandate)")}');
     // STRONGER THAN THE PIN IT REPLACES: no float arithmetic on money anywhere

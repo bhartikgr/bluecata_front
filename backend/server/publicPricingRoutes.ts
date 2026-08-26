@@ -272,9 +272,25 @@ export function resolvePublicPricingPayload(): PublicPricingPayload {
   //     marketing slug, else the first live "founder" model with an
   //     annual cadence (documented assumption — see ASSUMPTIONS_SLICE_2.md).
   const liveFounderModels = pricingModel.listModels({ productLine: "founder", status: "live" });
-  const founderModel =
-    findBySlug(liveFounderModels, SLUGS.capavateAnnual) ??
-    liveFounderModels.find((m) => m.cadence === "annual" || m.cadenceOptions?.some((c) => c.cadence === "annual"));
+  /* WAVE 152 · ITEM G · G-C11 (R115.1, R104 item 2).
+   *
+   * DELETED the second branch:
+   *   ?? liveFounderModels.find((m) => m.cadence === "annual"
+   *        || m.cadenceOptions?.some((c) => c.cadence === "annual"))
+   *
+   * That was a read BY SHAPE, not by identity: any live founder-line model that
+   * merely HAS an annual cadence was advertised on the public homepage as THE
+   * Capavate annual price. R115.1 is explicit that every price must be read by
+   * product + purpose key and never by matching an amount or a cadence — and this
+   * price is $840.00/year, the exact figure the Consortium Partner account fee
+   * also carries. A heuristic that picks "some annual founder model" is how the
+   * wrong product's $840 ends up on the marketing page while looking correct.
+   *
+   * A model now answers only when it IS the model, identified by its marketing
+   * slug. With no such model, the read falls through to the admin-editable
+   * `platform_fees` key below — also a purpose key — and then to an explicit
+   * refusal. Fewer branches, none of them guessing. */
+  const founderModel = findBySlug(liveFounderModels, SLUGS.capavateAnnual) ?? undefined;
 
   /* WAVE 50 · ITEM 1 — ONE READ, THEN A REFUSAL. A live pricing model still wins
    * when one exists (that is the richer catalogue and this route's first choice);
@@ -298,9 +314,10 @@ export function resolvePublicPricingPayload(): PublicPricingPayload {
   // --- academy_one_time: live add_on model tagged as one-time, matched by
   //     marketing slug first, else any live "add_on" with a one_time cadence.
   const liveAddOnModels = pricingModel.listModels({ productLine: "add_on", status: "live" });
-  const academyModel =
-    findBySlug(liveAddOnModels, SLUGS.academyOneTime) ??
-    liveAddOnModels.find((m) => m.cadence === "one_time" || m.cadenceOptions?.some((c) => c.cadence === "one_time"));
+  /* WAVE 152 · ITEM G · G-C11 (R115.1) — same deletion, same reason: the Academy
+   * price was resolved by "any live add-on with a one_time cadence". Identified by
+   * slug only; absence falls through to the purpose key, then to a refusal. */
+  const academyModel = findBySlug(liveAddOnModels, SLUGS.academyOneTime) ?? undefined;
 
   const academyFeeRow = academyModel ? null : readPlatformFee(PUBLIC_FEE_KEYS.academyOneTime);
   const academy_one_time: PublicPriceEntry = academyModel

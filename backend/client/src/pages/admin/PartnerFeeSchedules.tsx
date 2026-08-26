@@ -4,7 +4,11 @@
  * amount/currency/band shown here comes from the DB; nothing is hardcoded.
  */
 import { useState } from "react";
-import { formatMinor, toMinor } from "@/lib/currency"; /* v25.38 currency sweep; v25.40 FIX-4 toMinor */
+import {
+  decimalStringToMinor,
+  formatMinor,
+  moneyInputRefusalMessage,
+} from "@/lib/currency"; /* v25.38 currency sweep; W159 exact-decimal parser (no parseFloat) */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,11 +93,30 @@ export default function PartnerFeeSchedules() {
       // only ever sees a valid integer minor-unit amount in the correct currency.
       const currency = (form.currency || "USD").trim().toUpperCase();
       if (!currency) throw new Error("invalid_currency");
-      const amountMajor = parseFloat(form.amountMajor || "0");
-      if (!Number.isFinite(amountMajor) || amountMajor < 0) {
-        throw new Error("invalid_amount");
+      /* WAVE 158 · R119 sweep — the same blank-price hazard as
+         CollectivePaymentSchedules: `parseFloat(form.amountMajor || "0")` made an
+         untouched amount box into a saved 0. Blank is now refused in a plain
+         sentence. The currency-aware `toMinor` below is untouched. */
+      const typedAmount = String(form.amountMajor ?? "").trim();
+      if (typedAmount === "") {
+        throw new Error(
+          "Enter the amount for this fee schedule. Nothing was created — a blank amount is not read as zero.",
+        );
       }
-      const amountMinor = toMinor(amountMajor, currency);
+      /* WAVE 159 · R126.5 — `parseFloat` accepted "125abc" as 125 and rounded
+         sub-unit amounts (10.005 USD -> 1001) instead of refusing them. The
+         exact-decimal parser refuses both; scaling stays currency-aware. */
+      let amountMinor: number;
+      try {
+        amountMinor = decimalStringToMinor(typedAmount, currency);
+      } catch (err) {
+        throw new Error(`${moneyInputRefusalMessage(err, currency)} Nothing was created.`);
+      }
+      if (amountMinor < 0) {
+        throw new Error(
+          "An amount cannot be negative. Enter the amount to charge, for example 1500.00. Nothing was created.",
+        );
+      }
       const body: Record<string, unknown> = {
         feeKind: form.feeKind,
         tier: form.tier || null,
@@ -101,12 +124,28 @@ export default function PartnerFeeSchedules() {
         currency,
       };
       if (form.feeKind === "spv_deployment") {
-        const bandMin = form.sizeBandMinMajor ? parseFloat(form.sizeBandMinMajor) : null;
-        const bandMax = form.sizeBandMaxMajor ? parseFloat(form.sizeBandMaxMajor) : null;
-        if (bandMin !== null && (!Number.isFinite(bandMin) || bandMin < 0)) throw new Error("invalid_band_min");
-        if (bandMax !== null && (!Number.isFinite(bandMax) || bandMax < 0)) throw new Error("invalid_band_max");
-        body.sizeBandMin = bandMin === null ? null : toMinor(bandMin, currency);
-        body.sizeBandMax = bandMax === null ? null : toMinor(bandMax, currency);
+        /* W159 — the size bands are money too, and they were parsed the loose
+           way. Same exact-decimal parser, same plain refusal. */
+        let bandMin: number | null = null;
+        let bandMax: number | null = null;
+        try {
+          bandMin = form.sizeBandMinMajor
+            ? decimalStringToMinor(form.sizeBandMinMajor, currency, "smallest SPV size")
+            : null;
+          bandMax = form.sizeBandMaxMajor
+            ? decimalStringToMinor(form.sizeBandMaxMajor, currency, "largest SPV size")
+            : null;
+        } catch (err) {
+          throw new Error(`${moneyInputRefusalMessage(err, currency)} Nothing was created.`);
+        }
+        if (bandMin !== null && bandMin < 0) {
+          throw new Error("The smallest SPV size cannot be negative. Nothing was created.");
+        }
+        if (bandMax !== null && bandMax < 0) {
+          throw new Error("The largest SPV size cannot be negative. Nothing was created.");
+        }
+        body.sizeBandMin = bandMin;
+        body.sizeBandMax = bandMax;
       }
       const r = await apiRequest("POST", "/api/admin/partner-fees", body);
       const j = await r.json();

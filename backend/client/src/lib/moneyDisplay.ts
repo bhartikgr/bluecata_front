@@ -16,11 +16,17 @@
  *     exponent aware. A hardcoded `/ 100` misstates JPY (exponent 0) by 100×
  *     and BHD/KWD/JOD (exponent 3) by 10×.
  */
-import { formatMinor, currencyExponent } from "./currency";
+import { formatMinor, currencyExponent, MONEY_NOT_ON_RECORD } from "./currency";
 import { NOT_PROVIDED } from "./wave4Display"; /* WAVE 42 · R6 — see the R6 block below. */
 
-/** Rendered in place of a number that does not exist. */
-export const MONEY_UNAVAILABLE = "—";
+/** Rendered in place of a number that does not exist.
+ *
+ *  WAVE 147 · R111 Q13 — this was the bare em dash `"—"`. The owner fixed the
+ *  platform-wide wording for an unknown monetary value as exactly
+ *  "Not on record": a dash is a punctuation mark, not a statement, and a reader
+ *  cannot tell it from a layout artefact. The constant keeps its name and its
+ *  single definition point; only the words change. */
+export const MONEY_UNAVAILABLE = MONEY_NOT_ON_RECORD;
 
 /**
  * Format an integer minor-unit amount, or render an explicit unavailable
@@ -155,9 +161,24 @@ export function moneyOrNotProvided(
   currency: string | null | undefined,
   opts: { locale?: string; placeholder?: string } = {},
 ): string {
+  /* WAVE 147 · R111 Q13 — THE SECOND MONEY WORDING, WHICH THE SPEC DID NOT
+     MENTION. This module imports `NOT_PROVIDED` ("Not provided") from
+     `./wave4Display` and used it as the default refusal for the two MONEY
+     helpers, so the platform had two different sentences for one state:
+     "Not provided" here and the em dash (now "Not on record") in
+     `MONEY_UNAVAILABLE`. R111 Q13 fixes ONE wording for unknown money, so both
+     money helpers now default to it.
+
+     The non-money R6 helpers below (percent, ratio, count) keep `NOT_PROVIDED`:
+     Q13 is a ruling about money, and a never-filled text/score field is a
+     different state that reads correctly as "Not provided".
+
+     The function NAME is deliberately unchanged — renaming it would churn 28
+     call sites for no behavioural gain, and every caller may still override the
+     wording through `opts.placeholder`. */
   return formatMinorOrUnavailable(minor, currency, {
     locale: opts.locale,
-    placeholder: opts.placeholder ?? NOT_PROVIDED,
+    placeholder: opts.placeholder ?? MONEY_NOT_ON_RECORD,
   });
 }
 
@@ -174,7 +195,9 @@ export function moneyMajorOrNotProvided(
   currency: string | null | undefined,
   opts: { locale?: string; placeholder?: string; compact?: boolean } = {},
 ): string {
-  const placeholder = opts.placeholder ?? NOT_PROVIDED;
+  /* WAVE 147 · R111 Q13 — was `NOT_PROVIDED`; see the note in
+     `moneyOrNotProvided` above. This is money, so it uses the money wording. */
+  const placeholder = opts.placeholder ?? MONEY_NOT_ON_RECORD;
   if (isUnknownNumber(major)) return placeholder;
   const n = Number(major);
   const cur = String(currency ?? "").trim().toUpperCase() || "USD";

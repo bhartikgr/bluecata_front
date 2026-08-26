@@ -31,6 +31,17 @@ import { HelpTip } from "@/components/HelpTip";
 import { MilestoneBroadcastPanel } from "@/components/founder/MilestoneBroadcastPanel";
 import { currencySymbol } from "@/lib/currency";
 import { MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
+/* WAVE 147 · R111 Q13 — SCOPE FENCE FOR A MONEY RULING ON A PAGE THAT IS MOSTLY
+   NOT MONEY. Q13 fixes the wording for an unknown MONETARY value ("Not on
+   record"), and `MONEY_UNAVAILABLE` now carries those words for the SAFE/note
+   PRINCIPAL cell below, which is money. The four stat tiles at the top of this
+   page are NOT money: they are a SHARE COUNT and three PERCENTAGES. Reusing the
+   money constant there would silently re-word non-money surfaces on the strength
+   of a money ruling, and would change the refusal pinned by
+   w55b_captable_empty_vs_failed / w61a_captable_zero_shares_percent /
+   w125_captable_founder_not_on_record — behaviour NO ruling has changed.
+   So the non-money tiles keep their existing glyph, under its own name. */
+const FIGURE_UNAVAILABLE = "—";
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 55b · OQ-3 */
 import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — interim (pro-forma) additive view */
@@ -881,10 +892,10 @@ export default function CapTable() {
      quantity from the same data. `founderHolding.refuse` (see the `useMemo`
      above) is the third gate; it fires on ROW PRESENCE, so a founder row that
      RECORDS zero is untouched and still prints `0.00%` / `0 shares`. */}
- <Stat label="Total shares" value={securities.isSuccess && !viewRefusal ? fmtNum(totalSharesNum) : MONEY_UNAVAILABLE} hint={`${VIEW_LABEL[view]} view · ${VIEW_DENOMINATOR_LABEL[view]}`} icon={Layers} testid="stat-total-shares" />
- <Stat label="Founder ownership" value={founderHolding.refuse ? MONEY_UNAVAILABLE : securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={founderHolding.refuse ? founderHolding.statement ?? MONEY_UNAVAILABLE : securities.isSuccess && !viewRefusal ? `${fmtNum(founderSharesNum)} shares` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
- <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(investorSharesNum)} shares` : MONEY_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
- <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : MONEY_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(optionSharesNum)} options` : MONEY_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
+ <Stat label="Total shares" value={securities.isSuccess && !viewRefusal ? fmtNum(totalSharesNum) : FIGURE_UNAVAILABLE} hint={`${VIEW_LABEL[view]} view · ${VIEW_DENOMINATOR_LABEL[view]}`} icon={Layers} testid="stat-total-shares" />
+ <Stat label="Founder ownership" value={founderHolding.refuse ? FIGURE_UNAVAILABLE : securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((founderSharesNum / totalSharesNum) * 100, 2) : FIGURE_UNAVAILABLE} hint={founderHolding.refuse ? founderHolding.statement ?? FIGURE_UNAVAILABLE : securities.isSuccess && !viewRefusal ? `${fmtNum(founderSharesNum)} shares` : FIGURE_UNAVAILABLE} icon={PieIcon} testid="stat-founders" />
+ <Stat label="Investor ownership" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((investorSharesNum / totalSharesNum) * 100, 2) : FIGURE_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(investorSharesNum)} shares` : FIGURE_UNAVAILABLE} icon={TrendingUp} testid="stat-investors" />
+ <Stat label="Option pool" value={securities.isSuccess && totalSharesNum > 0 && !viewRefusal ? fmtPct((optionSharesNum / totalSharesNum) * 100, 2) : FIGURE_UNAVAILABLE} hint={securities.isSuccess && !viewRefusal ? `${fmtNum(optionSharesNum)} options` : FIGURE_UNAVAILABLE} icon={PieIcon} testid="stat-options" />
  </div>
 
  {/* Option pool sub-breakdown + Convertibles balance + Warrants */}
@@ -928,6 +939,16 @@ export default function CapTable() {
  {s.accruedInterest != null && s.accruedInterest > 0 && (
  <div className="flex justify-between text-muted-foreground">
  <span>+ Accrued ({s.interestRate}% APR)</span>
+ {/* WAVE 147 · R111 Q13 — NOT A DEFECT, FENCED AS A LATENT TRAP. The V2 spec
+     listed this `?? 0` as an unknown-money site to fix. It is not one: the
+     enclosing guard on the line above (`:928` before this comment was added)
+     is `s.accruedInterest != null && s.accruedInterest > 0`, so this expression
+     is only ever evaluated when `accruedInterest` is a number STRICTLY GREATER
+     than zero. The `?? 0` is dead code and can never print a zero, let alone a
+     false one. Rewriting it to a refusal would add an unreachable branch and a
+     test that could only be made to pass by weakening the guard.
+     It stays fenced rather than removed so the next sweep does not re-file it:
+     if the `> 0` condition is ever relaxed, THIS becomes a real defect. */}
  <span className="font-mono tabular-nums">{sym}{(s.accruedInterest ?? 0).toLocaleString()}</span>
  </div>
  )}

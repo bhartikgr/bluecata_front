@@ -25,6 +25,18 @@
  * Every assertion in this file was reproduced by running it. Nothing here is
  * asserted from memory.
  */
+/* ══════════════════════════════════════════════════════════════════════════
+   UPDATED BY WAVE 147 UNDER OWNER RULING R111 Q13 (per R98, which governs how a
+   pin on behaviour a ruling replaced is handled: update the PIN, never revert the
+   code, never reduce the assertion count).
+   ══════════════════════════════════════════════════════════════════════════
+   This file pinned the literal strings `"—"` and `"Not provided"` as the money
+   refusal vocabulary. R111 Q13 fixes ONE wording for a monetary value the
+   platform does not hold — exactly "Not on record" — so those literals are the
+   superseded strings, and each pin below now asserts the new wording AND that
+   the old one is gone. Every "a real 0 still prints $0.00" pole is untouched:
+   the ruling changes what UNKNOWN says, never what ZERO says.
+   ══════════════════════════════════════════════════════════════════════════ */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,7 +54,7 @@ const read = (rel: string) => fs.readFileSync(path.join(TREE, rel), "utf8");
 const hasNoDigit = (s: string) => expect(s).not.toMatch(/[0-9]/);
 
 describe("WAVE 55 · R6 — the refusal vocabulary itself (both poles)", () => {
-  it("dash treatment: unknown -> '—' with no digits; a real 0 -> '$0.00'", () => {
+  it("refusal treatment: unknown -> 'Not on record' with no digits; a real 0 -> '$0.00'", () => {
     for (const unknown of [null, undefined, ""] as const) {
       const out = formatMinorOrUnavailable(unknown as never, "USD");
       expect(out).toBe(MONEY_UNAVAILABLE);
@@ -53,10 +65,14 @@ describe("WAVE 55 · R6 — the refusal vocabulary itself (both poles)", () => {
     expect(zero).not.toBe(MONEY_UNAVAILABLE);
   });
 
-  it("named-refusal treatment: unknown -> 'Not provided'; a real 0 -> '$0.00'", () => {
+  it("named-refusal treatment: unknown -> 'Not on record'; a real 0 -> '$0.00'", () => {
     const out = moneyOrNotProvided(null, "USD");
-    expect(out).toBe(NOT_PROVIDED);
-    expect(out).toBe("Not provided");
+    /* WAVE 147 · R111 Q13 — was `NOT_PROVIDED` / "Not provided". `NOT_PROVIDED`
+       itself is unchanged and still used by the non-money R6 helpers, so it is
+       asserted here as a NEGATIVE: money must no longer speak with that voice. */
+    expect(out).toBe(MONEY_UNAVAILABLE);
+    expect(out).toBe("Not on record");
+    expect(out).not.toBe(NOT_PROVIDED);
     hasNoDigit(out);
     expect(moneyOrNotProvided(0, "USD", { locale: "en-US" })).toBe("$0.00");
   });
@@ -84,7 +100,8 @@ describe("WAVE 55 · site 1 — admin/PartnerPL.tsx fmtMoney (dense P&L table ->
     expect(read(REL)).toContain('function fmtMoney(minor: number | null, currency = "USD"): string {');
   });
   it("POLES — every cell fed by this helper", () => {
-    expect(formatMinorOrUnavailable(null, "USD", { locale: "en-US" })).toBe("—");
+    /* WAVE 147 · R111 Q13 — was `"—"`. */
+    expect(formatMinorOrUnavailable(null, "USD", { locale: "en-US" })).toBe("Not on record");
     expect(formatMinorOrUnavailable(250000, "USD", { locale: "en-US" })).toBe("$2,500.00");
     expect(formatMinorOrUnavailable(0, "USD", { locale: "en-US" })).toBe("$0.00");
   });
@@ -142,8 +159,10 @@ describe("WAVE 55 · site 3 — admin/AdminPartnerBillingOps.tsx discount cell (
   it("REACHABILITY — `discountMinor` is declared `number | null` on this page's DTO", () => {
     expect(read(REL)).toContain("discountMinor: number | null;");
   });
-  it("VOICE — the dash matches the sibling column already refusing in the same row", () => {
-    expect(formatMinorOrUnavailable(null, "USD")).toBe("—");
+  it("VOICE — the refusal matches the sibling column already refusing in the same row", () => {
+    /* WAVE 147 · R111 Q13 — was `"—"`; one wording for the whole row. */
+    expect(formatMinorOrUnavailable(null, "USD")).toBe("Not on record");
+    expect(formatMinorOrUnavailable(null, "USD")).not.toBe("—");
   });
 });
 
@@ -166,7 +185,9 @@ describe("WAVE 55 · site 4 — partner/PartnerFundDetail.tsx Target Size (promi
   });
   it("POLES — unknown target size refuses; a fund genuinely targeting 0 still prints", () => {
     const refusal = moneyOrNotProvided(null, "USD");
-    expect(refusal).toBe("Not provided");
+    /* WAVE 147 · R111 Q13 — was `"Not provided"`. */
+    expect(refusal).toBe("Not on record");
+    expect(refusal).not.toBe("Not provided");
     hasNoDigit(refusal);
     expect(moneyOrNotProvided(0, "USD", { locale: "en-US" })).toBe("$0.00");
     expect(moneyOrNotProvided(500000000, "USD", { locale: "en-US" })).toBe("$5,000,000.00");
@@ -209,9 +230,12 @@ describe("WAVE 55 · site 6 — founder/CapTable.tsx SAFE/note principal (dense 
     expect(read("shared/roundMathEngineAdapter.ts")).toContain("investmentAmount: number | null;");
     expect(read(REL)).toContain('/api/companies/${companyId}/securities');
   });
-  it("POLES — no principal on file renders the dash with no digits; a real 0 prints", () => {
+  it("POLES — no principal on file renders the refusal with no digits; a real 0 prints", () => {
     hasNoDigit(MONEY_UNAVAILABLE);
-    expect(MONEY_UNAVAILABLE).toBe("—");
+    /* WAVE 147 · R111 Q13 — was `"—"`. The CapTable principal cell renders this
+       constant, so the site inherits the ruling with no edit to the page. */
+    expect(MONEY_UNAVAILABLE).toBe("Not on record");
+    expect(MONEY_UNAVAILABLE).not.toBe("—");
     // the preserved happy-path expression, exercised directly
     const sym = "$";
     expect(`${sym}${(0).toLocaleString()}`).toBe("$0");
@@ -231,8 +255,9 @@ describe("WAVE 55 · site 7 — admin/AdminFeesConsolidated.tsx invoice amount (
     expect(src).toContain("data-testid={`button-refund-invoice-${inv.id}`}");
   });
   it("POLES — unknown amount OR unknown currency refuses; a real 0 prints", () => {
-    expect(formatMinorOrUnavailable(null, "USD")).toBe("—");
-    expect(formatMinorOrUnavailable(1000, null)).toBe("—");
+    /* WAVE 147 · R111 Q13 — both were `"—"`. */
+    expect(formatMinorOrUnavailable(null, "USD")).toBe("Not on record");
+    expect(formatMinorOrUnavailable(1000, null)).toBe("Not on record");
     expect(formatMinorOrUnavailable(0, "USD", { locale: "en-US" })).toBe("$0.00");
     // exponent-aware, so a 0-decimal currency is not misstated (JPY)
     expect(formatMinorOrUnavailable(1000, "JPY", { locale: "en-US" })).toBe("¥1,000");

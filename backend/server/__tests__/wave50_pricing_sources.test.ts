@@ -11,6 +11,7 @@
  * A JPY (exponent 0) fixture appears in the money assertions because no JPY data
  * exists live and these tests are the only place that path ever runs.
  */
+import { resolveAuthoritativeSpvDeploymentFee } from "../lib/spvDeploymentFeeSource";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { getDb, rawDb } from "../db/connection";
 import {
@@ -145,23 +146,41 @@ describe("WAVE 50 · ITEM 1 — the annual fee resolves from the database, never
     expect(mod.PRICE_UNAVAILABLE_DISPLAY).not.toMatch(/\$/);
   });
 
-  /* The seed R21 explicitly confirms as legitimate must still be there. This is
-     the "confirm 500000 remains a legitimate seed" instruction, asserted rather
-     than asserted-in-prose. */
-  it("leaves the legitimate consortium.spv_deployment_fee seed intact", () => {
+  /* WAVE 152 · ITEM G · R98 PIN UPDATE (A RULED PRICE CHANGE, NOT A LOOSENING).
+   *
+   * R21 confirmed 500000 ($5,000.00) as a legitimate SEED at the time. R110 sets
+   * the SPV launch fee to $240.00 and, critically, establishes that THIS row is
+   * the one that actually charges: `spvEngineDeploymentFeeHook` →
+   * `spvDeploymentFee.ts:96` → `spvDeploymentFeeSource.ts:247` reads
+   * `platform_fees['consortium.spv_deployment_fee']` and nothing else. The seed in
+   * `server/db/connection.ts` was changed to 24000 to match, so this pin follows
+   * the ruling.
+   *
+   * The pin is KEPT rather than deleted because its purpose is unchanged: the seed
+   * and the store's documented default must agree with each other and with the
+   * ruled price, so a fresh deployment charges the amount the owner set and not a
+   * leftover from a previous pricing model. An extra assertion is added below
+   * tying the seed to the amount the resolver actually returns — which is the
+   * check that would have caught the 20× overcharge this pin sat next to. */
+  it("leaves the consortium.spv_deployment_fee seed at the RULED amount, and the resolver agrees", () => {
     const row = h()
       .prepare(`SELECT amount_minor, currency FROM platform_fees WHERE key = 'consortium.spv_deployment_fee'`)
       .get();
     if (row) {
-      expect(Number(row.amount_minor)).toBe(500000);
+      expect(Number(row.amount_minor)).toBe(24000);
       expect(String(row.currency)).toBe("USD");
     } else {
       // A fresh :memory: database may not seed it; the store's documented
       // default is then authoritative and is what R22 points the charge path at.
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const store = require("../consortiumFeesStore");
-      expect(store.DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR).toBe(500000);
+      expect(store.DEFAULT_CONSORTIUM_SPV_DEPLOYMENT_FEE_MINOR).toBe(24000);
     }
+    /* THE ADDED ASSERTION. The seed is only worth pinning if the resolver on the
+       charge path returns it; for three specs it did not, and a table-contents
+       pin exactly like the one above passed throughout. */
+    const resolved = resolveAuthoritativeSpvDeploymentFee();
+    if (row) expect(resolved?.amountMinor).toBe(Number(row.amount_minor));
   });
 });
 

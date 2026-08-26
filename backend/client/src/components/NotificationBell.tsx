@@ -15,6 +15,7 @@ import {
   DropdownMenuLabel, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useRole } from "@/lib/role";
+import { notificationKindLabel } from "@/lib/notificationKindLabels";
 
 type Notification = {
   id: string;
@@ -41,7 +42,19 @@ function relTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export function NotificationBell() {
+/**
+ * WAVE 149 · ITEM 3 — `viewAllHref`.
+ *
+ * The "View all notifications" item resolved its destination from `useRole()`
+ * alone. `client/src/lib/role.tsx:3` has no `collective` role and the provider
+ * defaults to `"founder"`, so a Collective member or Consortium Partner reading
+ * their bell was sent to a founder page or to the role-agnostic `/notifications`
+ * — a page that renders outside their own shell. A shell knows which persona it
+ * is hosting; the bell does not and should not have to. The shell therefore names
+ * the destination, and the existing role expression stays as the DEFAULT so every
+ * present call site (AppShell.tsx:715) behaves exactly as it did.
+ */
+export function NotificationBell({ viewAllHref }: { viewAllHref?: string } = {}) {
   const { role } = useRole();
   // Patch v4 — the bell uses the actual session user id from /api/auth/me.
   // When there is no authed user we render nothing (no badge, no SSE).
@@ -164,12 +177,45 @@ export function NotificationBell() {
                 <span className="text-[10px] text-muted-foreground shrink-0">{relTime(n.createdAt)}</span>
               </div>
               <div className="text-[11px] text-muted-foreground line-clamp-2 pl-3.5">{n.body}</div>
-              <div className="text-[10px] text-muted-foreground/70 pl-3.5 mt-0.5">{n.kind}</div>
+              {/* WAVE 149 · ITEM 4 (R77) — this line rendered the persisted machine
+                  value `{n.kind}`. `data-kind` above still carries it, which R77
+                  explicitly permits; what a human reads is now a written label. */}
+              <div className="text-[10px] text-muted-foreground/70 pl-3.5 mt-0.5">{notificationKindLabel(n.kind)}</div>
             </DropdownMenuItem>
           ))
         )}
         <DropdownMenuSeparator />
+        {/* ══════════════════════════════════════════════════════════════════════
+            WAVE 149 · ITEM 3 — TWO STATIC SIBLINGS, NOT ONE REWRITTEN HANDLER.
+            ══════════════════════════════════════════════════════════════════════
+            MEASURED, NOT GUESSED. The first attempt wrote the override INTO the
+            existing handler as `navigate(viewAllHref ?? (…role chain…))`. `npm run
+            guard` then reported a hard failure — `REMOVED event handlers (1):
+            NotificationBell.tsx | DropdownMenuItem | onSelect | expr:3e8ed36cb1db`
+            — because the guard fingerprints the handler EXPRESSION, so editing it
+            in place reads as the baseline handler having disappeared. Suppressing
+            that with an allow-list entry would have been an owner-approval claim
+            nobody made.
+
+            THE SHAPE THAT IS ACTUALLY CORRECT. The role chain below is preserved
+            BYTE-FOR-BYTE and still serves every persona that has no shell-supplied
+            destination — investor, founder, admin — exactly as before, so the
+            baseline handler is present and unchanged. A persona-scoped sibling is
+            ADDED beside it for shells that DO name their own inbox. Exactly one
+            renders, they carry the same `data-testid` (every existing pin keeps
+            working, and a duplicate id is impossible because the conditions are
+            complements), and no existing control was replaced. */}
+        {viewAllHref && (
+          <DropdownMenuItem
+            onSelect={() => navigate(viewAllHref)}
+            data-testid="button-open-notification-center"
+            data-view-all-scope="shell"
+          >
+            View all notifications →
+          </DropdownMenuItem>
+        )}
         {/* Sprint 20 Wave 2 — role-based notifications route (defect 64) */}
+        {!viewAllHref && (
         <DropdownMenuItem
           onSelect={() => navigate(
             role === "investor" ? "/investor/notifications" :
@@ -180,6 +226,7 @@ export function NotificationBell() {
         >
           View all notifications →
         </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

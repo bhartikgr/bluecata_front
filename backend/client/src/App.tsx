@@ -153,6 +153,8 @@ import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
 import AdminCrmDedupReview from "@/pages/admin/CrmDedupReview"; /* WAVE 28 / CP-CRM-04 */
+import AdminCompedMemberships from "@/pages/admin/CompedMemberships"; /* WAVE 155 — R124.4.3 admin-granted membership */
+import AdminSpvLaunchGate from "@/pages/admin/SpvLaunchGate"; /* WAVE 156 — R124.4.1 / R114.3 the override lever */
 import AdminIntegrations from "@/pages/admin/AdminIntegrations"; /* W-V44 FIX K — market-data integrations */
 /* D2.5 SLICE 1 — the 15 old admin fee routes were RETIRED.
 
@@ -1156,6 +1158,21 @@ function AppRouter() {
         <Route path="/admin/crm-dedup-review">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCrmDedupReview /></RequireAuth>}
         </Route>
+        {/* WAVE 155 (R123.1 / R124.4.3) — the admin-granted (comped) membership.
+            `capavate_subscriptions` is written only by the payment flow and the
+            gateway webhook, so with zero rows and an unconfigured payment path
+            the SPV launch check had NO clearable path from admin at all. This is
+            it. A comp is never presented as revenue anywhere it appears. */}
+        <Route path="/admin/comped-memberships">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCompedMemberships /></RequireAuth>}
+        </Route>
+        {/* WAVE 156 (R124.4.1) — the SPV launch check. R114.3 makes the admin
+            override a HARD release condition; before this route the endpoints in
+            server/adminSpvLaunchGateRoutes.ts had no client caller anywhere, so
+            the owner could not exercise the lever the ruling requires. */}
+        <Route path="/admin/spv-launch-gate">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminSpvLaunchGate /></RequireAuth>}
+        </Route>
         {/* v19 Phase C — Hash-chain audit verification UI */}
         <Route path="/admin/audit-chain-verify">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AuditChainVerifyPage /></RequireAuth>}
@@ -1249,6 +1266,22 @@ function AppRouter() {
             hitting the catch-all 404. */}
         <Route path="/collective">
           {() => <Redirect to="/collective/dashboard" />}
+        </Route>
+        {/* ════════════════════════════════════════════════════════════════════════
+            WAVE 149 · ITEM 2 — THE INBOX, INSIDE THE PERSONA'S OWN SHELL.
+            ════════════════════════════════════════════════════════════════════════
+            `/notifications` (:876) already existed and is role-agnostic, but it
+            renders `NotificationCenter` BARE — a Collective member or Consortium
+            Partner following "View all" lost their rail, their topbar and their
+            place. The SAME page is registered here wrapped in `CollectiveShell`,
+            exactly as `/collective/dashboard` below is, so the reader keeps their
+            shell. `/notifications` is left untouched: the investor and founder
+            personas reach it through AppShell and nothing about their path changes.
+            `isAuthRoute` (:437-465) and the forced-bare rule for `/collective/*`
+            are NOT touched — they are what makes this shell the only chrome on the
+            page, which is the point. */}
+        <Route path="/collective/notifications">
+          {() => <RequireAuth><CollectiveShell><NotificationCenter /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/dashboard">
           {/* v25.48.2 MF7 (Q9) — the member gate now lives inside CollectiveShell

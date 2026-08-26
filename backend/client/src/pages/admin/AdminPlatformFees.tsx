@@ -83,8 +83,70 @@ function isValidSlug(s: string): boolean {
  * Tab 1 — Capavate (read-only info card)
  * ========================================================================== */
 function CapavateTab() {
+  /* WAVE 152 · ITEM G · G-C5 (R116.4, R95).
+   *
+   * This tab was READ-ONLY: a card of links, and a closing sentence claiming
+   * founder pricing "is read from the Admin pricing area and applied through the
+   * existing subscription flow — never hardcoded". The second half was false in
+   * the only place a customer could see it. `founder.capavate_annual` (84000) and
+   * `founder.academy_one_time` (150000) are real `platform_fees` rows seeded by
+   * migration 0187 with NO EDITOR ANYWHERE IN THE ADMIN AREA, and the public
+   * marketing homepage carried both figures as compiled-in fallbacks (G-C10).
+   * Between them, changing the advertised Capavate price required a deploy.
+   *
+   * Two editors are added, writing through the EXISTING
+   * `PUT /api/admin/platform-fees/:key` route — no new endpoint, no new store.
+   *
+   * R115.1 — THE $840 COLLISION. `founder.capavate_annual` is $840.00/yr and the
+   * Consortium Partner account fee is ALSO $840.00/yr, on a different table
+   * (`partner_tier_price`) behind a different screen. These cards are therefore
+   * addressed BY KEY and never by amount, and each says out loud which product it
+   * governs, so an administrator changing one cannot believe they changed both.
+   */
+  const feesQuery = useQuery<{ ok: boolean; fees: Array<{ key: string; amountMinor: number | null; currency: string | null }> }>({
+    queryKey: ["/api/admin/platform-fees"],
+    retry: false,
+    queryFn: async () => (await apiRequest("GET", "/api/admin/platform-fees")).json(),
+  });
+  const feeByKey = (key: string): FlatFee | undefined => {
+    const row = (feesQuery.data?.fees ?? []).find((f) => f.key === key);
+    /* Absence is NOT zero. With no row, the card is handed `undefined` so it
+       renders its empty state rather than an authoritative-looking $0.00. */
+    if (!row || row.amountMinor === null) return undefined;
+    return { amountMinor: row.amountMinor, currency: row.currency || "USD", source: "db" };
+  };
+
   return (
     <div className="space-y-4" data-testid="capavate-fees-tab">
+      {/* WAVE 152 · ITEM G · G-C5 — the two Capavate founder-line prices, editable. */}
+      <FlatFeeCard
+        title="Capavate founder subscription (annual)"
+        helper={
+          "The annual price a Capavate FOUNDER company pays, held in platform_fees under the key " +
+          "founder.capavate_annual. This is the price advertised on the public homepage. " +
+          "It is NOT the Consortium Partner account fee — that is a separate product, priced on the " +
+          "Consortium Partners tab, and the two happen to carry the same amount. Changing this one " +
+          "does not change that one."
+        }
+        fee={feeByKey("founder.capavate_annual")}
+        isLoading={feesQuery.isLoading}
+        endpoint="/api/admin/platform-fees/founder.capavate_annual"
+        invalidateKeys={["/api/admin/platform-fees", "/api/pricing-public"]}
+        testid="card-founder-capavate-annual"
+      />
+      <FlatFeeCard
+        title="Capavate Academy (one-time)"
+        helper={
+          "The one-time Academy price, held in platform_fees under the key " +
+          "founder.academy_one_time, and advertised on the public homepage. Charged once, " +
+          "not on a cycle."
+        }
+        fee={feeByKey("founder.academy_one_time")}
+        isLoading={feesQuery.isLoading}
+        endpoint="/api/admin/platform-fees/founder.academy_one_time"
+        invalidateKeys={["/api/admin/platform-fees", "/api/pricing-public"]}
+        testid="card-founder-academy-one-time"
+      />
       <AppCard>
         <div className="flex items-start gap-3">
           <Info className="h-5 w-5 mt-0.5 text-muted-foreground" />
@@ -142,8 +204,16 @@ function CapavateTab() {
               </ul>
             </div>
             <p className="text-xs text-muted-foreground">
-              Founder subscription pricing is read from the Admin pricing area and
-              applied through the existing subscription flow — never hardcoded.
+              {/* WAVE 152 · ITEM G · G-C5 — this sentence used to claim founder
+                  pricing was "never hardcoded". It was: two founder prices had no
+                  editor at all and the public homepage shipped both as compiled-in
+                  fallbacks. The claim is replaced by a statement of where the
+                  prices actually live. */}
+              The two founder-line prices above are read from and written to the
+              platform fee rows <code>founder.capavate_annual</code> and{" "}
+              <code>founder.academy_one_time</code>. The public pricing page reads the same
+              rows at request time; when a row is not set it says so rather than showing a
+              figure.
             </p>
           </div>
         </div>
