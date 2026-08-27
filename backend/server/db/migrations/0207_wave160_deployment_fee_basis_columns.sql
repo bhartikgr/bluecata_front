@@ -1,0 +1,41 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 0207 · WAVE 160 · BATCH 3 ITEM 0 — RECORD WHICH BASIS PRICED A DEPLOYMENT FEE.
+--                                                        R134.1, R135.1, R133.2
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WHY THIS EXISTS. The SPV deployment fee is SIZE-BANDED: the amount a partner
+-- is charged is chosen by a `sizeMinor` handed to
+-- `server/lib/partnerFeeResolver.ts` -> `pickBandRow`. Until wave 160 that
+-- `sizeMinor` was the SUM of every non-withdrawn `spv_subscription` row, so a
+-- NON-BINDING soft-circle could push the vehicle into a higher band and the
+-- partner was invoiced real money on interest that may never convert (R134.1).
+--
+-- Wave 160 changed the basis to CONFIRMED CAPITAL ONLY (`status = 'committed'`;
+-- `wire_funded` deliberately excluded per R135.1), keeping the target-raise
+-- fallback for a vehicle with no confirmed capital at all (V2 §13.2).
+--
+-- A basis change is only auditable if the basis is RECORDED. These two columns
+-- let a disputed charge be reconstructed from the row itself:
+--   · `fee_basis`        — 'confirmed_capital' | 'target_raise_fallback' |
+--                          'unavailable'. A MACHINE identifier, never rendered
+--                          to a user as-is (R77 permits identifiers here).
+--   · `basis_size_minor` — the exact `sizeMinor` handed to the banded resolver.
+--
+-- BOTH ARE NULLABLE ON PURPOSE. Every row written before this wave keeps NULL,
+-- which reads as "not recorded" rather than making a false claim about which
+-- basis priced a historical charge. No existing row is rewritten, no amount is
+-- re-derived, and no charge is replayed: `spvDeploymentFee.ts:128-130` latches
+-- an already-charged SPV, so this migration cannot cause a re-charge.
+--
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, so these ALTERs can only run once;
+-- the runner's `__drizzle_migrations_applied` ledger is what makes that safe, and
+-- `server/lib/spvEngineDeploymentFeeHook.ts::ensureBillingTable` performs the
+-- same additions defensively for the `:memory:` test database, whose schema comes
+-- from the SACRED inline bootstrap in `server/db/connection.ts`.
+--
+-- The table is STRICT, so the declared types are the stored types: TEXT and
+-- INTEGER. `basis_size_minor` is INTEGER minor units — never a decimal, never a
+-- string.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE spv_deployment_fee_billing ADD COLUMN fee_basis TEXT;
+ALTER TABLE spv_deployment_fee_billing ADD COLUMN basis_size_minor INTEGER;

@@ -551,8 +551,57 @@ const dealPromotionsHistory: PartnerDealPromotion[] = [];
  * (which would let an approved partner appear provisioned yet vanish on
  * restart). Default (strict=false) keeps the prior best-effort behaviour for
  * the non-identity-create callers (e.g. remove). */
+/* ══ WAVE 173 · ITEM 1 — THE WRITE PATH THAT MINTED THE SIX DUPLICATES ═══════
+   On live, ONE member (the partner themself) held SIX active rows. This is the
+   function that made them, and the mechanism is exact:
+
+     · the upsert below conflicts on `id` ONLY;
+     · every caller mints a FRESH `newId("ptm")` for what is conceptually the
+       SAME membership (see the invitation-redeem twin at :1703);
+     · the natural key (partner_id, user_id) carried NO unique index —
+       `server/db/connection.ts:5090` creates `idx_ptm_partner`, `idx_ptm_user`
+       and `idx_ptm_status`, all NON-unique.
+
+   So a re-seed or re-bootstrap of an existing membership never matched an
+   existing `id`, took the INSERT branch, and added a twin. Six invocations,
+   six rows.
+
+   Migration 0211 adds the missing constraint, partial on
+   `status='active' AND removed_at IS NULL`. That constraint alone would turn a
+   re-seed from "silently duplicates" into "throws" — which for a `strict`
+   caller means a real failure where previously there was harmless noise. So the
+   id is RESOLVED to the existing active row for this (partner_id, user_id)
+   FIRST, making the upsert converge on its own `ON CONFLICT(id)` branch and
+   UPDATE the membership instead of twinning it.
+
+   NOT A BEHAVIOUR CHANGE FOR ANY READER. Every reader filters `status='active'`
+   and projects `partner_id`/`user_id` (`lib/partnerDelegatedContext.ts:56,192`,
+   `lib/delegatedAgency.ts:130,204`, `lib/requirePartnerAuth.ts`), so the
+   DISTINCT membership set is identical — which is why wave 167's confidentiality
+   suite (groups C1-C4) stays 37/37 with no assertion touched.
+
+   THE LOOKUP IS FAIL-OPEN TO THE CALLER'S OWN ID. If the SELECT fails for any
+   reason we fall back to `m.id` and behave exactly as before, so this cannot
+   make a write fail that used to succeed. No money column exists on this table. */
+function canonicalActiveTeamMemberId(m: PartnerTeamMember): string {
+  if (m.status !== "active" || m.removedAt) return m.id;
+  try {
+    const row = rawDb()
+      .prepare(
+        `SELECT id FROM partner_team_members
+          WHERE partner_id = ? AND user_id = ? AND status = 'active' AND removed_at IS NULL
+          ORDER BY joined_at ASC, id ASC LIMIT 1`,
+      )
+      .get(m.partnerId, m.userId) as { id?: string } | undefined;
+    return row?.id ?? m.id;
+  } catch {
+    return m.id;
+  }
+}
+
 function persistTeamMember(m: PartnerTeamMember, strict = false): void {
   try {
+    const rowId = canonicalActiveTeamMemberId(m);
     rawDb().prepare(
       `INSERT INTO partner_team_members (id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -561,7 +610,7 @@ function persistTeamMember(m: PartnerTeamMember, strict = false): void {
          status = excluded.status,
          removed_at = excluded.removed_at,
          updated_at = excluded.updated_at`,
-    ).run(m.id, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, new Date().toISOString());
+    ).run(rowId, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, new Date().toISOString());
   } catch (err) {
     log.warn("[partnerWorkspaceStore] teamMember write-through failed:", (err as Error).message);
     if (strict) {

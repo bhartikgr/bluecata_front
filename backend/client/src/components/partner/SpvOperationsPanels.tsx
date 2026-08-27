@@ -1014,13 +1014,112 @@ function DeploymentDerivation({
    co-investors server-side unless the GP set lp_visibility='co_investors'. It
    is the ONLY route an LP may use to see who else is in their SPV, so it is
    wired (not retired) into the investor-facing SPV view. */
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 163 · BLOCKER 1 · R137.1 — THE LP-FACING FIX NOW REACHES THE LP.
+   ══════════════════════════════════════════════════════════════════════════════
+   WHAT WENT WRONG, AND IT MADE WAVE 161 INVISIBLE. This component read
+   `q.data?.subscribers ?? q.data?.roster`. The route it calls
+   (`GET /api/spv/:spvId/lp-roster`, server/spvEngineRoutes.ts:1163 →
+   `spvEngineStore.lpRosterForViewer`) has NEVER returned either key: it returns
+   `entries`. So for every valid response this panel fell through to its empty
+   state, and NONE of wave 161's stage labelling, capital split or committed-only
+   ownership reached the investor. Wave 161's 10.48% proof was against the store
+   function, not this mounted surface.
+
+   WHY THE CLIENT MOVED AND NOT THE SERVER (R126.8 — consumers enumerated before
+   choosing). The `entries` key is consumed by `server/spvEngineRoutes.ts:1167`
+   (verbatim `res.json`) and asserted by name in `spvLpVisibility.test.ts`
+   (:84/:87/:98/:100/:101/:108/:111), `wave161_itemA_aggregation_fence.test.ts`
+   (:182/:214/:230/:238 + the source assertion at :582) and reached by
+   `v25_50_group_b_spv.test.ts:189`. The GP TWIN route
+   (`/api/partner/me/spv/:spvId/lp-roster`) is the surface that legitimately
+   serves `subscribers`, and `v25_50_group_b_spv.test.ts:92` reads that key from
+   it. Renaming the investor payload to `subscribers` would therefore break ~12
+   existing assertions (R98: never lower an assertion count) AND collide the two
+   routes' vocabularies. `entries` is ADDED as the first read key here; the two
+   historical keys are RETAINED as fallbacks so no producer is dropped.
+
+   WHAT THE LP NOW ACTUALLY SEES: their own share of COMMITTED CAPITAL (the
+   figure wave 161 computed and nobody rendered), the all-stages share beside the
+   words naming its denominator, every row's stage in words, a row that is not a
+   commitment claiming NO committed share at all (`null`, never 0.0% — R111 Q13),
+   and the vehicle's confirmed-versus-soft-circled split.
+
+   Row view-models are hoisted into `useMemo` and the panel's JSX sibling shape is
+   STATIC — every line is always present, carrying its own absence wording rather
+   than disappearing. */
+interface InvestorRosterRowView {
+  key: string;
+  name: string;
+  amount: string;
+  stageLabel: string;
+  confirmedShare: string;
+  allStagesShare: string;
+}
+
+/** Minor units, read WITHOUT coercion. A value that is not a safe integer is
+ *  absent, not zero — so an unreadable amount can never print as $0.00. */
+function rosterMinor(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
+/** The words for "this row holds no share of committed capital", used when the
+ *  server sent `null` — which it does for every pre-commitment stage. */
+const INVESTOR_ROSTER_NO_COMMITTED_SHARE = "no share of committed capital — this is not a commitment";
+
 export function InvestorSpvLpRosterPanel({ spvId, currency }: { spvId: string; currency: string }) {
-  const q = useQuery<{ subscribers?: Array<Record<string, unknown>>; roster?: Array<Record<string, unknown>>; visibility?: string }>({
+  const q = useQuery<{
+    entries?: Array<Record<string, unknown>>;
+    subscribers?: Array<Record<string, unknown>>;
+    roster?: Array<Record<string, unknown>>;
+    visibility?: string;
+    split?: Record<string, unknown>;
+    splitStatement?: string | null;
+    viewerStageLabel?: string;
+    viewerIsConfirmedCapital?: boolean;
+    denominatorLabel?: string;
+    confirmedDenominatorLabel?: string;
+  }>({
     queryKey: ["/api/spv", spvId, "lp-roster"],
     queryFn: async () => (await apiRequest("GET", `/api/spv/${spvId}/lp-roster`)).json(),
     retry: false,
   });
-  const rows = (q.data?.subscribers ?? q.data?.roster ?? []) as Array<Record<string, unknown>>;
+  const rows = (q.data?.entries ?? q.data?.subscribers ?? q.data?.roster ?? []) as Array<Record<string, unknown>>;
+  const confirmedDenominatorLabel = q.data?.confirmedDenominatorLabel ?? "share of committed capital only";
+  const allStagesDenominatorLabel = q.data?.denominatorLabel ?? "share of every non-withdrawn subscription at any stage";
+
+  const views = useMemo<InvestorRosterRowView[]>(
+    () =>
+      rows.map((r, i) => {
+        const id = String(r.investorId ?? i);
+        const confirmedPct = r.ownershipPctOfConfirmedCapital;
+        const allStagesPct = r.ownershipPctOfAllStages ?? r.ownershipPct;
+        return {
+          key: id,
+          name: String(r.name ?? r.investorId ?? "LP"),
+          amount: money(rosterMinor(r.commitmentMinor), currency),
+          stageLabel: String(r.stageLabel ?? r.stage ?? "Not on record"),
+          confirmedShare:
+            typeof confirmedPct === "number"
+              ? formatFractionAsPercent(confirmedPct)
+              : INVESTOR_ROSTER_NO_COMMITTED_SHARE,
+          allStagesShare:
+            typeof allStagesPct === "number" ? formatFractionAsPercent(allStagesPct) : "Not on record",
+        };
+      }),
+    [rows, currency],
+  );
+
+  const splitLines = useMemo(() => {
+    const s = q.data?.split ?? {};
+    return [
+      { key: "confirmed", label: "Committed capital", value: money(rosterMinor(s.confirmedCapitalMinor), currency) },
+      { key: "soft", label: "Soft-circled interest — not capital", value: money(rosterMinor(s.softCircledInterestMinor), currency) },
+      { key: "wired", label: "Funds received, not yet committed", value: money(rosterMinor(s.wiredNotCommittedMinor), currency) },
+      { key: "all", label: "All stages combined — capacity, not capital", value: money(rosterMinor(s.allStagesMinor), currency) },
+    ];
+  }, [q.data?.split, currency]);
+
   return (
     <PanelFrame
       title="Co-investors in this SPV"
@@ -1028,12 +1127,36 @@ export function InvestorSpvLpRosterPanel({ spvId, currency }: { spvId: string; c
       hint="Visible to LPs of this SPV only. The GP controls whether co-investor names are shown; when they are hidden the server omits them entirely rather than this page filtering them."
     >
       <StateLine loading={q.isLoading} error={q.error} empty={rows.length === 0} emptyText="No co-investors visible" testid="investor-spv-lp-roster" />
-      {rows.map((r, i) => (
-        <div key={String(r.investorId ?? i)} className="flex justify-between text-xs py-0.5" data-testid={`investor-spv-lp-${String(r.investorId ?? i)}`}>
-          <div className="truncate">{String(r.name ?? r.investorId ?? "LP")}</div>
-          <div className="font-mono">{money(Number(r.commitmentMinor), currency)}</div>
+      <div className="text-[10px] text-[var(--cv-color-text-faint)] py-0.5" data-testid="investor-spv-lp-roster-viewer-stage">
+        Your own subscription in this SPV: {q.data?.viewerStageLabel ?? "Not on record"}
+      </div>
+      {views.map((v) => (
+        <div key={v.key} className="border-t py-1" data-testid={`investor-spv-lp-${v.key}`}>
+          <div className="flex justify-between text-xs py-0.5">
+            <div className="truncate">{v.name}</div>
+            <div className="font-mono">{v.amount}</div>
+          </div>
+          <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid={`investor-spv-lp-stage-${v.key}`}>
+            Stage: {v.stageLabel}
+          </div>
+          <div className="text-[10px]" data-testid={`investor-spv-lp-ownership-confirmed-${v.key}`}>
+            Ownership of committed capital: {v.confirmedShare}
+          </div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid={`investor-spv-lp-ownership-all-stages-${v.key}`}>
+            Share of all stages: {v.allStagesShare} — {allStagesDenominatorLabel}
+          </div>
         </div>
       ))}
+      <div className="mt-2 border-t pt-1 text-[10px]" data-testid="investor-spv-lp-roster-split">
+        <div className="text-[var(--cv-color-text-muted)]">What is capital here, and what is only interest ({confirmedDenominatorLabel})</div>
+        {splitLines.map((l) => (
+          <div key={l.key} className="flex justify-between" data-testid={`investor-spv-lp-roster-split-${l.key}`}>
+            <div>{l.label}</div>
+            <div className="font-mono">{l.value}</div>
+          </div>
+        ))}
+        <div data-testid="investor-spv-lp-roster-split-statement">{q.data?.splitStatement ?? ""}</div>
+      </div>
     </PanelFrame>
   );
 }

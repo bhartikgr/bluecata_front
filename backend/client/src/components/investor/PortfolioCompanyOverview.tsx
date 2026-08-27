@@ -34,6 +34,12 @@ import {
   Tooltip as RTooltip,
 } from "recharts";
 
+/* WAVE 174 · R142 — tax wording is authored in one place and rendered verbatim,
+   so a component cannot dilute or re-word it. */
+import {
+  SPV_TAX_DOCUMENT_US_FEDERAL_PACKAGE_CLARIFIER,
+  SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE,
+} from "@shared/spvEngine";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -800,15 +806,40 @@ function TaxCard({ companyId }: { companyId: string }) {
           </div>
         )}
         {/* DEF-013: Append companyId to download URL */}
+        {/* WAVE 174 · R142 / R144.3 — THE LABEL BELOW NAMES TWO US FEDERAL FORMS.
+            It was offered to LPs in all sixteen `SPV_JURISDICTIONS` with no
+            jurisdiction branch. This screen is a DIRECT company holding, so
+            there is no `spv.jurisdiction` in scope to resolve it from — the fix
+            is therefore the honest one, not a jurisdiction lookup. Per R143.1
+            the original literal is kept BYTE-VERBATIM and the clarifier is
+            appended as a STATIC SIBLING: replacing the text node would have
+            registered as a bare copy drop that `guard` does not catch and only
+            `drop:restyle` sees. Wording is server-authored in
+            `shared/spvEngine.ts` and rendered verbatim. */}
         {!taxQ.isLoading && taxQ.data?.available && (
-          <a
-            href={`${taxQ.data.downloadUrl ?? "/api/investor/portfolio/tax/download"}?companyId=${encodeURIComponent(companyId)}`}
-            download
-            className="inline-flex items-center gap-2 text-sm font-medium underline underline-offset-4"
-            data-testid="link-co-tax-download"
-          >
-            Download 1099 / K-1 package
-          </a>
+          <div className="space-y-1">
+            <a
+              href={`${taxQ.data.downloadUrl ?? "/api/investor/portfolio/tax/download"}?companyId=${encodeURIComponent(companyId)}`}
+              download
+              className="inline-flex items-center gap-2 text-sm font-medium underline underline-offset-4"
+              data-testid="link-co-tax-download"
+            >
+              Download 1099 / K-1 package
+            </a>
+            <div
+              className="text-[11px] leading-relaxed"
+              style={{ color: "#8a5a06" }}
+              data-testid="text-co-tax-us-federal-clarifier"
+            >
+              {SPV_TAX_DOCUMENT_US_FEDERAL_PACKAGE_CLARIFIER}
+            </div>
+            <div
+              className="text-[11px] leading-relaxed text-muted-foreground"
+              data-testid="text-co-tax-informational"
+            >
+              {SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE}
+            </div>
+          </div>
         )}
         <Button
           variant="outline"

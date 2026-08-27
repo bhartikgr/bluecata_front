@@ -220,3 +220,169 @@ export function pendingSubscriptionsStatement(summary: CommittedCapitalSummary):
   }
   return pieces.join(" ");
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 161 · BATCH 3 · ITEM A — THE AGGREGATION FENCE'S ONE PAYLOAD SHAPE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * WHAT WENT WRONG WITHOUT THIS. Eight surfaces summed SPV subscription amounts
+ * over EVERY non-withdrawn stage and printed the result beside the word
+ * "Committed", or divided by it to produce an ownership percentage. The worst
+ * (`spvEngineStore.lpRosterForViewer`) rendered an LP their OWN non-binding
+ * indication as their committed position, over an all-stages denominator, with no
+ * stage field anywhere in the payload — so no client could have labelled it even
+ * if it wanted to (R134.3).
+ *
+ * WHY A SHARED SHAPE AND NOT A FIX PER SURFACE. Each surface fixed in its own
+ * words is eight vocabularies for one distinction, and the next reader adds a
+ * ninth. `spvStageSplit` states the split ONCE; a surface then chooses which
+ * member to print. R134.3 is explicit that labelling the DENOMINATOR alone is
+ * insufficient — hence `stage`/`stageLabel` per ENTRY, not only per aggregate.
+ *
+ * MONEY TYPES. Sums here are integer minor units added with `+`, and every
+ * addend is type-checked with `Number.isSafeInteger` FIRST; there is no
+ * `Number()`, `parseInt` or `parseFloat` in this file. A row whose amount is not
+ * a safe integer is NOT counted as zero — it is counted in `unreadableRows`, so
+ * the caller can say "of what is on record" instead of quietly under-reporting.
+ * The percentages are ratios, not money.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/** The stages whose money is INTEREST, not capital: soft-circled, GP-confirmed
+ *  and under-review. Deliberately NOT `wire_funded` — cash in the bank with no
+ *  signed documents is its own category (R135.1) and is reported separately. */
+export const SPV_SOFT_CIRCLED_INTEREST_STATUSES: readonly SpvSubscriptionStatus[] = [
+  "soft_circled",
+  "founder_confirmed",
+  "review",
+];
+
+/** What a percentage computed over CONFIRMED capital is divided by, in words. */
+export const SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL =
+  "share of committed capital only — pre-commitment stages are excluded from both the amount and the denominator";
+
+/** What `wire_funded` money is, and is not (R135.1). */
+export const SPV_WIRED_NOT_COMMITTED_LABEL =
+  "funds received but the subscription is not committed — money in the bank without signed subscription documents is not confirmed capital";
+
+/** R132.3 — the partner-facing word for `founder_confirmed` is "GP-confirmed".
+ *  `spvSubscriptionStageLabel` above is left EXACTLY as it is: it is rendered by
+ *  two shipped surfaces (`SpvDetailTabs.tsx:1691`, `PartnerFundDetail.tsx:243`)
+ *  and changing a shipped string in place is a copy change on surfaces this wave
+ *  does not otherwise touch. Register and roster payloads use this wrapper. */
+export function spvSubscriptionStageLabelForRegister(status: string | null | undefined): string {
+  const key = String(status ?? "").trim();
+  if (key === "founder_confirmed") return "GP-confirmed — not a commitment";
+  return spvSubscriptionStageLabel(status);
+}
+
+/** The split every fenced aggregate carries. All figures are minor units. */
+export interface SpvStageSplit {
+  /** `status = 'committed'` — the only figure that is capital. */
+  confirmedCapitalMinor: number;
+  /** `soft_circled` + `founder_confirmed` + `review` — interest, not capital. */
+  softCircledInterestMinor: number;
+  /** `wire_funded` — cash received, documents not signed (R135.1). */
+  wiredNotCommittedMinor: number;
+  /** Every non-withdrawn stage summed: the OLD basis, kept and NAMED so a
+   *  surface that legitimately needs it can say which one it printed. */
+  allStagesMinor: number;
+  /** Rows whose amount is not a safe integer: excluded, never treated as 0. */
+  unreadableRows: number;
+  /** Row counts, because an investor LIMIT is a count and not an amount. */
+  confirmedRows: number;
+  interestedRows: number;
+  wiredNotCommittedRows: number;
+  allStagesRows: number;
+}
+
+/** Which population a percentage was divided by. Machine field (R77 permits an
+ *  identifier here); the human sentence is the matching `*_LABEL` constant. */
+export type SpvDenominatorBasis = "confirmed_capital" | "all_stages";
+
+/** The split for a set of rows. Pure; no I/O; no coercion. */
+export function spvStageSplit(
+  rows: readonly CommittedCapitalRow[] | null | undefined,
+): SpvStageSplit {
+  const out: SpvStageSplit = {
+    confirmedCapitalMinor: 0,
+    softCircledInterestMinor: 0,
+    wiredNotCommittedMinor: 0,
+    allStagesMinor: 0,
+    unreadableRows: 0,
+    confirmedRows: 0,
+    interestedRows: 0,
+    wiredNotCommittedRows: 0,
+    allStagesRows: 0,
+  };
+  for (const row of rows ?? []) {
+    const status = String(row?.status ?? "").trim();
+    if (status === "withdrawn" || status === "") continue;
+    const amount = row?.commitmentMinor;
+    const readable = typeof amount === "number" && Number.isSafeInteger(amount);
+    out.allStagesRows += 1;
+    if (!readable) {
+      out.unreadableRows += 1;
+    } else {
+      out.allStagesMinor += amount as number;
+    }
+    if (status === SPV_COMMITTED_SUBSCRIPTION_STATUS) {
+      out.confirmedRows += 1;
+      if (readable) out.confirmedCapitalMinor += amount as number;
+      continue;
+    }
+    if (status === "wire_funded") {
+      out.wiredNotCommittedRows += 1;
+      if (readable) out.wiredNotCommittedMinor += amount as number;
+      continue;
+    }
+    out.interestedRows += 1;
+    if (readable) out.softCircledInterestMinor += amount as number;
+  }
+  return out;
+}
+
+/** The two percentages one row is entitled to, each with its denominator named.
+ *  `ofConfirmedCapital` is `null` — NOT 0 — for a row that is not committed: a
+ *  non-binding indication has no share of committed capital, and `0.0%` would
+ *  read as "committed, and tiny" (R111 Q13: report absence, never invent zero). */
+export function spvRowOwnershipPercentages(
+  row: CommittedCapitalRow | null | undefined,
+  split: SpvStageSplit,
+): { ofAllStages: number; ofConfirmedCapital: number | null } {
+  const amount = row?.commitmentMinor;
+  const readable = typeof amount === "number" && Number.isSafeInteger(amount);
+  const ofAllStages = readable && split.allStagesMinor > 0 ? (amount as number) / split.allStagesMinor : 0;
+  const committed = isCommittedSubscriptionRow(row);
+  const ofConfirmedCapital =
+    committed && readable && split.confirmedCapitalMinor > 0
+      ? (amount as number) / split.confirmedCapitalMinor
+      : committed
+        ? 0
+        : null;
+  return { ofAllStages, ofConfirmedCapital };
+}
+
+/** One sentence naming what a split's non-capital members are, or `null` when
+ *  there is nothing to disclose. Used by every fenced surface so eight screens
+ *  cannot describe the same distinction eight ways. */
+export function spvStageSplitStatement(split: SpvStageSplit): string | null {
+  const pieces: string[] = [];
+  if (split.softCircledInterestMinor > 0 || split.interestedRows > 0) {
+    pieces.push(
+      `${split.interestedRows} pre-commitment subscription${split.interestedRows === 1 ? "" : "s"} ` +
+      "(soft-circled, GP-confirmed or under review) are counted as interest, not as capital.",
+    );
+  }
+  if (split.wiredNotCommittedMinor > 0 || split.wiredNotCommittedRows > 0) {
+    pieces.push(
+      `${split.wiredNotCommittedRows} subscription${split.wiredNotCommittedRows === 1 ? "" : "s"} ` +
+      "have funds received but are not committed, so they are not confirmed capital either.",
+    );
+  }
+  if (split.unreadableRows > 0) {
+    pieces.push(
+      `${split.unreadableRows} subscription${split.unreadableRows === 1 ? "" : "s"} ` +
+      "carry no recorded amount and are excluded from every figure rather than counted as zero.",
+    );
+  }
+  return pieces.length > 0 ? pieces.join(" ") : null;
+}

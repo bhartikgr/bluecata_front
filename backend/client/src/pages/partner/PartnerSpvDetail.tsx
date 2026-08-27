@@ -25,6 +25,13 @@ import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay
 import { spvStatusLabel } from "@/lib/partnerDisplay";
 import { humanizeMachineKey, formatTimestamp } from "@/lib/partnerDisplay";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
+/* WAVE 170 · BATCH 4 ITEM B · R77 / R111 Q13 — the five onError handlers below
+   rendered `e.message` raw. `partnerActionRefusalText` resolves the server's own
+   sentence first (so wave 164's cap-split disclosure and wave 166's offline
+   refusal are unchanged), then the shared copy map, and only then a plain
+   sentence naming the next step with the opaque support reference beside it. It
+   NEVER returns an internal code. Reasoning in the module. */
+import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
 /* ════════════════════════════════════════════════════════════════════════════
    WAVE 128 · FINDING 2 — THREE FIELDS ON THIS PAGE ASKED A PAYING CLIENT FOR
    CENTS, AND A FOURTH DID NOT BUT LOOKED IDENTICAL TO THE THREE.
@@ -68,6 +75,15 @@ import {
   wireMinorNumber,
 } from "@/components/partner/PartnerMoneyEntryNotice";
 import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits, formatWholeUnits } from "@/components/partner/partnerMoneyInput";
+/* WAVE 164 · BATCH 3 ITEM C — the vocabulary, imported rather than re-spelled.
+   Eight surfaces describing the same distinction eight ways is how a partner came
+   to read a target as a limit, so the words and the keys have one home. */
+import {
+  SPV_CAP_BLANK_LABEL,
+  SPV_NOT_ON_RECORD_LABEL,
+  SPV_TARGET_OVERAGES_TERMS_KEY,
+} from "@shared/spvCapSplitDisclosure";
+import { SPV_COMMITTED_SUBSCRIPTION_STATUS } from "@shared/spvCommittedCapital";
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -264,7 +280,7 @@ export default function PartnerSpvDetail() {
       qc.refetchQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
       toast({ title: "LP invited", description: "The roster below has been refreshed — the invite is on it. Do not send it again." });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Invite failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Invite failed", description: partnerActionRefusalText(e) }),
   });
 
   const commitMut = useMutation({
@@ -311,7 +327,7 @@ export default function PartnerSpvDetail() {
       qc.refetchQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
       toast({ title: "LP committed to the cap table" });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "LP commit failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "LP commit failed", description: partnerActionRefusalText(e) }),
   });
 
   const callMut = useMutation({
@@ -330,7 +346,7 @@ export default function PartnerSpvDetail() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spvs", spvId] });
       toast({ title: "Capital call recorded" });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Capital call failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Capital call failed", description: partnerActionRefusalText(e) }),
   });
 
   /* ── WAVE 6 / SC-5 — THE REPOINT ────────────────────────────────────────
@@ -395,7 +411,7 @@ export default function PartnerSpvDetail() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId] });
       toast({ title: "Distribution recorded" });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Distribution failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Distribution failed", description: partnerActionRefusalText(e) }),
   });
 
   /* GROUP F1 — seed a person-level CRM contact from an SPV LP row. Idempotent
@@ -414,7 +430,7 @@ export default function PartnerSpvDetail() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts"] });
       toast({ title: r?.existing ? "Already in CRM" : "Added to CRM" });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Add to CRM failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Add to CRM failed", description: partnerActionRefusalText(e) }),
   });
 
   /* ═════════════════════════════════════════════════════════════════════
@@ -481,15 +497,51 @@ export default function PartnerSpvDetail() {
     const resulting = committedBefore - existingContribution + typed.minor;
     const capBig = BigInt(capMinor);
     if (resulting <= capBig) return { text: "", overage: false };
+    /* ══════════════════════════════════════════════════════════════════
+       WAVE 164 · BATCH 3 ITEM C · R133.1 — "Committed now:" WAS FALSE AND IS GONE.
+       ══════════════════════════════════════════════════════════════════
+       `committedBefore` is the CAPACITY basis — every non-withdrawn subscription,
+       including soft-circled, GP-confirmed and under-review indications. Labelling
+       that total "Committed now" told a GP that interest was capital, which is the
+       single defect R133.1 is about. The BASIS IS CORRECT AND IS UNCHANGED (a
+       soft-circle does occupy a seat in the vehicle); only the LABEL was wrong.
+
+       So the four occupying figures are now named SEPARATELY — confirmed capital,
+       soft-circled interest, funds received but not committed — alongside the cap
+       and the overage. Confirmed capital is `status === "committed"` only;
+       soft-circled interest is soft-circled + GP-confirmed + under review; the
+       three plus the requested amount add up to the total, so no figure here is a
+       total without its parts. Sums are BigInt throughout — no `Number()`,
+       `parseInt` or `parseFloat` on money — and every addend was safe-integer
+       checked by the `occupying` guard above.
+
+       The committing LP's own existing row is excluded from all three parts for the
+       same reason it is subtracted from the total: `projectLpCommitted` REPLACES it
+       rather than adding to it. */
+    const others = occupying.filter((x) => !email || (x.email ?? "").trim().toLowerCase() !== email);
+    let confirmedCapital = BigInt(0);
+    let softCircledInterest = BigInt(0);
+    let wiredNotCommitted = BigInt(0);
+    for (const x of others) {
+      const st = String(x.status ?? "").trim();
+      if (st === SPV_COMMITTED_SUBSCRIPTION_STATUS) confirmedCapital += BigInt(x.commitmentMinor);
+      else if (st === "wire_funded") wiredNotCommitted += BigInt(x.commitmentMinor);
+      else softCircledInterest += BigInt(x.commitmentMinor);
+    }
     return {
       overage: true,
       text:
         `This commitment would take ${spv.name} past its cap. ` +
-        `Cap: ${formatWholeUnits(capBig, spv.currency)}. ` +
-        `Committed now: ${formatWholeUnits(committedBefore, spv.currency)}. ` +
-        `Total after this commitment: ${formatWholeUnits(resulting, spv.currency)}. ` +
-        `Over the cap by: ${formatWholeUnits(resulting - capBig, spv.currency)}. ` +
-        "You can still record it. If you do, the overage is recorded against this SPV with your name and the time.",
+        `Cap (maximum this vehicle may accept): ${formatWholeUnits(capBig, spv.currency)}. ` +
+        `Confirmed capital (committed subscriptions only): ${formatWholeUnits(confirmedCapital, spv.currency)}. ` +
+        `Soft-circled interest (soft-circled, GP-confirmed or under review — not capital, but it does occupy capacity): ` +
+        `${formatWholeUnits(softCircledInterest, spv.currency)}. ` +
+        `Funds received, not yet committed: ${formatWholeUnits(wiredNotCommitted, spv.currency)}. ` +
+        `This commitment: ${formatWholeUnits(typed.minor, spv.currency)}. ` +
+        `Total occupying capacity after this commitment: ${formatWholeUnits(resulting, spv.currency)}. ` +
+        `Overage above the cap: ${formatWholeUnits(resulting - capBig, spv.currency)}. ` +
+        "You can still record it. If you do, the overage is recorded against this SPV with your name and the time, " +
+        "together with this same split, so the record cannot assert an overage that does not exist in capital.",
     };
   }, [data?.spv, roster.data?.subscribers, commitAmount, commitEmail]);
 
@@ -508,13 +560,51 @@ export default function PartnerSpvDetail() {
       const total = o.resultingTotalMinor;
       const cap = o.capMinor;
       const cur = typeof o.currency === "string" ? o.currency : (data?.spv?.currency ?? "USD");
+      /* WAVE 164 · ITEM C — `"not recorded"` read as though the platform had
+         chosen not to record the figure. It never held one. `"Not on record"` is
+         the one spelling of that across every surface this wave touches. */
       const fig = (v: unknown) =>
-        typeof v === "number" && Number.isSafeInteger(v) ? formatMinor(v, cur) : "not recorded";
+        typeof v === "number" && Number.isSafeInteger(v) ? formatMinor(v, cur) : SPV_NOT_ON_RECORD_LABEL;
       return {
         investorId: String(o.investorId ?? ""),
         recordedAt: typeof o.recordedAt === "string" ? o.recordedAt : "",
         actor: String(o.actor ?? ""),
-        line: `Cap ${fig(cap)} · total after ${fig(total)} · over by ${fig(overage)}`,
+        /* WAVE 164 · ITEM C · R133.1 — the durable record now renders the SPLIT the
+           server writes, so a reader can see how much of the total was actually
+           capital instead of an unattributed "total after". A record written before
+           this wave carries no split fields, and those read as "Not on record"
+           rather than as zero. */
+        line:
+          `Cap (maximum) ${fig(cap)} · confirmed capital ${fig(o.confirmedCapitalMinor)} · ` +
+          `soft-circled interest ${fig(o.softCircledInterestMinor)} · ` +
+          `funds received not committed ${fig(o.wiredNotCommittedMinor)} · ` +
+          `total occupying capacity ${fig(total)} · overage ${fig(overage)}`,
+      };
+    });
+  }, [data?.spv]);
+
+  /* WAVE 164 · R130 — THE TARGET OVERAGES, READ FROM THEIR OWN KEY.
+     `terms._targetOverages`, NEVER `terms._capOverrides`. A target is a GOAL and
+     passing it is good news; a cap is a MAXIMUM and passing it is a breach. They
+     are read here by two separate memos over two separate keys so a GP surface
+     cannot present one as the other, which is the conflation R130 forbids. */
+  const recordedTargetOverages = useMemo(() => {
+    const bag = (data?.spv?.terms ?? {}) as Record<string, unknown>;
+    const overages = bag[SPV_TARGET_OVERAGES_TERMS_KEY] as
+      | Record<string, Record<string, unknown>>
+      | undefined;
+    return Object.values(overages ?? {}).map((o) => {
+      const cur = typeof o.currency === "string" ? o.currency : (data?.spv?.currency ?? "USD");
+      const fig = (v: unknown) =>
+        typeof v === "number" && Number.isSafeInteger(v) ? formatMinor(v, cur) : SPV_NOT_ON_RECORD_LABEL;
+      return {
+        investorId: String(o.investorId ?? ""),
+        recordedAt: typeof o.recordedAt === "string" ? o.recordedAt : "",
+        line:
+          `Target raise (the goal, not a limit) ${fig(o.targetRaiseMinor)} · ` +
+          `confirmed capital ${fig(o.confirmedCapitalMinor)} · ` +
+          `soft-circled interest ${fig(o.softCircledInterestMinor)} · ` +
+          `total ${fig(o.resultingTotalMinor)} · above target by ${fig(o.targetOverageMinor)}`,
       };
     });
   }, [data?.spv]);
@@ -542,6 +632,20 @@ export default function PartnerSpvDetail() {
             {/* WAVE 55 · R6 / 55-Q1 — prominent readout: named refusal, not a dash.
                 See PartnerFundDetail.tsx for the identical tile. */}
             <div className="font-mono">{moneyOrNotProvided(s.targetRaiseMinor, s.currency)}</div>
+            {/* WAVE 164 · R130.2 — S1. "Target Size" alone read as a LIMIT to at
+                least one partner, and that misreading is the original defect. The
+                heading above is left EXACTLY as it shipped (removing a live copy
+                string is a drop the guard correctly refuses) and the distinction is
+                ADDED beneath it: the target is a goal, the cap is the maximum, and a
+                blank cap reads "no maximum" rather than being shown as 0. */}
+            <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-spv-target-is-a-goal">
+              This is the fundraising goal for this vehicle, not a limit. Passing it does not block a
+              commitment; it is recorded so the raise can be reconciled against what was planned.
+            </div>
+            <div className="text-[var(--cv-color-text-muted)] mt-2">Cap (maximum this vehicle may accept)</div>
+            <div className="font-mono" data-testid="partner-spv-cap-maximum">
+              {s.capMinor == null ? SPV_CAP_BLANK_LABEL : moneyOrNotProvided(s.capMinor, s.currency)}
+            </div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
@@ -595,7 +699,11 @@ export default function PartnerSpvDetail() {
                   toast({
                     variant: "destructive",
                     title: "Capital call not recorded",
-                    description: (err as Error).message,
+                    /* WAVE 170 — the same resolver as the five onError handlers.
+                       These three sites throw the money parser's OWN sentence,
+                       which passes through unchanged; the resolver is here so a
+                       future throw that is NOT a sentence cannot reach the GP. */
+                    description: partnerActionRefusalText(err),
                   });
                   return;
                 }
@@ -720,7 +828,8 @@ export default function PartnerSpvDetail() {
                     "Gross proceeds",
                   );
                 } catch (err) {
-                  toast({ variant: "destructive", title: "Distribution not recorded", description: (err as Error).message });
+                  /* WAVE 170 — see the note at the capital-call handler above. */
+                  toast({ variant: "destructive", title: "Distribution not recorded", description: partnerActionRefusalText(err) });
                   return;
                 }
                 try {
@@ -729,7 +838,7 @@ export default function PartnerSpvDetail() {
                     "Cost basis",
                   );
                 } catch (err) {
-                  toast({ variant: "destructive", title: "Cost basis required", description: (err as Error).message });
+                  toast({ variant: "destructive", title: "Cost basis required", description: partnerActionRefusalText(err) });
                   return;
                 }
                 /* FE-5 — IRREVERSIBILITY. A distribution is an append-only,
@@ -777,6 +886,17 @@ export default function PartnerSpvDetail() {
               Recorded over-cap commitment — {o.line}
               {o.recordedAt ? ` · ${formatTimestamp(o.recordedAt)}` : ""}
               {o.actor ? ` · recorded by ${o.actor}` : ""}
+            </div>
+          ))}
+        </div>
+        {/* WAVE 164 · R130 — always-rendered sibling, empty when this vehicle has
+            not passed its target. A SEPARATE block from the cap overrides above,
+            with its own testid, because a goal being beaten is not a breach. */}
+        <div className="text-xs space-y-1" data-testid="partner-spv-target-overages">
+          {recordedTargetOverages.map((o) => (
+            <div key={o.investorId} className="text-emerald-700" data-testid={`partner-spv-target-overage-${o.investorId}`}>
+              Above target raise — not blocked, the target is a goal rather than a limit — {o.line}
+              {o.recordedAt ? ` · ${formatTimestamp(o.recordedAt)}` : ""}
             </div>
           ))}
         </div>

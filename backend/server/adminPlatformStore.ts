@@ -28,6 +28,8 @@ import {
   dbTotalCommittedSoftCircle,
   dbRegions,
   dbTotalSpvCommittedMinor,
+  // WAVE 161 · ITEM A (A3) — the pipeline figure, under a name that says so.
+  dbTotalSpvSubscribedAllStagesMinor,
   dbTotalSpvWiredMinor,
   dbTotalActiveSpvs,
 } from "./lib/adminKpiDbReads";
@@ -203,7 +205,12 @@ function computeKpis() {
   // Wave B v26.4.0-fix (BLOCK-K) — SPV KPIs. Per-currency maps so the UI can
   // render one tile per currency (matching the multi-currency reality of
   // Capavate's live test SPVs — Test SPV/USD, Asian Biotech/CAD, etc.).
+  /* WAVE 161 · BATCH 3 ITEM A (A3) — `totalSpvCommittedMinor` is now genuinely
+     `status = 'committed'`, matching the tile whose badge says "Committed". The
+     old all-stages basis is served ALONGSIDE it, named, so nothing is lost and
+     the dashboard can show the pipeline as a separate, labelled line. */
   const totalSpvCommittedMinor = dbTotalSpvCommittedMinor();
+  const totalSpvSubscribedAllStagesMinor = dbTotalSpvSubscribedAllStagesMinor();
   const totalSpvWiredMinor = dbTotalSpvWiredMinor();
   const totalActiveSpvs = dbTotalActiveSpvs();
 
@@ -223,6 +230,8 @@ function computeKpis() {
       nrr,
       // Wave B v26.4.0-fix (BLOCK-K) — SPV KPI tiles.
       totalSpvCommittedMinor,
+      // WAVE 161 · ITEM A (A3) — additive: the all-stages pipeline figure.
+      totalSpvSubscribedAllStagesMinor,
       totalSpvWiredMinor,
       totalActiveSpvs,
     },

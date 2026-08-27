@@ -27,6 +27,10 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import * as crypto from "node:crypto";
 import { getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
+/* WAVE 166 · BATCH 3 ITEM D (D-2) — registration binds a direct-added LP to the
+   position already recorded against their email. It hangs off the ROUTE because
+   `userContext.ts` is SACRED (call-only) and cannot be edited to do it inline. */
+import { bindLpIdentityAfterRegistration } from "./lpIdentityBinding";
 import { setSessionCookie, extractUserIdFromCookie } from "./sessionCookie";
 /* v25.25.1 emergency fix — static import of JWT_SECRET_MISSING. The v25.25
    shipped version used `await import("./auth")` inside the login handler;
@@ -624,6 +628,17 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       companyId: r.companyId,
     });
 
+    /* WAVE 166 (D-2) — Path 2's other half. A GP may have direct-added this human
+       as an LP months ago; every row for them is keyed under the deterministic id
+       derived from this same email, while `registerPersona` just minted a
+       timestamp id. Link the two now, so their position is ALREADY THERE when
+       they first look (R131.2) rather than being created afresh.
+
+       Matching is exact normalised email equality and nothing else, and an id
+       already claimed by a different person is REFUSED, never merged — see
+       `lpIdentityBinding.ts`. The outcome never blocks registration. */
+    const lpBinding = bindLpIdentityAfterRegistration(personaId, inviteeEmail, "authRoutes legacy redeem");
+
     // v24.2 Bug 1+2 fix — also persist the password into the durable
     // user_credentials store that /api/auth/login reads (via lookupByEmail
     // fallback), so the redeemed password survives a server restart instead
@@ -647,6 +662,9 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     const ctx = getUserContextForId(personaId);
     return res.json({
       ok: true,
+      /* R77 — the outcome travels with plain-language copy already attached, so no
+         surface has to invent a sentence for a code it does not recognise. */
+      lpIdentityBinding: { outcome: lpBinding.outcome, code: lpBinding.code, message: lpBinding.message },
       invitationId: r.invitationId,
       roundId: r.roundId,
       companyId: r.companyId,

@@ -437,6 +437,11 @@ export default function InvestorCompanyDetail({
  <Stat label="Pre-money" v={moneyMajorOrNotProvided(myInv.preMoney, myInv.currency, { compact: true })} />
  <Stat label="Post-money" v={moneyMajorOrNotProvided(myInv.postMoney, myInv.currency, { compact: true })} />
  <Stat label="Round size" v={moneyMajorOrNotProvided(myInv.targetAmount, myInv.currency, { compact: true })} />
+ {/* WAVE 165 · R130.2 / R139.4 — "Round size" is a target raise wearing a
+     different word, and this page never said so. */}
+ <div className="text-[10px] text-muted-foreground" data-testid="investor-company-round-size-is-a-goal">
+ Round size is the round's fundraising goal, not a limit.
+ </div>
  <Stat label="Min ticket" v={moneyMajorOrNotProvided(myInv.minTicket, myInv.currency, { compact: true })} />
                 {/* WAVE 42 · R6 — was `$${safeToFixed(pps, 4)}`, which rendered
                     the literal string "$—" for an unpriced round (a $ sign glued
@@ -851,6 +856,10 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
                 {/* WAVE 42 · R6 / F-4 — same defect, term-sheet preview copy. */}
  <Stat label="Pre-money" v={moneyMajorOrNotProvided(inv.preMoney, inv.currency, { compact: true })} />
  <Stat label="Round size" v={moneyMajorOrNotProvided(inv.targetAmount, inv.currency, { compact: true })} />
+ {/* WAVE 165 · R130.2 / R139.4 — second instance on the same page. */}
+ <div className="text-[10px] text-muted-foreground" data-testid="investor-company-round-size-is-a-goal-2">
+ Round size is the round's fundraising goal, not a limit.
+ </div>
  <Stat label="Min ticket" v={moneyMajorOrNotProvided(inv.minTicket, inv.currency, { compact: true })} />
  {/* DEF-025 fix: source liquidation pref + pro-rata from round data */}
  <Stat label="Liquidation pref" v={(myInv?.round as any)?.terms?.liquidationPref ?? "Per round terms"} />

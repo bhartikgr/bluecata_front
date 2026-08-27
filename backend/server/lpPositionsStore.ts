@@ -80,6 +80,26 @@ export interface LpPosition {
   refusalCopy: string | null;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 161 · BATCH 3 · ITEM A — FENCE. THESE THREE READS ARE CORRECT. LEAVE THEM.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * All three SPV-subscription reads in this file — `lpVehicleIdsFor`,
+ * `ownCommitment` and `ownershipFractionOf` — filter `status = 'committed'`,
+ * INCLUDING the aggregate denominator in `ownershipFractionOf`. That is the
+ * whole point: an LP's ownership fraction is their committed amount over the
+ * committed total, and nobody's soft-circle dilutes it.
+ *
+ * V1 of the Batch 3 preflight listed these as leaking. They are not; V2 verified
+ * all three and this wave re-verified them line by line before writing this
+ * comment (the predicate is in the SQL string on each read, not inherited from a
+ * helper, so grep alone was not accepted as evidence). They are pinned by a
+ * regression fence test in
+ * `server/__tests__/wave161_itemA_aggregation_fence.test.ts` so a later wave
+ * cannot widen them to all-stages "for consistency".
+ *
+ * DO NOT "FIX" THESE. The only correct change here is no change.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
 /** The vehicles this identity is a committed LP of. Scoped in the SQL. */
 export function lpVehicleIdsFor(investorId: string): string[] {
   return (rawDb()

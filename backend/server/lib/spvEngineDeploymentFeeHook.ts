@@ -47,6 +47,7 @@
  * is a queryable, reportable state.
  */
 import { rawDb } from "../db/connection";
+import { SPV_COMMITTED_SUBSCRIPTION_STATUS } from "@shared/spvCommittedCapital";
 import { chargeSpvDeploymentFee } from "./spvDeploymentFee";
 import { PartnerTierResolutionError } from "./partnerTierResolver";
 import { log } from "./logger";
@@ -56,6 +57,35 @@ export interface EngineDeploymentFeeResult {
   reason?: string;
   amountMinor?: number;
   currency?: string;
+  /* WAVE 160 · ITEM 0 · R134.1 — WHICH BASIS SELECTED THE BAND.
+   * A disputed invoice has to be reconstructable: the band is chosen by an
+   * amount, and until now nothing recorded which amount, nor where it came
+   * from. Machine identifiers, not user-facing copy (R77 permits them here). */
+  feeBasis?: SpvDeploymentFeeBasis;
+  /** The `sizeMinor` actually handed to the banded resolver. */
+  basisSizeMinor?: number;
+}
+
+/**
+ * WAVE 160 · ITEM 0 — the three things the deployment-fee band can be priced on.
+ *
+ *  • `confirmed_capital`      — SUM of `spv_subscription.commitment_minor`
+ *                               WHERE status = 'committed'. The only population
+ *                               that is actual capital (R131.1, R135.1).
+ *  • `target_raise_fallback`  — `spv.target_raise_minor`, used ONLY when there is
+ *                               no confirmed capital at all. Deliberately kept
+ *                               (V2 §13.2): removing it would change the fee for
+ *                               a legitimately zero-subscription vehicle.
+ *  • `unavailable`            — neither answered; `resolvePartnerFee` then fails
+ *                               closed on the band lookup rather than this
+ *                               module inventing a number.
+ */
+export type SpvDeploymentFeeBasis = "confirmed_capital" | "target_raise_fallback" | "unavailable";
+
+/** The amount that selects the band, together with where it came from. */
+export interface EngineFeeBandBasis {
+  sizeMinor: number;
+  basis: SpvDeploymentFeeBasis;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ *
@@ -112,7 +142,12 @@ CREATE TABLE IF NOT EXISTS spv_deployment_fee_billing (
   currency         TEXT,
   charged_at       TEXT,
   created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  -- WAVE 160 · ITEM 0 · R134.1 — which basis chose the band, and the amount it
+  -- was chosen on. Mirrored for existing databases by migration 0207 and by the
+  -- self-heal ALTERs in ensureBillingTable().
+  fee_basis        TEXT,
+  basis_size_minor INTEGER
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_sdfb_state_updated ON spv_deployment_fee_billing (state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_sdfb_partner ON spv_deployment_fee_billing (partner_id);
@@ -130,6 +165,10 @@ export interface DeploymentFeeBillingRow {
   chargedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /* WAVE 160 · ITEM 0 — `confirmed_capital` | `target_raise_fallback` |
+   * `unavailable`, or null for a row written before this wave. */
+  feeBasis: SpvDeploymentFeeBasis | null;
+  basisSizeMinor: number | null;
 }
 
 let _billingTableReady = false;
@@ -159,6 +198,21 @@ export function ensureBillingTable(raw?: any): boolean {
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
       .get(DEPLOYMENT_FEE_BILLING_TABLE) as { name?: string } | undefined;
     if (!present) raw.exec(DEPLOYMENT_FEE_BILLING_SQL);
+    /* WAVE 160 · ITEM 0 — self-heal the two basis columns on a database that was
+     * created before this wave. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the
+     * presence check is explicit; the columns are nullable, so no existing row is
+     * rewritten and no historical charge is re-interpreted. */
+    const cols = new Set(
+      (raw.prepare(`PRAGMA table_info(${DEPLOYMENT_FEE_BILLING_TABLE})`).all() as { name: string }[]).map(
+        (c) => c.name,
+      ),
+    );
+    if (!cols.has("fee_basis")) {
+      raw.exec(`ALTER TABLE ${DEPLOYMENT_FEE_BILLING_TABLE} ADD COLUMN fee_basis TEXT`);
+    }
+    if (!cols.has("basis_size_minor")) {
+      raw.exec(`ALTER TABLE ${DEPLOYMENT_FEE_BILLING_TABLE} ADD COLUMN basis_size_minor INTEGER`);
+    }
     _billingTableReady = true;
     return true;
   } catch (err) {
@@ -177,6 +231,8 @@ function rowToBilling(r: any): DeploymentFeeBillingRow {
     amountMinor: r.amount_minor === null || r.amount_minor === undefined ? null : Number(r.amount_minor),
     currency: r.currency ?? null, chargedAt: r.charged_at ?? null,
     createdAt: r.created_at, updatedAt: r.updated_at,
+    feeBasis: (r.fee_basis ?? null) as SpvDeploymentFeeBasis | null,
+    basisSizeMinor: integerMinorOrNull(r.basis_size_minor),
   };
 }
 
@@ -210,6 +266,8 @@ function recordBillingOutcome(raw: any, spvId: string, out: EngineDeploymentFeeR
           SET state = ?, attempts = attempts + 1, last_reason = ?, last_attempt_at = ?,
               amount_minor = COALESCE(?, amount_minor), currency = COALESCE(?, currency),
               charged_at = CASE WHEN ? = 'charged' THEN COALESCE(charged_at, ?) ELSE charged_at END,
+              fee_basis = COALESCE(?, fee_basis),
+              basis_size_minor = COALESCE(?, basis_size_minor),
               updated_at = ?
         WHERE spv_id = ?`,
     ).run(
@@ -220,6 +278,8 @@ function recordBillingOutcome(raw: any, spvId: string, out: EngineDeploymentFeeR
       out.currency ?? null,
       settled ? "charged" : "pending",
       now,
+      out.feeBasis ?? null,
+      out.basisSizeMinor ?? null,
       now,
       spvId,
     );
@@ -292,40 +352,84 @@ function resolveSponsorPartnerId(spvId: string): string | null {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 160 · ITEM 0 · R134.1 — A NON-BINDING INDICATION USED TO BILL REAL MONEY
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * WHAT WAS WRONG. This function summed `commitment_minor` WHERE
+ * `status <> 'withdrawn'`, i.e. EVERY STAGE — `review`, `soft_circled`,
+ * `founder_confirmed`, `wire_funded` and `committed` alike. Its result flows
+ * `:440` -> `chargeSpvDeploymentFee` -> `spvDeploymentFee.ts:141-142` ->
+ * `spvDeploymentFeeSource.resolveSpvDeploymentFee(..., { sizeMinor })`, which is
+ * a SIZE-BANDED fee (`partnerFeeResolver.pickBandRow`). So one LP soft-circling
+ * $2,000,000 with no signed documents and no money in the bank pushed the SPV
+ * into a higher band and the partner was INVOICED REAL MONEY on interest that
+ * may never convert. R133.2 confirms this is the live charge path.
+ *
+ * THE RULING (R134.1). The basis counts CONFIRMED CAPITAL ONLY. A fee is money;
+ * money follows capital, never interest.
+ *
+ * `wire_funded` IS DELIBERATELY EXCLUDED (R135.1). Money in the bank without
+ * signed subscription documents is not a commitment: R131.1 requires BOTH signed
+ * docs AND funds received before a GP confirms, and cash alone is one of the two.
+ * Under-counting delays a fee; over-counting bills a partner for money that is
+ * not contractually theirs to receive.
+ *
+ * THE NAME CHANGED TOO, and that is not cosmetic. `resolveEngineCommittedMinor`
+ * is the reason two readers and one independent review believed this already
+ * meant committed capital, and read past the `<> 'withdrawn'` on line 311.
+ *
+ * The literal `'committed'` is NOT re-typed here: it comes from
+ * `SPV_COMMITTED_SUBSCRIPTION_STATUS` (`shared/spvCommittedCapital.ts:44`),
+ * which an existing test pins byte-equal to `spvEngineStore`'s
+ * `COMMITTED_SUBSCRIPTION_STATUS` (`:3861`). The shared constant rather than the
+ * store constant, because `spvEngineStore` imports THIS module — importing back
+ * would create a cycle.
+ *
+ * No `Number()`, `parseInt` or `parseFloat` is applied to money below. Both
+ * columns are SQLite INTEGERs and better-sqlite3 hands them back as numbers; the
+ * reads are type-checked instead of coerced.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** An integer minor-unit amount read from SQLite, or null. Never coerces. */
+function integerMinorOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
 /**
- * The committed capital that selects the fee band, read live from the DB.
+ * The CONFIRMED CAPITAL that selects the fee band, read live from the DB.
  * Preference order:
- *   1. SUM of non-withdrawn `spv_subscription.commitment_minor` — what LPs have
- *      actually committed, which is what a size band should be priced on.
+ *   1. SUM of `spv_subscription.commitment_minor` WHERE status = 'committed' —
+ *      the only population that is actual capital (R134.1, R135.1).
  *   2. `spv.target_raise_minor` — the sponsor's stated target, used only when
- *      there are no subscription rows at all (a directly-funded SPV).
- * Returns 0 when neither is available; `resolvePartnerFee` then fails closed on
- * the band lookup rather than this module inventing a number.
+ *      there is no confirmed capital at all (a directly-funded SPV). RETAINED on
+ *      purpose per V2 §13.2 / R135.9.
+ * Reports `unavailable` with `sizeMinor: 0` when neither answers.
  */
-export function resolveEngineCommittedMinor(rawTx: any, spvId: string): number {
+export function resolveEngineConfirmedCapitalMinor(rawTx: any, spvId: string): EngineFeeBandBasis {
   try {
     const sub = rawTx
       .prepare(
         `SELECT COALESCE(SUM(commitment_minor), 0) AS total
            FROM spv_subscription
-          WHERE spv_id = ? AND status <> 'withdrawn'`,
+          WHERE spv_id = ? AND status = ?`,
       )
-      .get(spvId) as { total: number | null } | undefined;
-    const total = Number(sub?.total ?? 0);
-    if (Number.isFinite(total) && total > 0) return Math.trunc(total);
+      .get(spvId, SPV_COMMITTED_SUBSCRIPTION_STATUS) as { total: number | null } | undefined;
+    const total = integerMinorOrNull(sub?.total);
+    if (total !== null && total > 0) return { sizeMinor: total, basis: "confirmed_capital" };
   } catch (err) {
-    log.warn(`[spv-engine-fee] subscription sum failed for ${spvId}: ${String(err)}`);
+    log.warn(`[spv-engine-fee] confirmed-capital sum failed for ${spvId}: ${String(err)}`);
   }
   try {
     const row = rawTx
       .prepare(`SELECT target_raise_minor FROM spv WHERE id = ?`)
       .get(spvId) as { target_raise_minor: number | null } | undefined;
-    const target = Number(row?.target_raise_minor ?? 0);
-    if (Number.isFinite(target) && target > 0) return Math.trunc(target);
+    const target = integerMinorOrNull(row?.target_raise_minor);
+    if (target !== null && target > 0) return { sizeMinor: target, basis: "target_raise_fallback" };
   } catch (err) {
     log.warn(`[spv-engine-fee] target read failed for ${spvId}: ${String(err)}`);
   }
-  return 0;
+  return { sizeMinor: 0, basis: "unavailable" };
 }
 
 /**
@@ -436,13 +540,17 @@ export function chargeEngineSpvDeploymentFee(spvId: string, partnerId: string): 
    * process dies mid-charge, the SPV is still recorded as owing the fee. */
   openBillingRecord(raw, spvId, partnerId);
   let out: EngineDeploymentFeeResult;
+  /* WAVE 160 · ITEM 0 — resolved OUTSIDE the try so the basis is recorded on the
+   * billing row even when the charge itself fails and is queued as pending. An
+   * admin working the retry queue needs to see what the band would have priced
+   * on. */
+  const band = resolveEngineConfirmedCapitalMinor(raw, spvId);
   try {
-    const committedMinor = resolveEngineCommittedMinor(raw, spvId);
     out = chargeSpvDeploymentFee({
       rawTx: raw,
       spvId,
       partnerId,
-      committedMinor,
+      committedMinor: band.sizeMinor,
       // THE WHOLE POINT: stamp the ENGINE's table. Defaulting to "spvs" here
       // would bill the partner and record it nowhere on the SPV.
       stampTable: "spv",
@@ -459,9 +567,16 @@ export function chargeEngineSpvDeploymentFee(spvId: string, partnerId: string): 
       out = { charged: false, reason: "CHARGE_FAILED" };
     }
   }
+  /* WAVE 160 · ITEM 0 — the basis travels with the outcome, so a disputed charge
+   * can be reconstructed from the row rather than re-derived from a database that
+   * has since moved on. */
+  out = { ...out, feeBasis: band.basis, basisSizeMinor: band.sizeMinor };
   recordBillingOutcome(raw, spvId, out);
   if (out.charged) {
-    log.info(`[spv-engine-fee] charged ${out.amountMinor} ${out.currency} deployment fee for ${spvId} (partner ${partnerId})`);
+    log.info(
+      `[spv-engine-fee] charged ${out.amountMinor} ${out.currency} deployment fee for ${spvId} ` +
+        `(partner ${partnerId}) on basis ${band.basis} sizeMinor=${band.sizeMinor}`,
+    );
   } else if (out.reason && out.reason !== "already_charged") {
     log.warn(
       `[spv-engine-fee] NOT charged for ${spvId}: ${out.reason} — recorded PENDING in ` +

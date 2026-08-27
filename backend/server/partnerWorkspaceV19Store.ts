@@ -2022,7 +2022,313 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const row = loadOwnedContact(req, res);
     if (!row) return;
     const connections = resolveContactConnections(ctx.partnerId, row);
-    res.json({ contact: row, connections });
+    /* WAVE 171 — `links` is an ADDITIVE sibling of `connections`, never a
+       replacement for it. `connections` keeps deriving POSITIONS (commitments,
+       holdings) exactly as before; `links` carries the partner's own
+       relationship records, which are not positions. Two fields because they are
+       two different claims about a person, and collapsing them would let a
+       relationship read as capital. */
+    res.json({ contact: row, connections, links: listContactLinks(ctx.partnerId, row.id) });
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   * WAVE 171 · CONTACT → VEHICLE / PORTFOLIO-COMPANY LINKAGE
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A LINK IS NOT A COMMITMENT, AND THIS CODE CANNOT MAKE IT ONE.
+   *
+   * Writes go to `partner_crm_contact_links` (migration 0212) and nowhere else.
+   * That table has no amount, no minor unit, no currency and no status ladder,
+   * so linking cannot move a capital figure, a committed total, a cap capacity or
+   * a fee band — there is no column to move. Asserted by test
+   * (`wave171_contact_link_no_capital`), which snapshots every money-bearing
+   * total either side of a link and a delete.
+   *
+   * THE FENCE IS `spv.sponsor_partner_id` (R140.1) — the same fence wave 167's
+   * confidentiality suite proves. Note that this file's CONNECTIONS resolver
+   * above reads the OTHER table, drizzle `spvs.partner_id`; the engine, NAV, K-1
+   * and `lib/partnerDelegatedContext.ts:211-246` all fence on singular `spv`
+   * .sponsor_partner_id. Linking is an engine-vehicle action, so it uses the
+   * engine's fence, deliberately and by raw query against `spv`.
+   *
+   * A vehicle or company outside the fence is 404, never 403: "exists but not
+   * yours" must be indistinguishable from "does not exist" (R73), or the refusal
+   * itself discloses the existence of another partner's SPV.
+   */
+
+  /** Relationship labels. NONE of these names an invitation or commitment state. */
+  const LINK_RELATIONSHIPS = ["prospective_lp", "introducer", "adviser", "other"] as const;
+
+  const contactLinkCreateSchema = z.object({
+    target_kind: z.enum(["spv", "company"]),
+    target_id: z.string().trim().min(1),
+    relationship: z.enum(LINK_RELATIONSHIPS).optional(),
+    note: z.string().trim().max(2000).optional(),
+  });
+
+  /* COPY BEFORE THE THROW (R77). Every refusal this surface can produce has a
+     sentence here, written before the refusal that uses it exists. No enum code
+     is a substitute for one, and none of these invents a cause. */
+  const LINK_REFUSAL_COPY: Record<string, string> = {
+    LINK_TARGET_NOT_FOUND:
+      "That vehicle or company could not be linked, because it is not one of " +
+      "yours. You can only link a contact to an SPV your organisation sponsors, " +
+      "or to a company attributed to you. Nothing was changed. If you expected " +
+      "to see it here, check that the vehicle has been transferred to your " +
+      "organisation first.",
+    LINK_ALREADY_EXISTS:
+      "This contact is already linked to that vehicle or company, so nothing " +
+      "was added. Open the existing link to change the relationship or the note " +
+      "on it, or remove it and add it again.",
+    LINK_NOT_FOUND:
+      "That link could not be removed, because it is no longer there. It may " +
+      "have already been removed by someone else on your team. Nothing was " +
+      "changed — reload the contact to see the current links.",
+  };
+
+  function linkRefusal(res: Response, status: number, code: string): void {
+    res.status(status).json({ error: code, message: LINK_REFUSAL_COPY[code] ?? "" });
+  }
+
+  type ContactLinkRow = {
+    id: string;
+    contactId: string;
+    targetKind: "spv" | "company";
+    targetId: string;
+    targetName: string;
+    relationship: string;
+    note: string;
+    createdAt: string;
+  };
+
+  /* ══ WHY THE DDL IS ALSO HERE, AND WHY THAT IS NOT A SECOND AUTHORITY ══════
+     `migrations/0212_wave171_partner_crm_contact_links.sql` is the canonical DDL
+     and is byte-mirrored into `server/db/migrations`. But the SQLite bootstrap
+     path used by dev and by every test builds its schema from the INLINE
+     migrations in `server/db/connection.ts` (see its own comment at `:212`), and
+     that file is SACRED — it cannot be edited to add this table.
+
+     Without this installer the table simply would not exist under test, every
+     read below would fail-closed to `[]`, and the feature would look like it
+     worked while proving nothing. So the same idempotent statements run once, on
+     first use, exactly as the nine existing self-heal installers do for
+     migrations 0128-0137 (`connection.ts:463`). `IF NOT EXISTS` throughout, so on
+     a database where the migration already ran this is a no-op and cannot alter,
+     drop or reshape anything. */
+  let contactLinksTableReady = false;
+  function ensureContactLinksTable(): void {
+    if (contactLinksTableReady) return;
+    try {
+      const pdb = rawDb() as unknown as { exec?: (s: string) => void };
+      if (!pdb || typeof pdb.exec !== "function") return;
+      pdb.exec(`
+        CREATE TABLE IF NOT EXISTS partner_crm_contact_links (
+          id            TEXT PRIMARY KEY NOT NULL,
+          tenant_id     TEXT NOT NULL,
+          partner_id    TEXT NOT NULL,
+          contact_id    TEXT NOT NULL,
+          target_kind   TEXT NOT NULL,
+          target_id     TEXT NOT NULL,
+          relationship  TEXT NOT NULL DEFAULT 'other',
+          note          TEXT NOT NULL DEFAULT '',
+          created_at    TEXT NOT NULL,
+          created_by    TEXT NOT NULL,
+          deleted_at    TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pccl_contact_target_live
+          ON partner_crm_contact_links(contact_id, target_kind, target_id)
+          WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_pccl_partner ON partner_crm_contact_links(partner_id);
+        CREATE INDEX IF NOT EXISTS idx_pccl_contact ON partner_crm_contact_links(contact_id);
+        CREATE INDEX IF NOT EXISTS idx_pccl_target  ON partner_crm_contact_links(target_kind, target_id);
+      `);
+      contactLinksTableReady = true;
+    } catch (err) {
+      /* Do NOT latch on failure: a later call may succeed. Reads fail-closed to
+         an empty list, so a missing table shows no links rather than wrong ones. */
+      log.warn("[wave171] contact-links table install failed:", (err as Error).message);
+    }
+  }
+
+  /**
+   * The partner's SPVs, by the ENGINE fence `spv.sponsor_partner_id`.
+   * Archived vehicles are excluded so a link cannot be attached to a dead one.
+   */
+  function ownSpvsForLinking(partnerId: string): Array<{ id: string; name: string }> {
+    try {
+      const pdb = rawDb() as unknown as { prepare?: (s: string) => { all: (...a: unknown[]) => unknown[] } };
+      if (!pdb || typeof pdb.prepare !== "function") return [];
+      return (
+        pdb
+          .prepare(
+            `SELECT id, name FROM spv
+              WHERE sponsor_partner_id = ? AND archived_at IS NULL
+              ORDER BY created_at DESC`,
+          )
+          .all(partnerId) as Array<{ id?: string; name?: string }>
+      ).map((r) => ({ id: String(r.id ?? ""), name: String(r.name ?? "") }));
+    } catch (err) {
+      /* Fail-closed to an EMPTY list: an unreadable fence must offer nothing to
+         link, never everything. */
+      log.warn("[wave171] own-SPV read failed (fail-closed to empty):", (err as Error).message);
+      return [];
+    }
+  }
+
+  /** Companies attributed to this partner — the same source the cap-table
+      connection group above already trusts (`listByPartner`). */
+  function ownCompaniesForLinking(partnerId: string): Array<{ id: string; name: string }> {
+    const out: Array<{ id: string; name: string }> = [];
+    try {
+      for (const a of partnerAttributionStore.listByPartner(partnerId)) {
+        if (!a.companyId) continue;
+        if (out.some((c) => c.id === a.companyId)) continue;
+        out.push({ id: a.companyId, name: String((a as { companyName?: string }).companyName ?? a.companyId) });
+      }
+    } catch (err) {
+      log.warn("[wave171] own-company read failed (fail-closed to empty):", (err as Error).message);
+      return [];
+    }
+    return out;
+  }
+
+  /** Live links for a contact, with the target's display name resolved. */
+  function listContactLinks(partnerId: string, contactId: string): ContactLinkRow[] {
+    ensureContactLinksTable();
+    try {
+      const pdb = rawDb() as unknown as { prepare?: (s: string) => { all: (...a: unknown[]) => unknown[] } };
+      if (!pdb || typeof pdb.prepare !== "function") return [];
+      const rows = pdb
+        .prepare(
+          `SELECT id, contact_id, target_kind, target_id, relationship, note, created_at
+             FROM partner_crm_contact_links
+            WHERE partner_id = ? AND contact_id = ? AND deleted_at IS NULL
+            ORDER BY created_at DESC`,
+        )
+        .all(partnerId, contactId) as Array<Record<string, unknown>>;
+      const spvNames = new Map(ownSpvsForLinking(partnerId).map((s) => [s.id, s.name]));
+      const coNames = new Map(ownCompaniesForLinking(partnerId).map((c) => [c.id, c.name]));
+      return rows.map((r) => {
+        const kind = String(r.target_kind ?? "") === "spv" ? "spv" : "company";
+        const targetId = String(r.target_id ?? "");
+        return {
+          id: String(r.id ?? ""),
+          contactId: String(r.contact_id ?? ""),
+          targetKind: kind as "spv" | "company",
+          /* A name we cannot resolve renders as the id, never as an empty string:
+             a blank row is worse than a technical one. */
+          targetId,
+          targetName: (kind === "spv" ? spvNames.get(targetId) : coNames.get(targetId)) || targetId,
+          relationship: String(r.relationship ?? "other"),
+          note: String(r.note ?? ""),
+          createdAt: String(r.created_at ?? ""),
+        };
+      });
+    } catch (err) {
+      log.warn("[wave171] link read failed (fail-closed to empty):", (err as Error).message);
+      return [];
+    }
+  }
+
+  /* ---- What this partner is allowed to link to (drives the picker) ---- */
+  app.get("/api/partner/me/crm/link-targets", requirePartnerAuth, (req, res) => {
+    const ctx = req.partnerContext!;
+    res.json({ spvs: ownSpvsForLinking(ctx.partnerId), companies: ownCompaniesForLinking(ctx.partnerId) });
+  });
+
+  /* ---- List a contact's links ---- */
+  app.get("/api/partner/me/crm/contacts/:id/links", requirePartnerAuth, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    res.json({ links: listContactLinks(ctx.partnerId, row.id) });
+  });
+
+  /* ---- Create a link ---- */
+  app.post("/api/partner/me/crm/contacts/:id/links", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = contactLinkCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const { target_kind: kind, target_id: targetId } = parsed.data;
+    /* THE FENCE. Resolved from the partner's OWN set, so a forged target_id
+       cannot escape it — membership of this list IS the authorisation. */
+    const allowed = kind === "spv" ? ownSpvsForLinking(ctx.partnerId) : ownCompaniesForLinking(ctx.partnerId);
+    if (!allowed.some((t) => t.id === targetId)) {
+      linkRefusal(res, 404, "LINK_TARGET_NOT_FOUND");
+      return;
+    }
+    ensureContactLinksTable();
+    try {
+      const pdb = rawDb() as unknown as {
+        prepare: (s: string) => { get: (...a: unknown[]) => unknown; run: (...a: unknown[]) => unknown };
+      };
+      const dup = pdb
+        .prepare(
+          `SELECT id FROM partner_crm_contact_links
+            WHERE contact_id = ? AND target_kind = ? AND target_id = ? AND deleted_at IS NULL LIMIT 1`,
+        )
+        .get(row.id, kind, targetId) as { id?: string } | undefined;
+      if (dup?.id) {
+        linkRefusal(res, 409, "LINK_ALREADY_EXISTS");
+        return;
+      }
+      const id = `pccl_${randomBytes(8).toString("hex")}`;
+      const now = new Date().toISOString();
+      pdb
+        .prepare(
+          `INSERT INTO partner_crm_contact_links
+             (id, tenant_id, partner_id, contact_id, target_kind, target_id, relationship, note, created_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          row.tenantId ?? "",
+          ctx.partnerId,
+          row.id,
+          kind,
+          targetId,
+          parsed.data.relationship ?? "other",
+          parsed.data.note ?? "",
+          now,
+          ctx.userId ?? "",
+        );
+      res.status(201).json({ ok: true, links: listContactLinks(ctx.partnerId, row.id) });
+    } catch (err) {
+      log.error("[wave171] link create failed:", err);
+      res.status(500).json({ error: "LINK_WRITE_FAILED", message: LINK_REFUSAL_COPY.LINK_NOT_FOUND ?? "" });
+    }
+  });
+
+  /* ---- Remove a link (soft delete, so the partial unique index lets it be
+          re-added later) ---- */
+  app.delete("/api/partner/me/crm/contacts/:id/links/:linkId", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    ensureContactLinksTable();
+    try {
+      const pdb = rawDb() as unknown as {
+        prepare: (s: string) => { run: (...a: unknown[]) => { changes?: number } };
+      };
+      const result = pdb
+        .prepare(
+          `UPDATE partner_crm_contact_links SET deleted_at = ?
+            WHERE id = ? AND partner_id = ? AND contact_id = ? AND deleted_at IS NULL`,
+        )
+        .run(new Date().toISOString(), String(req.params.linkId), ctx.partnerId, row.id);
+      if (Number(result?.changes ?? 0) < 1) {
+        linkRefusal(res, 404, "LINK_NOT_FOUND");
+        return;
+      }
+      res.json({ ok: true, links: listContactLinks(ctx.partnerId, row.id) });
+    } catch (err) {
+      log.error("[wave171] link delete failed:", err);
+      res.status(500).json({ error: "LINK_WRITE_FAILED", message: LINK_REFUSAL_COPY.LINK_NOT_FOUND ?? "" });
+    }
   });
 
   // ---- Create (Rule #13: first + last mandatory; per-partner dedup) ----

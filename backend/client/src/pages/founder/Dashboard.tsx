@@ -777,6 +777,9 @@ export default function FounderDashboard() {
                         return (
                           <div className="text-xs text-muted-foreground mt-1" data-testid={`round-card-money-${rr.id}`}>
                             <span>{view.money.subscribedDisplay} subscribed (committed + funded) of {fmtUSD(rr.targetAmount, { compact: true })} target · {humanizeMachineKey(rr.type)}</span>
+                    <span className="text-[10px] text-muted-foreground" data-testid={`dash-round-target-is-a-goal-${rr.id}`}>
+                      goal, not a limit
+                    </span>
                             <span className="block">{view.buckets.map(b => `${b.label}: ${b.display}`).join(" · ")}</span>
                           </div>
                         );
@@ -983,6 +986,13 @@ export default function FounderDashboard() {
                   <>
                     <div className="text-2xl font-semibold" data-testid="active-raise-subscribed">{activeRaise.view.money.subscribedDisplay}</div>
                     <div className="text-sm text-muted-foreground">subscribed (committed + funded) of {fmtUSD(activeRaise.ar.targetAmount)} target</div>
+                {/* WAVE 165 · R130.2 / R139.4 (S17) — the founder dashboard is the
+                    most-read surface in the silo and it named a target without
+                    saying what one is. */}
+                <div className="text-xs text-muted-foreground" data-testid="dash-active-raise-target-is-a-goal">
+                  The target is the fundraising goal for this round, not a limit — commitments are
+                  never blocked for passing it.
+                </div>
                   </>
                 ) : (
                   <div className="text-sm text-muted-foreground" data-testid="active-raise-money-unavailable">

@@ -33,7 +33,14 @@ import {
   SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
   SPV_REGISTER_ALL_STAGES_BASIS,
   SPV_INVESTOR_COUNT_BASIS,
+  /* WAVE 161 · ITEM A (A4) — the committed spelling itself, so the investor-count
+     split cannot drift from the predicate every other surface uses. */
+  SPV_COMMITTED_SUBSCRIPTION_STATUS,
 } from "@shared/spvCommittedCapital";
+/* WAVE 164 · ITEM C — the cap-refusal floor, so the page-local translation map
+   below cannot drift from the sentence the server and `serverRefusalMessage.ts`
+   serve for the same code. */
+import { SPV_SUBSCRIPTION_REFUSAL_HEADLINE } from "@shared/spvSubscriptionRefusalCopy";
 import { displayCompanyMinor } from "@/lib/money/companyMoneyOnRecord";
 /* WAVE 115 · FINDING 6 — the wave-106 field-refusal helper, reused. */
 import { fieldValidityProps } from "@/lib/fieldValidityClass";
@@ -102,6 +109,9 @@ import {
   isImplausiblyLarge,
   minorToWholeUnitsInput,
 } from "./partnerMoneyInput";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
 /* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
  * exponent notation ("1e7" → NaN), decimals, and non-numeric strings.
@@ -218,7 +228,16 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
   INVESTOR_NOT_IN_PARTNER_TENANT: "That investor is already associated with a different partner and can't be subscribed here. Use an investor from your own workspace or contact the platform admin.",
   INVESTOR_TENANT_CHECK_FAILED: "Couldn't verify the investor's tenant — the safety check failed closed. Try again in a moment.",
   BELOW_MIN_CHECK: "Commitment is below the SPV's minimum check size.",
-  EXCEEDS_CAP: "Adding this commitment would push the SPV over its cap.",
+  /* WAVE 164 · BATCH 3 ITEM C · R77 / R133.1 — THE CAP REFUSAL, WITH ITS SPLIT.
+     The old sentence named NO figure at all, so a GP was told the cap was passed
+     without being told by how much, or how much of what the vehicle holds is
+     actually capital. The authoritative sentence is now built per-request by the
+     server (`spvCapSplitRefusalSentence`) and names cap, confirmed capital,
+     soft-circled interest, funds received and the overage separately;
+     `spvErrorMessage` below PREFERS it. This entry is the shared floor, imported
+     rather than re-spelled so this page-local map cannot drift from the sentence
+     `serverRefusalMessage.ts` serves for the same code. */
+  EXCEEDS_CAP: SPV_SUBSCRIPTION_REFUSAL_HEADLINE.EXCEEDS_CAP,
   ALREADY_SUBSCRIBED: "That investor already has an active subscription in this SPV.",
   INVALID_COMMITMENT: "Commitment must be greater than zero.",
 };
@@ -226,6 +245,17 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
 function spvErrorMessage(err: unknown): string {
   const code = (err as { code?: string })?.code;
   const msg = (err as { message?: string })?.message ?? "Something went wrong.";
+  /* WAVE 164 · ITEM C · R77 — A SERVER SENTENCE CARRYING THE VEHICLE'S OWN
+     FIGURES BEATS A STATIC ONE, and this carve-out is why the precedence below is
+     not simply inverted for every code: the general rule (local translation wins)
+     exists because most server bodies used to carry only a bare code, and
+     flipping it wholesale would put codes back on screen for every code that
+     still has no copy. `capSplit` is present ONLY when the server built the
+     five-part split, so this is exact: when the words with the numbers exist they
+     are used, and otherwise the static floor above is used. Neither branch can
+     produce a bare code. */
+  const split = (err as { capSplit?: unknown })?.capSplit;
+  if (split != null && typeof msg === "string" && msg.trim() && msg !== code) return msg;
   if (code && SPV_ERROR_TRANSLATIONS[code]) return SPV_ERROR_TRANSLATIONS[code];
   return msg;
 }
@@ -618,9 +648,44 @@ export function SpvDetailTabs({
 
   // D6 — jurisdiction-aware, NON-BLOCKING investor-count awareness.
   const lpCount = subs.filter((s) => s.status !== "withdrawn").length;
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 161 · BATCH 3 ITEM A (A4) — ONE NUMBER WAS ANSWERING TWO QUESTIONS.
+     ══════════════════════════════════════════════════════════════════════════
+     `lpCount` counts every non-withdrawn subscription at ANY stage. It is used
+     for two unrelated purposes: the "Investors" figure on the overview, and the
+     jurisdiction investor-count threshold in the compliance panel. Those need
+     DIFFERENT numbers. An investor-count limit (e.g. the 100-holder 3(c)(1)
+     shape) is about people who actually hold an interest; a soft-circle is a
+     conversation, and counting conversations toward a statutory-style threshold
+     produced amber "approaching the limit" warnings for vehicles nowhere near it
+     — warnings a GP could act on by turning away real LPs.
+
+     `lpCount` ITSELF IS UNCHANGED in value and still renders where it always
+     did, so no existing count assertion moves. The split is ADDED, the threshold
+     is keyed on the confirmed count, and BOTH numbers appear in the copy so
+     nothing is hidden by the change of basis. */
+  const lpCountSplit = useMemo(() => {
+    let confirmed = 0;
+    let interested = 0;
+    for (const s of subs) {
+      if (s.status === "withdrawn") continue;
+      if (s.status === SPV_COMMITTED_SUBSCRIPTION_STATUS) confirmed += 1;
+      else interested += 1;
+    }
+    return { confirmed, interested };
+  }, [subs]);
+  const confirmedLpCount = lpCountSplit.confirmed;
+  const interestedLpCount = lpCountSplit.interested;
+  /* WAVE 161 · ITEM A (A4) — the threshold sentence's basis, hoisted into a
+     variable so the surrounding text node (" investors. ") stays exactly the
+     baselined string it has always been. Rewriting that node in place would read
+     to the silent-drop guard as removed copy, and the guard is right to say so. */
+  const precommitmentCountNote =
+    `Committed investors only; ${interestedLpCount} more ${interestedLpCount === 1 ? "is" : "are"} at a ` +
+    "pre-commitment stage and are not counted toward this threshold. ";
   const awareness = { limit: compliance.investorCountLimit, label: compliance.investorCountNote };
-  const nearLimit = awareness.limit != null && lpCount >= Math.floor(awareness.limit * 0.8);
-  const overLimit = awareness.limit != null && lpCount > awareness.limit;
+  const nearLimit = awareness.limit != null && confirmedLpCount >= Math.floor(awareness.limit * 0.8);
+  const overLimit = awareness.limit != null && confirmedLpCount > awareness.limit;
 
   return (
     <Tabs
@@ -695,7 +760,16 @@ export function SpvDetailTabs({
             <div className="font-mono" data-testid="spv-detail-raise-figure">
               {committedReported
                 ? `${displayCompanyMinor(committedMinor, currency)}${spv.targetRaiseMinor ? ` / ${fmt(spv.targetRaiseMinor, currency)} target` : ""}`
-                : "Not reported"}
+                : NOT_ON_RECORD}
+            </div>
+            {/* WAVE 165 · R130.2 / R139.4 (S7) — "… / $X target" said nothing about
+                what the target IS, and this tab is where a GP watches the raise.
+                The figure line above is untouched; the meaning is ADDED as its own
+                sibling text node beneath the existing basis note. */}
+            <div className="text-[10px] text-muted-foreground" data-testid="spv-detail-target-is-a-goal">
+              Target raise: the fundraising goal being aimed for, not a limit. A commitment is never
+              refused for passing it. The cap, separately, is the maximum this vehicle may accept, and
+              a blank cap means no maximum.
             </div>
             <div className="text-[10px] text-muted-foreground" data-testid="spv-detail-raise-basis">
               {committedReported
@@ -741,6 +815,13 @@ export function SpvDetailTabs({
           <div data-testid="spv-detail-lpcount">
             <div className="font-medium">Investors</div>
             <div className="text-xs">{lpCount}</div>
+            {/* WAVE 161 · BATCH 3 ITEM A (A4) — the same count, split, as an
+                ADDITIVE sibling line. The figure above is every non-withdrawn
+                subscription; on its own it invited the reading "we have N
+                investors", when some of those N have committed nothing. */}
+            <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-detail-lpcount-split">
+              {confirmedLpCount} committed · {interestedLpCount} pre-commitment (soft-circled, GP-confirmed, under review or funds received without a commitment). Pre-commitment investors are not capital.
+            </div>
             {/* WAVE 127 · FINDING 3 — the count and the raise figure above it were
                 read as a contradiction on the live site: `Raise progress $0.00`
                 beside `Investors: 1`. Both were CORRECT and they answer different
@@ -1106,14 +1187,14 @@ export function SpvDetailTabs({
           <div className="font-medium text-sm">Investor count</div>
           <Edu testid="spv-edu-investor-count">{SPV_EDU.investorCount}</Edu>
           {awareness.limit == null ? (
-            <div className="text-xs text-[var(--cv-color-text-muted)]">{awareness.label} Current: {lpCount}.</div>
+            <div className="text-xs text-[var(--cv-color-text-muted)]">{awareness.label} Current: {confirmedLpCount} committed investor{confirmedLpCount === 1 ? "" : "s"}, plus {interestedLpCount} at a pre-commitment stage ({lpCount} subscriptions in total).</div>
           ) : (
             <div
               className={`text-xs rounded-md p-2 ${overLimit || nearLimit ? "text-amber-900" : "text-[var(--cv-color-text-muted)]"}`}
               style={overLimit || nearLimit ? { background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" } : {}}
               data-testid="spv-compliance-count-warning"
             >
-              {lpCount} of ~{awareness.limit} investors. {awareness.label}
+              {confirmedLpCount} of ~{awareness.limit} investors. {precommitmentCountNote}{awareness.label}
               {overLimit ? " You are over the common threshold — this is informational and does not block anything." : nearLimit ? " You are approaching the threshold — informational only, never blocks." : ""}
             </div>
           )}
@@ -1166,7 +1247,13 @@ export function SpvDetailTabs({
 
       {/* ── K-1 (WAVE 32 / CP-SPV-30 capability 3) ───────────────────────── */}
       <TabsContent value="k1">
-        <SpvK1Panel spvId={spvId} canWrite={canWrite} />
+        {/* WAVE 175 · R145.3.3 — the K-1 tab now receives the vehicle's own
+            jurisdiction, resolved by the SAME rule the compliance copy uses
+            above (`terms.jurisdictionCountry` preferred, enum column as the
+            fallback, ontology decides), so the tab can state which investor tax
+            document this vehicle's jurisdiction actually produces instead of
+            presenting a US federal form as any vehicle's output. */}
+        <SpvK1Panel spvId={spvId} canWrite={canWrite} jurisdiction={jurisdiction} />
       </TabsContent>
 
       {/* ── Side letters (WAVE 32 / CP-SPV-30 capability 4) ───────────────── */}
@@ -1989,6 +2076,14 @@ function ClosePanel({
       {summary && (
         <div className="text-xs space-y-1" data-testid="spv-close-summary">
           <div>{summary.confirmedCount} committed LP(s) · {fmt(summary.confirmedMinor, currency)} confirmed{summary.targetMinor != null ? ` of ${fmt(summary.targetMinor, currency)} target` : ""}</div>
+          {/* WAVE 165 · R130.2 / R139.4 (S8) — closing UNDER the target is normal and
+              never blocked, and closing OVER it is not a breach either. Said here
+              because this is the screen where a GP decides whether to close. */}
+          <div className="text-[10px] text-muted-foreground" data-testid="spv-close-target-is-a-goal">
+            The target is the fundraising goal, not a limit: you may close below it or above it, and
+            neither is refused. Only a cap — the maximum this vehicle may accept, blank meaning no
+            maximum — can refuse a commitment.
+          </div>
           <div
             className={summary.underTarget ? "rounded p-2 text-amber-900" : "text-[var(--cv-color-text-muted)]"}
             style={summary.underTarget ? { background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" } : {}}
@@ -2125,7 +2220,7 @@ function AuditReceiptField({ revisionHash, updatedAt }: { revisionHash: string |
         </div>
       )}
       <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-updated">
-        {updatedAt ? `Last revised ${updatedAt}` : "Revision time not recorded"}
+        {updatedAt ? `Last revised ${updatedAt}` : `Last revised: ${NOT_ON_RECORD}`}
       </div>
       {/* OQ-35 — named openly rather than left as a silent gap.
 

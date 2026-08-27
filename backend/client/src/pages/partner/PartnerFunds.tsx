@@ -10,7 +10,12 @@ import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 curren
    authored by this wave, and the text a managing partner reads is byte-identical
    to the text the platform stores. Same import the sibling SPV screen uses
    (`PartnerSpvs.tsx:10`). */
-import { ATTESTATION_TEXT_V1 } from "@shared/spvAttestation";
+/* WAVE 169 · R77 — this page can only create a FUND, and it was rendering v1's
+   "special-purpose vehicle" wording. It now resolves the fund wording from the
+   same shared authority the fund create route records
+   (`server/partnerRoutes.ts` passes `spvType: "fund"` to `recordSignoff`), so the
+   sentence signed here and the sentence stored are the same bytes. */
+import { attestationTextForType } from "@shared/spvAttestation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -44,6 +49,12 @@ import { Label } from "@/components/ui/label";
 /* WAVE 138 — `humanizeMachineKey` labels the fund-type options through the same
    shared accessor, so `closed_end` never reaches a client's eye raw. */
 import { fundStatusLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
+/* WAVE 170 — R77: a refusal reaching a paying client is a plain sentence with a
+   next step, or a traceable reference; never whatever string arrived. */
+import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
 /* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of the SC-1 fix applied to
  * PartnerFundDetail.tsx in Wave 2.
  *
@@ -204,7 +215,7 @@ export default function PartnerFunds() {
       });
       setShowForm(false);
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Create fund failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Create fund failed", description: partnerActionRefusalText(e) }),
   });
 
   /* WAVE 150 · R111 Q11 — an associate could create funds until this wave and
@@ -263,6 +274,12 @@ export default function PartnerFunds() {
                   Literal label + `aria-label` from the shared helper, for the
                   drop-detector reason written out in full on PartnerSpvs.tsx. */}
               <Label>Target size</Label>
+              {/* WAVE 165 · R130.2 / R139.4 — see the sibling note in PartnerSpvs.tsx.
+                  A fund's target is a goal on exactly the same terms as an SPV's. */}
+              <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="partner-fund-target-input-is-a-goal">
+                The fundraising goal for this vehicle, not a limit. Commitments may exceed it and are
+                never refused for doing so. A separate cap, if you set one, is the maximum.
+              </div>
               <Input
                 type="text"
                 inputMode="decimal"
@@ -351,7 +368,7 @@ export default function PartnerFunds() {
                 checked={form.signoffAccepted}
                 onChange={(e) => setForm({ ...form, signoffAccepted: e.target.checked })}
               />
-              <span className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="partner-fund-attestation-text">{ATTESTATION_TEXT_V1}</span>
+              <span className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="partner-fund-attestation-text">{attestationTextForType("fund")}</span>
             </label>
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">Your name, assent, and a UTC timestamp are recorded for audit (ESIGN/UETA).</div>
           </div>
@@ -407,13 +424,19 @@ export default function PartnerFunds() {
                     </div>
                   </div>
                   <div className="text-right">
-                    {/* MAJOR 3 — nullable target must read as "—", never $0.00. */}
+                    {/* MAJOR 3 — nullable target must read as "—", never $0.00.
+                        WAVE 164 · R130.2 (S5) — and a bare dash does not say WHICH
+                        of "unset", "zero" or "unknown" it means, so the absence is
+                        named in words instead. */}
                     <div className="font-mono">
                       {f.targetRaiseMinor === null || f.targetRaiseMinor === undefined
-                        ? "\u2014"
+                        ? NOT_ON_RECORD
                         : formatMinor(f.targetRaiseMinor, f.currency)}
                     </div>
+                    {/* WAVE 164 · R130.2 (S5) — "target" alone read as a limit on the
+                        list, which is the misreading that started this. */}
                     <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
+                    <div className="text-[10px] text-[var(--cv-color-text-muted)]">fundraising goal, not a limit</div>
                   </div>
                 </div>
               </Link>

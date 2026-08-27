@@ -13,6 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 /* v25.12 NH10 — toast file-upload failures. */
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 170 — R77: a refusal reaching a paying client is a plain sentence with a
+   next step, or a traceable reference; never whatever string arrived. */
+import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
 
 type PartnerFile = {
   id: string;
@@ -95,7 +98,7 @@ export default function PartnerFiles() {
       pickedRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "File upload failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "File upload failed", description: partnerActionRefusalText(e) }),
   });
 
   /* v25.23 NM-P / FINDING-05 — soft-delete a file via the server DELETE
@@ -117,7 +120,7 @@ export default function PartnerFiles() {
     onError: (e: Error, _id, ctx) => {
       // Roll back the optimistic removal.
       if (ctx?.previous) qc.setQueryData(["/api/partner/me/files"], ctx.previous);
-      toast({ variant: "destructive", title: "Could not delete file", description: e.message });
+      toast({ variant: "destructive", title: "Could not delete file", description: partnerActionRefusalText(e) });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/files"] });
@@ -151,7 +154,7 @@ export default function PartnerFiles() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e) {
-      toast({ variant: "destructive", title: "Could not open file", description: (e as Error).message });
+      toast({ variant: "destructive", title: "Could not open file", description: partnerActionRefusalText(e) });
     }
   };
 

@@ -54,6 +54,9 @@ import {
   isClosedAt,
   type CloseWindow,
 } from "@shared/roundClose";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
 type Inv = {
   id: string;
@@ -434,10 +437,17 @@ function InvitationCard({ inv: i, win, nowMs }: { inv: Inv; win: CloseWindow; no
                       <span className="text-muted-foreground"> subscribed (committed + funded) of {money(i.targetAmount) ?? "the recorded target"}</span>
                     </div>
                     {barPct === null ? (
-                      <div className="text-xs text-muted-foreground" data-testid={`inv-progress-unavailable-${i.id}`}>{moneyView.money?.progressBp?.targetNote ?? "No target amount recorded to measure against."}</div>
+                      <div className="text-xs text-muted-foreground" data-testid={`inv-progress-unavailable-${i.id}`}>{moneyView.money?.progressBp?.targetNote ?? NOT_ON_RECORD}</div>
                     ) : (
                       <div className="text-xs text-muted-foreground" data-testid={`inv-progress-pct-${i.id}`}>{fmtPct(barPct, 0)} of target subscribed</div>
                     )}
+                  </div>
+                  {/* WAVE 165 · R130.2 / R139.4 (S23) — an LP scanning the list saw
+                      "subscribed of the recorded target" and a percentage, with no
+                      statement of whether the target caps the round. */}
+                  <div className="text-[10px] text-muted-foreground" data-testid={`inv-target-is-a-goal-${i.id}`}>
+                    The target is the round's fundraising goal, not a limit and not the amount still
+                    available.
                   </div>
                   {barPct !== null && (
                     <div className="h-1.5 bg-secondary rounded-full overflow-hidden">

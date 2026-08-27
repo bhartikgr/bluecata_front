@@ -34,7 +34,12 @@ import { seedTestPartnerSandbox, partnerTeamStore, TEST_PARTNER_ID } from "../pa
 import { spvEngineStore } from "../spvEngineStore";
 import { storeCredential } from "../userCredentialsStore";
 import { listSignoffsForSpv } from "../spvLaunchSignoffStore";
-import { ATTESTATION_TEXT_V1, ATTESTATION_VERSION } from "@shared/spvAttestation";
+import {
+  ATTESTATION_TEXT_V1,
+  ATTESTATION_VERSION,
+  ATTESTATION_VERSION_V2,
+  attestationTextForType,
+} from "@shared/spvAttestation";
 
 const MANAGING = "u_avi_managing";
 const ASSOCIATE = "u_w150_associate";
@@ -117,7 +122,26 @@ describe("W150 — a fund cannot be created without the recorded attestation", (
 });
 
 describe("W150 — the recorded attestation is the text the user was shown", () => {
-  it("persists ATTESTATION_TEXT_V1 byte-for-byte and links it to the created fund", async () => {
+  /* ══ WAVE 169 — THIS PIN'S MEANING CHANGED, AND IS RE-ARGUED HERE RATHER THAN
+        LOWERED (R98, wave-168 precedent). ══
+     WAS: the fund sign-off must persist `ATTESTATION_TEXT_V1` byte-for-byte.
+     WHY IT WAS WRITTEN THAT WAY: wave 150 was told to reuse the SPV attestation
+     and author no new legal copy (R111 Q11), and byte-equality against the shared
+     constant was the strongest available proof that the recorded text was the text
+     the client rendered.
+     WHY IT CANNOT STAY: v1's sentence says "authorized to launch this
+     special-purpose vehicle", so satisfying this pin REQUIRED every fund to be
+     attested with the name of a product the partner was not creating. The pin was
+     enforcing the defect (R77).
+     WHAT IS PINNED INSTEAD, and it is strictly stronger: the persisted bytes equal
+     `attestationTextForType("fund")` — still the one shared authority the client
+     renders, so the original intent (recorded text == shown text, no retyped copy)
+     is preserved — AND the persisted sentence names a fund, AND it does NOT name a
+     special-purpose vehicle, AND `ATTESTATION_TEXT_V1` itself is still byte-intact
+     and differs from the fund text ONLY in the vehicle noun. Four assertions where
+     there was one; none of the old file's assertions are removed, the equality
+     target is retargeted to the same authority.                                  */
+  it("persists the FUND attestation byte-for-byte from the shared authority and links it to the created fund", async () => {
     const name = "W150 Attested Fund I";
     const r = await post(
       "/api/partner/me/funds",
@@ -135,11 +159,19 @@ describe("W150 — the recorded attestation is the text the user was shown", () 
     const signoffs = listSignoffsForSpv(PARTNER_A, fundId);
     expect(signoffs).toHaveLength(1);
     const s = signoffs[0];
-    // BYTE-IDENTICAL to the one shared constant the client renders
-    // (client/src/pages/partner/PartnerFunds.tsx imports the same symbol).
-    expect(s.attestationText).toBe(ATTESTATION_TEXT_V1);
-    expect(s.attestationText.length).toBe(ATTESTATION_TEXT_V1.length);
-    expect(s.attestationVersion).toBe(ATTESTATION_VERSION);
+    // BYTE-IDENTICAL to the one shared authority the client renders
+    // (client/src/pages/partner/PartnerFunds.tsx calls the same function with the
+    // same argument), and it names the vehicle actually being created.
+    expect(s.attestationText).toBe(attestationTextForType("fund"));
+    expect(s.attestationText.length).toBe(attestationTextForType("fund").length);
+    expect(s.attestationText).toContain("authorized to launch this fund on behalf of this Consortium Partner");
+    expect(s.attestationText).not.toContain("special-purpose vehicle");
+    expect(s.attestationVersion).toBe(ATTESTATION_VERSION_V2);
+    // v1 is EVIDENCE for everything signed before this wave: it must still exist,
+    // byte-intact, and the fund wording must differ from it in the noun alone.
+    expect(ATTESTATION_TEXT_V1).toContain("authorized to launch this special-purpose vehicle on behalf of");
+    expect(s.attestationText.replace("this fund on", "this special-purpose vehicle on")).toBe(ATTESTATION_TEXT_V1);
+    expect(ATTESTATION_VERSION).toBe("v1");
     expect(s.signerLegalName).toBe("Ada Managing Partner");
     expect(s.userId).toBe(MANAGING);
     expect(s.partnerId).toBe(PARTNER_A);

@@ -35,6 +35,74 @@ import { lpInvestorIdForEmail, normaliseLpEmail } from "./lib/lpIdentity";
 
 const GENESIS = "0".repeat(64);
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 166 · BATCH 3 ITEM D (PATH 2) · R131.2 — WHERE AN LP CAME FROM.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * The owner's second path: "If the SPV already has LPs before it is launched on
+ * the platform, GPs are able to directly add LPs to the SPV." Those LPs are
+ * FIRST-CLASS LPs WITHOUT ACCOUNTS — the register does not wait for them to
+ * register, and wave 166's identity binding (`server/lib/lpIdentityBinding.ts`)
+ * attaches them to their existing position if and when they ever do.
+ *
+ * The vocabulary is wave 130's, unchanged, from
+ * `server/lib/shareholderRegisterStore.ts` (`ShareholderRecordOrigin` at :66).
+ * It is IMPORTED rather than re-declared so there is one list, not two that drift.
+ *
+ * THREE VOCABULARIES STAY THREE. An invitation state (this table's `status`), a
+ * commitment state (`spv_subscription.status`) and a shareholder origin (this
+ * column) answer three different questions. No shared enum, no shared label map.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/** The origins an LP row may carry. Wave 130's vocabulary, not a new one. */
+export const SPV_LP_INVITE_ORIGINS = [
+  "incorporation",
+  "existing_captable",
+  "direct",
+] as const;
+export type SpvLpInviteOrigin = (typeof SPV_LP_INVITE_ORIGINS)[number];
+
+/** `direct` is what a GP adding an LP on the platform actually did. */
+export const DEFAULT_SPV_LP_INVITE_ORIGIN: SpvLpInviteOrigin = "direct";
+
+export function isSpvLpInviteOrigin(v: unknown): v is SpvLpInviteOrigin {
+  return typeof v === "string" && (SPV_LP_INVITE_ORIGINS as readonly string[]).includes(v);
+}
+
+const _originColumnEnsured = new WeakSet<object>();
+
+/**
+ * Idempotently make sure `spv_lp_invite.origin` exists (migration 0209).
+ *
+ * WHY THIS EXISTS AT ALL. `server/db/connection.ts` creates this table
+ * idempotently on boot and is a SACRED file that may not be edited, so a
+ * freshly-created database (every test DB) gets the table WITHOUT the wave-166
+ * column no matter what `migrations/0209_*.sql` says. This is the same
+ * ensure-on-read pattern `ensureWave152PricingSchema` uses for the same reason.
+ *
+ * Marked BEFORE the attempt so a persistent DDL failure cannot make every read
+ * retry it; the reads below already tolerate a missing column honestly.
+ */
+export function ensureSpvLpInviteOriginColumn(): void {
+  let db: any;
+  try { db = rawDb(); } catch { return; }
+  if (!db) return;
+  if (_originColumnEnsured.has(db as object)) return;
+  _originColumnEnsured.add(db as object);
+  try {
+    db.exec(
+      `ALTER TABLE spv_lp_invite ADD COLUMN origin TEXT NOT NULL DEFAULT '${DEFAULT_SPV_LP_INVITE_ORIGIN}'`,
+    );
+  } catch {
+    /* Column already present (the normal case), or the table does not exist yet
+       — both are fine and neither is an error worth logging on every read. */
+  }
+  try {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_spv_lp_invite_spv_origin ON spv_lp_invite (spv_id, origin)`,
+    );
+  } catch { /* no table / no column yet */ }
+}
+
 function sha256Hex(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
 }
@@ -52,6 +120,8 @@ export interface SpvLpInvite {
   lastName: string;
   note: string | null;
   status: string;
+  /** WAVE 166 · ITEM D (Path 2) — where this LP came from. Never their state. */
+  origin: SpvLpInviteOrigin;
   prevHash: string;
   currHash: string;
   createdAt: string;
@@ -68,6 +138,12 @@ function rowToInvite(r: any): SpvLpInvite {
     lastName: r.last_name,
     note: r.note ?? null,
     status: r.status ?? "invited",
+    /* A row written before migration 0209 reads back as `direct`, which is what
+       those rows actually were — every one was created by `createLpInvite`, i.e.
+       by a GP acting on the platform. This does NOT guess `existing_captable`
+       for them: claiming a pre-platform history the database has no evidence for
+       would be inventing provenance. */
+    origin: isSpvLpInviteOrigin(r.origin) ? r.origin : DEFAULT_SPV_LP_INVITE_ORIGIN,
     prevHash: r.prev_hash ?? GENESIS,
     currHash: r.curr_hash ?? GENESIS,
     createdAt: r.created_at,
@@ -77,6 +153,7 @@ function rowToInvite(r: any): SpvLpInvite {
 
 /** List all live LP invites for a partner's SPV, most-recent first. */
 export function listLpInvites(partnerId: string, spvId: string): SpvLpInvite[] {
+  ensureSpvLpInviteOriginColumn();
   try {
     const db: any = rawDb();
     const rows = db
@@ -100,6 +177,19 @@ export interface CreateLpInviteInput {
   firstName?: string | null;
   lastName: string;
   note?: string | null;
+  /**
+   * WAVE 166 · ITEM D (Path 2) — OPTIONAL, defaulting to `direct`.
+   *
+   * Optional on purpose: every caller that existed before wave 166 was in fact
+   * performing a `direct` add, so omitting it records the truth rather than a
+   * placeholder, and no existing call site changes meaning. A GP entering LPs the
+   * vehicle already had passes `existing_captable`.
+   *
+   * An UNRECOGNISED value is REFUSED (`LP_INVITE_INVALID_ORIGIN`), never coerced
+   * to the default: silently filing an unknown provenance as `direct` is how the
+   * register would come to assert something nobody stated.
+   */
+  origin?: unknown;
 }
 
 /**
@@ -123,6 +213,13 @@ export function createLpInvite(
     throw new Error("LP_INVITE_EMAIL_REQUIRED");
   }
   if (!lastName) throw new Error("LP_INVITE_LAST_NAME_REQUIRED");
+  /* WAVE 166 · ITEM D (Path 2). Absent → `direct`. Present-but-unknown → REFUSED. */
+  let origin: SpvLpInviteOrigin = DEFAULT_SPV_LP_INVITE_ORIGIN;
+  if (input.origin !== undefined && input.origin !== null && input.origin !== "") {
+    if (!isSpvLpInviteOrigin(input.origin)) throw new Error("LP_INVITE_INVALID_ORIGIN");
+    origin = input.origin;
+  }
+  ensureSpvLpInviteOriginColumn();
 
   const now = new Date().toISOString();
   const id = newId();
@@ -135,11 +232,11 @@ export function createLpInvite(
     db.prepare(
       `INSERT INTO spv_lp_invite
          (id, tenant_id, partner_id, spv_id, email, first_name, last_name, note,
-          status, prev_hash, curr_hash, created_at, created_by)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'invited', ?, ?, ?, ?)`,
+          status, origin, prev_hash, curr_hash, created_at, created_by)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'invited', ?, ?, ?, ?, ?)`,
     ).run(
       id, partnerId, spvId, email, firstName || null, lastName, note || null,
-      prevHash, currHash, now, createdBy,
+      origin, prevHash, currHash, now, createdBy,
     );
   } catch (err) {
     log.error("[spvLpInviteStore] createLpInvite DB write failed:", err);
@@ -155,6 +252,7 @@ export function createLpInvite(
     lastName,
     note: note || null,
     status: "invited",
+    origin,
     prevHash,
     currHash,
     createdAt: now,
@@ -251,11 +349,14 @@ export function recordLpCommitIdentity(
     db.prepare(
       `INSERT INTO spv_lp_invite
          (id, tenant_id, partner_id, spv_id, email, first_name, last_name, note,
-          status, prev_hash, curr_hash, created_at, created_by)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?, ?)`,
+          status, origin, prev_hash, curr_hash, created_at, created_by)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?, ?, ?)`,
     ).run(
       id, partnerId, spvId, email, firstName || null, lastName, null,
-      prevHash, currHash, now, createdBy,
+      /* An LP who reached the register by COMMITTING through the platform is a
+         `direct` add. This path has no way to know about a pre-platform history
+         and does not pretend to. */
+      DEFAULT_SPV_LP_INVITE_ORIGIN, prevHash, currHash, now, createdBy,
     );
   } catch (err) {
     log.error("[spvLpInviteStore] recordLpCommitIdentity insert failed:", err);
@@ -268,6 +369,7 @@ export function recordLpCommitIdentity(
       lastName,
       note: null,
       status: "committed",
+      origin: DEFAULT_SPV_LP_INVITE_ORIGIN,
       prevHash, currHash,
       createdAt: now,
       createdBy,

@@ -556,7 +556,14 @@ export default function PartnerSpvTemplates() {
                 </dd>
               </div>
               <div>
+                {/* WAVE 165 · R130.2 / R139.4 — a template prefills the wizard, so an
+                    unexplained target here becomes an unexplained target on every SPV
+                    made from it. Both numbers in this prefill list now say which of
+                    them is the ceiling. */}
                 <dt className="text-muted-foreground">Target raise</dt>
+                <dd className="text-[10px] text-muted-foreground" data-testid="spv-template-target-is-a-goal">
+                  fundraising goal, not a limit
+                </dd>
                 <dd data-testid="prefill-target-raise">
                   <Amount
                     minor={(prefill.targetRaiseMinor as number | null) ?? null}
@@ -566,6 +573,9 @@ export default function PartnerSpvTemplates() {
               </div>
               <div>
                 <dt className="text-muted-foreground">Cap</dt>
+                <dd className="text-[10px] text-muted-foreground" data-testid="spv-template-cap-is-the-maximum">
+                  maximum accepted in total; blank means no maximum
+                </dd>
                 <dd data-testid="prefill-cap">
                   <Amount
                     minor={(prefill.capMinor as number | null) ?? null}

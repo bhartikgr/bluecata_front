@@ -722,7 +722,11 @@ export function SpvOnBehalfPanel({ engagement, subRole }: { engagement: Engageme
           <div><Label htmlFor="mf-sob-jur">Jurisdiction</Label><Input id="mf-sob-jur" data-testid="mf-sob-jurisdiction" value={jurisdiction} onChange={(ev) => setJurisdiction(ev.target.value)} /></div>
           <div><Label htmlFor="mf-sob-carry">Carry basis</Label><Input id="mf-sob-carry" data-testid="mf-sob-carry-basis" value={carryBasis} onChange={(ev) => setCarryBasis(ev.target.value)} /></div>
           <div><Label htmlFor="mf-sob-cur">Currency</Label><Input id="mf-sob-cur" data-testid="mf-sob-currency" value={currency} onChange={(ev) => setCurrency(ev.target.value)} /></div>
-          <div><Label htmlFor="mf-sob-target">Target raise (optional)</Label><Input id="mf-sob-target" inputMode="decimal" data-testid="mf-sob-target-raise" value={targetRaise} onChange={(ev) => setTargetRaise(ev.target.value)} /></div>
+          <div><Label htmlFor="mf-sob-target">Target raise (optional)</Label><Input id="mf-sob-target" inputMode="decimal" data-testid="mf-sob-target-raise" value={targetRaise} onChange={(ev) => setTargetRaise(ev.target.value)} />
+            <p className="text-[10px] text-muted-foreground" data-testid="mf-sob-target-is-a-goal">
+              The fundraising goal for this vehicle, not a limit. Commitments may exceed it.
+            </p>
+          </div>
           <div className="sm:col-span-5">
             <Button
               data-testid="mf-sob-submit"

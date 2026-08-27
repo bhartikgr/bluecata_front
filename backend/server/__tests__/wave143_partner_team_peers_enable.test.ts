@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 import { installV14TestIdentity } from "./_v14TestIdentity";
 import { getDb, rawDb } from "../db/connection";
 import { registerCommsRoutes } from "../commsStore";
-import { readRules, isAudienceRuleEnabled } from "../lib/commsAudienceRules";
+import { readRules, isAudienceRuleEnabled, setAudienceRuleEnabled } from "../lib/commsAudienceRules";
 import { partnerTeamPeerIds, delegatedCompanyPeopleIds } from "../lib/partnerDelegatedContext";
 import { applyCommsDelegatedContextSchema } from "../lib/applyCommsDelegatedContextSchema";
 import { splitStatements } from "../db/migrate";
@@ -413,6 +413,11 @@ beforeAll(() => {
   seedTeamMember(PARTNER_MATE, "active");
   seedTeamMember(PARTNER_EX, "removed");
   seedTeamMember(INVESTOR_WITH_TEAM_ROW, "active");
+  /* WAVE 167 — a viewer with NO partner record of any kind, for the role fence
+     in Q5. Seeded as an ordinary investor and given no team row and no
+     `consortium_partner` contact, so `resolveDmRole` step 2a must NOT promote
+     them. */
+  seedUser("u_w143_no_partner_record", "Investor Without Any Partner Record", "investor");
 });
 
 beforeEach(() => {
@@ -432,6 +437,13 @@ describe("WAVE 143 · Q — eligibility on the real /api/comms/users path", () =
   });
 
   it("Q2 THE LIVE SYMPTOM — pre-0199, the partner's picker offers only themselves", async () => {
+    /* WAVE 167 · R139.1 — `partner_own_lp_peers` ships ENABLED and grants a
+       partner their OWN team as well, so it must be switched off to observe the
+       OFF pole of `partner_team_peers` at all. The assertions below are
+       unchanged; only the fixture is isolated to the rule under test. The
+       overlap is recorded in build_log/wave167/artefacts/
+       FINDING_wave167_rule_overlap_partner_team_peers.md. */
+    setAudienceRuleEnabled("partner_own_lp_peers", false, "u_owner");
     expect(isAudienceRuleEnabled("partner_team_peers", "partner")).toBe(false);
     const res = await users(PARTNER_USER);
     expect(res.status).toBe(200);
@@ -471,22 +483,62 @@ describe("WAVE 143 · Q — eligibility on the real /api/comms/users path", () =
        investor — even one who genuinely sits on a partner team roster. The role is
        resolved from `auth_users`, not from the request header, so this is the real
        gate rather than a header the test controls. */
+    /* WAVE 167 · R139.1 — THIS VERDICT CHANGED, ON PURPOSE, AND IS NOT RELAXED.
+       `resolveDmRole` step 2a now resolves a viewer whose `users.role` is
+       `investor` but who holds a durable partner record (an ACTIVE
+       `partner_team_members` row — exactly this fixture, and exactly the live
+       `u_partner_keiretsu` shape) as a PARTNER. So this viewer is no longer an
+       investor for messaging purposes, and `partner_own_lp_peers` reaches their
+       OWN team. The pole this case exists to hold — that enabling a
+       partner-scoped rule opens nothing for a viewer the platform resolves as an
+       investor — is therefore re-stated below against a viewer with NO partner
+       record at all, and the original assertions are kept for the
+       wave-167 rule switched OFF, where they still hold verbatim. */
+    setAudienceRuleEnabled("partner_own_lp_peers", false, "u_owner");
     const before = await users(INVESTOR_WITH_TEAM_ROW, "investor");
     const beforeIds = (before.body as Array<{ id: string }>).map((u) => u.id).sort();
+    /* Both rules off ⇒ nothing is open for anybody, whatever the resolved role. */
     expect(beforeIds).not.toContain(PARTNER_MATE);
+    expect(beforeIds).not.toContain(PARTNER_USER);
     applyM0199();
     const after = await users(INVESTOR_WITH_TEAM_ROW, "investor");
     const afterIds = (after.body as Array<{ id: string }>).map((u) => u.id).sort();
-    expect(afterIds).toEqual(beforeIds);
-    expect(afterIds).not.toContain(PARTNER_MATE);
-    expect(afterIds).not.toContain(PARTNER_USER);
+    /* THE CHANGED VERDICT, STATED OUT LOUD: this viewer holds an ACTIVE
+       `partner_team_members` row, so step 2a resolves them as a PARTNER and 0199
+       DOES open their own team to them. That is the audience R139.1 authorises —
+       their own organisation's people, and only those. It is not the audience
+       R108.1 refused. */
+    expect(afterIds).toContain(PARTNER_MATE);
+    expect(afterIds).not.toEqual(beforeIds);
+    /* What must NOT have opened: the client company's founder (R108.1) and any
+       other partner organisation's roster. */
+    expect(afterIds).not.toContain(CLIENT_FOUNDER);
     /* And the same rule, on the same DB, IS open for the partner — so the pole is
        about the ROLE and not about the rule being off. */
     const partnerView = await users(PARTNER_USER);
     expect((partnerView.body as Array<{ id: string }>).map((u) => u.id)).toContain(PARTNER_MATE);
+
+    /* WAVE 167 — and the role fence itself, with the wave-167 rule ON: a viewer
+       with NO partner record of any kind is still resolved as an investor and
+       still sees neither the partner nor their team. Step 2a is a promotion for
+       durable partner records ONLY; it is not a widening. */
+    setAudienceRuleEnabled("partner_own_lp_peers", true, "u_owner");
+    const stranger = await users("u_w143_no_partner_record", "investor");
+    expect(stranger.status).toBe(200);
+    const strangerIds = (stranger.body as Array<{ id: string }>).map((u) => u.id);
+    expect(strangerIds).not.toContain(PARTNER_MATE);
+    expect(strangerIds).not.toContain(PARTNER_USER);
+    expect(strangerIds).not.toContain(INVESTOR_WITH_TEAM_ROW);
   });
 
   it("Q6 the rules reader has no cache — the toggle is observed on the very next call", async () => {
+    /* WAVE 167 · R139.1 — `partner_own_lp_peers` ships ENABLED and grants a
+       partner their OWN team as well, so it must be switched off to observe the
+       OFF pole of `partner_team_peers` at all. The assertions below are
+       unchanged; only the fixture is isolated to the rule under test. The
+       overlap is recorded in build_log/wave167/artefacts/
+       FINDING_wave167_rule_overlap_partner_team_peers.md. */
+    setAudienceRuleEnabled("partner_own_lp_peers", false, "u_owner");
     const off = await users(PARTNER_USER);
     expect((off.body as Array<{ id: string }>).map((u) => u.id)).not.toContain(PARTNER_MATE);
     applyM0199();

@@ -32,7 +32,7 @@ import { log } from "./lib/logger";
  * exported here so every existing importer of this module is unaffected.
  */
 export { ATTESTATION_VERSION, ATTESTATION_TEXT_V1 } from "../shared/spvAttestation";
-import { ATTESTATION_VERSION, ATTESTATION_TEXT_V1 } from "../shared/spvAttestation";
+import { resolveAttestation } from "../shared/spvAttestation";
 
 export interface SpvLaunchSignoff {
   id: string;
@@ -73,8 +73,20 @@ export function recordSignoff(input: {
   signerSubRole?: string | null;
   ip?: string | null;
   userAgent?: string | null;
+  /* WAVE 169 · R77 — WHICH VEHICLE IS BEING LAUNCHED, so the recorded sentence
+     names it. OPTIONAL and defaulting to the single-deal SPV: the legacy create
+     path (`partnerRoutes.ts:1849`) can only make an `spv`, and every row written
+     before this wave was written with v1's wording, so the default records
+     `ATTESTATION_TEXT_V1` and `ATTESTATION_VERSION` byte-for-byte — no caller
+     that does not pass a type changes what it records. */
+  spvType?: string | null;
 }): SpvLaunchSignoff {
   const now = new Date().toISOString();
+  /* WAVE 169 — the text and its version are resolved TOGETHER from one authority
+     (`shared/spvAttestation.ts`), so a row can never carry v2 wording under a v1
+     label or the reverse. The bytes recorded here are the bytes the client renders
+     for the same type: both sides call the same function. */
+  const attestation = resolveAttestation(input.spvType);
   const rec: SpvLaunchSignoff = {
     id: newId(),
     partnerId: String(input.partnerId),
@@ -82,8 +94,8 @@ export function recordSignoff(input: {
     userId: String(input.userId),
     signerLegalName: String(input.signerLegalName).trim(),
     signerSubRole: input.signerSubRole ?? null,
-    attestationText: ATTESTATION_TEXT_V1,
-    attestationVersion: ATTESTATION_VERSION,
+    attestationText: attestation.text,
+    attestationVersion: attestation.version,
     signedAt: now,
     ip: input.ip ?? null,
     userAgent: input.userAgent ?? null,

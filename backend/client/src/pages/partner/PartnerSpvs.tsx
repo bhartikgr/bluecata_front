@@ -38,6 +38,9 @@ import { Label } from "@/components/ui/label";
    screen cannot disagree with PartnerSpvDetail / PartnerPipeline about what
    `wound_down` reads as. One rule, one implementation. */
 import { spvStatusLabel } from "@/lib/partnerDisplay";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
 /* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of SC-1.
  *
@@ -255,6 +258,12 @@ export default function PartnerSpvs() {
                   placeholder is currency-shaped and the notice under the field states
                   the recorded amount with its code. */}
               <Label>Target size</Label>
+              {/* WAVE 165 · R130.2 / R139.4 — the field that AUTHORS the number said
+                  nothing about it. Added beneath the label as a sibling text node. */}
+              <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="partner-spv-target-input-is-a-goal">
+                The fundraising goal for this vehicle, not a limit. Commitments may exceed it and are
+                never refused for doing so. A separate cap, if you set one, is the maximum.
+              </div>
               <Input
                 type="text"
                 inputMode="decimal"
@@ -376,13 +385,18 @@ export default function PartnerSpvs() {
                   </div>
                   <div className="text-right">
                     {/* MAJOR 3 — `targetRaiseMinor` is nullable on the DTO; an
-                        unset target must read as "—", never as $0.00. */}
+                        unset target must read as "—", never as $0.00.
+                        WAVE 164 · R130.2 (S6) — the dash is now words: a reader
+                        cannot tell "unset" from "zero" from "not loaded" otherwise,
+                        and a target of zero is a real target. */}
                     <div className="font-mono">
                       {s.targetRaiseMinor === null || s.targetRaiseMinor === undefined
-                        ? "\u2014"
+                        ? NOT_ON_RECORD
                         : formatMinor(s.targetRaiseMinor, s.currency)}
                     </div>
+                    {/* WAVE 164 · R130.2 (S6) — the cap is the maximum; this is not. */}
                     <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
+                    <div className="text-[10px] text-[var(--cv-color-text-muted)]">fundraising goal, not a limit</div>
                   </div>
                 </div>
               </Link>

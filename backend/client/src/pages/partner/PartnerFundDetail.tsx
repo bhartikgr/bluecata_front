@@ -197,6 +197,15 @@ export default function PartnerFundDetail() {
               The fundraising goal recorded for this vehicle. Commitments below are NOT expressed as a percentage of it
               — they can exceed it, and a listed amount is not necessarily raised.
             </div>
+            {/* WAVE 165 · R130.2 / R139.4 (S4) — this tile was the ONE surface already
+                correct about the target, and its phrasing is the model the rest of
+                this wave copies. It was silent about the CAP, though, and a reader
+                who cannot see whether a maximum exists is left to assume the target
+                is one. That assumption is the live defect. */}
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="partner-fund-cap-is-the-maximum">
+              The cap, separately, is the maximum this vehicle may accept in total. It is optional:
+              left blank there is no maximum.
+            </div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>

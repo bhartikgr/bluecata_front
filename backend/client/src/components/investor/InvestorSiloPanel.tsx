@@ -271,7 +271,7 @@ export function InvestorSiloPanel() {
                     )}
                   </span>
                   <span className="text-xs">
-                    <span className="mr-2 text-muted-foreground">target</span>
+                    <span className="mr-2 text-muted-foreground">target</span><span className="mr-2 text-[10px] text-muted-foreground">(goal, not a limit)</span>
                     <span className="font-medium" data-testid={`investor-discover-target-${d.id}`}>
                       {renderAmount(d.targetAmountMinor, d.currency)}
                     </span>

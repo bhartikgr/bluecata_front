@@ -16,6 +16,7 @@
 // touches permissions or navigation; the PT-5 fence is untouched.
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { mintRefusalIncidentCode } from "./refusalIncidentCode";
 import { rawDb } from "../db/connection";
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
 import { requireSignedAgreement } from "./requireSignedAgreement";
@@ -61,8 +62,15 @@ function isNonEmptyString(v: unknown): v is string {
    payload and the `data-*` attribute. The join is made in the LOG, which carries
    both the opaque code and the internal one, on BOTH arms.
    ════════════════════════════════════════════════════════════════════════════ */
+/* WAVE 170 — THE FORMAT MOVED, THE OUTPUT DID NOT. `mintRefusalIncidentCode`
+   (`server/lib/refusalIncidentCode.ts`) is the same expression this function
+   held: `${prefix}-${randomBytes(4).toString("hex").toUpperCase()}` with prefix
+   "ESG". Wave 170 needed the identical token on the SPV refusal path, and two
+   copies of a format is two places to change it, so this delegates rather than
+   duplicates. Every caller, response body and shipped assertion sees the same
+   `ESG-XXXXXXXX` it saw before. */
 function mintEsignIncidentCode(): string {
-  return `ESG-${randomBytes(4).toString("hex").toUpperCase()}`;
+  return mintRefusalIncidentCode("ESG");
 }
 
 /** Read paths whose failure means "this database cannot answer right now", not

@@ -277,7 +277,48 @@ function _isSqliteDriver(): boolean {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * WAVE 161 · BATCH 3 ITEM A (A3) — THE PLATFORM KPI SAID "COMMITTED" AND MEANT
+ * "ANYTHING NOT WITHDRAWN".
+ * ═══════════════════════════════════════════════════════════════════════
+ * This function feeds the admin dashboard tile whose badge is the single word
+ * "Committed" (`client/src/pages/admin/Dashboard.tsx:397-417`). Its predicate was
+ * `status != 'withdrawn'`, so every soft-circle and every under-review indication
+ * on the platform was added into the figure a platform operator reads as capital
+ * raised. On a platform where indications outnumber commitments early in a
+ * vehicle's life, this over-states raised capital without bound.
+ *
+ * THE NAME IS KEPT AND THE MEANING IS CORRECTED, not the reverse. The tile's word
+ * is "Committed"; the honest change is to make the number match the word, and a
+ * rename would leave the wrong number under the right label. The all-stages
+ * figure is NOT lost — `dbTotalSpvSubscribedAllStagesMinor` below returns exactly
+ * the old query under a name that says what it sums, and the dashboard renders it
+ * as a labelled second line (R44: add, do not swap).
+ * ══════════════════════════════════════════════════════════════════════ */
 export function dbTotalSpvCommittedMinor(): SpvCommittedByCurrency {
+  if (!_isSqliteDriver()) return {};
+  try {
+    const rows = rawDb()
+      .prepare(
+        `SELECT currency, COALESCE(SUM(commitment_minor), 0) AS total
+         FROM spv_subscription
+         WHERE status = 'committed'
+         GROUP BY currency`,
+      )
+      .all() as Array<{ currency: string; total: number }>;
+    const out: SpvCommittedByCurrency = {};
+    for (const r of rows) out[r.currency] = Number(r.total) || 0;
+    return out;
+  } catch (err) {
+    throw new DbUnavailableError("admin KPI spv committed", err as Error);
+  }
+}
+
+/** WAVE 161 · ITEM A (A3) — the OLD basis, kept, under a name that states it:
+ *  every non-withdrawn subscription at any stage. Nothing was deleted; a surface
+ *  that legitimately wants the pipeline figure asks for it by this name and can
+ *  then label it truthfully. */
+export function dbTotalSpvSubscribedAllStagesMinor(): SpvCommittedByCurrency {
   if (!_isSqliteDriver()) return {};
   try {
     const rows = rawDb()
@@ -292,7 +333,7 @@ export function dbTotalSpvCommittedMinor(): SpvCommittedByCurrency {
     for (const r of rows) out[r.currency] = Number(r.total) || 0;
     return out;
   } catch (err) {
-    throw new DbUnavailableError("admin KPI spv committed", err as Error);
+    throw new DbUnavailableError("admin KPI spv subscribed all stages", err as Error);
   }
 }
 

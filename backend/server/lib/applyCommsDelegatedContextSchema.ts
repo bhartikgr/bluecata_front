@@ -35,6 +35,20 @@ interface DbLike {
 
 const MIGRATION_BASENAME = "0181_wave33_msg01_delegated_context.sql";
 
+/* WAVE 167 · R139.1 — the healed database must hold the rule set the platform
+   SHIPS, not the one wave 33 shipped. 0181 seeds six rules; 0210 adds the
+   seventh (`partner_own_lp_peers`, enabled). A heal that stopped at 0181 left a
+   re-seeded database with NO row for that rule at all, so every partner's own-LP
+   audience silently disappeared on any database that had been healed rather than
+   migrated — an empty picker with no error, which is the exact failure mode this
+   installer exists to remove. Read from the file for the same parity-by-
+   construction reason as 0181: the DDL is never re-typed here.
+
+   0210 is INSERT-only and touches no table 0181 does not create, so it is safe
+   to replay after it. It lives in `migrations/` only; the `server/db/migrations/`
+   mirror stops at 0208, so its absence there is expected and is not an error. */
+const WAVE167_MIGRATION_BASENAME = "0210_wave167_partner_own_lp_peers.sql";
+
 /** Both trees hold a byte-identical copy; most-likely location first. */
 function candidatePaths(): string[] {
   const cwd = process.cwd();
@@ -46,6 +60,21 @@ function candidatePaths(): string[] {
 
 export function readCommsDelegatedContextDdl(): string | null {
   for (const p of candidatePaths()) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
+    } catch {
+      /* unreadable candidate — try the next */
+    }
+  }
+  return null;
+}
+
+export function readWave167OwnLpPeersDdl(): string | null {
+  const cwd = process.cwd();
+  for (const p of [
+    path.join(cwd, "migrations", WAVE167_MIGRATION_BASENAME),
+    path.join(cwd, "server", "db", "migrations", WAVE167_MIGRATION_BASENAME),
+  ]) {
     try {
       if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
     } catch {
@@ -99,6 +128,19 @@ export function applyCommsDelegatedContextSchema(db: DbLike): void {
     }
     db.exec(ddl);
     log.info("[wave33] comms audience rules + delegated context installed from migration 0181 (bootstrap heal)");
+    /* Bring the healed registry up to the SHIPPED rule set. Failure here must not
+       undo the 0181 heal, so it carries its own guard. */
+    try {
+      const wave167Ddl = readWave167OwnLpPeersDdl();
+      if (wave167Ddl) {
+        db.exec(wave167Ddl);
+        log.info("[wave167] partner_own_lp_peers audience rule seeded from migration 0210 (bootstrap heal)");
+      }
+    } catch (err) {
+      log.warn(
+        `[wave167] partner_own_lp_peers seed skipped during heal: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } catch (err) {
     log.warn(
       `[wave33] comms delegated-context heal skipped: ${err instanceof Error ? err.message : String(err)}`,

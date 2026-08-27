@@ -23,6 +23,44 @@
  * integer minor units. Reads are side-effect-free.
  */
 /* WAVE 45 */ import { purchasableCadences } from "./partnerTiers";
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 165 · ITEM F · R135.5 — HONEST ADVERTISING OF BILLING CADENCE.
+ *
+ * THE DEFECT. Three live partner controls offered MONTHLY billing while these
+ * very handlers refused it with `409 CYCLE_NOT_PURCHASABLE` (:565 and :728). A
+ * partner chose a cadence, pressed a button, and was handed a refusal — the
+ * platform advertised something it does not sell.
+ *
+ * R135.5 forbids the obvious fix: *"LABEL, do not remove ... the owner prefers
+ * adding to deleting and forbids silently dropping any control."* So all three
+ * controls stay, and each is marked. A LABEL, though, is only trustworthy if it
+ * cannot outlive its reason — purchasability is CONFIGURATION
+ * (`partner_pricing_model_config`), not code, so a sentence hard-coded in the
+ * client would become a lie the day the owner starts selling monthly.
+ *
+ * Hence this: the READ endpoint publishes the same two sets the WRITE endpoints
+ * enforce, and the client renders the server's own answer. The additive fields
+ * are the whole change — no route is added, no existing field is altered, and
+ * the refusal logic at :565/:728 is untouched. `wave165_itemF_dead_promises`
+ * asserts the two sets agree in BOTH directions and survive a config flip.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/** Every cadence the platform's controls can name. Kept beside the availability
+ *  split so the two sets always partition the same space; a cadence absent from
+ *  here would be silently unclassified, which is how a control goes unlabelled. */
+const ALL_BILLING_CADENCES = ["annual", "monthly"] as const;
+
+function cadenceAvailability(): {
+  purchasableCycles: string[];
+  unavailableCycles: string[];
+} {
+  const purchasable = purchasableCadences();
+  return {
+    purchasableCycles: purchasable,
+    unavailableCycles: ALL_BILLING_CADENCES.filter((c) => !purchasable.includes(c)),
+  };
+}
 import { createHash, randomBytes } from "node:crypto";
 import { quotePartnerSubscription } from "./partnerBillingStore";
 /* WAVE 11 / EN-6 — the single amount producer + the partner-scoped charge path. */
@@ -197,6 +235,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
             subscription: null,
             agreement: currentAgreement(),
             ...wave11SubscriptionBlock(pid),
+            ...cadenceAvailability(),
           });
         }
         const sub = db
@@ -212,6 +251,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
           subscription: sub ?? null,
           agreement: currentAgreement(),
           ...wave11SubscriptionBlock(pid),
+          ...cadenceAvailability(),
         });
       } catch (err) {
         res.status(500).json({ error: "PARTNER_SUBSCRIPTION_QUERY_FAILED", message: sanitizeErrorMessage(err) });

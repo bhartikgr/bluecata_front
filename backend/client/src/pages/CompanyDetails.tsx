@@ -583,6 +583,9 @@ function CompanyDetailsView({
  </div>
  <div className="text-muted-foreground capitalize">{r.type.replace(/_/g, " ")}</div>
  {r.targetAmount && <div className="font-mono text-muted-foreground">target {fmtUSD(r.targetAmount, { compact: true })}</div>}
+ {/* WAVE 165 · R130.2 / R139.4 (S19) — this page is rendered to founders AND
+     to investors, so an unexplained "target" here reaches two silos at once. */}
+ {r.targetAmount ? <div className="text-[10px] text-muted-foreground" data-testid={`company-round-target-is-a-goal-${r.id}`}>fundraising goal, not a limit</div> : null}
  {engineAttribution && <div className="text-[10px] text-muted-foreground mt-1.5 italic">{engineAttribution}</div>}
  </li>
  ))}

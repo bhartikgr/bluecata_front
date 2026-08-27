@@ -35,6 +35,7 @@ import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { GpTaxDocumentNotice } from "@/components/partner/GpTaxDocumentNotice";
 
 /* ── wire types (mirror server/lib/spvK1.ts) ──────────────────────────────── */
 
@@ -181,7 +182,22 @@ function StatementCard({
 
 /* ── panel ────────────────────────────────────────────────────────────────── */
 
-export function SpvK1Panel({ spvId, canWrite }: { spvId: string; canWrite: boolean }) {
+export function SpvK1Panel({
+  spvId,
+  canWrite,
+  jurisdiction,
+}: {
+  spvId: string;
+  canWrite: boolean;
+  /* WAVE 175 · R145.3.3. The vehicle's own recorded jurisdiction, passed down so
+     this GP-side surface can say which investor tax document the vehicle's
+     jurisdiction actually produces, instead of presenting a US federal form as
+     any vehicle's output. OPTIONAL and never defaulted to a country: an absent
+     value resolves to `other` and renders the explicit "jurisdiction not on
+     record" warning, never an assumption. Nothing about generation depends on
+     it — see `GpTaxDocumentNotice` for why this labels rather than gates. */
+  jurisdiction?: string | null;
+}) {
   const { toast } = useToast();
   const qc = useQueryClient();
   /* WAVE 141 · BATCH 1 ITEM 3. NO GUESSED YEAR ON MOUNT.
@@ -270,6 +286,13 @@ export function SpvK1Panel({ spvId, canWrite }: { spvId: string; canWrite: boole
 
   return (
     <div data-testid="spv-k1-panel">
+      {/* WAVE 175 · R145.3.3 / R143.1. A STATIC SIBLING placed ABOVE the policy
+          line below, which is left byte-for-byte untouched. The policy line is
+          true about derivation and says nothing about jurisdiction; the defect
+          was that this surface offered a US federal form as any vehicle's output
+          in silence. That is corrected by ADDING the jurisdictional truth here,
+          not by editing or allow-listing the existing copy. */}
+      <GpTaxDocumentNotice jurisdiction={jurisdiction} />
       <div className="text-xs mb-3 leading-relaxed text-[var(--cv-color-text-muted)]" data-testid="spv-k1-policy">
         Schedule K-1 figures are derived only from recorded facts: confirmed capital receipts, recorded distributions and
         the committed register. A commitment is not a contribution, so a partner with no confirmed receipt shows a blank

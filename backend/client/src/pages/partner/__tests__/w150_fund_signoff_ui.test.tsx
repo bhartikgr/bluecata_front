@@ -19,7 +19,7 @@ import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ATTESTATION_TEXT_V1 } from "@shared/spvAttestation";
+import { ATTESTATION_TEXT_V1, attestationTextForType } from "@shared/spvAttestation";
 import PartnerFunds from "../PartnerFunds";
 
 function isDisabled(el: HTMLElement): boolean {
@@ -96,14 +96,30 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("W150 — the fund screen renders the ONE shipped attestation", () => {
-  it("the rendered text is byte-identical to shared/spvAttestation.ts", () => {
+  /* ══ WAVE 169 — RE-ARGUED IN PLACE, NOT LOWERED (R98, wave-168 precedent). ══
+     WAS: the fund screen's rendered text must equal `ATTESTATION_TEXT_V1`.
+     WHY IT CHANGED: v1 names a "special-purpose vehicle", and this screen creates
+     a FUND only. The pin was requiring the screen to show a sentence naming a
+     product the signer was not creating (R77).
+     WHAT IS PINNED INSTEAD: the rendered text is byte-identical to the shared
+     authority for the type this screen creates (`attestationTextForType("fund")`)
+     — the original anti-divergence property, unchanged — it NAMES a fund, it does
+     NOT name a special-purpose vehicle, it is still a real ESIGN/UETA attestation,
+     and v1 is still byte-intact for everything already signed. Two assertions
+     become six. */
+  it("the rendered text is byte-identical to shared/spvAttestation.ts and names a fund", () => {
     mount(<PartnerFunds />);
     fillFundBasics();
     const node = screen.getByTestId("partner-fund-attestation-text");
-    expect(node.textContent).toBe(ATTESTATION_TEXT_V1);
-    expect((node.textContent ?? "").length).toBe(ATTESTATION_TEXT_V1.length);
+    const fundText = attestationTextForType("fund");
+    expect(node.textContent).toBe(fundText);
+    expect((node.textContent ?? "").length).toBe(fundText.length);
+    expect(node.textContent).toContain("authorized to launch this fund on behalf of this Consortium Partner");
+    expect(node.textContent).not.toContain("special-purpose vehicle");
     // it is a real ESIGN/UETA attestation, not a placeholder
-    expect(ATTESTATION_TEXT_V1).toContain("ESIGN/UETA");
+    expect(fundText).toContain("ESIGN/UETA");
+    // v1 is evidence for records signed before wave 169 and is untouched
+    expect(ATTESTATION_TEXT_V1).toContain("authorized to launch this special-purpose vehicle on behalf of");
   });
 });
 

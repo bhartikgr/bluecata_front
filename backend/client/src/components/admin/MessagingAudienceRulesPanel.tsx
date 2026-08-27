@@ -71,6 +71,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { AudienceRulePreview } from "./AudienceRulePreview";
 
 interface PolicyRule {
   ruleKey: string;
@@ -337,6 +338,15 @@ export function MessagingAudienceRulesPanel() {
                   </div>
                 </div>
               ) : null}
+
+              {/* WAVE 167 · TASK 3.2 — APPENDED AT THE END AS A SIBLING (guard
+                  rule 4). Nothing above is moved, rewrapped or reworded; the
+                  read-only preview is simply the last child of the rule item.
+                  R139.3 requires the owner to be able to verify who a rule
+                  reaches on the live server, for EVERY rule — not just the one
+                  this wave adds — because the question "who can this person
+                  reach?" is the same question for all seven. */}
+              <AudienceRulePreview ruleKey={r.ruleKey} />
             </li>
           ))}
         </ul>

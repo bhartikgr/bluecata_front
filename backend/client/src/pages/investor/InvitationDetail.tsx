@@ -939,7 +939,12 @@ export default function InvitationDetail() {
       <TabIntro>Read the company's pitch and decide if it's worth a closer look.</TabIntro>
       <div className="grid md:grid-cols-3 gap-4">
        <Card><CardContent className="p-4">
+        {/* WAVE 164 · R130.2 (S20) — an LP reading "Round target" as the amount
+            still available is the investor-side form of the same defect. */}
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Round target</div>
+        <div className="text-xs text-muted-foreground normal-case">
+          The round's fundraising goal. It is not a limit and not the amount still available.
+        </div>
         <div className="text-2xl font-semibold mt-1" data-testid="text-round-target">{money(i.targetAmount) ?? NO_CURRENCY_CELL}</div>
         {/* ── WAVE 122 · FINDING 1 — THE THIRD AND FOURTH CHILDREN OF THIS CARD.
 
@@ -1281,7 +1286,7 @@ export default function InvitationDetail() {
             no currency on record rather than guessing one. */
          ["Pre-money valuation", moneyFull(i.preMoney) ?? NO_CURRENCY_CELL, "The company's value before this round's new money lands."],
          ["Post-money valuation", moneyFull(i.postMoney) ?? NO_CURRENCY_CELL, "Pre-money plus the round size — the company's value the instant the round closes."],
-         ["Round size", moneyFull(i.targetAmount) ?? NO_CURRENCY_CELL, "Total new money the company is targeting in this round."],
+         ["Round size", moneyFull(i.targetAmount) ?? NO_CURRENCY_CELL, "Total new money the company is targeting in this round. It is a goal, not a limit and not the amount still available: the round may close above it, and your commitment is never refused for taking the total past it."],
          /* v25.25 Avi-8 — was `$${i.pricePerShare?.toFixed(4)}` which rendered
             "$undefined" when price_per_share is NULL (priced rounds where the
             founder didn't fill sharesAuthorized). Surface honestly. */
@@ -1831,6 +1836,12 @@ export default function InvitationDetail() {
             state the round's real denomination, not a defaulted dollar sign. */}
         <div>Pre-money: <strong>{moneyFull(i.preMoney) ?? NO_CURRENCY_CELL}</strong></div>
         <div>Target: <strong>{moneyFull(i.targetAmount) ?? NO_CURRENCY_CELL}</strong></div>
+        {/* WAVE 165 · R130.2 / R139.4 (S22) — this sits beside the commit control,
+            which is the single worst place on the platform for an LP to believe a
+            target is the amount still available. */}
+        <div className="text-[10px] text-muted-foreground" data-testid="invitation-commit-target-is-a-goal">
+          The target is the round's fundraising goal, not a limit and not the amount still available.
+        </div>
        </div>
        <div className="space-y-1.5">
         <Label>Your full legal name (typed signature)</Label>

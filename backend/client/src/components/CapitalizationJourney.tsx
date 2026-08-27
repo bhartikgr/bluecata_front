@@ -568,7 +568,7 @@ function ValuationTooltip({ active, payload }: any) {
  <div className="border-t border-border/60 my-1" />
  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Pre-money</span><span className="font-mono font-medium">{fmtUSD(p.preMoney, { compact: true })}</span></div>
  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Post-money</span><span className="font-mono font-medium">{fmtUSD(p.postMoney, { compact: true })}</span></div>
- <div className="flex justify-between gap-4"><span className="text-muted-foreground">Round size</span><span className="font-mono font-medium">{fmtUSD(p.targetAmount, { compact: true })}</span></div>
+ <div className="flex justify-between gap-4"><span className="text-muted-foreground">Round size</span><span className="text-[10px] text-muted-foreground">(target, not a limit)</span><span className="font-mono font-medium">{fmtUSD(p.targetAmount, { compact: true })}</span></div>
  {p.leadInvestor && (
  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Lead</span><span className="font-medium">{p.leadInvestor}</span></div>
  )}

@@ -526,6 +526,10 @@ import { loadUserContext, requireEntitlement, entitlementGate } from "./lib/requ
 // edits automatically reach capavate.com/#pricing. Zero Airwallex touches.
 import registerPublicPricingRoutes from "./publicPricingRoutes";
 import { registerPersona } from "./lib/userContext";
+/* WAVE 166 · BATCH 3 ITEM D (D-2) — see the docblock in lpIdentityBinding.ts.
+   Both redeem paths below must bind, not just one: an LP does not choose which
+   invitation flow their GP happened to use. */
+import { bindLpIdentityAfterRegistration } from "./lib/lpIdentityBinding";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
 // v25.56 Avi wave item 2 — provision a populated durable investor profile at
 // invitation redemption so the contact is valid + email matches (fixes silent
@@ -4995,6 +4999,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         roundId: entry.roundId,
         companyId: entry.companyId,
       });
+      /* WAVE 166 (D-2) — bind before the profile is provisioned, so the alias is in
+         place by the time anything reads a position for this user. Refuses on an
+         ambiguous match; never merges two people; never blocks registration. */
+      bindLpIdentityAfterRegistration(personaId, entry.inviteeEmail, "routes legacy redeem");
       // v25.56 Avi item 2 — provision a populated durable profile from the
       // invitation identity so contact fields persist + KYC upload resolves.
       await provisionRedeemedInvestorProfile({ investorId: personaId, email: entry.inviteeEmail, name: entry.inviteeName });
@@ -5058,6 +5066,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       roundId: modernEntry.roundId,
       companyId: modernEntry.companyId ?? "",
     });
+    /* WAVE 166 (D-2) — same binding on the modern redeem path. */
+    bindLpIdentityAfterRegistration(personaId, modernEntry.investorEmail, "routes modern redeem");
     const marked = markInvitationRedeemed(modernEntry.id, personaId);
     if (!marked) return res.status(404).json({ ok: false, reason: "not_found" });
     // v25.56 Avi item 2 — provision a populated durable profile from the

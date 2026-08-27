@@ -23,6 +23,7 @@
 // ZERO caching: every call re-reads SQLite.
 import { randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
+import { resolveCanonicalUserId } from "./investorIdentityAliasStore";
 import { applyCommsDelegatedContextSchema } from "./applyCommsDelegatedContextSchema";
 
 const isValidId = (v: unknown): v is string =>
@@ -199,6 +200,77 @@ export function partnerTeamPeerIds(userId: string): string[] {
   } catch {
     return [];
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 167 · BATCH 3 ITEM E · R139.1 — THE PARTNER'S OWN LPs.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * THE SCOPE, STATED AS A SENTENCE: the people who hold a subscription in an SPV
+ * THIS partner organisation sponsors, and nobody else.
+ *
+ * THE FENCE IS `spv.sponsor_partner_id`, AND IT IS THE WHOLE FENCE.
+ * Every candidate is reached by walking OUT from the viewer's own partner id:
+ * partner → the SPVs that partner sponsors → the subscriptions in those SPVs.
+ * There is no branch that starts from an SPV, an LP or a company and walks IN, so
+ * there is no input for which this returns a person from another partner's book.
+ * A viewer with no partner id gets `[]`.
+ *
+ * WHY IT RESOLVES THROUGH THE ALIAS STORE.
+ * `spv_subscription.investor_id` is a LEDGER id, and after wave 166 a direct-added
+ * LP may hold a derived `ext_…` id with no account behind it at all. A ledger id is
+ * not addressable: you cannot message it. `resolveCanonicalUserId` turns a ledger id
+ * into the account that has CLAIMED it, and returns the input unchanged when nobody
+ * has. So an unclaimed `ext_…` id falls out naturally at the `commsUserRef` lookup
+ * in the directory handler, which is the correct outcome — a direct-added LP who has
+ * not registered is a real position but not yet a reachable person.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO (R139.2).
+ *  - It does NOT read `company_members`. `delegatedCompanyPeopleIds` is R108's
+ *    withdrawn audience and stays withdrawn; this function does not reopen it.
+ *  - It does NOT widen `cap_table_peer`, whose `notSpvBackedSql` fence is untouched.
+ *  - It does NOT consult the Collective directory, chapters or follows.
+ *  - It does NOT dedupe or otherwise alter `partner_team_members` rows (R135.8);
+ *    it only READS them, through the pre-existing `partnerTeamPeerIds`.
+ */
+export function partnerOwnLpPeerIds(userId: string): string[] {
+  const partnerId = resolvePartnerIdForUser(userId);
+  if (!partnerId) return [];
+  const out = new Set<string>();
+  try {
+    const db: any = rawDb();
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT sub.investor_id AS investor_id
+           FROM spv_subscription sub
+           JOIN spv ON spv.id = sub.spv_id
+          WHERE spv.sponsor_partner_id = ?`,
+      )
+      .all(partnerId) as Array<{ investor_id?: string }>;
+    for (const r of rows) {
+      if (!isValidId(r?.investor_id)) continue;
+      const canonical = resolveCanonicalUserId(String(r.investor_id).trim());
+      if (isValidId(canonical)) out.add(canonical.trim());
+    }
+  } catch {
+    return [];
+  }
+  /* The viewer is added to the candidate pool by the directory handler itself; a
+     peer SOURCE returning the viewer would make "my own LPs" include me. */
+  out.delete(userId.trim());
+  return Array.from(out.values());
+}
+
+/**
+ * R139.1's audience in one call: the partner's own LPs UNION the partner's own
+ * team. Exposed as one function because the ruling is one sentence — "a partner
+ * may reach their own LPs and their own team" — and splitting it across two call
+ * sites is how one half later gets enabled without the other.
+ */
+export function partnerOwnAudienceIds(userId: string): string[] {
+  const out = new Set<string>(partnerOwnLpPeerIds(userId));
+  for (const id of partnerTeamPeerIds(userId)) out.add(id);
+  out.delete(userId.trim());
+  return Array.from(out.values());
 }
 
 /* ============================================================

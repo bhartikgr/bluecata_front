@@ -39,9 +39,25 @@ function get(p: string, user: string) {
   return request(app).get(p).set("x-user-id", user);
 }
 
+/* ══ WAVE 173 · ITEM 3 — WHY THE SIGN-OFF FIELDS ARE HERE NOW ═══════════════
+   This helper was written for migration `0085_v25_49_spv_lp_visibility.sql`
+   (v25.49) and sent NO sign-off fields. WAVE 86B · ITEM 2 later made an
+   ESIGN/UETA attestation mandatory on `POST /api/partner/me/spv`
+   (`server/spvEngineRoutes.ts:535-543`, fail-closed BEFORE the first write).
+   From then on all eight SPV-creating tests below died at the first line of
+   that gate with 400 SIGNOFF_LEGAL_NAME_REQUIRED, and the LP-confidentiality
+   guarantees this suite exists to prove — "LP A sees ONLY their own position,
+   NEVER LP B" — were silently not being checked at all.
+
+   THE GATE IS NOT RELAXED AND NO ASSERTION BELOW IS WEAKENED (R98). The helper
+   is brought up to the contract every other SPV suite in the tree already
+   satisfies (spvEngine, spvFeeObligations, spvUnifiedCanonical, spvWaterfall,
+   w106, w10, w112 ×2, partner_workspace, reviewH, w138, w150). Verdict and
+   evidence: `build_log/wave173/W173_SIGNOFF_VERDICT.md`. */
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
-    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", minCheckMinor: 1000, ...extra,
+    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", minCheckMinor: 1000,
+    signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;
@@ -144,9 +160,30 @@ describe("SPV LP-visibility — founder NEVER sees roster; GP sees full", () => 
   it("invalid lp_visibility on create → 400 INVALID_LP_VISIBILITY", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Bad Vis SPV", jurisdiction: "delaware", carryBasis: "whole_spv", lpVisibility: "everyone",
+      signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("INVALID_LP_VISIBILITY");
+  });
+
+  /* WAVE 173 · ITEM 3 — ADDED, NOT SUBSTITUTED. The gate that was hiding this
+     whole suite is now pinned here too, so a future relaxation of the
+     attestation requirement fails in the suite it silenced. */
+  it("WAVE 173: creating an SPV without a typed legal name is still REFUSED", async () => {
+    const r = await post("/api/partner/me/spv", MANAGING, {
+      name: "Unattested SPV", jurisdiction: "delaware", carryBasis: "whole_spv",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("SIGNOFF_LEGAL_NAME_REQUIRED");
+  });
+
+  it("WAVE 173: a typed name without acceptance is still REFUSED", async () => {
+    const r = await post("/api/partner/me/spv", MANAGING, {
+      name: "Unaccepted SPV", jurisdiction: "delaware", carryBasis: "whole_spv",
+      signoffLegalName: "Avi Managing", signoffAccepted: false,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("SIGNOFF_ATTESTATION_REQUIRED");
   });
 });
 

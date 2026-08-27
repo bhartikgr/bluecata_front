@@ -2412,6 +2412,19 @@ export function registerConsortiumApplyRoutes(app: Express): void {
  * Stored as JSON in partner_organizations.onboarding_state. Reads/writes
  * via plain GET/PATCH endpoints; no hash chain (operational metadata).
  * ============================================================ */
+/* WAVE 173 · ITEM 2 — THE SENTENCE EXISTS BEFORE THE REFUSAL THAT USES IT.
+   Plain language, no enum code, no internal table name, and it does not promise
+   a retry will work — because it will not until the organisation record exists.
+   It tells the partner the one thing they need: the tick did NOT save, so do not
+   rely on it. */
+export const PARTNER_ONBOARDING_STATE_NOT_STORABLE_COPY =
+  "This checklist could not be saved, so your tick has not been kept. Your " +
+  "organisation record has not been set up yet, and these ticks are stored " +
+  "against it. Nothing else about your account is affected, and the work " +
+  "itself still counts — ask your chapter admin to finish setting up your " +
+  "organisation, then tick the items again. Please do not treat this checklist " +
+  "as a record of what you have completed until then.";
+
 export function registerPartnerOnboardingRoutes(app: Express): void {
   app.get(
     "/api/partner/onboarding/state",
@@ -2471,15 +2484,47 @@ export function registerPartnerOnboardingRoutes(app: Express): void {
       try {
         const db = getDb();
         const now = nowIso();
-        db.transaction((tx: any) => {
+        /* ══ WAVE 173 · ITEM 2 — THIS WRITE WAS A FALSE SUCCESS ═══════════════
+           `partner_organizations` is EMPTY and has no server INSERT path
+           (R135.7, re-verified: `SELECT COUNT(*) FROM partner_organizations`
+           returns 0). An `UPDATE … WHERE id = ?` against a table with no
+           matching row changes ZERO rows and throws NOTHING — and this handler
+           then answered `{ ok: true, state: body }`.
+
+           So a partner ticked a checklist item, the screen showed a saved
+           timestamp, and the tick was discarded. On the next load the GET above
+           returns `{ state: {} }` (its own `rows.length === 0` branch), so the
+           checklist silently reverts. A write that cannot store anything must
+           not report success: that is the difference between "not done yet" and
+           "we told you it was saved and it was not".
+
+           R135.7 DECIDED NOT TO BUILD THE INSERT PATH, and that decision stands
+           — building a writer for a table nothing writes is its own piece of
+           work with its own blast radius. What is fixed here is the LIE, not the
+           storage. The refusal carries a plain-language sentence (written BEFORE
+           the refusal exists, below) and the existing enum code, which is the
+           shape `serverRefusalText` already renders.
+
+           NO MONEY, NO CAPITAL, NO FEE is involved: `onboarding_state` is
+           operational metadata with no hash chain, as the block comment above
+           this function already records. */
+        const result = db.transaction((tx: any) =>
           tx.update(partnerOrgsTable)
             .set({
               onboardingState: JSON.stringify(body),
               updatedAt: now,
             })
             .where(eq(partnerOrgsTable.id, partnerId))
-            .run();
-        });
+            .run(),
+        );
+        const changed = Number((result as any)?.changes ?? 0);
+        if (!Number.isFinite(changed) || changed < 1) {
+          res.status(409).json({
+            error: "ONBOARDING_STATE_NOT_STORABLE",
+            message: PARTNER_ONBOARDING_STATE_NOT_STORABLE_COPY,
+          });
+          return;
+        }
         res.json({ ok: true, state: body });
       } catch (err) {
         log.error("[onboarding] write failed:", err);

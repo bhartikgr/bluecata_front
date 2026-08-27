@@ -58,6 +58,30 @@ export function MessagesWidget({ basePath, title }: {
  return [...conv].sort((a, b) => (b.lastMessage?.ts ?? "").localeCompare(a.lastMessage?.ts ?? ""));
  }, [channels.data, filter]);
 
+ /* WAVE 167 · TASK 3.1 — AN ERROR MUST NOT RENDER AS EMPTINESS.
+    ─────────────────────────────────────────────────────────────────────────────
+    THE DEFECT, MEASURED ON LIVE. The dashboard Messages panel stayed
+    "No conversations yet." straight through invites, commitments and a published
+    post. The reason is the condition below: it was
+    `!channels.isLoading && visible.length === 0`, which is TRUE when the query
+    FAILED, because a failed `useQuery` has `data === undefined` and
+    `isLoading === false`. So a 500, a dropped session or an offline network all
+    rendered as the calm, confident, WRONG statement that the user has no
+    conversations. The user then stops looking, and nobody files a bug.
+
+    THE FIX. `isError` gets its own branch and is excluded from the empty branch,
+    so the three states are now mutually exclusive and exhaustive: LOADING,
+    FAILED, and GENUINELY EMPTY. "No conversations yet." keeps its ORIGINAL
+    WORDING, unchanged, for the one case where it is true.
+
+    Hoisted into `useMemo` and rendered as STATIC SIBLING JSX so the copy guard
+    sees three fixed text nodes rather than one node whose content varies. */
+ const panelState: "loading" | "failed" | "empty" | "list" = useMemo(() => {
+   if (channels.isLoading) return "loading";
+   if (channels.isError) return "failed";
+   return visible.length === 0 ? "empty" : "list";
+ }, [channels.isLoading, channels.isError, visible.length]);
+
  const starredCount = asArray(channels.data).filter((c) => c.starred).length;
  const totalUnread = visible.reduce((s, c) => s + (c.unread ?? 0), 0);
 
@@ -113,8 +137,18 @@ export function MessagesWidget({ basePath, title }: {
  </div>
 
  {/* Thread list */}
- {channels.isLoading && <Skeleton className="h-24 w-full" />}
- {!channels.isLoading && visible.length === 0 && (
+ {panelState === "loading" && <Skeleton className="h-24 w-full" />}
+ {panelState === "failed" && (
+ <div
+ className="text-sm py-6 text-center text-destructive"
+ role="status"
+ data-testid="widget-messages-failed"
+ >
+ We couldn&rsquo;t load your messages just now. This is a problem on our side, not
+ an empty inbox &mdash; your conversations are safe. Please refresh to try again.
+ </div>
+ )}
+ {panelState === "empty" && (
  <div className="text-sm text-muted-foreground py-6 text-center">
  No conversations yet.
  </div>

@@ -38,11 +38,46 @@ import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 import { authorizeGatewaySettlement, authorizePlatformAdminSettlement } from "./lib/feeSettlementAuthority";
 import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
+/* WAVE 161 · BATCH 3 ITEM A — one stage-split helper and one set of denominator
+   sentences, shared with the client surfaces that render these payloads. */
+import {
+  SPV_REGISTER_ALL_STAGES_BASIS,
+  SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+  SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+  spvStageSplit,
+  spvStageSplitStatement,
+  spvSubscriptionStageLabelForRegister,
+} from "@shared/spvCommittedCapital";
+/* WAVE 162 · BATCH 3 ITEM B — the ONE transition-legality map and the ONE enum
+   guard, consulted here so a malformed PATCH is a clean 400 at the boundary
+   rather than a 500 raised out of the store. The store re-asserts both (see
+   `advanceSubscription`); neither layer is sufficient alone. */
+import { isSpvSubscriptionStatus, isSpvMoneyMinor } from "@shared/spvSubscriptionTransitions";
+/* WAVE 162 · ITEM B (B-4) · R77 — the plain-language sentences, in `shared/` so
+   this file can reach them. A refusal that leaves here as a bare code is read
+   verbatim by `PartnerSpvDetail.tsx:267/:314`, so no refusal leaves here as a
+   bare code. */
+import {
+  spvSubscriptionRefusalCopy,
+  spvSubscriptionRefusalHeadline,
+} from "@shared/spvSubscriptionRefusalCopy";
 /* WAVE 151 · ITEM C · R105 — the cap arithmetic and the canonical committed sum
    live in the store; this route computes no rival figure of its own. */
-import { computeCapImpact, canonicalCommittedMinorForSpv } from "./spvEngineStore";
+import {
+  computeCapImpact,
+  canonicalCommittedMinorForSpv,
+  /* WAVE 164 · ITEM C — the cap refusal that carries its own five-part split,
+     and the builder the lp-commit route uses to attach the same split to the
+     audit record and the response. */
+  isSpvCapRefusalError,
+  spvCapSplitFiguresForSpv,
+} from "./spvEngineStore";
 import { appendAdminAudit, isAuditWriteFailure } from "./adminPlatformStore";
 import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNKNOWN } from "./lib/percentPolicy";
+/* WAVE 170 · R77 — the opaque support reference for a refusal with no copy, and
+   the logger that joins it to the internal code (R77 permits the code in a log). */
+import { mintRefusalIncidentCode } from "./lib/refusalIncidentCode";
+import { log } from "./lib/logger";
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
@@ -80,6 +115,8 @@ import {
   SPV_TYPES,
   SPV_CARRY_BASIS_HELP,
 } from "../shared/spvEngine";
+// WAVE 166 · ITEM D (D-4) — the alias-aware viewer identity set.
+import { viewerInvestorIds } from "./lib/lpIdentityBinding";
 
 const WRITE_ROLES = ["managing_partner", "associate", "bd"] as const;
 
@@ -238,7 +275,113 @@ function err(res: Response, e: unknown): Response {
     SUBSCRIPTION_ALREADY_EXISTS: 409,
     // WAVE 6 / FE-3 — the rolling-close window is DB-driven and fails closed.
     SPV_CLOSE_WINDOW_POLICY_MISSING: 503, INVALID_CLOSE_WINDOW: 400,
+    /* WAVE 166 · BATCH 3 ITEM D (PATH 1) · R131.1 — the offline affirmation.
+       409 for REQUIRED: the request is well-formed and the amount is fine; the
+       SUBSCRIPTION'S STATE forbids calling an unaffirmed indication committed
+       capital. 400 for INCOMPLETE: the caller sent a malformed affirmation.
+       Both sentences already exist in `shared/spvSubscriptionRefusalCopy.ts`, so
+       neither code can reach the GP naked at `PartnerSpvDetail.tsx:267/:314`. */
+    GP_OFFLINE_CONFIRMATION_REQUIRED: 409, GP_OFFLINE_CONFIRMATION_INCOMPLETE: 400,
+    /* WAVE 166 · ITEM D (Path 2) — an origin outside wave 130's vocabulary. */
+    LP_INVITE_INVALID_ORIGIN: 400,
+    /* WAVE 161 · BATCH 3 ITEM A (A-5) — a wire recorded against an investor who
+       has not committed. 409, not 400: the request is well-formed and the amount
+       is fine; the SUBSCRIPTION'S STATE forbids reconciling a wire against a
+       non-binding indication. Plain-language copy exists ahead of this line in
+       `shared/spvSubscriptionRefusalCopy.ts` — wave 162 MOVED it there from
+       `client/src/lib/serverRefusalMessage.ts`, which re-exports it, so this
+       file can reach the sentence and attach it below (R77). */
+    FUNDS_CONFIRMATION_REQUIRES_COMMITMENT: 409,
+    /* WAVE 162 · BATCH 3 ITEM B — a PATCH with no `to` at all. 400: the request
+       is malformed, and the subscription is untouched. Plain-language copy for
+       this code exists in `shared/spvSubscriptionRefusalCopy.ts` (R77). */
+    SUBSCRIPTION_STATUS_REQUIRED: 400,
   };
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 162 · BATCH 3 ITEM B (B-4) · R77 — NO REFUSAL LEAVES HERE AS A BARE
+     CODE, AND THE PREFIX FORMS ARE 400 rather than 500.
+     ═══════════════════════════════════════════════════════════════════════
+     Three of Item B's codes carry their diagnosis AFTER the code
+     (`INVALID_SUBSCRIPTION_STATUS:string:committedd`,
+     `INVALID_WIRED_MINOR:string:1000`,
+     `ILLEGAL_SUBSCRIPTION_TRANSITION:committed:soft_circled:…`), so the
+     exact-key lookup in `map` above can never match them and every one of them
+     would have been reported as an HTTP **500** carrying an internal string. A
+     rejected input is a 400, and a refused transition of a well-formed status is
+     a 409 — never a server failure.
+
+     `message` carries the boundary-safe HEADLINE and `guidance` the unabridged
+     sentence. The split is not cosmetic: `client/src/lib/queryClient.ts:60-65`
+     discards any server `message` of 240 characters or more and substitutes a
+     generic one, and `PartnerSpvDetail.tsx:267/:314` render `e.message` RAW. The
+     full reasoning is written out in `shared/spvSubscriptionRefusalCopy.ts`.
+
+     `error` still carries the exact code, unchanged, because an operator quoting
+     it in a ticket must still find it (R44: ADD, do not substitute).
+     ═══════════════════════════════════════════════════════════════════════ */
+  const SPV_SUBSCRIPTION_PREFIX_STATUS: Record<string, number> = {
+    INVALID_SUBSCRIPTION_STATUS: 400,
+    INVALID_WIRED_MINOR: 400,
+    /* 409, not 400: the request is well-formed and the target IS a real stage —
+       the SUBSCRIPTION'S CURRENT STATE is what forbids the move. Same reasoning
+       as FUNDS_CONFIRMATION_REQUIRES_COMMITMENT above. */
+    ILLEGAL_SUBSCRIPTION_TRANSITION: 409,
+  };
+  {
+    const head = msg.split(":")[0] ?? "";
+    const prefixStatus = SPV_SUBSCRIPTION_PREFIX_STATUS[head];
+    if (prefixStatus !== undefined) {
+      return res.status(prefixStatus).json({
+        error: msg,
+        message: spvSubscriptionRefusalHeadline(head) ?? undefined,
+        guidance: spvSubscriptionRefusalCopy(head) ?? undefined,
+      });
+    }
+  }
+  /* ══════════════════════════════════════════════════════════════════════
+     WAVE 164 · BATCH 3 ITEM C · R77 / R133.1 — THE CAP REFUSAL CARRIES ITS SPLIT.
+     ══════════════════════════════════════════════════════════════════════
+     `EXCEEDS_CAP` used to leave here as `{ error: "EXCEEDS_CAP" }` with NO
+     `message`, and `PartnerSpvDetail.tsx:267/:314` render `e.message` RAW — so a
+     GP read the bare code on screen. `spvEngineStore.subscribe` now throws an
+     error that CARRIES the five-part split, and this branch serves it.
+
+     `error` is still EXACTLY `EXCEEDS_CAP` and the status is still 400, so no
+     shipped assertion on the code or the status changes (R44: ADD, do not
+     substitute; R98: never lower an assertion). What is added is the `message`
+     headline (short enough to survive `queryClient.ts`'s 240-char `looksHuman`
+     gate), the unabridged `guidance`, and a machine `capSplit` object naming cap,
+     confirmed capital, soft-circled interest, funds-received-not-committed and
+     the overage SEPARATELY — never a single "committed" number, and never a total
+     without its parts.
+
+     Placed BEFORE the generic copy lookup below so the vehicle's own figures win
+     over the static fallback sentence in `spvSubscriptionRefusalCopy.ts`; that
+     fallback still covers any `EXCEEDS_CAP` raised without a split, so the code
+     cannot reach a user naked by either route. */
+  if (isSpvCapRefusalError(e)) {
+    return res.status(400).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      capSplit: e.capSplit,
+    });
+  }
+  /* Every OTHER code this module can raise that HAS plain-language copy gets the
+     sentence attached too. `error` is untouched, so no existing assertion on the
+     code changes; a body that previously carried only a code now also carries
+     the words. Codes with no copy are left exactly as they were — this cannot
+     invent an explanation for a refusal nobody has written one for. */
+  {
+    const headline = spvSubscriptionRefusalHeadline(msg);
+    if (headline && map[msg] !== undefined) {
+      return res.status(map[msg]).json({
+        error: msg,
+        message: headline,
+        guidance: spvSubscriptionRefusalCopy(msg) ?? undefined,
+      });
+    }
+  }
   /* ═══════════════════════════════════════════════════════════════════════
      WAVE 82 · ITEM 2 — THE HURDLE WAS ALREADY FENCED. IT WAS REPORTED AS A 500.
      ═══════════════════════════════════════════════════════════════════════
@@ -263,11 +406,79 @@ function err(res: Response, e: unknown): Response {
      rescaled: the domain lives in `PERCENT_FIELD_DOMAIN` and this only decides
      how its refusal is reported.
      ═══════════════════════════════════════════════════════════════════════ */
+  /* WAVE 161 · ITEM A (A-6) — the write chokepoint refuses a non-integer money
+     value and names the field, the type it received and the value, because those
+     three facts are the whole diagnosis. Prefix-matched for the same reason the
+     percent-domain refusal below is: the useful part follows the code. 400 — a
+     malformed amount in a request is a client error, never a server failure. */
+  if (msg.startsWith("SUBSCRIPTION_MONEY_NOT_INTEGER_MINOR:")) {
+    const parts = msg.split(":");
+    /* WAVE 162 · ITEM B (B-4) — `fieldError` names the field for a control to
+       point at; `message`/`guidance` are what a PERSON reads. Wave 161 wrote the
+       copy for this code and nothing could reach it; now it is attached. */
+    return res.status(400).json({
+      error: msg,
+      fieldError: parts[1] ?? null,
+      message: spvSubscriptionRefusalHeadline(msg) ?? undefined,
+      guidance: spvSubscriptionRefusalCopy(msg) ?? undefined,
+    });
+  }
   if (msg.startsWith(`${PERCENT_FIELD_OUT_OF_DOMAIN}:`) || msg.startsWith(`${PERCENT_FIELD_UNKNOWN}:`)) {
     const parts = msg.split(":");
-    return res.status(400).json({ error: msg, fieldError: parts[1] ?? null });
+    return res.status(400).json({
+      error: msg,
+      fieldError: parts[1] ?? null,
+      /* WAVE 170 — this branch has never carried a `message`, so the screen shows
+         the boundary's generic substitute and the rationale inside `error` is
+         discarded. The reference below is the only thing a GP can hand to
+         support. See the block at the tail of this function. */
+      incidentCode: mintUnexplainedRefusalReference(msg),
+    });
   }
-  return res.status(map[msg] ?? 500).json({ error: msg });
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 170 · BATCH 4 ITEM B · R77 / R111 Q13 — THE UNMAPPED TAIL.
+     ═══════════════════════════════════════════════════════════════════════
+     WHAT ACTUALLY REACHED THE SCREEN, MEASURED NOT ASSUMED. This line is where
+     every code with no status and no copy leaves: `LP_IDENTITY_PERSIST_FAILED`,
+     `LP_IDENTITY_EMAIL_REQUIRED`, `SPV_NOT_FOUND` raised from a store, anything
+     a future store throws. The body was `{ error: "<CODE>" }` with NO `message`,
+     and `client/src/lib/queryClient.ts:60-65` therefore substitutes a GENERIC
+     sentence for `ApiError.message` ("Something went wrong on our side. Please
+     try again."). The five handlers in `PartnerSpvDetail.tsx` render that
+     `e.message`. So the GP was NOT usually shown the raw code by this path — the
+     defect here is the opposite one, and it is worse than it looks: a sentence
+     that names NO next step and carries NOTHING traceable, while the code that
+     would have let support find the failure is discarded by the boundary.
+
+     (The raw code DOES reach the screen through the OTHER shape on these five
+     channels: an error thrown inside `mutationFn` that is not an `ApiError` —
+     `res.json()` on a truncated body, a helper throwing a bare code — whose
+     `.message` is rendered verbatim. That half is fenced on the client, in
+     `partnerActionRefusalText`. Neither half is fixed by the other, so both are
+     changed in this wave.)
+
+     `error` is UNTOUCHED — byte-for-byte the code every shipped assertion and
+     every support ticket already quotes (R44: ADD, do not substitute). What is
+     added is `incidentCode`, the wave-148 opaque reference, logged beside the
+     internal code so a screenshot resolves to one log line, and safe to render
+     because it names nothing internal (R77).
+     ═══════════════════════════════════════════════════════════════════════ */
+  return res.status(map[msg] ?? 500).json({ error: msg, incidentCode: mintUnexplainedRefusalReference(msg) });
+}
+
+/**
+ * WAVE 170 — mint the opaque reference AND write the log line that joins it to
+ * the internal code. One function so the two can never drift apart: a reference
+ * on a screen with no log line behind it is worse than none, because support
+ * would ask the client for a code that leads nowhere.
+ */
+function mintUnexplainedRefusalReference(internalCode: string): string {
+  const incidentCode = mintRefusalIncidentCode("SPV");
+  log.error(
+    `[spv.refusal.unexplained] ${internalCode} (incident ${incidentCode}) — ` +
+      "no plain-language copy exists for this code; the client was shown the generic refusal sentence and this reference.",
+  );
+  return incidentCode;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -414,6 +625,13 @@ export function registerSpvEngineRoutes(app: Express): void {
           userId: ctx.userId,
           signerLegalName: signoffLegalName,
           signerSubRole: ctx.partnerSubRole ?? null,
+          /* WAVE 169 · R77 — the RECORDED sentence must name the vehicle the
+             partner chose. The type comes from the SAME `createBody` the store is
+             about to create the vehicle from (never a second read of `req.body`),
+             so the attested wording and the persisted `spv_type` cannot disagree.
+             Absent or unreadable → `resolveAttestation` defaults to the v1
+             single-deal wording, which is what this path always recorded. */
+          spvType: typeof createBody.spvType === "string" ? createBody.spvType : null,
           ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
           userAgent: (req.headers["user-agent"] as string) ?? null,
         });
@@ -483,6 +701,11 @@ export function registerSpvEngineRoutes(app: Express): void {
       distributions: spvEngineStore.listDistributions(pid, spv.id),
       documents: spvEngineStore.listDocuments(pid, spv.id),
       register: spvEngineStore.investorRegister(pid, spv.id),
+      /* WAVE 161 · ITEM A (A17) — `register` is UNCHANGED (same rows, same order,
+         plus additive per-row stage fields). `registerSplit` is the new answer to
+         "of the amounts in that register, how much is actually capital?", which no
+         consumer could previously compute without re-deriving the predicate. */
+      registerSplit: spvEngineStore.investorRegisterWithSplit(pid, spv.id),
       // W-FIX1f — surface the built-but-hidden capabilities in the tabbed detail:
       // secondary transfers, minimal capital accounts (D10), and the close summary.
       transfers: spvEngineStore.listTransfers(pid, spv.id),
@@ -682,6 +905,112 @@ export function registerSpvEngineRoutes(app: Express): void {
     } catch (e) { err(res, e); }
   });
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 166 · BATCH 3 ITEM D · PATH 1 · R131.1 — THE TWO CONTROLS THE OWNER'S
+     MODEL NEEDS AND THE PLATFORM DID NOT HAVE.
+     ══════════════════════════════════════════════════════════════════════════
+     The owner's model, verbatim: "invitation to soft-circle so that the LPs can
+     review the deal and soft-circle. The GP will confirm the investment when the
+     LP signs the proper subscription docs and the funds are in the bank account
+     (OFFLINE process)."
+
+     What existed before this wave: the STATES (`soft_circled`, `founder_confirmed`
+     in `shared/spvEngine.ts`), the ladder (`advanceSubscription`), and the label.
+     What did NOT exist: any way for an LP to soft-circle, and any act by which a
+     GP states the two offline facts. A GP could only PATCH the row themselves —
+     so "the LP soft-circled" was something a GP asserted on the LP's behalf, and
+     "the GP confirmed" was a status assignment with nothing behind it.
+
+     Two routes, in the two voices they belong to. Note the FIRST is on the
+     INVESTOR side: it is the LP's own act, taken from the LP's own session, and
+     putting it behind `requirePartnerAuth` would have reproduced the bug.
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /* ── LP: I have reviewed this deal and I am soft-circling. ─────────────────
+     THIS IS NOT CAPITAL, AND THE ROUTE IS BUILT SO IT CANNOT BECOME CAPITAL:
+     the only status it can ever write is `soft_circled`, it takes NO amount from
+     the body (the amount is whatever the subscription already says), and it
+     cannot reach `committed` because `advanceSubscription`'s legality map has no
+     `soft_circled → committed` edge that skips the affirmation gate.
+     Wave 161 fenced every aggregation and wave 163 fixed the LP roster; this
+     route relies on both and undoes neither. */
+  app.post("/api/investor/me/spv/:spvId/subscriptions/:subId/soft-circle", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx?.isAuthed || !ctx.userId) return res.status(401).json({ error: "AUTH_REQUIRED" });
+    try {
+      const spvId = String(req.params.spvId);
+      const subId = String(req.params.subId);
+      const spv = spvEngineStore.adminListAll().find((x) => x.id === spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      /* FAIL CLOSED ON IDENTITY. An LP may only soft-circle THEIR OWN
+         subscription, and "their own" is resolved through wave 166's alias set
+         (D-4) so that a direct-added LP who has since registered is recognised.
+         The subscription id from the URL is checked AGAINST that set rather than
+         trusted: without this, any authenticated user could soft-circle any
+         subscription in any vehicle by guessing an id. */
+      const sub = spvEngineStore
+        .listSubscriptions(spv.sponsorPartnerId, spvId)
+        .find((x) => x.id === subId);
+      if (!sub) return res.status(404).json({ error: "SUBSCRIPTION_NOT_FOUND" });
+      if (!viewerInvestorIds(ctx.userId).includes(sub.investorId)) {
+        return res.status(403).json({ error: "NOT_AN_LP" });
+      }
+      const updated = spvEngineStore.advanceSubscription(
+        spv.sponsorPartnerId,
+        spvId,
+        subId,
+        "soft_circled",
+      );
+      res.json({
+        subscription: updated,
+        /* The words ship WITH the act, so no client can render this as a
+           commitment by omission. Same sentence the register already uses. */
+        stageLabel: spvSubscriptionStageLabelForRegister(updated.status),
+        notCapitalNotice:
+          "A soft-circle records your interest. It is not a commitment, and no funds are due. " +
+          "Your GP will confirm the investment only after your subscription documents are signed " +
+          "and your funds have been received.",
+      });
+    } catch (e) { err(res, e); }
+  });
+
+  /* ── GP: I affirm BOTH offline conditions, and I am committing this LP. ────
+     ONE request, TWO explicit affirmations, and the stage change happens only
+     after the affirmation is durably recorded. Never inferred, never automatic. */
+  app.post("/api/partner/me/spv/:spvId/subscriptions/:subId/gp-confirm", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const spvId = String(req.params.spvId);
+      const subId = String(req.params.subId);
+      const partnerId = req.partnerContext!.partnerId;
+      /* RECORD FIRST, ADVANCE SECOND. If this throws, nothing moved and the GP
+         gets `GP_OFFLINE_CONFIRMATION_INCOMPLETE` with its sentence. If it
+         succeeds and the advance then fails, we are left with an affirmation and
+         no commitment — which is the safe direction: a recorded statement with no
+         money movement, rather than moved money with no statement of why. */
+      const confirmation = spvEngineStore.recordGpOfflineConfirmation(partnerId, spvId, subId, {
+        documentsSigned: body.documentsSigned,
+        fundsReceived: body.fundsReceived,
+        actorId: req.partnerContext!.userId,
+      });
+      /* The e-sign / KYC / accreditation / fee gates on `committed` are the
+         PRE-EXISTING R105 gates and this route does not relax any of them — the
+         dual affirmation is an ADDITIONAL condition, never a substitute. The
+         document reference is forwarded because "the documents are signed" and
+         "here is the signed document" are the same statement, and refusing to
+         carry it would force the GP to make the same claim twice. */
+      const updated = spvEngineStore.advanceSubscription(partnerId, spvId, subId, "committed", {
+        subscriptionDocRef:
+          typeof body.subscriptionDocRef === "string" ? body.subscriptionDocRef : undefined,
+      });
+      res.json({
+        subscription: updated,
+        confirmation,
+        stageLabel: spvSubscriptionStageLabelForRegister(updated.status),
+      });
+    } catch (e) { err(res, e); }
+  });
+
   /* ── subscriptions (unified flow + 3 gates) ────────────────────────────── */
   app.post("/api/partner/me/spv/:spvId/subscriptions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
@@ -692,7 +1021,65 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.patch("/api/partner/me/spv/:spvId/subscriptions/:subId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const body = req.body ?? {};
-      res.json({ subscription: spvEngineStore.advanceSubscription(req.partnerContext!.partnerId, String(req.params.spvId), String(req.params.subId), body.to, body) });
+      /* ══════════════════════════════════════════════════════════════════════
+         WAVE 162 · BATCH 3 ITEM B (B-1) — THE BOUNDARY CHECK, AND IT LANDS
+         BEFORE THE STORE IS CALLED AT ALL.
+         ══════════════════════════════════════════════════════════════════════
+         WHAT WAS HERE. `body.to` went straight into `advanceSubscription` with no
+         zod schema and no enum check, and the store assigned it onto the row. Two
+         measured consequences:
+
+           1. An ARBITRARY STRING persisted as a subscription status, into a
+              hash-chained status column. A row reading "committedd" is neither
+              `committed` nor `withdrawn`, so it silently joined every all-stages
+              basis while being invisible to every committed-only one.
+           2. `body` is forwarded WHOLESALE as the `data` argument, so a JSON
+              STRING reached `wiredMinor` untyped.
+
+         WHY VALIDATE HERE WHEN THE STORE ALSO VALIDATES. Because they answer
+         different questions and the spec requires both (B-1). The store's check
+         is the one that cannot be bypassed by a caller that never touches an HTTP
+         body. THIS check is the one that makes the refusal a clean 400 carrying a
+         sentence a person can read, instead of a 500 raised from inside a store
+         — and `err()` above now maps the store's codes as well, so a caller that
+         reaches the store by another route lands on the same words.
+
+         NOTHING IS COERCED. A `to` of the wrong type is refused, not `String()`d;
+         a `wiredMinor` of the wrong type is refused, not `Number()`d. Coercing at
+         a boundary is how a string became a money value in the first place.
+
+         `message` is the boundary-safe headline — `queryClient.ts:60-65` discards
+         any server message of 240 characters or more, and
+         `PartnerSpvDetail.tsx:267/:314` render `e.message` RAW, so a bare code
+         here would put an enum on a GP's screen (R77). `guidance` carries the
+         unabridged sentence. Neither is ever the code.
+         ══════════════════════════════════════════════════════════════════════ */
+      const to: unknown = body.to;
+      if (to === undefined || to === null || to === "") {
+        return res.status(400).json({
+          error: "SUBSCRIPTION_STATUS_REQUIRED",
+          message: spvSubscriptionRefusalHeadline("SUBSCRIPTION_STATUS_REQUIRED") ?? undefined,
+          guidance: spvSubscriptionRefusalCopy("SUBSCRIPTION_STATUS_REQUIRED") ?? undefined,
+          fieldError: "to",
+        });
+      }
+      if (!isSpvSubscriptionStatus(to)) {
+        return res.status(400).json({
+          error: `INVALID_SUBSCRIPTION_STATUS:${typeof to}:${String(to).slice(0, 40)}`,
+          message: spvSubscriptionRefusalHeadline("INVALID_SUBSCRIPTION_STATUS") ?? undefined,
+          guidance: spvSubscriptionRefusalCopy("INVALID_SUBSCRIPTION_STATUS") ?? undefined,
+          fieldError: "to",
+        });
+      }
+      if (body.wiredMinor !== undefined && !isSpvMoneyMinor(body.wiredMinor)) {
+        return res.status(400).json({
+          error: `INVALID_WIRED_MINOR:${typeof body.wiredMinor}:${String(body.wiredMinor).slice(0, 40)}`,
+          message: spvSubscriptionRefusalHeadline("INVALID_WIRED_MINOR") ?? undefined,
+          guidance: spvSubscriptionRefusalCopy("INVALID_WIRED_MINOR") ?? undefined,
+          fieldError: "wiredMinor",
+        });
+      }
+      res.json({ subscription: spvEngineStore.advanceSubscription(req.partnerContext!.partnerId, String(req.params.spvId), String(req.params.subId), to, body) });
     } catch (e) { err(res, e); }
   });
 
@@ -1029,6 +1416,20 @@ export function registerSpvEngineRoutes(app: Express): void {
       const total = subs
         .filter((s) => s.status !== "withdrawn")
         .reduce((a, s) => a + s.commitmentMinor, 0);
+      /* ══════════════════════════════════════════════════════════════
+         WAVE 161 · BATCH 3 ITEM A (A20/A21) — THE GP ROSTER'S DENOMINATOR.
+         ══════════════════════════════════════════════════════════════
+         `total` above sums EVERY non-withdrawn subscription, and `ownershipPct`
+         divides by it, so a committed LP's ownership was diluted by other
+         people's non-binding indications. The row already carried `status`, so
+         the STAGE was visible — the PERCENTAGE never was.
+
+         `ownershipPct` keeps its exact value (no client render changes, R44:
+         add). What is added: the same figure under an honest name, the
+         confirmed-capital share (`null`, not 0, for a row that is not committed),
+         the stage in words, and the vehicle-level split so the GP can see how
+         much of what is listed is actually capital. */
+      const rosterSplit = spvStageSplit(subs);
       const subscribers = subs.map((s) => {
         const idn = names.get(String(s.investorId).trim());
         const identity = identities.get(String(s.investorId).trim());
@@ -1045,6 +1446,18 @@ export function registerSpvEngineRoutes(app: Express): void {
           commitmentMinor: s.commitmentMinor,
           status: s.status,
           ownershipPct: total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
+          /* WAVE 161 · ITEM A (A20) — stage words and BOTH denominators, per row. */
+          stage: s.status,
+          stageLabel: spvSubscriptionStageLabelForRegister(s.status),
+          isConfirmedCapital: s.status === "committed",
+          ownershipPctOfAllStages:
+            total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
+          ownershipPctOfConfirmedCapital:
+            s.status === "committed"
+              ? rosterSplit.confirmedCapitalMinor > 0
+                ? s.commitmentMinor / rosterSplit.confirmedCapitalMinor
+                : 0
+              : null,
         };
       });
       /* An identity row whose LP is already on the roster above is NOT repeated
@@ -1114,7 +1527,21 @@ export function registerSpvEngineRoutes(app: Express): void {
             ...(unconfirmed ? { commitmentUnconfirmed: true as const } : {}),
           };
         });
-      res.json({ spvId, lpVisibility: spv.lpVisibility, subscribers, invites });
+      res.json({
+        spvId,
+        lpVisibility: spv.lpVisibility,
+        subscribers,
+        invites,
+        /* WAVE 161 · ITEM A (A21) — the split, and the words for each
+           denominator, so the screen can say which population it divided by
+           instead of leaving the GP to assume. */
+        split: rosterSplit,
+        splitStatement: spvStageSplitStatement(rosterSplit),
+        denominatorBasis: "all_stages" as const,
+        denominatorLabel: SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+        confirmedDenominatorLabel: SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+        basisNote: SPV_REGISTER_ALL_STAGES_BASIS,
+      });
     },
   );
 
@@ -1145,7 +1572,14 @@ export function registerSpvEngineRoutes(app: Express): void {
         invite = createLpInvite(
           ctx.partnerId,
           spvId,
-          { email: body.email, firstName: body.firstName, lastName: body.lastName, note: body.note },
+          {
+            email: body.email, firstName: body.firstName, lastName: body.lastName, note: body.note,
+            /* WAVE 166 · ITEM D (Path 2) · R131.2 — the GP states WHERE this LP
+               came from. Forwarded UNCOERCED: `createLpInvite` refuses an
+               unrecognised value rather than filing it as `direct`, and absent
+               means `direct`, which is what every pre-wave-166 caller was doing. */
+            origin: body.origin,
+          },
           ctx.userId,
         );
       } catch (e) { return err(res, e); }
@@ -1390,6 +1824,29 @@ export function registerSpvEngineRoutes(app: Express): void {
        * subscribe() cap gate (spvEngineStore.ts:1444) is untouched and unrelaxed on
        * its own path. This surfaces and records; it does not block. */
       const capImpact = computeCapImpact(spvId, investorId, amountMinor, spv.capMinor);
+      /* ══ WAVE 164 · BATCH 3 ITEM C · R133.1 — THE FIVE-PART SPLIT, MEASURED HERE
+       * FOR THE SAME REASON `capImpact` IS: BEFORE the projection.
+       *
+       * The BASIS is untouched — `computeCapImpact` above still decides the total
+       * and this only LABELS what that total is made of, taking the total as an
+       * input so the split can never contradict the gate. `excludeInvestorId` is
+       * the committing LP because `projectLpCommitted` REPLACES their existing row
+       * rather than adding to it, which is exactly the overlap `computeCapImpact`
+       * corrects; excluding them keeps confirmed + soft-circled + wired + requested
+       * equal to the resulting total.
+       *
+       * Measured BEFORE the projection so `confirmedCapitalMinor` is the confirmed
+       * capital the vehicle held when the breach happened. Reading it afterwards
+       * would include this very commit and the record would assert an overage
+       * against capital that only exists because of the commit being recorded. */
+      const capSplit = spvCapSplitFiguresForSpv({
+        spvId,
+        capMinor: capImpact.capMinor,
+        requestedMinor: capImpact.effectiveNewCommitmentMinor,
+        resultingTotalMinor: capImpact.resultingTotalMinor,
+        currency,
+        excludeInvestorId: investorId,
+      });
 
       // PROJECTION — reflect the authoritative commit onto the SPV roster.
       // `amountMinor` was converted and validated ABOVE, before the ledger
@@ -1429,6 +1886,11 @@ export function registerSpvEngineRoutes(app: Express): void {
               resultingTotalMinor: capImpact.resultingTotalMinor,
               overageMinor: capImpact.overageMinor,
               currency,
+              /* R133.1 — the durable record carries the split, so no record can
+                 assert an overage that does not exist in capital. */
+              confirmedCapitalMinor: capSplit.confirmedCapitalMinor,
+              softCircledInterestMinor: capSplit.softCircledInterestMinor,
+              wiredNotCommittedMinor: capSplit.wiredNotCommittedMinor,
             },
             String(ctx.userId ?? ""),
           );
@@ -1464,6 +1926,23 @@ export function registerSpvEngineRoutes(app: Express): void {
               overageMinor: capImpact.overageMinor,
               currency,
               capBasis: "status !== withdrawn",
+              /* WAVE 164 · ITEM C · R133.1 — the machine basis string above is
+                 KEPT (an operator's saved query still matches it) and the split is
+                 ADDED beside it, plus the basis in words. `capBasis: "status !==
+                 withdrawn"` on its own told a reader nothing about how much of
+                 that total was actually capital, which is how an audit record came
+                 to assert an overage over a population it never named. */
+              capBasisSplit: {
+                confirmedCapitalMinor: capSplit.confirmedCapitalMinor,
+                softCircledInterestMinor: capSplit.softCircledInterestMinor,
+                wiredNotCommittedMinor: capSplit.wiredNotCommittedMinor,
+                requestedMinor: capSplit.requestedMinor,
+                resultingTotalMinor: capSplit.resultingTotalMinor,
+                overageMinor: capSplit.overageMinor,
+              },
+              capBasisStatement:
+                "cap capacity counts every non-withdrawn subscription, so soft-circled interest " +
+                "occupies capacity without being capital; only the confirmed-capital figure is capital",
               durableRecordWritten: capOverrideRecorded,
             },
           );
@@ -1499,6 +1978,29 @@ export function registerSpvEngineRoutes(app: Express): void {
           canonicalCommittedMinor,
           overrideRecorded: capOverrideRecorded,
           overrideRecordFailed: capOverrideRecordFailed,
+          /* WAVE 164 · ITEM C · R133.1 — the split, ADDED beside the existing keys
+             (none of which changes meaning). `canonicalCommittedMinor` at the line
+             above is retained exactly as it was. */
+          split: {
+            capMinor: capSplit.capMinor,
+            confirmedCapitalMinor: capSplit.confirmedCapitalMinor,
+            softCircledInterestMinor: capSplit.softCircledInterestMinor,
+            wiredNotCommittedMinor: capSplit.wiredNotCommittedMinor,
+            requestedMinor: capSplit.requestedMinor,
+            resultingTotalMinor: capSplit.resultingTotalMinor,
+            overageMinor: capSplit.overageMinor,
+            currency: capSplit.currency,
+          },
+        },
+        /* WAVE 164 · R130 — the TARGET raise, reported SEPARATELY from the cap and
+           never conflated with it. `blocked: false` is explicit: a target is a
+           goal, and this commit was not refused for passing one. The durable
+           records live under `terms._targetOverages`, written by the store's four
+           committed-writers. */
+        targetRaise: {
+          targetRaiseMinor: spv.targetRaiseMinor,
+          overages: spvEngineStore.targetOveragesForSpv(ctx.partnerId, spvId),
+          blocked: false,
         },
         /* WAVE 106 — the commitment now names its holder in the response, so a
          * caller can see WHO it was attributed to and whether an existing

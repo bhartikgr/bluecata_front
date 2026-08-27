@@ -126,6 +126,14 @@ export default function CollectiveSoftCircles() {
                     />
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-400">Target: {fmtUsdOrDash(agg.targetUsd)}</span>
+                      {/* WAVE 165 · R130.2 / R139.4 — the Collective ladder stays its own
+                          ladder (R111 Q14: `soft_circle` is NOT unified with
+                          `soft_circled`, no shared code, no shared component). Only the
+                          WORDING is brought into line, so a Collective member reads the
+                          same meaning of "target" as everyone else. */}
+                      <span className="text-[10px] text-slate-400" data-testid={`target-is-a-goal-${agg.roundId}`}>
+                        goal, not a limit
+                      </span>
                       <span className="font-medium text-slate-700" data-testid={`fill-pct-${agg.roundId}`}>
                         {agg.fillPct}%
                       </span>

@@ -217,6 +217,9 @@ import {
   parseCapMultiple,
   PARTICIPATION_CAP_MAX,
 } from "@shared/liquidationTermsReader";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
 type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null; createdAt?: string | null };
 
@@ -423,10 +426,19 @@ export default function Rounds() {
                                   <span className="text-muted-foreground">subscribed (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
                                 </div>
                                 {barPct === null ? (
-                                  <div className="text-xs text-muted-foreground" data-testid={`round-progress-unavailable-${r.id}`}>{moneyView.money?.progressBp?.targetNote ?? "No target recorded"}</div>
+                                  <div className="text-xs text-muted-foreground" data-testid={`round-progress-unavailable-${r.id}`}>{moneyView.money?.progressBp?.targetNote ?? NOT_ON_RECORD}</div>
                                 ) : (
                                   <div className="text-xs text-muted-foreground">{fmtPct(barPct, 0)} of target subscribed</div>
                                 )}
+                              </div>
+                              {/* WAVE 165 · R130.2 / R139.4 (S13) — the founder card printed
+                                  "of $X target" and a percentage of it, which is precisely the
+                                  pairing that reads as "$X is all you may raise". The edit
+                                  form was fixed in wave 164; the CARD, which is what a
+                                  founder actually looks at, was not. */}
+                              <div className="text-[10px] text-muted-foreground" data-testid={`round-target-is-a-goal-${r.id}`}>
+                                The target is this round's fundraising goal, not a limit — commitments are never
+                                blocked for passing it.
                               </div>
                               {barPct !== null && (
                                 <div className="h-2 bg-secondary rounded-full overflow-hidden">
@@ -1038,7 +1050,12 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             <Input value={name} onChange={e => setName(e.target.value)} className="mt-1" data-testid="input-round-name" placeholder="e.g. Seed, Series A" />
           </div>
           <div>
+            {/* WAVE 164 · R130.2 (S13) — a target is a GOAL. Stated here because a
+                partner read "target" as a ceiling, which is the original defect. */}
             <Label>Target amount (USD)</Label>
+            <div className="text-xs text-muted-foreground">
+              The fundraising goal for this round, not a limit. Commitments are never blocked for passing it.
+            </div>
             <MoneyInput value={targetAmount} onChange={setTargetAmount} className="mt-1" data-testid="input-target" />
           </div>
           <div>

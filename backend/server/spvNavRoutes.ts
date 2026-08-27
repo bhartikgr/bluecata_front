@@ -69,6 +69,25 @@ function fail(res: Response, e: unknown): Response {
  * (`spv_subscription.status = 'committed'`), so a person can never be shown a
  * NAV share computed from a register they are not in.
  */
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 161 · BATCH 3 · ITEM A — FENCE (V2 §13.6). DENYING A NON-COMMITTED LP IS
+ * CORRECT. IT WILL LOOK LIKE A GAP. IT IS NOT ONE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * A soft-circled investor asking for their NAV share gets 403 here, and the same
+ * is true of side letters (`spvSideLetterRoutes.ts`) and K-1s (`spvK1Routes.ts`).
+ * A future reader auditing "which LP surfaces work for a soft-circle?" will find
+ * three that refuse and may read that as an omission this wave forgot.
+ *
+ * IT IS THE POINT. A NAV share is a share OF A REGISTER; a person who has not
+ * committed is not in that register, so there is no share to show and any figure
+ * shown would be fabricated. Relaxing this gate to "include pre-commitment
+ * stages, labelled" would hand a non-binding indication a dollar valuation — the
+ * precise defect Item A exists to remove, arriving through the door marked
+ * transparency.
+ *
+ * DO NOT RELAX THIS. Fenced and pinned by
+ * `server/__tests__/wave161_itemA_aggregation_fence.test.ts`.
+ * ════════════════════════════════════════════════════════════════════════════ */
 function isCommittedLp(spvId: string, investorId: string): boolean {
   return committedRegisterRows(spvId).some((r) => r.investorId === investorId);
 }

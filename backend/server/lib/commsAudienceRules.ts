@@ -48,6 +48,10 @@ export const AUDIENCE_RULE_KEYS = [
   "follow_peer",
   "partner_engaged_company_people",
   "partner_team_peers",
+  /* WAVE 167 · ITEM E · R139.1 — the one rule the owner has RULED ON, and the
+     only rule in this registry that ships ENABLED after 0181's four legacy
+     sources. Scope: a partner reaches THEIR OWN LPs and THEIR OWN team. */
+  "partner_own_lp_peers",
 ] as const;
 export type AudienceRuleKey = (typeof AUDIENCE_RULE_KEYS)[number];
 
@@ -88,11 +92,50 @@ function rowToRule(r: Record<string, unknown>): AudienceRule {
   };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 167 · ITEM E · R139.1 — SEEDING `partner_own_lp_peers` ON AN ALREADY-HEALED
+ * DATABASE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * `applyCommsDelegatedContextSchema` re-runs migration 0181's DDL only when the
+ * rules table is ABSENT or EMPTY, which is right for what it defends but means a
+ * database already carrying 0181's six rows will never learn about a seventh.
+ * Migration 0210 supplies the row in production; this does the same thing for any
+ * database the migration runner has not reached, so a build cannot ship a rule key
+ * the code evaluates and the database has never heard of — `isAudienceRuleEnabled`
+ * treats an unknown key as OFF, which would silently reinstate the very "No
+ * eligible contacts" emptiness this item removes.
+ *
+ * `INSERT OR IGNORE`, so an owner who later disables the rule keeps their decision:
+ * this seeds an absent row, it never re-asserts a value over a present one.
+ * Never throws — a directory read must not fail because a seed could not be written.
+ */
+function ensureWave167OwnLpPeersRule(db: any): void {
+  try {
+    db.prepare(
+      `INSERT OR IGNORE INTO comms_audience_rules
+         (rule_key, applies_to_viewer_role, enabled, requires_owner_decision,
+          description, recommended_default, decided_at, decided_by)
+       VALUES ('partner_own_lp_peers', 'partner', 1, 0, ?, ?, datetime('now'), 'owner:R139.1')`,
+    ).run(PARTNER_OWN_LP_PEERS_DESCRIPTION, PARTNER_OWN_LP_PEERS_RECOMMENDATION);
+  } catch {
+    /* Table not ready yet, or a read-only handle. The caller's fallback covers it. */
+  }
+}
+
+/** The rendered statement of the rule. Kept beside the code that evaluates it so
+ *  the admin surface and migration 0210 cannot describe two different rules. */
+export const PARTNER_OWN_LP_PEERS_DESCRIPTION =
+  "A partner may message the LPs of the SPVs their own organisation sponsors, and the other active members of their own partner organisation. It grants no access to another partner's LPs, another partner's team, a founder's cap-table members, or any Collective member the partner has no relationship with.";
+
+export const PARTNER_OWN_LP_PEERS_RECOMMENDATION =
+  "enabled — the partner cannot administer an SPV they cannot talk to its LPs about";
+
 /** Every rule row, healing the schema first. Never throws. */
 export function readRules(): AudienceRule[] {
   try {
     const db: any = rawDb();
     applyCommsDelegatedContextSchema(db);
+    ensureWave167OwnLpPeersRule(db);
     const rows = db
       .prepare(
         `SELECT rule_key, applies_to_viewer_role, enabled, requires_owner_decision,

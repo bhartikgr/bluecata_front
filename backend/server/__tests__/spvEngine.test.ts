@@ -110,7 +110,13 @@ beforeAll(() => {
 describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("managing_partner creates an SPV (carry_basis chosen) → 201", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
+      /* WAVE 173 · ITEM 3 — this file's own `createSpv` helper (:55-63) was
+         updated for the WAVE 86B attestation gate; these three inline `post()`
+         calls were not, so they died at the gate. Bringing the BODY up to the
+         contract; every assertion below is unchanged (R98). See
+         `build_log/wave173/W173_SIGNOFF_VERDICT.md`. */
       name: "Alpha SPV", jurisdiction: "delaware", carryBasis: "per_deployment",
+      signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(201);
     expect(r.body.spv.carryBasis).toBe("per_deployment");
@@ -121,6 +127,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("carry_basis is REQUIRED (no default) → 400 CARRY_BASIS_REQUIRED", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "No Carry SPV", jurisdiction: "delaware",
+      signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("CARRY_BASIS_REQUIRED");
@@ -129,6 +136,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("invalid jurisdiction → 400 INVALID_JURISDICTION", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Bad Juris", jurisdiction: "atlantis", carryBasis: "whole_spv",
+      signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("INVALID_JURISDICTION");

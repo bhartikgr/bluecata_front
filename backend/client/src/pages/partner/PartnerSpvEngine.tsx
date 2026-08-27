@@ -44,13 +44,18 @@ import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import { SPV_EDU } from "@/lib/spvEducation"; /* WAVE 8 / ORP-063 */
 import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 import { spvStatusLabel } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
-import { ATTESTATION_TEXT_V1 } from "@shared/spvAttestation"; /* WAVE 138 — one definition, shared with the server that records it */
+/* WAVE 170 — R77: a refusal reaching a paying client is a plain sentence with a
+   next step, or a traceable reference; never whatever string arrived. */
+import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
+import { attestationTextForType } from "@shared/spvAttestation"; /* WAVE 138 — one definition, shared with the server that records it; WAVE 169 — resolved per vehicle type */
 import {
   SPV_CARRY_BASES,
   SPV_CARRY_BASIS_HELP,
   SPV_TYPES,
   SPV_TYPE_LABELS,
   SPV_TYPE_HELP,
+  spvLaunchButtonLabel, /* WAVE 169 — the launch control names the vehicle */
+  spvLaunchedToastTitle, /* WAVE 169 — so does its confirmation */
   SPV_MANDATE_MODES,
   SPV_MANDATE_MODE_LABELS,
   SPV_MANDATE_MODE_HELP,
@@ -498,7 +503,7 @@ export default function PartnerSpvEngine() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
       toast({ title: "Distribution scope updated" });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not update scope", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not update scope", description: partnerActionRefusalText(e) }),
   });
 
   const create = useMutation({
@@ -610,12 +615,27 @@ export default function PartnerSpvEngine() {
       }
       return spv as SpvDTO;
     },
-    onSuccess: () => {
+    onSuccess: (created: SpvDTO) => {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
+      /* WAVE 169 · R77 — READ THE TYPE OFF THE CREATED VEHICLE, NOT OFF WIZARD
+         STATE. `setW(EMPTY_WIZARD)` on the line below resets the wizard's type to
+         `spv`, so a title derived from wizard state after the reset would be a race
+         with it; the server's own record of what it created cannot drift. Falls
+         back to the type just submitted, and `spvLaunchedToastTitle` falls back
+         again to the single-deal wording, so the confirmation is never blank.
+         An `spv` (and a multi-asset SPV) is still told `SPV launched` — see
+         `SPV_LAUNCHED_TOAST_TITLES` in shared/spvEngine.ts. */
+      const launchedType = typeof created?.spvType === "string" && created.spvType.trim() ? created.spvType : w.spvType;
       setWizardOpen(false); setStep(0); setW(EMPTY_WIZARD);
-      toast({ title: "SPV launched" });
+      /* WAVE 169 · R138 — the original literal STAYS, verbatim, as the branch that
+         still means what it always meant: the single-deal SPV. The per-type title
+         is a SIBLING branch, not a replacement, because `drop:restyle` reads toast
+         copy statically and scored the pure call form as a REMOVED toast string
+         ("DROPPED toastCopy … SPV launched"). Same shape as the launch button
+         label a few lines below. */
+      toast({ title: launchedType === "spv" ? "SPV launched" : spvLaunchedToastTitle(launchedType) });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Launch failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Launch failed", description: partnerActionRefusalText(e) }),
   });
 
   /* ══════════════════════════════════════════════════════════════════════
@@ -1200,9 +1220,15 @@ export default function PartnerSpvEngine() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 {/* 3h/3i — amounts labelled with the selected currency, stored as minor */}
-                <div><Label>{amountLabel("Target raise")}</Label><Input data-testid="spv-w-target" type="number" value={w.targetRaiseMinor} onChange={(e) => setW({ ...w, targetRaiseMinor: e.target.value })} /></div>
+                {/* WAVE 165 · R130.2 / R139.4 — THE WIZARD IS WHERE THE DEFECT WAS
+                    AUTHORED. A GP typed 5,000,000 here, a partner later read it as
+                    the amount the vehicle would accept, and committed 10,000,000.
+                    Three fields sat side by side with no statement of which one is
+                    the maximum. Each now says what it is, as an added last child of
+                    its own field <div> so no container ordinal moves. */}
+                <div><Label>{amountLabel("Target raise")}</Label><Input data-testid="spv-w-target" type="number" value={w.targetRaiseMinor} onChange={(e) => setW({ ...w, targetRaiseMinor: e.target.value })} /><div className="text-[10px] text-[color:var(--cv-color-text-faint)] mt-1" data-testid="spv-w-target-is-a-goal">The fundraising goal you are aiming for — not a limit. Commitments may exceed it and are never refused for doing so.</div></div>
                 <div><Label>{amountLabel("Min check")}</Label><Input data-testid="spv-w-mincheck" type="number" value={w.minCheckMinor} onChange={(e) => setW({ ...w, minCheckMinor: e.target.value })} /></div>
-                <div><Label>{amountLabel("Cap")}</Label><Input data-testid="spv-w-cap" type="number" value={w.capMinor} onChange={(e) => setW({ ...w, capMinor: e.target.value })} /></div>
+                <div><Label>{amountLabel("Cap")}</Label><Input data-testid="spv-w-cap" type="number" value={w.capMinor} onChange={(e) => setW({ ...w, capMinor: e.target.value })} /><div className="text-[10px] text-[color:var(--cv-color-text-faint)] mt-1" data-testid="spv-w-cap-is-the-maximum">The maximum this vehicle may accept in total. This one IS a limit and commitments past it are refused. Optional — leave it blank for no maximum.</div></div>
                 {/* 3k/3l — currency dropdown instead of free text */}
                 <div>
                   <Label>Currency</Label>
@@ -1265,6 +1291,15 @@ export default function PartnerSpvEngine() {
                 onEdit={() => setStep(2)}
               />
               <ReviewRow label="Target raise" value={wizardMoneyDisplay(w.targetRaiseMinor, w.currency, "Target raise")} onEdit={() => setStep(3)} />
+              {/* WAVE 165 · R130.2 / R139.4 — the review step is the last thing a GP
+                  reads before the vehicle exists, so it is the last chance to say
+                  which of these two numbers is a ceiling. Rendered as its own
+                  sibling row rather than folded into the ReviewRow value, which
+                  would have replaced a rendered value node. */}
+              <div className="text-[10px] text-[color:var(--cv-color-text-faint)] px-1" data-testid="spv-w-review-target-is-a-goal">
+                Target raise is the goal being aimed for and never blocks a commitment. The cap, if
+                you set one, is the maximum this vehicle may accept; blank means no maximum.
+              </div>
               <ReviewRow label="Distribution scope" value={SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.find((o) => o.value === w.distributionScope)?.label ?? w.distributionScope} onEdit={() => setStep(3)} />
               <ReviewRow label="Co-investor visibility" value={w.lpVisibility === "co_investors" ? "On (club deal)" : "Off (own only)"} onEdit={() => setStep(3)} />
               <ReviewRow label="Carry basis" value={w.carryBasis ? (w.carryBasis === "per_deployment" ? "Per deployment" : "Whole SPV") : "— (required)"} onEdit={() => setStep(2)} />
@@ -1410,7 +1445,12 @@ export default function PartnerSpvEngine() {
                     checked={w.signoffAccepted}
                     onChange={(e) => setW({ ...w, signoffAccepted: e.target.checked })}
                   />
-                  <span className="text-xs text-[var(--cv-color-text-secondary)]">{ATTESTATION_TEXT_V1}</span>
+                  {/* WAVE 169 · R77 — the sentence names the vehicle the GP selected on step 1.
+                      Resolved from the SAME shared authority the server records
+                      (`attestationTextForType`, shared/spvAttestation.ts), so the text signed
+                      here and the text stored in `spv_launch_signoffs` are the same bytes by
+                      construction. `spv` still resolves to `ATTESTATION_TEXT_V1` verbatim. */}
+                  <span className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="spv-attestation-text">{attestationTextForType(w.spvType)}</span>
                 </label>
                 {(!w.signoffLegalName.trim() || !w.signoffAccepted) && (
                   <div className="text-xs text-rose-600" data-testid="spv-signoff-error">
@@ -1430,7 +1470,11 @@ export default function PartnerSpvEngine() {
               <Button data-testid="spv-wizard-next" disabled={!canAdvance()} onClick={() => setStep(step + 1)} style={{ background: NAVY, borderColor: NAVY }}>Next</Button>
             ) : (
               <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || !w.currencyConfirmed || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY, borderColor: NAVY }}>
-                {create.isPending ? "Launching…" : "Launch SPV"}
+                {/* WAVE 169 · R77 — the control names what it launches. The `spv` arm keeps the
+                    original literal in place (the guard scores a replaced text node as a removed
+                    copy string, and "Launch SPV" is correct for a single-deal SPV anyway); every
+                    other type reads its own label from `SPV_LAUNCH_BUTTON_LABELS`. */}
+                {create.isPending ? "Launching…" : w.spvType === "spv" ? "Launch SPV" : spvLaunchButtonLabel(w.spvType)}
               </Button>
             )}
           </div>
@@ -1692,6 +1736,13 @@ export default function PartnerSpvEngine() {
                     <div className="font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
                     <div className="text-[10px] text-[color:var(--cv-color-text-faint)]" data-testid={`spv-target-raise-caption-${s.id}`}>
                       Target raise — not the amount committed
+                    </div>
+                    {/* WAVE 165 · R130.2 / R139.4 — the caption above says what the
+                        figure is NOT. It never said what it IS, so a reader could
+                        still take it for the ceiling. The original literal is kept
+                        verbatim and the positive statement is ADDED beside it. */}
+                    <div className="text-[10px] text-[color:var(--cv-color-text-faint)]" data-testid={`spv-target-raise-goal-${s.id}`}>
+                      fundraising goal, not a limit
                     </div>
                   </div>
                   {canWrite && (

@@ -23,6 +23,7 @@ import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PartnerSpvs from "../PartnerSpvs";
 import PartnerFunds from "../PartnerFunds";
+import { attestationTextForType } from "@shared/spvAttestation"; /* WAVE 169 — the per-type resolver, pinned against the bytes extracted from source */
 
 const REPO_ROOT = path.resolve(__dirname, "../../../../..");
 const ROUTES_SRC = fs.readFileSync(path.join(REPO_ROOT, "server/partnerRoutes.ts"), "utf8");
@@ -424,7 +425,23 @@ describe("W138 pin 5 — attestation anti-divergence", () => {
     // guard the extraction itself
     expect(serverText.startsWith("I certify that I am authorized to launch")).toBe(true);
     expect(serverText.endsWith("(ESIGN/UETA).")).toBe(true);
-    expect(SIGNOFF_STORE_SRC).toContain("attestationText: ATTESTATION_TEXT_V1");
+    /* ══ WAVE 169 — RE-ARGUED IN PLACE, NOT LOWERED (R98, wave-168 precedent). ══
+       WAS: `expect(SIGNOFF_STORE_SRC).toContain("attestationText: ATTESTATION_TEXT_V1")`.
+       WHAT IT WAS PROTECTING: that the store records the SHARED constant and not a
+       retyped literal — an anti-divergence pin, not a pin on the constant's name.
+       WHY IT CHANGED: the store now records `resolveAttestation(input.spvType)`,
+       because a fund must not be attested as a special-purpose vehicle (R77). The
+       literal source string it looked for no longer exists.
+       WHAT IS PINNED INSTEAD — the same property, more of it: the store records
+       from the shared resolver (source-level), records text and version TOGETHER
+       so they cannot desync, and the resolver's default/`spv` answer is still
+       byte-identical to the v1 bytes extracted from source above. */
+    expect(SIGNOFF_STORE_SRC).toContain("resolveAttestation(input.spvType)");
+    expect(SIGNOFF_STORE_SRC).toContain("attestationText: attestation.text");
+    expect(SIGNOFF_STORE_SRC).toContain("attestationVersion: attestation.version");
+    expect(SIGNOFF_STORE_SRC).not.toContain("attestationText: \"I certify");
+    expect(attestationTextForType("spv")).toBe(serverText);
+    expect(attestationTextForType(undefined)).toBe(serverText);
 
     mount(<PartnerSpvs />);
     fireEvent.click(screen.getByTestId("partner-spvs-new-toggle"));
@@ -450,5 +467,28 @@ describe("W138 pin 5 — attestation anti-divergence", () => {
     };
     for (const r of roots) walk(path.join(REPO_ROOT, r));
     expect(hits).toEqual(["shared/spvAttestation.ts"]);
+    /* WAVE 169 — and the per-type wordings are DERIVED from that one definition,
+       never retyped: no file outside it contains a second full attestation
+       sentence for any other vehicle noun. */
+    const derivedNeedles = [
+      "I certify that I am authorized to launch this fund on ",
+      "I certify that I am authorized to launch this syndicate on ",
+      "I certify that I am authorized to launch this rolling fund on ",
+    ];
+    const derivedHits: string[] = [];
+    const walk2 = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "__tests__") continue;
+          walk2(p);
+        } else if (/\.tsx?$/.test(entry.name)) {
+          const src = fs.readFileSync(p, "utf8");
+          if (derivedNeedles.some((n) => src.includes(n))) derivedHits.push(path.relative(REPO_ROOT, p));
+        }
+      }
+    };
+    for (const r of roots) walk2(path.join(REPO_ROOT, r));
+    expect(derivedHits).toEqual([]);
   });
 });

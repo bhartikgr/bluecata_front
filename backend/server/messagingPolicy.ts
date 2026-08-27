@@ -67,6 +67,45 @@ const isValidId = (v: unknown): v is string =>
  * (auth_users first for invite-created investors/partners), but is
  * self-contained so messagingPolicy stays the single source of truth.
  */
+/**
+ * WAVE 167 · ITEM E — is this user recorded as a partner by a DURABLE row?
+ *
+ * Two branches, in the owner's stated order:
+ *   (a) R132.3's own condition — a `contacts` row of kind 'consortium_partner'.
+ *   (b) an ACTIVE `partner_team_members` row. Named separately because (a) cannot
+ *       fire on the live database, where `contacts` is empty.
+ *
+ * READ-ONLY and fails CLOSED to `false`: if neither table can be read, the caller
+ * keeps whatever role it already had. A role resolver must never invent a partner.
+ */
+function isPartnerByDurableRecord(db: any, uid: string): boolean {
+  try {
+    const c = db
+      .prepare(
+        `SELECT 1 AS hit FROM contacts
+          WHERE (id = ? OR lower(email) = lower(?)) AND kind = 'consortium_partner'
+          LIMIT 1`,
+      )
+      .get(uid, uid) as { hit?: number } | undefined;
+    if (c?.hit) return true;
+  } catch {
+    /* contacts table optional — fall through to the team-membership branch. */
+  }
+  try {
+    const t = db
+      .prepare(
+        `SELECT 1 AS hit FROM partner_team_members
+          WHERE user_id = ? AND status = 'active' AND removed_at IS NULL
+          LIMIT 1`,
+      )
+      .get(uid) as { hit?: number } | undefined;
+    if (t?.hit) return true;
+  } catch {
+    /* partner_team_members absent on a minimal database — not a partner, then. */
+  }
+  return false;
+}
+
 export function resolveDmRole(userId: string): DmRole {
   if (!isValidId(userId)) return "unknown";
   const uid = userId.trim();
@@ -86,6 +125,45 @@ export function resolveDmRole(userId: string): DmRole {
         .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
         .get(uid) as { role?: string } | undefined;
       const legacyRole = normalizeRole(userRow?.role);
+      /* ══════════════════════════════════════════════════════════════════════
+         WAVE 167 · ITEM E · STEP 2a · R132.3 — A PARTNER WHOSE LEGACY ROW SAYS
+         'investor'.
+         ══════════════════════════════════════════════════════════════════════
+         THE DEFECT THIS FIXES, MEASURED ON LIVE, NOT ASSUMED.
+         The live consortium partner is `users` row
+         `u_partner_keiretsu | partner@keiretsu.ca | investor`, and there is NO
+         `auth_users` row for that id at all. So step 1 returns 'unknown', step 2
+         returns 'investor', and the function never reaches step 3. That single
+         value is why R139's rule could not have worked on its own:
+         `partner_own_lp_peers` is scoped to the 'partner' viewer role, and
+         `isAudienceRuleEnabled` requires the scope to MATCH the resolved role, so
+         a partner resolving as 'investor' would have gone on seeing "No eligible
+         contacts" with the rule fully enabled. Enabling the rule without this
+         step would have shipped a fix that fixes nothing.
+
+         THE SECOND BRANCH, AND WHY IT IS LABELLED RATHER THAN HIDDEN.
+         R132.3 words step 2a in terms of the `contacts` table
+         (`kind='consortium_partner'`) — which is exactly step 3's existing test.
+         On live that table is EMPTY, so step 2a AS LITERALLY WORDED CANNOT FIRE.
+         Rather than quietly substitute a different condition for the owner's, this
+         implements the owner's condition FIRST and adds one explicitly-named
+         second branch — an ACTIVE `partner_team_members` row — which is the
+         durable fact that actually distinguishes the live partner. That table is
+         only READ here; its six rows are not deduped or altered (R135.8).
+
+         WHY THIS CANNOT BROADEN ANYONE ELSE.
+         The whole step is gated on `legacyRole === "investor"`. A founder, an
+         admin, an already-'partner' row, an unknown row and every user with an
+         `auth_users` role are all untouched, because either they never reach here
+         or they fail that guard. It can only ever turn 'investor' into 'partner',
+         and only for a user the database independently records as a partner.
+
+         WHAT IT DOES NOT DO.
+         It grants no audience by itself. It selects which RULES apply; every rule
+         still has to be enabled and still applies its own fence. */
+      if (legacyRole === "investor" && isPartnerByDurableRecord(db, uid)) {
+        return "partner";
+      }
       if (legacyRole !== "unknown") return legacyRole;
     } catch {
       /* users table optional / absent — continue */

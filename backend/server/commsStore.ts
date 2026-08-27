@@ -128,8 +128,14 @@ import { partnerTeamStore } from "./partnerWorkspaceStore";
    STATIC imports: a call-time `require` of either module would resolve under
    tsx and throw MODULE_NOT_FOUND inside the bundled production build (proved by
    execution in item 5 of this wave). */
+import type { AudienceRule } from "./lib/commsAudienceRules";
 import {
   readRules as readAudienceRules,
+  /* WAVE 167 · ITEM E — the preview route validates `:key` against the SAME
+     registry the evaluator uses, so an unknown key is a 400 and never an
+     unhandled throw. Imported explicitly: wave 167's first pass referenced this
+     symbol bare, which is a ReferenceError at request time, not a type nit. */
+  AUDIENCE_RULE_KEYS,
   isAudienceRuleEnabled,
   pendingOwnerDecisions,
   setAudienceRuleEnabled,
@@ -144,6 +150,12 @@ import {
   resolveDelegatedContext,
   delegatedCompanyPeopleIds,
   partnerTeamPeerIds,
+  partnerOwnAudienceIds,
+  /* WAVE 168 · R140.1 — the own-LP half of the wave-167 audience, imported
+     separately because the NAMING fence is narrower than the AUDIENCE fence:
+     names unmask only for LPs on SPVs this partner sponsors, never for the
+     partner's own team (R140.3 holds that for the owner). */
+  partnerOwnLpPeerIds,
   stampDelegatedContext,
   readDelegatedContext,
 } from "./lib/partnerDelegatedContext";
@@ -3442,6 +3454,63 @@ export function registerCommsRoutes(app: Express): void {
         candidateIds.add(p);
       }
     }
+    /* WAVE 167 · ITEM E · R139.1 — the partner's OWN LPs and OWN team, and this
+       one ships ENABLED because the owner ruled on it. It is ADDITIVE: a seventh
+       `if` that can only ADD to `peers`, so no rule above it loses an audience and
+       no fence above it is relaxed. In particular `cap_table_peer` keeps its
+       `notSpvBackedSql` fence, `partner_engaged_company_people` stays disabled, and
+       R108's withdrawal of `delegatedCompanyPeopleIds` is NOT reopened — this
+       branch never calls it (R139.2).
+
+       `candidateIds.add` is required as well as `peers.add`: an LP who registered
+       through an invite may be in neither the seeded `COMMS_USERS` map nor the
+       first 500 durable ids, and a peer who is not a candidate is a peer the loop
+       below never considers. */
+    if (isAudienceRuleEnabled("partner_own_lp_peers", viewerRole)) {
+      for (const p of partnerOwnAudienceIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
+    }
+
+    /* WAVE 168 · ITEM A · R140.1 — THE ONE NARROW NAMING CONTEXT THIS WAVE ADDS.
+
+       THE DEFECT. Wave 167 shipped the audience and then proved on the rendered
+       DOM that every own LP still displayed the identical string
+       "Private Investor", so a partner who typed their own LP's real name read
+       "No eligible contacts."
+       (`build_log/wave167/artefacts/BLOCKER_wave167_own_lp_names_masked.md`).
+
+       THE RULING. R140.1: a Consortium Partner may see the names of LPs on SPVs
+       IT SPONSORS — nothing wider. The justification is also the bound: **the
+       partner typed those names in.** "Invite an LP" and "Commit an LP to the cap
+       table" both take a first name, a last name and an email entered by the
+       partner, and the partner holds the subscription agreement. Masking a name
+       back to the party who authored it is a defect, not privacy; no third
+       party's data is disclosed.
+
+       WHAT THIS IS, PRECISELY. It is a CALLING CONTEXT, not a policy change. The
+       SACRED `userPrivacyResolver` is NOT edited and knows nothing about SPVs:
+       these ids are simply resolved in the SAME `message` context, with the SAME
+       `isCoMember: true` assertion, that a cap-table counterparty already gets.
+       Every consequence of that context still applies — in particular an LP who
+       has EXPLICITLY set `visibleToCoMembers:false` is STILL masked, because the
+       resolver's explicit opt-out wins over the counterparty default. A partner
+       may read a name they authored; they may not overrule a person who said no.
+
+       THE FENCE IS `spv.sponsor_partner_id`, AND ONLY THAT. `partnerOwnLpPeerIds`
+       is used deliberately in place of the wider `partnerOwnAudienceIds` used by
+       the audience branch above: the audience covers the partner's own TEAM as
+       well, and R140.3 holds the team half for the owner, so team members keep
+       rendering exactly as they did before this wave. Nothing here reads
+       `delegatedCompanyPeopleIds` (R108 stays withdrawn), `captable_commits`,
+       `company_members` or any Collective source, and `notSpvBackedSql` is
+       untouched.
+
+       Computed ONCE, outside the loop, and only for a viewer the rule applies to. */
+    const ownLpNameIds: Set<string> = isAudienceRuleEnabled("partner_own_lp_peers", viewerRole)
+      ? new Set<string>(partnerOwnLpPeerIds(viewerId))
+      : new Set<string>();
 
     const out: Array<Record<string, unknown>> = [];
     for (const id of Array.from(candidateIds)) {
@@ -3450,13 +3519,15 @@ export function registerCommsRoutes(app: Express): void {
       const u = commsUserRef(id);
       if (!u) continue;
       /* PRIVACY: never the raw legal name for anyone but the subject. Cap-table
-         co-membership uses the SACRED predicate; everyone else is resolved in
-         the `collectiveDirectory` context, which requires an EXPLICIT opt-in and
-         otherwise yields the screen name or "Private Investor". An explicit
-         `visibleToCoMembers:false` therefore still wins. */
+         co-membership uses the SACRED predicate; a sponsoring partner's own LP is
+         resolved in the same counterparty context under R140.1 (see the block
+         above); everyone else is resolved in the `collectiveDirectory` context,
+         which requires an EXPLICIT opt-in and otherwise yields the screen name or
+         "Private Investor". An explicit `visibleToCoMembers:false` therefore still
+         wins in every one of those cases. */
       const displayName = isSelf
         ? u.legalName
-        : areCoMembersOnAnyCapTable(viewerId, id)
+        : areCoMembersOnAnyCapTable(viewerId, id) || ownLpNameIds.has(id)
           ? resolveDisplayName(id, viewerId, "message", { legalName: u.legalName, isCoMember: true })
           : resolveDisplayName(id, viewerId, "collectiveDirectory", { legalName: u.legalName });
       /* `readUserPrivacyRaw` returns null when the subject has never set a
@@ -3559,6 +3630,101 @@ export function registerCommsRoutes(app: Express): void {
             engagements: delegated.engagements,
           }
         : null,
+    });
+  });
+
+  /* ════════════════════════════════════════════════════════════════════════════
+     WAVE 167 · ITEM E · THE ADMIN PREVIEW · R139.3
+     ════════════════════════════════════════════════════════════════════════════
+     WHAT IT ANSWERS. "If I enable this rule for this person, exactly who becomes
+     reachable?" Before this route the owner could toggle a rule that changes who
+     can see a real person's data and had NO way to see the consequence except by
+     enabling it and asking a partner to look. That is not a decision, it is a
+     guess with a person's confidentiality as the stake.
+
+     IT IS A PREVIEW, SO IT NEVER WRITES AND IT NEVER DEPENDS ON THE TOGGLE.
+     It evaluates the rule's SOURCE directly, so an owner can inspect the audience
+     of a DISABLED rule without enabling it, and can confirm an ENABLED rule is
+     still scoped the way they ruled. `enabledForThisViewer` is reported separately
+     so the two facts — "who this would reach" and "whether it currently applies" —
+     are never conflated.
+
+     WHAT IT DELIBERATELY DOES NOT RETURN. No legal names, no emails, no privacy
+     flags: ids and a count only. A confidentiality-inspection tool that leaks the
+     identities it is meant to protect would be self-defeating, and an admin who
+     needs a name already has the directory. `requireAdmin` — never a partner. */
+  app.get("/api/comms/audience-rules/:key/preview", requireAdmin, (req, res) => {
+    const key = String(req.params.key ?? "");
+    const viewerId = String((req.query as Record<string, unknown>)?.viewerId ?? "").trim();
+    if (!AUDIENCE_RULE_KEYS.includes(key as never)) {
+      return res.status(400).json({ ok: false, error: "unknown_rule_key" });
+    }
+    if (!viewerId) {
+      return res.status(400).json({ ok: false, error: "viewer_required" });
+    }
+    const viewerRole = resolveDmRole(viewerId);
+    let audience: string[] = [];
+    let sourceLabel = "";
+    switch (key) {
+      case "partner_own_lp_peers":
+        audience = partnerOwnAudienceIds(viewerId);
+        sourceLabel =
+          "the LPs of the SPVs this partner organisation sponsors, plus the other active members of that partner organisation";
+        break;
+      case "partner_team_peers":
+        audience = partnerTeamPeerIds(viewerId);
+        sourceLabel = "the other active members of this partner organisation";
+        break;
+      case "partner_engaged_company_people":
+        audience = delegatedCompanyPeopleIds(viewerId);
+        sourceLabel = "the active members of every company this partner holds a live engagement for";
+        break;
+      case "cap_table_peer":
+        audience = durableCapTablePeerIds(viewerId);
+        sourceLabel = "durable cap-table co-members, excluding SPV-backed holdings";
+        break;
+      case "chapter_peer":
+        audience = durableChapterPeerIds(viewerId);
+        sourceLabel = "co-members of the same chapter";
+        break;
+      case "follow_peer":
+        audience = durableFollowPeerIds(viewerId);
+        sourceLabel = "shared-follow peers";
+        break;
+      case "channel_participant": {
+        const set = new Set<string>();
+        for (const ch of Array.from(channels.values())) {
+          if (!ch.participantUserIds.includes(viewerId)) continue;
+          for (const p of ch.participantUserIds) if (p !== viewerId) set.add(p);
+        }
+        audience = Array.from(set.values());
+        sourceLabel = "co-participants of every channel this viewer is in";
+        break;
+      }
+      default:
+        audience = [];
+        sourceLabel = "";
+    }
+    return res.json({
+      ok: true,
+      ruleKey: key,
+      viewerId,
+      viewerRole,
+      /* Whether the rule would apply to THIS viewer right now — scope and
+         enablement together, which is the pair that actually decides the picker. */
+      enabledForThisViewer: isAudienceRuleEnabled(key, viewerRole),
+      appliesToViewerRole:
+        readAudienceRules().find((r: AudienceRule) => r.ruleKey === key)?.appliesToViewerRole ??
+        "any",
+      sourceLabel,
+      audienceCount: audience.length,
+      audienceUserIds: audience,
+      /* Plain language, because a count of zero has two very different meanings and
+         an owner must not have to guess which one they are looking at (R77). */
+      statement:
+        audience.length === 0
+          ? `This rule would make NOBODY reachable for ${viewerId} right now. Either this viewer has no relationships of this kind, or the source that feeds this rule is empty.`
+          : `This rule would make ${audience.length} ${audience.length === 1 ? "person" : "people"} reachable for ${viewerId}: ${sourceLabel}.`,
     });
   });
 

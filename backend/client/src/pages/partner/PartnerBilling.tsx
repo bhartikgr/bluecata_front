@@ -19,7 +19,10 @@
  * (GET /api/partner/me/subscription, /spv-fees, /tax-forms). All reads are
  * DB-direct; nothing is hardcoded. Totals are now multi-currency aware.
  */
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
+/* WAVE 165 · PART 3 · R77 / R111 Q13 — the ONE canonical spelling of an absent
+   value. This file previously carried three private ones. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 import { Link } from "wouter";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { formatMinorOrUnavailable, minorToMajorString } from "@/lib/moneyDisplay"; /* WAVE 21 ITEM 2 + ITEM 5 */
@@ -359,6 +362,12 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
     partnerSubscriptionEvents?: LifecycleEvent[];
     enforcement?: EnforcementBlock;
     lifecycleUnavailable?: string | null;
+    /* WAVE 165 · ITEM F · R135.5 — which billing cadences the platform actually
+       SELLS, published by the same endpoint that already serves this tab
+       (server/lib/partnerSelfServiceRoutes.ts, `cadenceAvailability`). Optional
+       so an older server simply yields no label rather than a wrong one. */
+    purchasableCycles?: string[];
+    unavailableCycles?: string[];
   }>({
     queryKey: ["/api/partner/me/subscription"],
     enabled: ready,
@@ -370,7 +379,53 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
 
   /* Merged quote flow (was PartnerSubscribe). POST resolves the DB-driven price
      for the partner's tier + chosen cycle; no price is ever hardcoded. */
-  const [cycle, setCycle] = useState<"monthly" | "annual">("monthly");
+  /* ════════════════════════════════════════════════════════════════════════
+   * WAVE 165 · ITEM F · R135.5 — THE MONTHLY CONTROLS STAY, AND SAY SO.
+   *
+   * THE DEFECT. This tab offered MONTHLY billing in three places while the
+   * server refused it: `POST /api/partner/me/subscribe` answers
+   * `409 CYCLE_NOT_PURCHASABLE` — "The 'monthly' billing cycle is not currently
+   * offered. Available: annual." A partner chose monthly, pressed a button, and
+   * was handed an error. R135.5 forbids the tempting fix: *"LABEL, do not
+   * remove ... the owner prefers adding to deleting and forbids silently
+   * dropping any control."* So every control below is still present, still
+   * selectable, and now MARKED.
+   *
+   * WHY THE MARK IS DERIVED AND NOT WRITTEN. Purchasability is configuration
+   * (`partner_pricing_model_config`), not code. A hard-coded sentence would
+   * become a lie the day the owner starts selling monthly — and would be wrong
+   * in the worse direction, warning about a restriction that no longer exists.
+   * The endpoint now publishes both sets and this reads them, so the warning
+   * cannot outlive its reason and cannot be missing while the reason holds.
+   *
+   * The `useMemo` is deliberate: the notes below are STATIC sibling JSX whose
+   * text comes from here. Building them as inline conditionals in place of the
+   * existing siblings is what the drop gate scores as removed copy.
+   * ════════════════════════════════════════════════════════════════════════ */
+  const unavailableCycles = data?.unavailableCycles ?? [];
+  const cycleAvailability = useMemo(() => {
+    const unsellable = new Set(unavailableCycles);
+    const monthlyUnavailable = unsellable.has("monthly");
+    return {
+      unsellable,
+      monthlyUnavailable,
+      /* Rendered unconditionally so the JSX shape never changes; when every
+         cadence is sellable this is the empty string and the row is silent. */
+      /* Mapped off the ARRAY, not the Set: this tsconfig targets below es2015
+         and spreading a Set is a compile error here (TS2802). */
+      notice: unsellable.size
+        ? `Not currently available for purchase: ${unavailableCycles
+            .map((c) => billingCadenceLabel(c))
+            .join(", ")}. Selecting it will be refused at checkout.`
+        : "",
+    };
+  }, [unavailableCycles.join(",")]);
+
+  /* WAVE 165 · ITEM F — this defaulted to "monthly", i.e. every partner opening
+     the tab was pre-set to the ONE cadence checkout refuses. The monthly option
+     itself is retained below (R135.5); only the default moves to the cadence R3
+     actually sells, so the first click succeeds instead of erroring. */
+  const [cycle, setCycle] = useState<"monthly" | "annual">("annual");
   const [quote, setQuote] = useState<SubscribeQuote | null>(null);
   const quoteMut = useMutation({
     mutationFn: async (): Promise<SubscribeQuote> =>
@@ -542,6 +597,13 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
                 {cancelMut.isPending ? "Working…" : "Cancel at period end"}
               </Button>
             </div>
+            {/* WAVE 165 · ITEM F · R135.5 — CONTROL 2 OF 3. "Preview switch to
+                monthly" is retained verbatim; this says the switch cannot be
+                completed while monthly is unsold, so the partner learns it before
+                pricing a change they cannot buy. */}
+            <div className="mt-2 text-[11px] text-amber-900" data-testid="plan-change-cycle-availability">
+              {cycleAvailability.notice}
+            </div>
             {previewMut.isError && (
               <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="plan-change-error">
                 {previewMut.error instanceof Error ? previewMut.error.message : "Could not price this change."}
@@ -586,6 +648,15 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
                 >
                   {applyChangeMut.isPending ? "Applying…" : "Confirm plan change"}
                 </Button>
+                {/* WAVE 165 · ITEM F · R135.5 — CONTROL 3 OF 3. This button posts
+                    `toCycle` straight to the change route, which enforces the same
+                    purchasable set. The button stays enabled and present; the
+                    refusal is now predicted rather than sprung. */}
+                <div className="mt-2 text-[11px] text-amber-900" data-testid="plan-change-apply-cycle-availability">
+                  {cycleAvailability.unsellable.has(String(changePreview.toCycle))
+                    ? `${billingCadenceLabel(String(changePreview.toCycle))} is not currently available for purchase, so this change will be refused.`
+                    : ""}
+                </div>
               </div>
             )}
           </div>
@@ -642,6 +713,14 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
           <Button size="sm" data-testid="subscribe-quote-btn" disabled={quoteMut.isPending} onClick={() => quoteMut.mutate()}>
             {quoteMut.isPending ? "Resolving…" : "Get quote"}
           </Button>
+        </div>
+        {/* WAVE 165 · ITEM F · R135.5 — CONTROL 1 OF 3. The "Monthly" option above
+            is untouched and still selectable; this states that the platform does
+            not currently sell it, rather than letting the partner discover it from
+            a 409. Rendered unconditionally (empty text when everything is
+            sellable) so the sibling shape is static. */}
+        <div className="mt-2 text-[11px] text-amber-900" data-testid="subscribe-cycle-availability">
+          {cycleAvailability.notice}
         </div>
         {quoteMut.isError && (
           <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="subscribe-quote-error">
@@ -1676,6 +1755,33 @@ const AGG_FEE_KIND_LABELS: Record<string, string> = {
   spv_deployment: "SPV deployment",
 };
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 165 · ITEM F · R133.2 — WHEN EACH FEE IS ACTUALLY CHARGED.
+ *
+ * THE DEFECT, verbatim from the brief: a partner launched an SPV, was invoiced
+ * NOTHING, and got no explanation. This schedule advertised "$600.00 one-off"
+ * for SPV deployment and never said what "one-off" was triggered BY — so a
+ * partner with an open, funded, LP-signed vehicle had no way to know the charge
+ * was still ahead of them, and no way to tell a missing invoice from a bug.
+ *
+ * R133.2 rules the TRIGGER unchanged: it fires when an SPV is marked Deployed
+ * (server/lib/spvEngineDeploymentFeeHook.ts). Nothing about the hook, its amount,
+ * or its basis is touched here. The defect was silence, so the fix is the
+ * sentence. The basis clause matters as much as the timing: R160/R133.1 set the
+ * fee basis to CONFIRMED capital, so a partner reading a soft-circled total and
+ * predicting a band from it would predict the wrong number.
+ *
+ * The $600-vs-$240 display divergence is deliberately NOT touched — R133.2
+ * settles it through the admin "Displayed vs Charged" view, and "fixing" the
+ * amount here would contradict the ruling.
+ * ════════════════════════════════════════════════════════════════════════════ */
+const AGG_FEE_KIND_TRIGGERS: Record<string, string> = {
+  spv_deployment:
+    "Charged once, when this SPV is marked Deployed. Based on confirmed capital at that moment — soft-circled interest is not counted.",
+  subscription_annual: "Charged at checkout, then once per annual period while the subscription is active.",
+  subscription_monthly: "Charged at checkout, then once per monthly period while the subscription is active.",
+};
+
 /* How a value was arrived at. Rendered verbatim next to the amount so a partner
  * can see WHY they are charged what they are charged. */
 const AGG_VIA_LABELS: Record<string, string> = {
@@ -1809,7 +1915,17 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
             <tbody>
               {agg.lines.map((line) => (
                 <tr className="border-b last:border-0" key={line.feeKind} data-testid={`partner-feeschedule-row-${line.feeKind}`}>
-                  <td className="px-4 py-2 whitespace-nowrap">{AGG_FEE_KIND_LABELS[line.feeKind] ?? line.feeKind}</td>
+                  <td className="px-4 py-2">
+                    <div className="whitespace-nowrap">{AGG_FEE_KIND_LABELS[line.feeKind] ?? line.feeKind}</div>
+                    {/* WAVE 165 · ITEM F · R133.2 — the trigger, beside the price.
+                        A new sibling; the label expression above is unchanged. */}
+                    <div
+                      className="mt-0.5 text-xs font-normal text-[var(--cv-color-text-muted)]"
+                      data-testid={`partner-feeschedule-trigger-${line.feeKind}`}
+                    >
+                      {AGG_FEE_KIND_TRIGGERS[line.feeKind] ?? ""}
+                    </div>
+                  </td>
                   <td className="px-4 py-2 font-mono whitespace-nowrap">
                     {line.ok && line.amountMinor !== null ? (
                       formatMinor(line.amountMinor, line.currency ?? undefined)
@@ -1823,14 +1939,29 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
                     )}
                   </td>
                   <td className="px-4 py-2 text-xs whitespace-nowrap" data-testid={`partner-feeschedule-period-${line.feeKind}`}>
-                    {billingPeriodPhrase(line.billingPeriod) ?? humanizeMachineKey(line.billingPeriod, "Period not recorded")}
+                    {/* WAVE 165 · PART 3 · R77 / R111 Q13 — was "Period not
+                        recorded". The platform has ONE spelling for an absent
+                        value and partnerWorkspaceStore.ts:3201-3225 is the model;
+                        four spellings of the same fact told a reader they were
+                        four different facts. */}
+                    {billingPeriodPhrase(line.billingPeriod) ?? humanizeMachineKey(line.billingPeriod, NOT_ON_RECORD)}
                   </td>
                   <td className="px-4 py-2 text-xs text-[var(--cv-color-text-muted)]">
+                    {/* WAVE 165 · PART 3 · R77 — two defects on one line.
+                        (1) "Source not recorded" was a second private spelling of
+                        an absent value; it is now the canonical one.
+                        (2) `line.error` put the RESOLVER'S RAW CODE in front of a
+                        partner — `FEE_SCHEDULE_NO_ROW_FOR_TIER` and friends. R77
+                        forbids a raw code reaching a user. The code is still
+                        surfaced, but humanised into words, so the partner and an
+                        admin are still looking at the same fact (the reason the
+                        code was shown in the first place) without the partner
+                        being handed an enum. */}
                     {line.ok
                       ? (line.computedVia
-                          ? (AGG_VIA_LABELS[line.computedVia] ?? humanizeMachineKey(line.computedVia, "Source not recorded"))
-                          : "Source not recorded")
-                      : (line.error ?? "unresolved")}
+                          ? (AGG_VIA_LABELS[line.computedVia] ?? humanizeMachineKey(line.computedVia, NOT_ON_RECORD))
+                          : NOT_ON_RECORD)
+                      : humanizeMachineKey(line.error, "Could not be resolved")}
                   </td>
                 </tr>
               ))}

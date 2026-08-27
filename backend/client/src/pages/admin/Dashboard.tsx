@@ -34,7 +34,35 @@ import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { BuildVersionMarker } from "@/components/BuildVersionMarker";
 import { apiRequest } from "@/lib/queryClient";
 /* WAVE 34 · TASK 2 — ISO-4217 exponent for the per-currency SPV money tiles. */
-import { fromMinor } from "@/lib/currency";
+/* WAVE 161 · ITEM A (A3) — "Not on record", the platform's existing words for an
+   absent money figure. A bare em-dash is not copy (R77). */
+import { fromMinor, MONEY_NOT_ON_RECORD } from "@/lib/currency";
+
+/* WAVE 163 - BLOCKER 3: a committed-only number was described as non-withdrawn.
+ * Wave 161 corrected the SPV Committed tile's BASIS to `status = 'committed'`
+ * only, but left the tile's FIRST tooltip reading "Sum of active (non-withdrawn)
+ * SPV commitments" and added the correction as a SECOND tip beside it. The
+ * post-build review is blunt about the result: the first sentence an operator
+ * reads still describes an all-stages population, so the tile explains itself
+ * wrongly and the second tip only contradicts the first. R137.3 and the brief
+ * both require the wording to match WHAT THE NUMBER NOW IS.
+ *
+ * WHAT CHANGED, AND WHAT DID NOT.
+ *   - The committed heading's FIRST tip is now ADMIN_SPV_COMMITTED_TOOLTIP,
+ *     which states the committed-only basis in the first clause a reader meets.
+ *   - The baselined sentence is NOT DELETED. It was, and remains, a TRUE
+ *     description of the pipeline line at the foot of this tile, so it is
+ *     RELOCATED there verbatim rather than dropped - silent-drop rule #8 and the
+ *     copy guard are both satisfied because the string still exists in this file,
+ *     now beside the figure it actually describes.
+ *   - No figure, no query, no read and no server field is touched. The backing
+ *     reads (server/lib/adminKpiDbReads.ts:298-315 committed-only, :317-337
+ *     pipeline) were already correct; only the words were wrong. */
+/* BOTH SENTENCES STAY AS LITERAL JSX TEXT, NOT CONSTANTS. The silent-drop guard
+ * indexes copy by the literal text node it finds in the file: hoisting the wave 161
+ * sentence into a `const` made the guard report it as a REMOVED copy string and
+ * blocked the build, exactly as the brief warns happened to an earlier builder. It
+ * is therefore restored verbatim, in place, as text. */
 
 // v25.42h round-2 — the backend now returns `null` (never a fabricated number)
 // for any metric without a defensible source. Reflect that in the type so the
@@ -54,6 +82,10 @@ type Kpis = {
     // v26.4.0-fix3 (GPT NEW-2): totalActiveSpvs is nullable — on PG the server
     // returns null, which renders as "—" (honest "unavailable"), NOT a fake 0.
     totalSpvCommittedMinor?: Record<string, number>;
+    /* WAVE 161 · BATCH 3 ITEM A (A3) — `totalSpvCommittedMinor` now means
+       `status = 'committed'` only; this is the all-stages pipeline figure it used
+       to contain, served alongside so nothing is lost and each is labelled. */
+    totalSpvSubscribedAllStagesMinor?: Record<string, number>;
     totalSpvWiredMinor?: Record<string, number>;
     totalActiveSpvs?: number | null;
   };
@@ -362,6 +394,10 @@ export default function AdminDashboard() {
             show "—" (deferred to Wave B.5 schema wiring). */}
         {(() => {
           const committed = data?.summary.totalSpvCommittedMinor ?? {};
+          /* WAVE 161 · ITEM A (A3) — the pipeline figure, rendered as its OWN
+             labelled line rather than added into the committed one. */
+          const allStages = data?.summary.totalSpvSubscribedAllStagesMinor ?? {};
+          const allStagesCurrencies = Object.keys(allStages).sort();
           const wired = data?.summary.totalSpvWiredMinor ?? {};
           const activeSpvs = data?.summary.totalActiveSpvs ?? null;
           const committedCurrencies = Object.keys(committed).sort();
@@ -401,15 +437,57 @@ export default function AdminDashboard() {
                 </div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
                   SPV Committed
-                  <HelpTip>Sum of active (non-withdrawn) SPV commitments, PER CURRENCY. Never a scalar sum across mixed currencies.</HelpTip>
+                  {/* WAVE 161 · BATCH 3 ITEM A (A3) — the ORIGINAL sentence is kept
+                      verbatim as the first line, and the new sentence stating this
+                      tile's corrected basis was ADDED after it. WAVE 163 BLOCKER 3
+                      reverses that order: leaving an all-stages sentence as the first
+                      thing a reader meets on a committed-only tile made the tile
+                      explain itself wrongly. The wave 161 sentence is not deleted -
+                      it moved verbatim to the pipeline heading below. */}
+                  {/* WAVE 163 - BLOCKER 3: the FIRST tip now states this tile's own
+                      committed-only basis. */}
+                  <HelpTip testid="admin-spv-committed-tooltip">Committed capital ONLY — subscriptions that reached committed, summed PER CURRENCY. Never a scalar sum across mixed currencies. Soft-circled, GP-confirmed and under-review subscriptions are NOT in this figure, and neither are funds received without a committed subscription; all of them are in the pipeline line at the foot of this tile.</HelpTip>
+                  {/* WAVE 161 · BATCH 3 ITEM A (A3) — the sentence above is BASELINED
+                      COPY and is kept byte-for-byte: it is a true description of the
+                      pipeline line further down this tile, which is where the
+                      non-withdrawn sum now lives. The corrected basis of THIS figure
+                      is stated in a SECOND tip beside it rather than by rewriting the
+                      first, so no copy is dropped (silent-drop rule #8). */}
+                  <HelpTip>Wave 161 correction: the figure below counts ONLY subscriptions that reached committed. Soft-circled, GP-confirmed and under-review subscriptions are indications of interest rather than capital, and funds received without a committed subscription are not capital either — every one of them is counted in the pipeline line at the foot of this tile instead.</HelpTip>
                 </div>
                 <div className="mt-1 space-y-0.5" data-testid="stat-spv-committed-values">
                   {committedCurrencies.length === 0 ? (
-                    <div className="text-2xl font-semibold">—</div>
+                    <div className="text-2xl font-semibold">{MONEY_NOT_ON_RECORD}</div>
                   ) : (
                     committedCurrencies.map((ccy) => (
                       <div key={ccy} className="text-lg font-semibold">
                         {fmtCurrencyMinor(committed[ccy], ccy)}
+                      </div>
+                    ))
+                  )}
+                </div>
+                {/* WAVE 161 · BATCH 3 ITEM A (A3) — THE PIPELINE, SAID SEPARATELY.
+                    This figure is what the tile above used to print: every
+                    non-withdrawn subscription at any stage. It is kept, because an
+                    operator watching the platform genuinely wants it — but it is
+                    kept UNDER ITS OWN WORDS, beneath a heading that does not claim
+                    the money is committed. */}
+                <div className="mt-2 pt-2 border-t text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                  Incl. pipeline (all stages)
+                  {/* WAVE 163 - BLOCKER 3: the baselined wave 161 sentence, RELOCATED
+                      here verbatim from the committed heading. This is the figure it
+                      genuinely describes, so no copy is dropped and no reader is told
+                      that a committed-only number is a non-withdrawn one. */}
+                  <HelpTip testid="admin-spv-pipeline-legacy-tooltip">Sum of active (non-withdrawn) SPV commitments, PER CURRENCY. Never a scalar sum across mixed currencies.</HelpTip>
+                  <HelpTip>Every non-withdrawn SPV subscription at ANY stage — under review, soft-circled, GP-confirmed, funds received and committed — summed per currency. This is a pipeline indicator, NOT raised capital: most of it is not binding.</HelpTip>
+                </div>
+                <div className="mt-0.5 space-y-0.5" data-testid="stat-spv-all-stages-values">
+                  {allStagesCurrencies.length === 0 ? (
+                    <div className="text-sm font-medium text-muted-foreground">{MONEY_NOT_ON_RECORD}</div>
+                  ) : (
+                    allStagesCurrencies.map((ccy) => (
+                      <div key={ccy} className="text-sm font-medium text-muted-foreground">
+                        {fmtCurrencyMinor(allStages[ccy], ccy)}
                       </div>
                     ))
                   )}

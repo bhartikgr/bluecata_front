@@ -378,6 +378,14 @@ describe("(F) preconditions", () => {
     const shipped = openFresh("f3_shipped.db");
     applyFile(shipped, "migrations/0181_wave33_msg01_delegated_context.sql");
     applyFile(shipped, "migrations/0199_wave143_partner_team_peers_enable.sql");
+    /* WAVE 167 · R139.1 — 0210 is part of what the platform ships today, so it
+       belongs in "the SHIPPED rule state". Without it this case described a rule
+       set the platform no longer has, and the count pin below (which exists so a
+       migration cannot add an UNACCOUNTED audience) would fail for the opposite
+       reason it was written: the seventh audience IS accounted for — by a
+       migration, a registry key, and the confidentiality proof in
+       server/__tests__/wave167_itemE_partner_own_lp_confidentiality.test.ts. */
+    applyFile(shipped, "migrations/0210_wave167_partner_own_lp_peers.sql");
 
     const team = rowOf(shipped, "partner_team_peers");
     expect(team.enabled).toBe(1);
@@ -398,7 +406,28 @@ describe("(F) preconditions", () => {
     for (const k of ["channel_participant", "cap_table_peer", "chapter_peer", "follow_peer"]) {
       expect({ k, on: rowOf(shipped, k).enabled }).toEqual({ k, on: 1 });
     }
-    /* Exactly six rules, so a migration cannot add an unaccounted audience. */
+    /* WAVE 167 — the seventh rule ships ENABLED and already DECIDED: the owner
+       ruled on it (R139.1), so it must not render as "awaiting an owner
+       decision". `partner_engaged_company_people` is asserted above to be
+       untouched by it — R108.1 is not reopened. */
+    const ownLp = rowOf(shipped, "partner_own_lp_peers");
+    expect({ enabled: ownLp.enabled, pending: ownLp.requires_owner_decision }).toEqual({
+      enabled: 1,
+      pending: 0,
+    });
+    /* `rowOf` does not select the scope column, so it is read on its own: the
+       rule must be scoped to PARTNER viewers and to nobody else. */
+    expect(
+      shipped
+        .prepare(`SELECT applies_to_viewer_role AS r FROM comms_audience_rules WHERE rule_key = ?`)
+        .get("partner_own_lp_peers").r,
+    ).toBe("partner");
+    expect(ownLp.decided_at).not.toBeNull();
+    expect(String(ownLp.decided_by)).toContain("owner:");
+    expect((ownLp.recommended_default ?? "").length).toBeGreaterThan(20);
+
+    /* Exactly as many rules as keys, so a migration cannot add an unaccounted
+       audience. */
     expect(
       shipped.prepare(`SELECT COUNT(*) AS n FROM comms_audience_rules`).get().n,
     ).toBe(AUDIENCE_RULE_KEYS.length);
@@ -497,6 +526,14 @@ describe("(A) the audience rules drive the picker", () => {
   });
 
   it("A3 team peers, both poles — and a REMOVED colleague never appears at either", async () => {
+    /* WAVE 167 — `partner_own_lp_peers` ALSO grants the viewer's own partner-org
+       team (R139.1), and it ships ENABLED. Both poles of `partner_team_peers`
+       are therefore only observable with the wave-167 rule off; leaving it on
+       made this case fail on its OFF pole, which is a genuine overlap and is
+       recorded in build_log/wave167/artefacts/
+       FINDING_wave167_rule_overlap_partner_team_peers.md — NOT a relaxation of
+       anything. The assertions themselves are unchanged. */
+    setAudienceRuleEnabled("partner_own_lp_peers", false, "u_owner");
     const off = await users(PARTNER_USER);
     expect(off.body.map((u: any) => u.id)).not.toContain(PARTNER_MATE);
     setAudienceRuleEnabled("partner_team_peers", true, "u_owner");

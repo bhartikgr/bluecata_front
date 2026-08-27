@@ -1891,7 +1891,13 @@ export function registerPartnerRoutes(app: Express): void {
     const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
     // Positions map onto the canonical investor register (per-LP commitment + %).
-    res.json({ spv, positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
+    res.json({
+      spv,
+      positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      /* WAVE 161 · BATCH 3 ITEM A (A22) — `positions` is UNCHANGED; the split says
+         how much of it is confirmed capital. See shared/spvCommittedCapital.ts. */
+      positionsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
+    });
   });
   app.patch(
     "/api/partner/me/spvs/:id",
@@ -1934,7 +1940,11 @@ export function registerPartnerRoutes(app: Express): void {
     const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
     // Positions are the canonical investor register (per-LP commitment + %).
-    res.json({ positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
+    res.json({
+      positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      /* WAVE 161 · ITEM A (A23) — additive split; the rows are untouched. */
+      positionsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
+    });
   });
   app.post(
     "/api/partner/me/spvs/:id/positions",
@@ -2015,6 +2025,16 @@ export function registerPartnerRoutes(app: Express): void {
          `recordSignoff` writes verbatim. NO new legal copy is authored here, and
          no second version of the text exists to diverge.
 
+         WAVE 169 CORRECTION, RECORDED RATHER THAN SMOOTHED OVER: reusing v1
+         VERBATIM was the wrong call, and the paragraph above is why it survived
+         unexamined. v1 says "authorized to launch this special-purpose vehicle",
+         so every fund created through this route was attested with the name of a
+         product the partner was not creating. R111 Q11's instruction — same
+         attestation as an SPV, author no new legal copy — is still honoured: the
+         sentence is unchanged except for the vehicle noun, which is substituted
+         positionally out of the v1 bytes by `shared/spvAttestation.ts`. There is
+         still exactly ONE authority for the copy and still no second sentence.
+
          ORDER MATTERS AND IS DELIBERATE: the sign-off is recorded BEFORE the fund
          row is created, exactly as the SPV path does, so a fund can never exist
          without its authorization record. If the durable INSERT fails the request
@@ -2037,6 +2057,14 @@ export function registerPartnerRoutes(app: Express): void {
           userId: ctx.userId,
           signerLegalName: signoffLegalName,
           signerSubRole: ctx.partnerSubRole ?? null,
+          /* WAVE 169 · R77 — this route creates `spvType: "fund"` (:2064 below), so
+             the recorded attestation must say FUND. Until this wave it recorded
+             v1's "special-purpose vehicle" wording on every fund ever created
+             here: a signed sentence naming a product the partner was not making.
+             The literal is passed rather than derived because this route can only
+             ever create a fund — the same reason `spvType: "fund"` is a literal at
+             :2064 — and a test asserts the two agree. */
+          spvType: "fund",
           ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
           userAgent: (req.headers["user-agent"] as string) ?? null,
         });
@@ -2072,7 +2100,14 @@ export function registerPartnerRoutes(app: Express): void {
     const ctx = req.partnerContext!;
     const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
-    res.json({ fund, commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
+    res.json({
+      fund,
+      commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      /* WAVE 161 · ITEM A (A24) — the Fund Commitment Register's split. The word
+         "commitments" on this key is the reason the split matters most here: the
+         rows include stages that are NOT commitments. */
+      commitmentsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
+    });
   });
   app.patch(
     "/api/partner/me/funds/:id",
@@ -2100,7 +2135,11 @@ export function registerPartnerRoutes(app: Express): void {
     const ctx = req.partnerContext!;
     const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
-    res.json({ commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
+    res.json({
+      commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      /* WAVE 161 · ITEM A (A25) — additive split; the rows are untouched. */
+      commitmentsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
+    });
   });
   app.post(
     "/api/partner/me/funds/:id/commitments",

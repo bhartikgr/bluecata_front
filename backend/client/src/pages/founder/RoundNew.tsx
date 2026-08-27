@@ -2153,7 +2153,7 @@ export default function RoundNew() {
  {step === 2 && (
  <div className="grid md:grid-cols-2 gap-5">
  {usesField("targetAmount") && (
- <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
+ <div><LabelWithTip tip="The fundraising GOAL for this round — how much new money you want it to bring in. It is not a limit: commitments can exceed it and are never blocked for doing so. A separate cap, where one is set, is the maximum a vehicle may accept. Investors look at progress against this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
  )}
  {usesField("preMoney") && !isFoundationRound && (
  <>

@@ -33,6 +33,24 @@ interface ChecklistItem {
   label: string;
   description: string;
   group: string;
+  /* ══════════════════════════════════════════════════════════════════════════
+   * WAVE 165 · ITEM F · R135.6 — "mark unsupported, do not remove".
+   *
+   * THE DEFECT. Several items on this list read as platform features and are
+   * not. "Configure SSO (optional but recommended) — SAML 2.0 / OIDC. Required
+   * for orgs >25 seats per security policy" is the worst of them: a grep of the
+   * whole tree for SAML/OIDC finds ONE hit, and it is this file. The platform
+   * has no SSO. A partner who ticks the box has told the record they configured
+   * something that does not exist, and a partner who tries to configure it finds
+   * nothing to configure. The two KYC items say "Upload …" while this screen
+   * offers no upload control at all — the tick is a self-declaration that the
+   * document was handled off-platform.
+   *
+   * R135.6 forbids deleting the items, so each stays exactly where it was, still
+   * tickable, and now carries a plain statement of what the tick actually means.
+   * An empty/absent value renders nothing, so the supported items are unchanged.
+   * ══════════════════════════════════════════════════════════════════════════ */
+  support?: string;
 }
 
 /**
@@ -46,12 +64,16 @@ const CHECKLIST: ChecklistItem[] = [
     label: "Upload organisation KYC document",
     description: "Certificate of incorporation, organising agreement, or equivalent.",
     group: "Identity & Compliance",
+    support:
+      "Manual step — there is no upload control on this screen. Send the document to your chapter admin, then tick this to record that you have done so.",
   },
   {
     key: "kyc_signatory_doc",
     label: "Upload authorised signatory ID",
     description: "Government-issued photo ID for the primary signatory on partner agreements.",
     group: "Identity & Compliance",
+    support:
+      "Manual step — there is no upload control on this screen. Send the ID to your chapter admin, then tick this to record that you have done so.",
   },
   {
     key: "signed_partner_agreement",
@@ -89,6 +111,8 @@ const CHECKLIST: ChecklistItem[] = [
     label: "Configure SSO (optional but recommended)",
     description: "SAML 2.0 / OIDC. Required for orgs >25 seats per security policy.",
     group: "Security",
+    support:
+      "Not currently supported — Capavate has no SSO integration to configure, so this item cannot be completed on the platform. It is retained for the roadmap and for orgs whose own policy requires the record.",
   },
   {
     key: "data_retention_acked",
@@ -101,6 +125,8 @@ const CHECKLIST: ChecklistItem[] = [
     label: "Schedule go-live review with chapter admin",
     description: "Final review before LP-visible promotions are enabled.",
     group: "Launch",
+    support:
+      "Manual step — arranged directly with your chapter admin. Nothing on the platform books this review.",
   },
 ];
 
@@ -346,6 +372,13 @@ export default function PartnerOnboardingChecklistPage() {
                           {it.label}
                         </div>
                         <div className="text-xs text-muted-foreground">{it.description}</div>
+                        {/* WAVE 165 · ITEM F · R135.6 — what ticking this box does
+                            and does not do. A new sibling: the label and the
+                            description above are untouched, because R135.6 marks
+                            rather than rewrites. */}
+                        <div className="text-xs text-amber-800" data-testid={`support-${it.key}`}>
+                          {it.support ?? ""}
+                        </div>
                         {isAgreement && !done && (
                           <a
                             href={AGREEMENT_SIGN_PATH}

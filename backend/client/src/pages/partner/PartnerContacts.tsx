@@ -105,6 +105,32 @@ interface CrmConnections {
   client: { companyId: string; stage: string; lastActivityAt: string | null } | null;
 }
 
+/* WAVE 171 — A CONTACT CAN NOW BE LINKED TO A VEHICLE.
+   `CrmConnections` above is untouched, and so is the panel that renders it. What
+   it derives are POSITIONS: an `spvLpMemberships` row exists because the person
+   holds a commitment, a `capTableHoldings` row because they hold shares. Useful,
+   and unable to express the thing a partner needs first — "I know this person in
+   connection with this vehicle" — before any money exists.
+
+   A LINK IS NOT A COMMITMENT. There is deliberately no amount on this type, no
+   currency and no status, so nothing on this screen can render a link as capital
+   even by accident. Note what `relationship` is NOT: not a subscription state and
+   not a commitment state. `prospective_lp` is the partner's own note about their
+   own pipeline and is never joined to `spv_commitments.status`. */
+interface CrmContactLink {
+  id: string;
+  targetKind: "spv" | "company";
+  targetId: string;
+  targetName: string;
+  relationship: string;
+  note: string;
+  createdAt: string;
+}
+interface CrmLinkTargets {
+  spvs: Array<{ id: string; name: string }>;
+  companies: Array<{ id: string; name: string }>;
+}
+
 /* WAVE 21 ITEM 5: hardcoded /100 AND a hardcoded USD label. The currency
    is now a parameter so a non-USD caller cannot be silently mislabelled. */
 function money(minor: number, currency = "USD"): string {
@@ -130,7 +156,14 @@ export default function PartnerContacts() {
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/crm/contacts")).json(),
   });
 
-  const detailQ = useQuery<{ contact: CrmContact; connections: CrmConnections }>({
+  const detailQ = useQuery<{
+    contact: CrmContact;
+    connections: CrmConnections;
+    /* WAVE 171 — OPTIONAL on purpose. A server that has not been redeployed yet
+       omits it, and this screen must then render the connections panel exactly as
+       it did before rather than crashing on `undefined.map`. */
+    links?: CrmContactLink[];
+  }>({
     queryKey: ["/api/partner/me/crm/contacts", selectedId],
     enabled: role.ready && !!selectedId,
     queryFn: async () =>
@@ -518,11 +551,220 @@ export default function PartnerContacts() {
               </div>
 
               <ConnectionsPanel connections={detailQ.data.connections} />
+
+              {/* WAVE 171 — STATIC SIBLING, appended beside the panel above and
+                  never wrapped around it. The connections panel renders on the
+                  same terms it always did. */}
+              <ContactLinksPanel contactId={detailQ.data.contact.id} links={detailQ.data.links ?? []} />
             </div>
           )}
         </div>
       </div>
     </PartnerShell>
+  );
+}
+
+/* ══ WAVE 171 · RELATIONSHIP LINKS ══════════════════════════════════════
+   The control the CRM did not have: link a contact to an SPV this partner
+   sponsors, or to a company attributed to them.
+
+   The picker is populated by the SERVER (`/api/partner/me/crm/link-targets`), so
+   the fence is not a client-side filter over a wider list — a vehicle belonging
+   to another partner never reaches this component at all, and posting a forged id
+   is refused server-side against the same fence.
+
+   NO MONEY IS RENDERED ANYWHERE IN THIS PANEL and `money()` is not called from
+   it. The heading says what a link is and, just as importantly, what it is not,
+   because a partner who reads "linked to Fund II" could otherwise reasonably
+   assume they had recorded a commitment. */
+const LINK_RELATIONSHIP_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "prospective_lp", label: "Prospective LP" },
+  { value: "introducer", label: "Introducer" },
+  { value: "adviser", label: "Adviser" },
+  { value: "other", label: "Other" },
+];
+
+function ContactLinksPanel({ contactId, links }: { contactId: string; links: CrmContactLink[] }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [kind, setKind] = useState<"spv" | "company">("spv");
+  const [targetId, setTargetId] = useState<string>("");
+  const [relationship, setRelationship] = useState<string>("prospective_lp");
+  const [note, setNote] = useState<string>("");
+  const [linkError, setLinkError] = useState<string | null>(null);
+
+  const targetsQ = useQuery<CrmLinkTargets>({
+    queryKey: ["/api/partner/me/crm/link-targets"],
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/crm/link-targets")).json(),
+  });
+
+  /* Hoisted per the guard's shape rule: the option list is derived here, not
+     branched inside JSX. An unreadable or empty fence yields an EMPTY array, and
+     the panel then says so in words rather than offering an empty picker. */
+  const options = useMemo<Array<{ id: string; name: string }>>(() => {
+    const d = targetsQ.data;
+    if (!d) return [];
+    return kind === "spv" ? (d.spvs ?? []) : (d.companies ?? []);
+  }, [targetsQ.data, kind]);
+
+  const spvLinks = useMemo(() => links.filter((l) => l.targetKind === "spv"), [links]);
+  const companyLinks = useMemo(() => links.filter((l) => l.targetKind === "company"), [links]);
+
+  const createMut = useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest("POST", `/api/partner/me/crm/contacts/${contactId}/links`, {
+          target_kind: kind,
+          target_id: targetId,
+          relationship,
+          note,
+        })
+      ).json(),
+    onSuccess: () => {
+      setTargetId("");
+      setNote("");
+      setLinkError(null);
+      void qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts", contactId] });
+      toast({ title: "Link added" });
+    },
+    /* The SERVER'S OWN SENTENCE, not an invented one (R58/R77). */
+    onError: (e: unknown) => setLinkError((e as Error).message),
+  });
+
+  const removeMut = useMutation({
+    mutationFn: async (linkId: string) =>
+      (await apiRequest("DELETE", `/api/partner/me/crm/contacts/${contactId}/links/${linkId}`)).json(),
+    onSuccess: () => {
+      setLinkError(null);
+      void qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts", contactId] });
+    },
+    onError: (e: unknown) => setLinkError((e as Error).message),
+  });
+
+  return (
+    <div className="space-y-3 border-t pt-3" data-testid="contacts-links">
+      <div className="text-xs font-medium uppercase tracking-wide text-[var(--cv-color-text-faint)]">
+        Relationship links
+      </div>
+      {/* THE SENTENCE THAT STOPS A LINK BEING READ AS A COMMITMENT. */}
+      <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="contacts-links-disclaimer">
+        A link records who you know in connection with a vehicle or company. It is not a subscription, an
+        invitation or a commitment, and it does not reserve or allocate any amount. Commitments appear under
+        Connections above, once they exist.
+      </div>
+
+      <ConnGroup label="Linked vehicles" count={spvLinks.length}>
+        {spvLinks.map((l) => (
+          <li key={l.id} className="flex justify-between gap-2" data-testid={`link-spv-${l.targetId}`}>
+            <span>
+              {l.targetName} · {humanizeMachineKey(l.relationship)}
+            </span>
+            <button
+              type="button"
+              className="text-xs underline text-[var(--cv-color-text-muted)]"
+              onClick={() => removeMut.mutate(l.id)}
+              data-testid={`link-remove-${l.id}`}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ConnGroup>
+
+      <ConnGroup label="Linked companies" count={companyLinks.length}>
+        {companyLinks.map((l) => (
+          <li key={l.id} className="flex justify-between gap-2" data-testid={`link-company-${l.targetId}`}>
+            <span>
+              {l.targetName} · {humanizeMachineKey(l.relationship)}
+            </span>
+            <button
+              type="button"
+              className="text-xs underline text-[var(--cv-color-text-muted)]"
+              onClick={() => removeMut.mutate(l.id)}
+              data-testid={`link-remove-${l.id}`}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ConnGroup>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={kind}
+          onChange={(e) => {
+            setKind(e.target.value === "company" ? "company" : "spv");
+            setTargetId("");
+          }}
+          className="rounded-md border px-2 py-1 text-sm"
+          data-testid="link-kind"
+          aria-label="What to link to"
+        >
+          <option value="spv">SPV you sponsor</option>
+          <option value="company">Portfolio company</option>
+        </select>
+        <select
+          value={targetId}
+          onChange={(e) => setTargetId(e.target.value)}
+          className="rounded-md border px-2 py-1 text-sm"
+          data-testid="link-target"
+          aria-label="Which vehicle or company"
+        >
+          <option value="">Select…</option>
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={relationship}
+          onChange={(e) => setRelationship(e.target.value)}
+          className="rounded-md border px-2 py-1 text-sm"
+          data-testid="link-relationship"
+          aria-label="Relationship"
+        >
+          {LINK_RELATIONSHIP_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Note (optional)"
+          className="rounded-md border px-2 py-1 text-sm"
+          data-testid="link-note"
+          aria-label="Note about this link"
+        />
+        <button
+          type="button"
+          disabled={!targetId || createMut.isPending}
+          onClick={() => createMut.mutate()}
+          className="rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          style={{ background: "var(--cv-accent, #1a1a2e)" }}
+          data-testid="link-add"
+        >
+          {createMut.isPending ? "Linking…" : "Add link"}
+        </button>
+      </div>
+
+      {/* An empty fence is stated, never left as a silently empty picker. */}
+      {targetsQ.isSuccess && options.length === 0 && (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="link-no-targets">
+          {kind === "spv"
+            ? "You do not sponsor any active SPVs yet, so there is nothing to link to."
+            : "No companies are attributed to your organisation yet, so there is nothing to link to."}
+        </div>
+      )}
+
+      {linkError && (
+        <div className="text-xs text-red-700" data-testid="link-error">
+          {linkError}
+        </div>
+      )}
+    </div>
   );
 }
 

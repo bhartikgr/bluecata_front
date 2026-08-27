@@ -107,6 +107,10 @@ import { getDb, rawDb } from "./db/connection";
  * NOT modify any SPV/cap-table BigInt math). Called once, additively, at the
  * end of updateSpv()'s existing transaction when status -> 'active'. */
 import { chargeSpvDeploymentFee } from "./lib/spvDeploymentFee";
+/* WAVE 163 · BLOCKER 2 · R137.2 — the legacy activation fee's confirmed-capital
+   basis. See the module comment there for why the basis moved and the mirror
+   column did not. */
+import { resolveLegacyActivationFeeBasis } from "./lib/legacySpvActivationFeeBasis";
 import {
   spvs as spvsTable,
   spvCommitments as spvCommitmentsTable,
@@ -1256,8 +1260,55 @@ export const spvFundStore = {
             .get(spv.id) as { sourcing_partner_id: string | null; target_minor: number | null; committed_minor: number | null } | undefined;
           const sourcingPartnerId = spvDbRow?.sourcing_partner_id ?? null;
           if (sourcingPartnerId) {
-            // Band on committed_minor when present, else fall back to target_minor.
-            const sizeMinor = Number(spvDbRow?.committed_minor ?? spvDbRow?.target_minor ?? next.targetMinor ?? 0);
+            /* ═══════════════════════════════════════════════════════════════
+             * WAVE 160 · BATCH 3 ITEM 0 — THE SECOND CHARGE PATH. NOT SAFE, AND
+             * THE MEASUREMENT IS NAMED HERE. (R134.1, V2 §2.2.4, FINDING W160-F1)
+             * ═══════════════════════════════════════════════════════════════
+             * This is the LEGACY charge path, and its band is priced on the
+             * DENORMALISED column `spvs.committed_minor` — not on
+             * `spv_subscription`. Wave 160 fixed the ENGINE path
+             * (`server/lib/spvEngineDeploymentFeeHook.ts:379`) to count
+             * `status = 'committed'` only, because an all-stages basis let a
+             * NON-BINDING soft-circle inflate the size band and bill a partner
+             * real money.
+             *
+             * V2 §2.2.4 REASONED THIS PATH WAS SAFE BY ACCIDENT — because the
+             * legacy `spv_commitments` vocabulary has no `soft_circled` member, so
+             * no non-binding indication could reach `spvs.committed_minor`.
+             * MEASURED, THAT IS FALSE (FINDING W160-F1). `spvEngineStore.subscribe`
+             * mirrors EVERY new subscription into `spv_commitments` with legacy
+             * status `"signed"` (`shadowCommitmentFromLegacyStrict` :1417 below, and
+             * `shadowCommitmentFromLegacy` :1510) at `review` time, so the
+             * denormalised column already sums pre-commitment interest as though
+             * it were signed capital: on a vehicle with $1,000.00 committed and
+             * $9,000.00 soft-circled, `spvs.committed_minor` reads $10,000.00
+             * while the engine basis correctly reads $1,000.00. The exact billing
+             * defect wave 160 closed on the engine path is STILL OPEN on this one.
+             *
+             * WAVE 160 left the basis unchanged and FENCED it, reasoning that
+             * correcting a live legacy charge basis needed its own ruling. R137.2
+             * IS THAT RULING, and it overrules the fence: *"W160-F1 must be FIXED
+             * or PROVEN UNREACHABLE before this batch ships. Not fenced, not
+             * deferred. A partner being overbilled is not an open item; it is a
+             * defect."* This path is REACHABLE, so it is FIXED below, not proved
+             * unreachable. The measurement stays pinned in
+             * `server/__tests__/wave160_item0_deployment_fee_confirmed_capital.test.ts`
+             * §4 (T0.6/T0.6b), which records the inflated MIRROR COLUMN — that
+             * column's value is deliberately unchanged (see the module comment on
+             * `resolveLegacyActivationFeeBasis` for why the basis moved and the
+             * mirror did not); what changed is that it no longer selects a band. */
+            /* WAVE 163 · BLOCKER 2 — CONFIRMED CAPITAL ONLY (R134.1), with the
+             * target-raise fallback RETAINED (R135.9) and pure-legacy vehicles
+             * billed exactly as before. `spvs.committed_minor` is still read, but
+             * only to REPORT the averted overcharge. */
+            const feeBasis = resolveLegacyActivationFeeBasis(raw, spv.id, spvDbRow?.target_minor ?? next.targetMinor ?? null);
+            const sizeMinor = feeBasis.sizeMinor;
+            log.info?.(
+              `[spv-legacy-fee] spv=${spv.id} basis=${feeBasis.basis} sizeMinor=${sizeMinor} ` +
+                `confirmedCapitalMinor=${feeBasis.confirmedCapitalMinor} legacyOnlySignedMinor=${feeBasis.legacyOnlySignedMinor} ` +
+                `mirrorColumnMinor=${String(feeBasis.legacyMirrorColumnMinor)} ` +
+                `excludedPreCommitmentMinor=${feeBasis.excludedPreCommitmentMinor}`,
+            );
             chargeSpvDeploymentFee({ rawTx: raw, spvId: spv.id, partnerId: sourcingPartnerId, committedMinor: sizeMinor });
           }
         } catch (feeErr) {

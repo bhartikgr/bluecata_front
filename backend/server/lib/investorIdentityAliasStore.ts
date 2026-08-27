@@ -28,7 +28,10 @@
 // ALL DB-DRIVEN. No in-memory alias cache. An alias revoked in one process must
 // stop resolving in every process on the next read, and a cache would make
 // revocation eventually-consistent — for an identity claim, that is unsafe.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+/* WAVE 166 (D-1) — the ONE derivation. `createHash` is deliberately no longer
+   imported here: re-importing it is the first step of re-growing a second copy. */
+import { lpInvestorIdForEmail } from "./lpIdentity";
 import { rawDb } from "../db/connection";
 import { isSqlite } from "../db/portable";
 import { log } from "./logger";
@@ -100,11 +103,35 @@ function tableReady(): boolean {
  * again. `server/__tests__/waveW10_en3_alias.test.ts` pins the derivation
  * against a literal expected digest AND greps the route file for the same
  * expression, so a change on either side fails the suite rather than the LP.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 166 · BATCH 3 ITEM D (D-1) — THIS IS NOW A DELEGATION, NOT A SECOND COPY.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The docblock above said "MUST STAY BYTE-FOR-BYTE IDENTICAL" and then achieved
+ * that by RE-TYPING the expression, which is the arrangement that guarantees the
+ * eventual divergence it warns about. Verified this wave: the body here and
+ * `lpIdentity.lpInvestorIdForEmail` computed the same digest but disagreed on ONE
+ * input — the unusable email. `lpInvestorIdForEmail` returns "" so that nobody is
+ * ever seated under `sha256("")`; this copy returned `ext_<hash("")>`, a single
+ * real-looking id that EVERY LP with a blank email would land on. That is a mass
+ * merge waiting for its first two blank emails, and it is exactly the outcome
+ * Item D exists to make impossible.
+ *
+ * So the derivation now has ONE implementation, in `lpIdentity.ts`, and this
+ * function forwards to it. The exported symbol and its name are KEPT rather than
+ * removed: `waveW10_en3_alias.test.ts:49` imports it and `selfClaimByEmail:336`
+ * calls it, and deleting a working export to tidy up is a breaking change dressed
+ * as a cleanup.
+ *
+ * THE ONE BEHAVIOUR CHANGE, STATED PLAINLY: an empty/unusable email now yields ""
+ * here too, instead of a shared bogus id. `selfClaimByEmail` gains an explicit
+ * guard for that, and `claimAlias` already refuses an empty alias id with
+ * `ALIAS_FIELDS_REQUIRED` — so the new value is refused at both layers rather
+ * than written. Non-empty emails are unchanged, which is what the pinned literal
+ * digest in the existing test asserts.
  */
 export function deriveExternalInvestorId(email: string): string {
-  const normalised = String(email ?? "").trim().toLowerCase();
-  const stableKey = createHash("sha256").update(normalised, "utf8").digest("hex").slice(0, 16);
-  return `ext_${stableKey}`;
+  return lpInvestorIdForEmail(email);
 }
 
 function nowIso(): string {
@@ -334,6 +361,10 @@ export function selfClaimByEmail(input: {
   canonicalUserId: string;
 }): { alias: InvestorAlias | null; derivedId: string; hadLedgerRows: boolean } {
   const derivedId = deriveExternalInvestorId(input.email);
+  /* WAVE 166 (D-1) — an unusable email now derives "" rather than a shared
+     `ext_<hash("")>`. Guard it here so the caller gets the same "nothing to
+     claim" shape it already handles, instead of a probe on an empty id. */
+  if (!derivedId) return { alias: null, derivedId, hadLedgerRows: false };
   const hadLedgerRows = externalIdHasLedgerRows(derivedId);
   if (!hadLedgerRows) return { alias: null, derivedId, hadLedgerRows };
   const alias = claimAlias({

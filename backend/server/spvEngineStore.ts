@@ -26,6 +26,68 @@
  */
 import { createHash, randomBytes } from "crypto";
 import { recordFeeHydration, feeStateUnknown, probeFeeRowCount } from "./lib/spvFeeHydrationState";
+/* WAVE 166 · BATCH 3 ITEM D (D-4) — alias-aware viewer identity for the LP
+   roster read below, plus the refuse-never-merge helper. */
+import { viewerInvestorIds, soleMatchingInvestorId } from "./lib/lpIdentityBinding";
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 166 · BATCH 3 ITEM D (PATH 1) · R131.1 — THE STAGES THAT REQUIRE THE
+ * GP'S OFFLINE AFFIRMATION BEFORE THEY MAY BECOME COMMITTED CAPITAL.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * DERIVED, NOT HAND-LISTED, and the derivation is the whole point.
+ *
+ * The platform already has ONE authority on which stages hold INTEREST rather
+ * than capital: `SPV_SOFT_CIRCLED_INTEREST_STATUSES`
+ * (`shared/spvCommittedCapital.ts`), whose own docblock states it is
+ * "[d]eliberately NOT `wire_funded` — cash in the bank with no signed documents
+ * is its own category (R135.1) and is reported separately."
+ *
+ * WHY THAT MATTERS HERE, AND WHAT IT CORRECTED.
+ * This set was first written by hand as
+ * `{soft_circled, founder_confirmed, wire_funded}`, and including `wire_funded`
+ * was WRONG on the platform's own terms and produced a real regression:
+ * `wave164_itemC_cap_split_and_target.test.ts` §3.2 moves a `wire_funded` row to
+ * `committed` through the GP's own route to prove R130's target-overage record is
+ * written by the `advanceSubscription` writer, and the hand-written gate refused
+ * that move — suppressing a recording R135.3 requires.
+ *
+ * The substantive reason, not merely the failing test: `wire_funded` is the stage
+ * that MEANS funds were received and recorded (see `confirmFundsReceived`, which
+ * accepts exactly `committed` and `wire_funded` for that reason). At
+ * `wire_funded` the platform is not INFERRING that money arrived — it holds a
+ * record that it did. This gate exists to stop an INFERENCE about facts the
+ * platform cannot see, so it has no business firing on a stage whose entire
+ * meaning is a recorded receipt.
+ *
+ * `review` is subtracted for a different and equally binding reason: it is the
+ * pre-existing direct-commit path (`projectLpCommitted`, nine suites), where the
+ * authoritative money seat is the sacred cap-table ledger line, and gating it
+ * would change WHEN a partner incurs a charge — which R136.2 forbids.
+ *
+ * So the gate is exactly the two PRE-COMMITMENT INDICATION stages: `soft_circled`
+ * and `founder_confirmed`. Those are the stages whose money the platform itself
+ * calls interest, and they are the ones from which a drift to "committed capital"
+ * would turn an indication into capital with nobody having said anything.
+ *
+ * DO NOT ADD `review` OR `wire_funded` TO THIS SET to "make the gate consistent".
+ * Both exclusions are rulings, and both are load-bearing.
+ */
+const GP_OFFLINE_CONFIRMATION_REQUIRED_FROM: ReadonlySet<string> = new Set(
+  SPV_SOFT_CIRCLED_INTEREST_STATUSES.filter((s) => s !== "review"),
+);
+
+/** The GP's recorded affirmation of the two OFFLINE conditions (R131.1). */
+export interface GpOfflineConfirmation {
+  documentsSigned: true;
+  fundsReceived: true;
+  /** WHO said it. A user id, never a role and never a system marker. */
+  affirmedBy: string;
+  /** WHEN they said it. */
+  affirmedAt: string;
+  subscriptionId: string;
+  investorId: string;
+  stageAtAffirmation: string;
+}
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
 /* WAVE 10 / EN-1 — project distributions into the ILPA cash-flow ledger. */
@@ -68,6 +130,63 @@ import { chargeOrIdempotent } from "./paymentStore";
 // WAVE 1A / S-2 — the fee self-mark fix. See server/lib/feeSettlementAuthority.ts.
 // WAVE 3E — `withSettlementTransaction` makes the CONSUME atomic with the money
 // write. See server/lib/feeSettlementAuthority.ts and migration 0151.
+/* WAVE 161 · BATCH 3 ITEM A — the ONE stage-split shape and the ONE set of
+   denominator words, shared with every client surface that renders these
+   payloads. Eight surfaces summed all-stages amounts and printed them beside the
+   word "Committed"; each fixed in its own words would be eight vocabularies for
+   one distinction (R134.3, V2 §3.4 A-1). */
+/* WAVE 162 · BATCH 3 ITEM B — the ONE transition-legality map and the ONE enum
+   guard. Imported, never re-spelled: a second copy of the rule is the defect. */
+import {
+  isSpvSubscriptionStatus,
+  isSpvMoneyMinor,
+  spvSubscriptionTransitionLegality,
+} from "@shared/spvSubscriptionTransitions";
+import {
+  SPV_REGISTER_ALL_STAGES_BASIS,
+  SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+  SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+  spvStageSplit,
+  spvStageSplitStatement,
+  spvRowOwnershipPercentages,
+  spvSubscriptionStageLabelForRegister,
+  SPV_SOFT_CIRCLED_INTEREST_STATUSES,
+  type SpvStageSplit,
+} from "@shared/spvCommittedCapital";
+/* WAVE 164 · BATCH 3 ITEM C (R133.1) and R130 — the five-part cap split that
+   every refusal and every audit record must carry, and the SEPARATE target-raise
+   overage vocabulary. The capacity ARITHMETIC below is unchanged; these are the
+   words and the record shapes. */
+import {
+  TARGET_RAISE_EXCEEDED_CODE,
+  SPV_TARGET_OVERAGES_TERMS_KEY,
+  spvCapSplitRefusalSentence,
+  spvCapSplitRefusalHeadline,
+  spvTargetRaiseWarningSentence,
+  type SpvCapSplitFigures,
+  type SpvTargetOverageRecord,
+} from "@shared/spvCapSplitDisclosure";
+
+/** WAVE 161 · ITEM A — one NAMED row shape for the investor register. Named, and
+ *  not inferred, deliberately: an inline return type inside `spvEngineStore`
+ *  referenced back via `ReturnType<typeof spvEngineStore.…>` makes the whole store
+ *  object self-referential and TypeScript widens it to `any` (TS7022), which
+ *  would silently delete type checking across ~7k lines. */
+export interface SpvInvestorRegisterRow {
+  investorId: string;
+  commitmentMinor: number;
+  /** UNCHANGED basis and value: share of every non-withdrawn subscription. */
+  ownershipPct: number;
+  status: string;
+  /** WAVE 161 · R134.3 — the stage on the ENTRY, not only on the aggregate. */
+  stage: string;
+  stageLabel: string;
+  ownershipPctOfAllStages: number;
+  /** `null` — never 0 — when the row is not committed capital. */
+  ownershipPctOfConfirmedCapital: number | null;
+  denominatorBasis: "all_stages";
+}
+
 import {
   consumeSettlementAuthorization,
   isFeeSettlementAuthorization,
@@ -76,7 +195,7 @@ import {
 } from "./lib/feeSettlementAuthority";
 /* WAVE 35 · F5 — `convertMinorUnits` re-scales by BOTH ISO-4217 exponents.
    Static import (never a lazy require — see F4). */
-import { allocateDistributionMinor, exactFractionToCarryScaled, convertMinorUnits } from "./lib/money";
+import { allocateDistributionMinor, exactFractionToCarryScaled, convertMinorUnits, currencyExponent } from "./lib/money";
 /* WAVE 32 / CP-SPV-30 capability 2 — per-LP side-letter carry, applied to the
    canonical waterfall between the allocator and the carry collection. */
 import { applySideLetterCarry } from "./lib/spvSideLetterWaterfall";
@@ -1442,7 +1561,36 @@ export const spvEngineStore = {
          reduce, same refusal — this gate is NOT relaxed (R105: "Path A's gates are
          not relaxed"). */
       const existing = capBasisCommittedMinorForSpv(spvId);
-      if (existing + data.commitmentMinor > s.capMinor) throw new Error("EXCEEDS_CAP");
+      /* WAVE 164 · BATCH 3 ITEM C · R133.1 / R77 — THE COMPARISON IS UNCHANGED;
+         THE REFUSAL IS AUGMENTED.
+
+         `existing + data.commitmentMinor > s.capMinor` is the SAME arithmetic on
+         the SAME basis as before this wave — R133.1 rules that a soft-circle DOES
+         occupy capacity, so the basis was already right and narrowing it here
+         would let a fully soft-circled vehicle be oversubscribed. The ONLY change
+         is that the thrown error now CARRIES the five-part split (cap, confirmed
+         capital, soft-circled interest, funds received, overage) and the plain
+         sentence built from it. It used to throw a bare `EXCEEDS_CAP`, which
+         `PartnerSpvDetail.tsx:267/:314` rendered raw on a GP's screen — an R77
+         violation. `e.message` is still exactly `EXCEEDS_CAP` so the route's 400
+         mapping and every shipped assertion on the code are untouched (R98). */
+      const capResultingTotalMinor = existing + data.commitmentMinor;
+      if (capResultingTotalMinor > s.capMinor) {
+        throw buildSpvCapRefusalError(
+          spvCapSplitFiguresForSpv({
+            spvId,
+            capMinor: s.capMinor,
+            requestedMinor: data.commitmentMinor,
+            resultingTotalMinor: capResultingTotalMinor,
+            currency: data.currency ?? s.currency,
+            /* The duplicate check above already refused any investor who holds a
+               non-withdrawn row, so this exclusion is a no-op on this path. It is
+               spelled anyway so the parts and the total are guaranteed to add up
+               even if that ordering ever changes. */
+            excludeInvestorId: data.investorId,
+          }),
+        );
+      }
     }
     const now = nowIso();
     const sub: SpvSubscriptionDTO = {
@@ -1526,6 +1674,50 @@ export const spvEngineStore = {
     if (!this.getSpv(partnerId, spvId)) throw new Error("SPV_NOT_FOUND");
     const sub = (subsBySpv.get(spvId) ?? []).find((x) => x.id === subscriptionId);
     if (!sub) throw new Error("SUBSCRIPTION_NOT_FOUND");
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 162 · BATCH 3 ITEM B (B-1) — THE ENUM CHECK, AND IT LANDS FIRST.
+       ═══════════════════════════════════════════════════════════════════════
+       `to` used to be assigned straight onto the row. The route now validates it
+       too, and BOTH are required: the route so a caller gets a clean 400 instead
+       of a 500, and this store so the check cannot be bypassed by a caller that
+       never touches an HTTP body (there is already one such family — see the
+       writer allow-list in shared/spvSubscriptionTransitions.ts).
+
+       These checks run BEFORE the `kycRef` / `accreditationRef` /
+       `subscriptionDocRef` / `wiredMinor` assignments below, ON PURPOSE.
+       Validating after them would leave a refused PATCH having already mutated
+       the row in RAM — a refusal that half-succeeded is worse than no refusal. */
+    if (to === undefined || to === null || (to as unknown) === "") {
+      throw new Error("SUBSCRIPTION_STATUS_REQUIRED");
+    }
+    if (!isSpvSubscriptionStatus(to)) {
+      throw new Error(`INVALID_SUBSCRIPTION_STATUS:${typeof to}:${String(to).slice(0, 40)}`);
+    }
+    if (data.wiredMinor !== undefined && !isSpvMoneyMinor(data.wiredMinor)) {
+      throw new Error(
+        `INVALID_WIRED_MINOR:${typeof data.wiredMinor}:${String(data.wiredMinor).slice(0, 40)}`,
+      );
+    }
+    /* B-2 — the transition-legality map, consulted only once the value is known
+       to BE a status. A reversal (`committed → soft_circled`, anything out of
+       `withdrawn`, any move down the ladder) is REFUSED: confirmed capital can
+       only ever be withdrawn, and a withdrawal is a recorded event rather than a
+       status downgrade. R135.2's `soft_circled → wire_funded` is refused here
+       too. A forward SKIP is recorded rather than refused. That is R136.2, which
+       is the BINDING ruling and not an open question: refusing skips would force
+       every one-step commit through `wire_funded`, which accrues funding fee
+       obligations, and so would change WHEN a partner incurs a charge. The full
+       reasoning and the measured nine-suite cost of ever flipping it are in
+       `shared/spvSubscriptionTransitions.ts`. W162-F1 is CLOSED. */
+    const legality = spvSubscriptionTransitionLegality(sub.status, to);
+    if (!legality.ok) throw new Error(`${legality.code}:${legality.detail}`);
+    if (legality.ok && legality.kind === "forward_skip") {
+      log.warn?.(
+        `[spvEngineStore] SUBSCRIPTION_TRANSITION_FORWARD_SKIP subId=${sub.id} spvId=${spvId} ` +
+          `${sub.status} → ${to}, skipping ${legality.skipped.join(" + ") || "nothing"}. ` +
+          `Permitted and RECORDED under SPV_SUBSCRIPTION_FORWARD_SKIP_POLICY="record" (R136.2).`,
+      );
+    }
     if (data.kycRef !== undefined) sub.kycRef = data.kycRef;
     if (data.accreditationRef !== undefined) sub.accreditationRef = data.accreditationRef;
     if (data.subscriptionDocRef !== undefined) sub.subscriptionDocRef = data.subscriptionDocRef;
@@ -1535,6 +1727,37 @@ export const spvEngineStore = {
     // the SPV is allowed to commit or deploy.
     if (to === "wire_funded") this.accrueFundingFeeObligations(partnerId, spvId);
     if (to === "committed") {
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 166 · BATCH 3 ITEM D (PATH 1) · R131.1 — A SOFT-CIRCLE MUST NEVER
+         DRIFT TO COMMITTED.
+         ═══════════════════════════════════════════════════════════════════════
+         The owner's model is explicit: a GP confirms an LP's investment "when the
+         LP signs the proper subscription docs and the funds are in the bank
+         account (OFFLINE process)". The platform cannot see either event, so it
+         must not infer either one. Before wave 166 a GP could PATCH a
+         soft-circled row straight to `committed` — a legal forward skip under
+         R136.2 — and a non-binding indication became confirmed capital, moving
+         what the LP owns, what the vehicle has raised and what the partner is
+         billed, with nobody having stated that anything was signed or received.
+
+         So committing a row that came up the PATH-1 LADDER now requires the
+         recorded dual affirmation. Never inferred, never automatic.
+
+         WHY THE GATE IS SCOPED TO THE LADDER STAGES AND NOT TO EVERY COMMIT.
+         `review → committed` is the pre-existing direct-commit path used by nine
+         suites and by `projectLpCommitted`, where the authoritative money seat is
+         the sacred cap-table ledger line and the affirmation has already happened
+         elsewhere in the flow. Gating that too would change WHEN a partner incurs
+         a charge, which R136.2 forbids for exactly this reason. The stages listed
+         here are the ones Path 1 walks, and they are the ones where an
+         unaffirmed drift was possible.
+
+         This is a REFUSAL, not a warning: the whole point is that the transition
+         does not happen. Its sentence was written first, in
+         `shared/spvSubscriptionRefusalCopy.ts`. */
+      if (GP_OFFLINE_CONFIRMATION_REQUIRED_FROM.has(sub.status) && !this.gpOfflineConfirmationFor(partnerId, spvId, sub.id)) {
+        throw new Error("GP_OFFLINE_CONFIRMATION_REQUIRED");
+      }
       // Gate 1 KYC (reusable), Gate 2 accreditation, Gate 3 e-sign — all required.
       const gates = this.gateStatus(sub.investorId);
       if (!gates.kyc) throw new Error("GATE_KYC_REQUIRED");
@@ -1547,6 +1770,16 @@ export const spvEngineStore = {
     sub.status = to;
     sub.updatedAt = nowIso();
     this._persistSub(sub);
+    /* WAVE 164 · R130 — COMMITTED-WRITER 1 OF 4. AFTER the write, never before,
+       and never able to fail it (R135.3): the target raise is a GOAL, so passing
+       it is recorded and warned about and NOTHING is blocked. */
+    if (to === "committed") {
+      this._noteTargetRaiseOverage(partnerId, spvId, {
+        investorId: sub.investorId,
+        writer: "advanceSubscription",
+        currency: sub.currency,
+      });
+    }
     emit("spv.subscription_advanced", spvId, { partnerId, spvId, subscriptionId, to });
     return sub;
   },
@@ -1578,6 +1811,15 @@ export const spvEngineStore = {
       existing.status = "committed";
       existing.updatedAt = now;
       this._persistSub(existing);
+      /* WAVE 164 · R130 — COMMITTED-WRITER 2 OF 4 (the AMEND / re-project branch).
+         Both branches of this method record, because a recording that fires on one
+         path and not its sibling makes the record look authoritative when it is
+         partial. Never blocks (R135.3). */
+      this._noteTargetRaiseOverage(partnerId, spvId, {
+        investorId: existing.investorId,
+        writer: "projectLpCommitted.existing",
+        currency: existing.currency,
+      });
       emit("spv.lp_committed", spvId, { partnerId, spvId, subscriptionId: existing.id, investorId: existing.investorId, projected: true });
       return existing;
     }
@@ -1600,6 +1842,12 @@ export const spvEngineStore = {
     };
     this._persistSub(sub);
     pushInto(subsBySpv, spvId, sub);
+    /* WAVE 164 · R130 — COMMITTED-WRITER 3 OF 4 (the NEW-row branch). */
+    this._noteTargetRaiseOverage(partnerId, spvId, {
+      investorId: sub.investorId,
+      writer: "projectLpCommitted.new",
+      currency: sub.currency,
+    });
     emit("spv.lp_committed", spvId, { partnerId, spvId, subscriptionId: sub.id, investorId: sub.investorId, projected: true });
     return sub;
   },
@@ -1664,6 +1912,31 @@ export const spvEngineStore = {
   },
 
   _persistSub(sub: SpvSubscriptionDTO): void {
+    /* ═══════════════════════════════════════════════════════════════
+       WAVE 161 · BATCH 3 ITEM A (A-6) — THE ONE CHOKEPOINT, TYPE-ASSERTED.
+       ═══════════════════════════════════════════════════════════════
+       EVERY write of a subscription amount in this store passes through here
+       (five callers: subscribe, advanceSubscription, projectLpCommitted ×2,
+       shadowCommitmentToEngine). SQLite is not STRICT on this table, so a value
+       that is not an integer — a JSON string arriving from an unvalidated route
+       body, a float, a NaN — persisted happily and only became visible later as a
+       corrupt aggregate or a NaN in a fee band. Every aggregate this wave fenced
+       reads these two columns; a fence over unreadable data is decoration.
+
+       ASSERTS, DOES NOT COERCE. There is no `Number()`, `parseInt` or
+       `parseFloat` here and there must never be: coercion is what turns a wrong
+       value into a plausible one. A bad amount is REFUSED at the write, before
+       any row exists, which is the only point at which refusing is free.
+       Migration 0208 mirrors the same rule as a CHECK-style money floor in the
+       database, so a writer that bypasses this store cannot get past the table
+       either. */
+    for (const [field, value] of [["commitmentMinor", sub.commitmentMinor], ["wiredMinor", sub.wiredMinor]] as const) {
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+        throw new Error(
+          `SUBSCRIPTION_MONEY_NOT_INTEGER_MINOR:${field}:${typeof value}:${String(value)}`,
+        );
+      }
+    }
     const { prev, curr } = chain("spv_subscription", { ...sub, revisionHash: undefined });
     sub.revisionHash = curr;
     // Wave B v26.4.0-fix (BLOCK-I part 1) — include commitment_minor and
@@ -1725,16 +1998,69 @@ export const spvEngineStore = {
      the figure was never a percentage OF THE TARGET, and nothing on screen said
      which denominator it used. Additive, presentation-only; no amount, filter or
      ratio computed here changes. */
-  investorRegister(partnerId: string, spvId: string): Array<{ investorId: string; commitmentMinor: number; ownershipPct: number; status: string }> {
+  /* ═══════════════════════════════════════════════════════════════════
+     WAVE 161 · BATCH 3 ITEM A (A16) — THE DENOMINATOR WAS DILUTING REAL LPs.
+     ═══════════════════════════════════════════════════════════════════
+     Wave 127 added `status` per row so the two rendering surfaces could LABEL an
+     all-stages amount. It did not touch the PERCENTAGE, and the percentage is a
+     second, independent defect: `ownershipPct` divided by the sum of every
+     non-withdrawn subscription, so a committed LP's own share was DILUTED by
+     other people's non-binding interest. On a vehicle with one $1,000 committed
+     LP and one $9,000 soft-circle, the committed LP read `10.0%` of a vehicle in
+     which they hold 100% of the capital actually committed.
+
+     THE ROW IS NOT FILTERED AND NO FIGURE IS REMOVED. `ownershipPct` keeps its
+     exact previous value and meaning — a client that reads it is unchanged — and
+     four fields are ADDED: the same number under an honest name
+     (`ownershipPctOfAllStages`), the confirmed-capital share
+     (`ownershipPctOfConfirmedCapital`, `null` for a row that is not committed —
+     never 0, which would read as "committed, and tiny"), the stage in words, and
+     which denominator was used. R134.3: the stage is on the ENTRY, because
+     labelling the aggregate alone leaves one row unreadable on its own. */
+  investorRegister(partnerId: string, spvId: string): SpvInvestorRegisterRow[] {
     if (!this.getSpv(partnerId, spvId)) return [];
     const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
+    const split = spvStageSplit(subs);
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
-    return subs.map((x) => ({
-      investorId: x.investorId,
-      commitmentMinor: x.commitmentMinor,
-      ownershipPct: total > 0 ? x.commitmentMinor / total : 0,
-      status: x.status,
-    }));
+    return subs.map((x) => {
+      const pct = spvRowOwnershipPercentages(x, split);
+      return {
+        investorId: x.investorId,
+        commitmentMinor: x.commitmentMinor,
+        ownershipPct: total > 0 ? x.commitmentMinor / total : 0,
+        status: x.status,
+        stage: x.status,
+        stageLabel: spvSubscriptionStageLabelForRegister(x.status),
+        ownershipPctOfAllStages: pct.ofAllStages,
+        ownershipPctOfConfirmedCapital: pct.ofConfirmedCapital,
+        denominatorBasis: "all_stages" as const,
+      };
+    });
+  },
+
+  /** WAVE 161 · ITEM A (A16/A17) — the register WITH its aggregate split, for the
+   *  five API surfaces that serve it. The rows are byte-identical to
+   *  `investorRegister` above; what is added is the answer to "of the amounts
+   *  below, how much is actually capital?", which no consumer could previously
+   *  compute without re-deriving the predicate for itself. */
+  investorRegisterWithSplit(partnerId: string, spvId: string): {
+    rows: SpvInvestorRegisterRow[];
+    split: SpvStageSplit;
+    splitStatement: string | null;
+    basisNote: string;
+    denominatorLabel: string;
+    confirmedDenominatorLabel: string;
+  } {
+    const rows = this.investorRegister(partnerId, spvId);
+    const split = spvStageSplit(rows);
+    return {
+      rows,
+      split,
+      splitStatement: spvStageSplitStatement(split),
+      basisNote: SPV_REGISTER_ALL_STAGES_BASIS,
+      denominatorLabel: SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+      confirmedDenominatorLabel: SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+    };
   },
 
   /** Blocker 4 (4D) — COMMITTED-only LP register. ONLY subscriptions that have
@@ -1780,25 +2106,115 @@ export const spvEngineStore = {
     spvId: string;
     lpVisibility: SpvLpVisibility;
     viewerInvestorId: string;
-    entries: Array<{ investorId: string; commitmentMinor: number; ownershipPct: number; isSelf: boolean }>;
+    entries: Array<{
+      investorId: string;
+      commitmentMinor: number;
+      ownershipPct: number;
+      isSelf: boolean;
+      stage: string;
+      stageLabel: string;
+      isConfirmedCapital: boolean;
+      ownershipPctOfAllStages: number;
+      ownershipPctOfConfirmedCapital: number | null;
+    }>;
+    /** WAVE 161 · ITEM A (A18) — the aggregate split, stated. */
+    split: SpvStageSplit;
+    splitStatement: string | null;
+    viewerStage: string;
+    viewerStageLabel: string;
+    viewerIsConfirmedCapital: boolean;
+    denominatorBasis: "all_stages";
+    denominatorLabel: string;
+    confirmedDenominatorLabel: string;
+    basisNote: string;
   } {
     const s = spvById.get(spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
-    const own = subs.find((x) => x.investorId === viewerInvestorId);
+    /* ══════════════════════════════════════════════════════════════
+       WAVE 166 · BATCH 3 ITEM D (D-4) — WHICH IDS ARE *ME*.
+       ══════════════════════════════════════════════════════════════
+       This line used to be `x.investorId === viewerInvestorId`, canonical id only.
+       A direct-added LP (Path 2) is seated under the deterministic id derived from
+       their EMAIL; when they later register, `registerPersona` mints an unrelated
+       `u_redeemed_<timestamp>` id. Wave 166's registration binding records an alias
+       linking the two — but this comparison never read it, so the bound LP was
+       still told `NOT_AN_LP` while their position sat in the roster one row away.
+
+       `viewerInvestorIds` returns `[canonical, ...active aliases]` and FAILS CLOSED
+       to `[canonical]` on any error, so the worst case is exactly the old
+       behaviour. NOTHING ELSE HERE MOVES: the `status !== "withdrawn"` filter above
+       is untouched, the all-stages denominator is untouched, and `s.lpVisibility`
+       still decides what an LP may see. This widens WHO THE VIEWER IS, not what a
+       viewer is allowed to look at.
+
+       AMBIGUITY IS REFUSED, NOT RESOLVED (R134.6). If the same human matches TWO
+       subscription rows in this ONE vehicle there is no safe answer: summing
+       invents a commitment nobody signed, and picking the first silently hides real
+       money. `soleMatchingInvestorId` throws instead, and the plain-language
+       sentence is carried on the error rather than left for a surface to invent. */
+    const viewerIds = viewerInvestorIds(viewerInvestorId);
+    const ownMatch = soleMatchingInvestorId(
+      spvId,
+      viewerIds,
+      (id) => subs.find((x) => x.investorId === id) ?? null,
+    );
+    const own = ownMatch?.row;
     if (!own) throw new Error("NOT_AN_LP"); // fail-closed: only actual LPs get a roster
     const visible = s.lpVisibility === "co_investors" ? subs : [own];
+    /* ═════════════════════════════════════════════════════════════════
+       WAVE 161 · BATCH 3 ITEM A (A18) · R134.3 — THE WORST LP-FACING LEAK.
+       ═════════════════════════════════════════════════════════════════
+       The entry shape had NO `status` FIELD AT ALL. An LP who had only
+       soft-circled — no signed documents, no funds, nothing binding — was served
+       their own amount and a percentage of an all-stages denominator, and no
+       client could have labelled it because the stage was not in the payload. An
+       LP read their non-binding indication AS THEIR OWN COMMITTED POSITION.
+
+       R134.3: LABELLING THE DENOMINATOR ALONE IS INSUFFICIENT. So `stage`,
+       `stageLabel` and `isConfirmedCapital` are on EVERY ENTRY — including, and
+       especially, the viewer's own — and the split is stated on the aggregate as
+       well. `viewerStage*` is duplicated at the top level because the one fact
+       this LP most needs ("is MY row a commitment?") should not require finding
+       oneself in a list.
+
+       `ownershipPct` is UNCHANGED in value and meaning, so no existing client
+       render breaks; `ownershipPctOfConfirmedCapital` is `null` — never 0 — for a
+       non-committed row, because 0.0% reads as "committed, and tiny". */
+    const split = spvStageSplit(subs);
     return {
       spvId,
       lpVisibility: s.lpVisibility,
       viewerInvestorId,
-      entries: visible.map((x) => ({
-        investorId: x.investorId,
-        commitmentMinor: x.commitmentMinor,
-        ownershipPct: total > 0 ? x.commitmentMinor / total : 0,
-        isSelf: x.investorId === viewerInvestorId,
-      })),
+      entries: visible.map((x) => {
+        const pct = spvRowOwnershipPercentages(x, split);
+        return {
+          investorId: x.investorId,
+          commitmentMinor: x.commitmentMinor,
+          ownershipPct: total > 0 ? x.commitmentMinor / total : 0,
+          /* WAVE 166 (D-4) — compared against the id the viewer was actually
+             MATCHED under, not their canonical id. A bound LP is seated under
+             their email-derived id, so the canonical comparison marked their
+             OWN row `isSelf: false` and every surface then rendered it as a
+             co-investor's row. Same rule as the `own` lookup above. */
+          isSelf: x.investorId === own.investorId,
+          stage: x.status,
+          stageLabel: spvSubscriptionStageLabelForRegister(x.status),
+          isConfirmedCapital: x.status === COMMITTED_SUBSCRIPTION_STATUS,
+          ownershipPctOfAllStages: pct.ofAllStages,
+          ownershipPctOfConfirmedCapital: pct.ofConfirmedCapital,
+        };
+      }),
+      split,
+      splitStatement: spvStageSplitStatement(split),
+      viewerStage: own.status,
+      viewerStageLabel: spvSubscriptionStageLabelForRegister(own.status),
+      viewerIsConfirmedCapital: own.status === COMMITTED_SUBSCRIPTION_STATUS,
+      denominatorBasis: "all_stages" as const,
+      denominatorLabel: SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+      confirmedDenominatorLabel: SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+      basisNote: SPV_REGISTER_ALL_STAGES_BASIS,
     };
   },
 
@@ -2433,7 +2849,39 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!investorId) throw new Error("INVESTOR_ID_REQUIRED");
-    const sub = (subsBySpv.get(spvId) ?? []).find((x) => x.investorId === investorId && x.status !== "withdrawn");
+    /* ════════════════════════════════════════════════════════════════ *
+     *  WAVE 161 · BATCH 3 ITEM A (A-5) — THE EXPECTED AMOUNT WAS AN INDICATION.
+     *  ════════════════════════════════════════════════════════════════ *
+     *  The `find` matched ANY live subscription, so a GP recording an offline
+     *  wire against an investor who had only SOFT-CIRCLED got that indication's
+     *  amount as `expectedMinor` — the figure the confirmation is reconciled
+     *  against, persisted into `terms._fundsConfirmations`, and read by every
+     *  K-1. A non-binding indication became the expected capital of a wire.
+     *
+     *  A pre-commitment row is now REFUSED rather than silently reconciled: the
+     *  honest answer to "how much did we expect from this person?" is "they have
+     *  not committed", and answering with their indication is the exact confusion
+     *  this wave exists to remove. `wire_funded` IS accepted — that stage means
+     *  funds were received and this is the method that records them — even though
+     *  R135.1 keeps `wire_funded` out of confirmed CAPITAL.
+     *
+     *  AN INVESTOR WITH NO SUBSCRIPTION AT ALL IS UNCHANGED (`expectedMinor` 0,
+     *  reported as a mismatch by `computeFundsConfirmation`): those are
+     *  invite-seated LPs, and refusing them here would break a working path.
+     *
+     *  Copy for the refusal code was written FIRST, in
+     *  `client/src/lib/serverRefusalMessage.ts`
+     *  (`SPV_SUBSCRIPTION_REFUSAL_COPY.FUNDS_CONFIRMATION_REQUIRES_COMMITMENT`),
+     *  because `spvEngineRoutes.err()` answers `{ error: CODE }` with no sentence
+     *  — throwing before the copy exists would CREATE an R77 violation.
+     *  ═══════════════════════════════════════════════════════════════ */
+    const live = (subsBySpv.get(spvId) ?? []).filter(
+      (x) => x.investorId === investorId && x.status !== "withdrawn",
+    );
+    const sub = live.find(
+      (x) => x.status === COMMITTED_SUBSCRIPTION_STATUS || x.status === "wire_funded",
+    );
+    if (!sub && live.length > 0) throw new Error("FUNDS_CONFIRMATION_REQUIRES_COMMITMENT");
     const expectedMinor = sub ? sub.commitmentMinor : 0;
     const conf = computeFundsConfirmation(expectedMinor, receivedMinor, reference ?? undefined);
     // Persist durably in terms._fundsConfirmations (never blocks the money path).
@@ -2451,6 +2899,108 @@ export const spvEngineStore = {
     this.updateSpv(partnerId, spvId, { terms }, actor);
     emit("spv.funds_confirmed", spvId, { partnerId, spvId, investorId, status: conf.status, mismatch: conf.mismatch });
     return conf;
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════ *
+   *  WAVE 166 · BATCH 3 ITEM D (PATH 1) · R131.1 — THE GP'S OFFLINE AFFIRMATION.
+   *  ══════════════════════════════════════════════════════════════════════ *
+   *  Two statements about the world outside this platform, made by a named human
+   *  at a recorded moment:
+   *
+   *    • the LP's subscription documents are SIGNED, and
+   *    • the LP's funds are IN THE BANK.
+   *
+   *  BOTH are required, together, in one act. One of the two is not a partial
+   *  commitment — it is still not a commitment, and accepting it would let the
+   *  platform hold a half-truth that later reads as capital. A caller that sends
+   *  one is REFUSED (`GP_OFFLINE_CONFIRMATION_INCOMPLETE`) and nothing is written.
+   *
+   *  Storage is the SPV's own `terms` JSON, the same durable surface
+   *  `_fundsConfirmations` and `_capOverrides` already use, so no new table is
+   *  invented for four fields. THE MERGE IS ONE LEVEL, exactly the
+   *  `confirmFundsReceived` precedent above: `updateSpv` assigns
+   *  `s.terms = patch.terms` WHOLESALE, so writing a freshly-built object through
+   *  it would DELETE `_fundsConfirmations` and break every K-1. Read `s.terms`,
+   *  shallow-copy, replace ONE key, write the whole object back. The column is
+   *  `terms`, not `terms_json`.
+   *  ══════════════════════════════════════════════════════════════════════ */
+
+  /** The recorded affirmation for one subscription, or null. Read-only. */
+  gpOfflineConfirmationFor(
+    partnerId: string,
+    spvId: string,
+    subscriptionId: string,
+  ): GpOfflineConfirmation | null {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) return null;
+    const bag = ((s.terms ?? {}) as Record<string, unknown>)._gpOfflineConfirmations as
+      | Record<string, GpOfflineConfirmation>
+      | undefined;
+    const hit = bag?.[subscriptionId];
+    /* Fail closed on a malformed bag: an affirmation that cannot be read as BOTH
+       statements being true is not an affirmation. */
+    if (!hit || hit.documentsSigned !== true || hit.fundsReceived !== true) return null;
+    return hit;
+  },
+
+  /**
+   * Record the GP's affirmation of both offline conditions for one subscription.
+   *
+   * This does NOT move the subscription. Recording the affirmation and advancing
+   * the stage are two separate acts on purpose: the route performs them in order
+   * so that a failure to persist the affirmation cannot leave a row committed with
+   * no record of who said so.
+   */
+  recordGpOfflineConfirmation(
+    partnerId: string,
+    spvId: string,
+    subscriptionId: string,
+    input: { documentsSigned: unknown; fundsReceived: unknown; actorId: string },
+  ): GpOfflineConfirmation {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const sub = (subsBySpv.get(spvId) ?? []).find((x) => x.id === subscriptionId);
+    if (!sub) throw new Error("SUBSCRIPTION_NOT_FOUND");
+    /* STRICTLY `true`. A truthy string, a 1, or a missing field are all refused:
+       "yes-ish" is not an affirmation that both documents and funds exist, and
+       coercing here is how an empty form becomes a commitment. */
+    if (input.documentsSigned !== true || input.fundsReceived !== true) {
+      throw new Error("GP_OFFLINE_CONFIRMATION_INCOMPLETE");
+    }
+    const actor = String(input.actorId ?? "").trim();
+    if (!actor) throw new Error("GP_OFFLINE_CONFIRMATION_INCOMPLETE");
+
+    const record: GpOfflineConfirmation = {
+      documentsSigned: true,
+      fundsReceived: true,
+      affirmedBy: actor,
+      affirmedAt: nowIso(),
+      subscriptionId,
+      investorId: sub.investorId,
+      /* The stage the row was in WHEN the affirmation was made. Recorded because
+         "confirmed at soft-circle" and "confirmed after funds were logged" are
+         different stories and the audit should be able to tell them apart. */
+      stageAtAffirmation: sub.status,
+    };
+    // ONE-LEVEL MERGE. See the docblock above; anything deeper destroys K-1 data.
+    const terms = { ...(s.terms ?? {}) } as Record<string, unknown>;
+    const bag = { ...((terms._gpOfflineConfirmations as Record<string, unknown>) ?? {}) };
+    bag[subscriptionId] = record;
+    terms._gpOfflineConfirmations = bag;
+    this.updateSpv(partnerId, spvId, { terms }, actor);
+    /* NO NEW OUTBOUND EVENT, DELIBERATELY. `ALL_OUTBOUND_EVENT_TYPES` is an
+       EXHAUSTIVE registry pinned by `sprint12.test.ts:115` with `toEqual`, and it
+       is also a webhook contract subscribers rely on. Minting a new public event
+       type to log an internal affirmation would mean editing a pinned inventory
+       and widening an external contract for something nobody asked for. The
+       affirmation is already durable in `terms._gpOfflineConfirmations`, and the
+       stage change that follows it emits the existing `spv.subscription_advanced`,
+       so nothing observable is lost. */
+    log.info?.(
+      `[w166] GP offline confirmation recorded spv=${spvId} sub=${subscriptionId} ` +
+        `by=${actor} stage=${sub.status} (documents signed AND funds received)`,
+    );
+    return record;
   },
 
   /* ══════════════════════════════════════════════════════════════════════ *
@@ -2500,12 +3050,33 @@ export const spvEngineStore = {
       resultingTotalMinor: number;
       overageMinor: number;
       currency: string;
+      /* WAVE 164 · ITEM C · R133.1 — the split, supplied by the caller because
+         the caller measured it BEFORE the projection mutated the roster. When it
+         is absent the split is measured here instead and said so, rather than
+         omitted: a record that states an overage without stating how much of the
+         total was actually capital is the defect this wave closes. */
+      confirmedCapitalMinor?: number;
+      softCircledInterestMinor?: number;
+      wiredNotCommittedMinor?: number;
     },
     actor: string,
   ): SpvCapOverrideRecord {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!rec.investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    const suppliedSplit =
+      typeof rec.confirmedCapitalMinor === "number" &&
+      typeof rec.softCircledInterestMinor === "number" &&
+      typeof rec.wiredNotCommittedMinor === "number";
+    const measured = suppliedSplit
+      ? null
+      : spvCapSplitFiguresForSpv({
+          spvId,
+          capMinor: rec.capMinor,
+          requestedMinor: 0,
+          resultingTotalMinor: rec.resultingTotalMinor,
+          currency: rec.currency,
+        });
     const entry: SpvCapOverrideRecord = {
       investorId: rec.investorId,
       capMinor: rec.capMinor,
@@ -2515,6 +3086,19 @@ export const spvEngineStore = {
       currency: rec.currency,
       actor: actor ?? "",
       recordedAt: nowIso(),
+      confirmedCapitalMinor: suppliedSplit
+        ? (rec.confirmedCapitalMinor as number)
+        : (measured as SpvCapSplitFigures).confirmedCapitalMinor,
+      softCircledInterestMinor: suppliedSplit
+        ? (rec.softCircledInterestMinor as number)
+        : (measured as SpvCapSplitFigures).softCircledInterestMinor,
+      wiredNotCommittedMinor: suppliedSplit
+        ? (rec.wiredNotCommittedMinor as number)
+        : (measured as SpvCapSplitFigures).wiredNotCommittedMinor,
+      capBasisCode: suppliedSplit ? "measured_before_projection" : "measured_after_projection",
+      capBasis:
+        "cap capacity counts every non-withdrawn subscription, so soft-circled interest occupies " +
+        "capacity without being capital; only the confirmed-capital figure is capital",
     };
     // ONE-LEVEL copy of `terms`, then only this wave's own key is touched.
     const terms = { ...(s.terms ?? {}) } as Record<string, unknown>;
@@ -2534,6 +3118,134 @@ export const spvEngineStore = {
       | Record<string, SpvCapOverrideRecord>
       | undefined;
     return Object.values(bag ?? {});
+  },
+
+  /* ════════════════════════════════════════════════════════════════ *
+   *  WAVE 164 · BATCH 3 · R130 — THE TARGET RAISE WARNS AND RECORDS. IT NEVER
+   *  BLOCKS.
+   *  ═══════════════════════════════════════════════════════════════
+   *  THE ORIGINAL DEFECT was a partner believing the TARGET was a LIMIT. The
+   *  target is a fundraising GOAL: passing it is good news. The cap is the
+   *  maximum, it stays hard, it stays optional, and a blank cap still means no
+   *  cap.
+   *
+   *  R135.3 — NO NEW BLOCKING GATE. This method records and returns a sentence.
+   *  Every one of its callers invokes it AFTER its own write has already
+   *  succeeded and inside a `try`, so a failure here cannot fail a commit that
+   *  happened. A recording surface that could refuse a write would be a new gate,
+   *  which is precisely what R135.3 forbids.
+   *
+   *  A SEPARATE KEY, ON PURPOSE. `_targetOverages` is NOT `_capOverrides`. A cap
+   *  override is a breach of a maximum; a target overage is a goal being beaten.
+   *  Sharing one key or one reason code would let a compliance export report the
+   *  second as the first — the exact conflation R130 exists to prevent — so the
+   *  reason code is `TARGET_RAISE_EXCEEDED` and the record carries `blocked:
+   *  false` explicitly rather than leaving a reader to infer it.
+   *
+   *  THE MERGE IS ONE LEVEL, exactly the `confirmFundsReceived:2440-2451` /
+   *  `recordCapOverride` pattern (R120.3): read `s.terms`, shallow-copy THE TOP
+   *  LEVEL, touch only `_targetOverages`, write back. Writing a freshly-built
+   *  object through `updateSpv` (which ASSIGNS `s.terms`) would delete
+   *  `_fundsConfirmations` and `_capOverrides` and break every K-1. The column is
+   *  `terms`, not `terms_json`.
+   *
+   *  Keyed by investor so a replayed commit overwrites its own entry instead of
+   *  growing an unbounded list — same idempotence as `_capOverrides`.
+   * ═════════════════════════════════════════════════════════════════ */
+  recordTargetRaiseOverage(
+    partnerId: string,
+    spvId: string,
+    args: { investorId: string; writer: string; actor?: string; currency?: string },
+  ): { record: SpvTargetOverageRecord; warning: string } | null {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) return null;
+    const target = s.targetRaiseMinor;
+    /* Blank / zero / unreadable target => there is no goal to pass, so there is
+       nothing to warn about. Absence is reported by returning `null`; it is never
+       coerced into a target of 0, which would make EVERY commit an overage. */
+    if (typeof target !== "number" || !Number.isSafeInteger(target) || target <= 0) return null;
+    const currency = args.currency ?? s.currency;
+    const resultingTotalMinor = capBasisCommittedMinorForSpv(spvId);
+    if (resultingTotalMinor <= target) return null;
+    const figures = spvCapSplitFiguresForSpv({
+      spvId,
+      capMinor: s.capMinor ?? null,
+      requestedMinor: 0,
+      resultingTotalMinor,
+      currency,
+    });
+    const record: SpvTargetOverageRecord = {
+      reasonCode: TARGET_RAISE_EXCEEDED_CODE,
+      investorId: args.investorId,
+      targetRaiseMinor: target,
+      capMinor: s.capMinor ?? null,
+      confirmedCapitalMinor: figures.confirmedCapitalMinor,
+      softCircledInterestMinor: figures.softCircledInterestMinor,
+      wiredNotCommittedMinor: figures.wiredNotCommittedMinor,
+      resultingTotalMinor,
+      targetOverageMinor: resultingTotalMinor - target,
+      currency,
+      writer: args.writer,
+      actor: args.actor ?? "",
+      blocked: false,
+      recordedAt: nowIso(),
+    };
+    const terms = { ...(s.terms ?? {}) } as Record<string, unknown>;
+    const bag = { ...((terms[SPV_TARGET_OVERAGES_TERMS_KEY] as Record<string, unknown>) ?? {}) };
+    bag[args.investorId] = record;
+    terms[SPV_TARGET_OVERAGES_TERMS_KEY] = bag;
+    this.updateSpv(partnerId, spvId, { terms }, args.actor ?? "");
+    return {
+      record,
+      warning: spvTargetRaiseWarningSentence(
+        { ...figures, targetRaiseMinor: target },
+        currencyExponent(currency),
+      ),
+    };
+  },
+
+  /** R130 — the durable target overages on this SPV, readable after the fact.
+   *  Deliberately a DIFFERENT reader from `capOverridesForSpv`: a caller must say
+   *  which of the two it wants and cannot get one while asking for the other. */
+  targetOveragesForSpv(partnerId: string, spvId: string): SpvTargetOverageRecord[] {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) return [];
+    const bag = ((s.terms ?? {}) as Record<string, unknown>)[SPV_TARGET_OVERAGES_TERMS_KEY] as
+      | Record<string, SpvTargetOverageRecord>
+      | undefined;
+    return Object.values(bag ?? {});
+  },
+
+  /** R130 / R135.3 — the NEVER-THROWS wrapper the four committed-writers call.
+   *  A target overage is a side effect of a write that has already succeeded, so
+   *  a failure to record one is LOGGED and swallowed: turning it into a throw
+   *  would convert a recording surface into a blocking gate. */
+  _noteTargetRaiseOverage(
+    partnerId: string,
+    spvId: string,
+    args: { investorId: string; writer: string; actor?: string; currency?: string },
+  ): { record: SpvTargetOverageRecord; warning: string } | null {
+    try {
+      const out = this.recordTargetRaiseOverage(partnerId, spvId, args);
+      if (out) {
+        log.warn?.(
+          `[spvEngineStore] ${TARGET_RAISE_EXCEEDED_CODE} spv=${spvId} investor=${args.investorId} ` +
+            `writer=${args.writer} target=${out.record.targetRaiseMinor} ` +
+            `total=${out.record.resultingTotalMinor} overage=${out.record.targetOverageMinor} ` +
+            `${out.record.currency}. NOT BLOCKED — the target is a goal, not a limit (R130).`,
+        );
+      }
+      return out;
+    } catch (e) {
+      log.error?.({
+        route: "spvEngineStore.recordTargetRaiseOverage",
+        code: "TARGET_OVERAGE_RECORD_FAILED",
+        message:
+          `spv=${spvId} investor=${args.investorId} writer=${args.writer}: ${(e as Error).message}. ` +
+          `The commit itself SUCCEEDED and is unaffected; only the target-overage record is missing.`,
+      });
+      return null;
+    }
   },
 
   /** SPV-CORE-1 — the durable confirmed-received amounts keyed by investor. */
@@ -3214,6 +3926,29 @@ export function shadowCommitmentToEngine(input: {
     list.push(sub);
     subsBySpv.set(engineSpvId, list);
   }
+  /* ══════════════════════════════════════════════════════════════════
+     WAVE 164 · R130 — COMMITTED-WRITER 4 OF 4.
+     ══════════════════════════════════════════════════════════════════
+     THE LINE NUMBER IN THE BRIEF WAS A COMMENT, NOT CODE: `shadowCommitmentToEngine`
+     really begins at the `export function` above, and this is its single success
+     exit. This mirror USUALLY writes a `review` row (`existing?.status ?? "review"`
+     preserves whatever the engine already held and never promotes anything), so
+     the guard below is the point: the target-overage record is written only when
+     the row this call leaves behind actually IS committed capital. Recording on a
+     `review` mirror would report a target as passed on the strength of an
+     indication — the very conflation R130 forbids.
+
+     Wrapped in the never-throws helper AFTER the write, so the legacy mirror
+     cannot be failed by a recording surface (R135.3). `_noteTargetRaiseOverage`
+     resolves the SPV through `getSpv(partnerId, …)`, so an input whose partner
+     does not own the vehicle records nothing rather than recording it elsewhere. */
+  if (sub.status === COMMITTED_SUBSCRIPTION_STATUS) {
+    spvEngineStore._noteTargetRaiseOverage(input.partnerId, engineSpvId, {
+      investorId: sub.investorId,
+      writer: "shadowCommitmentToEngine",
+      currency: sub.currency,
+    });
+  }
   return { ok: true };
 }
 
@@ -3884,6 +4619,26 @@ export function committedSubscriptionsForSpv(spvId: string): SpvSubscriptionDTO[
    values are already integer minor-unit counts on the DTO.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 161 · BATCH 3 · ITEM A — FENCE (R133.1). THE CAP BASIS IS ALL-STAGES ON
+ * PURPOSE AND MUST STAY THAT WAY.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * Wave 161 narrowed several aggregates from "every non-withdrawn subscription" to
+ * "committed only". These two helpers, `computeCapImpact` and the cap gate in
+ * `subscribe` look like the same defect and are NOT: R133.1 rules that a
+ * soft-circle DOES occupy capacity in the vehicle. A GP who has soft-circled the
+ * entire cap has no room left to offer, and a capacity check that ignored
+ * pre-commitment stages would let a vehicle be oversubscribed several times over
+ * before anyone committed anything.
+ *
+ * SO THE SAME PREDICATE IS RIGHT HERE AND WRONG THERE, FOR DIFFERENT QUESTIONS:
+ * "how much room is left?" counts indications; "how much capital do we have?"
+ * does not. Naming both `committed` was how the two questions got one answer.
+ *
+ * DO NOT NARROW THESE. Pinned by
+ * `server/__tests__/wave161_itemA_aggregation_fence.test.ts`.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
 /** WAVE 151 — every subscription that OCCUPIES CAPACITY in the vehicle (R115.4). */
 export function capBasisSubscriptionsForSpv(spvId: string): SpvSubscriptionDTO[] {
   return (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
@@ -3902,7 +4657,99 @@ export function capBasisContributionMinor(spvId: string, investorId: string): nu
   return existing ? existing.commitmentMinor : 0;
 }
 
-/** The durable record of a commit that pushed a vehicle past its cap (R105). */
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 164 · BATCH 3 · ITEM C (R133.1) — THE FIVE-PART SPLIT, BUILT FROM THE
+ * GATE'S OWN NUMBER SO IT CANNOT CONTRADICT THE GATE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * `resultingTotalMinor` is a PARAMETER, not something recomputed here. The two
+ * callers reach the same total by different (both correct) routes — `subscribe`
+ * adds to `capBasisCommittedMinorForSpv`, `computeCapImpact` subtracts the
+ * committing LP's own pre-existing row first because `projectLpCommitted`
+ * REPLACES it rather than adding to it — and a split that recomputed the total
+ * its own way would eventually disagree with the gate that refused. A refusal
+ * whose figures do not add up to the refusal is worse than a bare code.
+ *
+ * `excludeInvestorId` exists for exactly that replace semantics: excluding the
+ * committing LP's existing row from the labelled parts keeps
+ * `confirmed + soft-circled + wired + requested === resultingTotal`.
+ *
+ * THE CAPACITY BASIS IS UNCHANGED (R133.1, and the wave 161 fence above says so
+ * at length): the parts are drawn from `capBasisSubscriptionsForSpv`, every
+ * non-withdrawn subscription. This function LABELS that population; it does not
+ * re-decide it. Money is summed by `spvStageSplit`, which type-checks every
+ * addend with `Number.isSafeInteger` — no `Number()`, `parseInt` or `parseFloat`.
+ * ════════════════════════════════════════════════════════════════════════════ */
+export function spvCapSplitFiguresForSpv(args: {
+  spvId: string;
+  capMinor: number | null;
+  requestedMinor: number;
+  resultingTotalMinor: number;
+  currency: string;
+  excludeInvestorId?: string | null;
+}): SpvCapSplitFigures {
+  const rows = capBasisSubscriptionsForSpv(args.spvId).filter(
+    (x) => !args.excludeInvestorId || x.investorId !== args.excludeInvestorId,
+  );
+  const split = spvStageSplit(rows);
+  const overageMinor =
+    args.capMinor != null && args.resultingTotalMinor > args.capMinor
+      ? args.resultingTotalMinor - args.capMinor
+      : 0;
+  return {
+    capMinor: args.capMinor,
+    confirmedCapitalMinor: split.confirmedCapitalMinor,
+    softCircledInterestMinor: split.softCircledInterestMinor,
+    wiredNotCommittedMinor: split.wiredNotCommittedMinor,
+    requestedMinor: args.requestedMinor,
+    resultingTotalMinor: args.resultingTotalMinor,
+    overageMinor,
+    currency: args.currency,
+  };
+}
+
+/** WAVE 164 · ITEM C · R77 — an `EXCEEDS_CAP` error that CARRIES its split.
+ *
+ *  The thrown `message` stays EXACTLY `"EXCEEDS_CAP"`. That is deliberate and is
+ *  not laziness: `spvEngineRoutes.err()` maps the message by exact key, every
+ *  shipped assertion reads `error === "EXCEEDS_CAP"`, and appending the figures
+ *  INTO the message would both miss the 400 mapping (falling through to a 500)
+ *  and change assertions this wave has no licence to lower (R98). The words and
+ *  the figures ride on the Error OBJECT instead, where the route reads them and
+ *  serves them as `message` / `guidance` / `capSplit`. */
+export interface SpvCapRefusalError extends Error {
+  capSplit: SpvCapSplitFigures;
+  refusalHeadline: string;
+  refusalGuidance: string;
+}
+
+export function isSpvCapRefusalError(e: unknown): e is SpvCapRefusalError {
+  return (
+    e instanceof Error &&
+    e.message === "EXCEEDS_CAP" &&
+    typeof (e as SpvCapRefusalError).refusalHeadline === "string" &&
+    (e as SpvCapRefusalError).capSplit != null
+  );
+}
+
+/** Build the refusal. Nothing is persisted and nothing is emitted — this only
+ *  turns figures into an error that can explain itself. */
+export function buildSpvCapRefusalError(figures: SpvCapSplitFigures): SpvCapRefusalError {
+  const exponent = currencyExponent(figures.currency);
+  const e = new Error("EXCEEDS_CAP") as SpvCapRefusalError;
+  e.capSplit = figures;
+  e.refusalHeadline = spvCapSplitRefusalHeadline(figures, exponent);
+  e.refusalGuidance = spvCapSplitRefusalSentence(figures, exponent);
+  return e;
+}
+
+/** The durable record of a commit that pushed a vehicle past its cap (R105).
+ *
+ *  WAVE 164 · ITEM C · R133.1 — the split fields are ADDED, never substituted:
+ *  `committedBeforeMinor` keeps its meaning (the CAPACITY-basis total before the
+ *  commit) and every existing reader of it is unaffected. The three new figures
+ *  exist so no record can assert an overage that does not exist in capital: a
+ *  reader can now see how much of the total was actually committed capital.
+ *  `capBasis` names the population in words, beside the machine `capBasisCode`. */
 export type SpvCapOverrideRecord = {
   investorId: string;
   capMinor: number;
@@ -3912,6 +4759,13 @@ export type SpvCapOverrideRecord = {
   currency: string;
   actor: string;
   recordedAt: string;
+  /** R133.1 — the split. Optional on the TYPE only so records written before
+   *  this wave still read; every record written from now on carries all three. */
+  confirmedCapitalMinor?: number;
+  softCircledInterestMinor?: number;
+  wiredNotCommittedMinor?: number;
+  capBasisCode?: string;
+  capBasis?: string;
 };
 
 /** The arithmetic a cap warning and a cap-override record are both built from. */

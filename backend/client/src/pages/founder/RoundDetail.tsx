@@ -73,6 +73,9 @@ import {
   readGovernanceTerms,
   GOVERNANCE_TERM_NOT_RECORDED_DETAIL,
 } from "@shared/roundGovernanceTerms";
+/* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
+   R111 Q13 settled it as "Not on record"; this file had invented its own. */
+import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
 type UseOfProceedsRow = { category: string; percent: number; amount: number };
 type ChecklistRow = { item: string; done: boolean; owner: string };
@@ -572,10 +575,18 @@ export default function RoundDetail() {
    <span className="text-muted-foreground text-sm">subscribed (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
  </div>
  {subscribedBarPct === null ? (
- <div className="text-sm text-muted-foreground" data-testid="text-round-progress-unavailable">{moneyView.money?.progressBp?.targetNote ?? "No target recorded"}</div>
+ <div className="text-sm text-muted-foreground" data-testid="text-round-progress-unavailable">{moneyView.money?.progressBp?.targetNote ?? NOT_ON_RECORD}</div>
  ) : (
  <div className="text-sm text-muted-foreground" data-testid="text-round-progress">{fmtPct(subscribedBarPct, 0)} of target subscribed</div>
  )}
+ {/* WAVE 165 · R130.2 / R139.4 (S15) — the round's headline figure sat over
+     "of $X target" with no statement of what the target is. Added as a
+     sibling inside the same fragment so the existing two children keep
+     their order and their literals. */}
+ <div className="text-xs text-muted-foreground" data-testid="text-round-target-is-a-goal">
+ The target is this round's fundraising goal, not a limit. Commitments are never blocked for
+ passing it, and there is no separate cap on a Capavate round.
+ </div>
  </>
  ) : (
  <div data-testid="text-round-money-not-recorded">

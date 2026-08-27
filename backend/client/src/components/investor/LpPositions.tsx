@@ -24,6 +24,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
+/* WAVE 174 · R142 — the tax document an LP should expect, resolved from the
+   jurisdiction ALREADY stored on the vehicle and already carried on this
+   payload (`LpPosition.jurisdiction`). No jurisdiction literal lives here. */
+import { LpTaxDocumentNote } from "@/components/investor/LpTaxDocumentNote";
 
 interface LpPosition {
   spvId: string;
@@ -156,6 +160,8 @@ export function LpPositions() {
               {p.refusalCopy}
             </div>
           )}
+
+          <LpTaxDocumentNote jurisdiction={p.jurisdiction} />
         </div>
       ))}
     </div>
