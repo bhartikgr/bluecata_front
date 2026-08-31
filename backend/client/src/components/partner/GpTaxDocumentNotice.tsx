@@ -39,17 +39,42 @@ import {
   SPV_TAX_DOCUMENT_NO_STANDARD_FORM_LABEL,
   SPV_TAX_DOCUMENT_VEHICLE_FORM_NOTICE,
   SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE,
+  /* WAVE 189 · ITEM A · R159.5 — the STRONGER disclaimer the owner asked for,
+     naming BOTH Capavate and BluePrint Catalyst Limited. Rendered as a STATIC
+     SIBLING of the notice above, which is kept byte-verbatim (R143.1). */
+  SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER,
   SPV_TAX_DOCUMENT_SOURCES_LABEL,
 } from "@shared/spvEngine";
+/* WAVE 179 · ITEM B · R151.3 — the OPTIONAL, GP-STATED legal form. */
+import { spvLegalFormResolvedTreatment } from "@shared/spvLegalForm";
 
 export function GpTaxDocumentNotice({
   jurisdiction,
   testidPrefix = "spv-k1-jurisdiction",
+  legalForm = null,
 }: {
   jurisdiction?: string | null;
   testidPrefix?: string;
+  /* ══ WAVE 179 · ITEM B · R151.3 — OPTIONAL, DEFAULTS TO NOT STATED ════════
+     The default is `null` and every existing call site that does not pass it keeps
+     rendering EXACTLY what it renders today — which is the guarantee R151.3
+     demands and what the byte-identity test pins.
+
+     THE PLATFORM NEVER INFERS THIS. The prop is threaded from the vehicle's own
+     persisted `legal_form` column, which is only ever written from an explicit
+     user selection. There is deliberately no fallback that derives it from
+     `jurisdiction`, from the vehicle's name, or from its type. */
+  legalForm?: string | null;
 }) {
   const doc = useMemo(() => spvJurisdictionTaxDocument(jurisdiction), [jurisdiction]);
+  /* Non-null ONLY when a legal form was explicitly stated AND it genuinely belongs
+     to this vehicle's jurisdiction AND wave 175 recorded a single treatment for it.
+     `null` in every other case, including a stale form left over from a different
+     jurisdiction — which then reads as not stated, i.e. as today. */
+  const resolvedTreatment = useMemo(
+    () => spvLegalFormResolvedTreatment(doc.code, legalForm),
+    [doc.code, legalForm],
+  );
 
   /* `delaware` is the one jurisdiction for which a Schedule K-1 IS the
      vehicle's own investor document, so nothing needs correcting there. */
@@ -63,6 +88,64 @@ export function GpTaxDocumentNotice({
       <div className="mb-2 text-[11px] leading-relaxed text-muted-foreground" data-testid={`${testidPrefix}-us`}>
         Vehicle jurisdiction: {doc.jurisdictionLabel}. A Schedule K-1 is this vehicle's investor tax
         document.
+        {/* ── WAVE 176 · ITEM C · R147.3(4) — THE PANEL MAKING THE STRONGEST CLAIM
+            WAS THE ONLY ONE WITHOUT A SOURCE.
+
+            This early-return branch used to end at the sentence above, so a
+            Delaware vehicle — the one jurisdiction where the platform asserts
+            outright that a Schedule K-1 IS the investor tax document — rendered
+            NEITHER the citation NOR the not-tax-advice sentence, while every
+            non-US jurisdiction fell through to the card below and rendered both.
+            The owner found exactly that on live 26.29.0.
+
+            THE DATA WAS NEVER THE PROBLEM. `SPV_JURISDICTION_TAX_DOCUMENT.delaware`
+            has carried its three IRS citations since wave 175 (shared/spvEngine.ts),
+            including the Partner's Instructions for Schedule K-1 (Form 1065) at
+            https://www.irs.gov/instructions/i1065sk1. This branch simply returned
+            before reaching them. Nothing is invented here and no authority is
+            added to any jurisdiction: both blocks below render only what the
+            jurisdiction's own row holds, which is why Cayman and BVI still name no
+            authority.
+
+            R143.1 — the two sentences above are UNTOUCHED, byte-verbatim, in the
+            same element with the same `data-testid`. These are STATIC SIBLING
+            nodes appended after them, so no copy string is replaced. The blocks
+            are deliberate duplicates of the ones in the card below rather than a
+            shared sub-component: extracting them would move the existing
+            elements into a new component and change their inventory paths, which
+            is the drop the guard exists to catch. The two branches are mutually
+            exclusive, so the shared testids are never both in the DOM. */}
+        {doc.sources.length > 0 && (
+          <div className="text-[11px] mt-1 leading-relaxed text-muted-foreground" data-testid={`${testidPrefix}-sources`}>
+            {SPV_TAX_DOCUMENT_SOURCES_LABEL}:{" "}
+            {doc.sources.map((s, i) => (
+              <span key={s.url}>
+                {i > 0 ? " · " : ""}
+                <a href={s.url} target="_blank" rel="noreferrer noopener" className="underline">
+                  {s.label}
+                </a>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="text-[11px] mt-1 leading-relaxed text-muted-foreground" data-testid={`${testidPrefix}-informational`}>
+          {SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE}
+        </div>
+        {/* WAVE 189 · ITEM A · R159.5 — THE STRONG, UNAMBIGUOUS DISCLAIMER.
+
+            A STATIC SIBLING, not a replacement. The literal above is unchanged to the
+            byte: under R143.1 a replaced text node scores as a REMOVED copy string in
+            the silent-drop inventory, so strengthening the wording in place would have
+            registered as deleting a shipped sentence. Both sentences now render.
+
+            Owner: *"We need to have a strong and unambiguous disclaimer here."* The
+            sentence names BOTH entities the owner named — Capavate AND BluePrint Catalyst
+            Limited — and states explicitly that the reader must consult their own
+            accounting firm or tax lawyer. */}
+        <div className="text-[11px] mt-1 leading-relaxed font-medium" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-no-advice`}>
+          {SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER}
+        </div>
       </div>
     );
   }
@@ -101,15 +184,42 @@ export function GpTaxDocumentNotice({
         </div>
       )}
 
-      {doc.vehicleFormDependent && doc.vehicleFormConditional && (
+      {/* ══ WAVE 179 · ITEM B · R151.3 — HEDGE, OR RESOLVE ══════════════════
+          The two nodes below are wave 175's UNCHANGED hedge: the conditional wording
+          that states BOTH branches, and the sentence telling the GP that which one
+          applies depends on the vehicle's legal form. Both literals are byte-verbatim
+          and both testids are unchanged (R143.1). The ONLY change is the added
+          `&& !resolvedTreatment` — they stop rendering once the GP has answered the
+          very question they ask, because continuing to ask it would be the defect
+          this item exists to close.
+
+          When nothing is stated, `resolvedTreatment` is null, both conditions are
+          exactly as before, and this card is byte-identical to today. */}
+      {doc.vehicleFormDependent && doc.vehicleFormConditional && !resolvedTreatment && (
         <div className="text-[11px] mt-1 leading-relaxed" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-vehicle-form`}>
           {doc.vehicleFormConditional}
         </div>
       )}
 
-      {doc.vehicleFormDependent && (
+      {doc.vehicleFormDependent && !resolvedTreatment && (
         <div className="text-[11px] mt-0.5 leading-relaxed" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-vehicle-form-notice`}>
           {SPV_TAX_DOCUMENT_VEHICLE_FORM_NOTICE}
+        </div>
+      )}
+
+      {/* NEW STATIC SIBLING, appended — never a replacement of the text above.
+          The sentence is authored once in `shared/spvLegalForm.ts` from the wave-175
+          research and is not composed here. The jurisdiction's own sources still
+          render below it, and the not-tax-advice sentence still closes the card:
+          resolving the branch narrows what we state, it does not upgrade it into
+          tax advice. */}
+      {resolvedTreatment && (
+        <div
+          className="text-[11px] mt-1 leading-relaxed"
+          style={{ color: "#8a5a06" }}
+          data-testid={`${testidPrefix}-legal-form-resolved`}
+        >
+          {resolvedTreatment}
         </div>
       )}
 
@@ -129,6 +239,20 @@ export function GpTaxDocumentNotice({
 
       <div className="text-[11px] mt-1 leading-relaxed text-muted-foreground" data-testid={`${testidPrefix}-informational`}>
         {SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE}
+      </div>
+      {/* WAVE 189 · ITEM A · R159.5 — THE STRONG, UNAMBIGUOUS DISCLAIMER.
+
+          A STATIC SIBLING, not a replacement. The literal above is unchanged to the
+          byte: under R143.1 a replaced text node scores as a REMOVED copy string in
+          the silent-drop inventory, so strengthening the wording in place would have
+          registered as deleting a shipped sentence. Both sentences now render.
+
+          Owner: *"We need to have a strong and unambiguous disclaimer here."* The
+          sentence names BOTH entities the owner named — Capavate AND BluePrint Catalyst
+          Limited — and states explicitly that the reader must consult their own
+          accounting firm or tax lawyer. */}
+      <div className="text-[11px] mt-1 leading-relaxed font-medium" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-no-advice`}>
+        {SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER}
       </div>
     </div>
   );

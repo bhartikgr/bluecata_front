@@ -35,6 +35,13 @@ import { spvFundStore, hydrateSpvFundStore } from "../spvFundStore";
 import { rawDb, getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_CAPITAL_CALL_ATT } from "./_wave226_attestation_fixture";
+
 const MANAGING = TEST_PARTNER_USERS.managing.userId;
 const VIEWER = TEST_PARTNER_USERS.viewer.userId;
 const PARTNER_A = TEST_PARTNER_ID;
@@ -153,11 +160,39 @@ describe("Wave B adapter routes — full happy-path lifecycle", () => {
     const r = await request(app)
       .post(`/api/partner/me/spvs/${spvId}/capital-calls`)
       .set("x-user-id", MANAGING)
-      .send({ amount_minor: 50_000_00, called_at: new Date().toISOString() });
+      /* WAVE 226 · R202 — see the fixture note. Only the PLURAL capital-call route is
+         gated by wave 211; the plural DISTRIBUTIONS route below is the retired legacy
+         ledger that answers 409, is not a wave 211 money event, and is left alone. */
+      .send({ ...W226_CAPITAL_CALL_ATT, amount_minor: 50_000_00, called_at: new Date().toISOString() });
     expect(r.status).toBe(201);
     expect(r.body.ok).toBe(true);
     expect(r.body.capitalCall.sequenceNo).toBe(1);
     expect(r.body.capitalCall.amountMinor).toBe(50_000_00);
+  });
+
+  /* WAVE 226 · R195.5 + R202 — THE COMPANION INVERSION.
+     The proof above was written when a capital call needed no operator attestation,
+     so as written its purpose was "an UNGATED capital-call write succeeds". Wave 211
+     retired that contract. R195.5 forbids deleting the proof, so it is re-pointed
+     above and this test is added beside it to pin the NEW contract from the other
+     side: the same route, the same operator, the same body MINUS the attestation, and
+     the write must be REFUSED and must leave the ledger untouched.
+
+     Without this pair, re-pointing would have quietly converted a contract proof into
+     a happy-path proof, and nothing in this file would fail if the gate were removed. */
+  it("[6b. POST /capital-calls · WAVE 226] REFUSES the same call with NO attestation, and writes nothing", async () => {
+    const before = spvFundStore.listCapitalCalls(spvId).length;
+    const r = await request(app)
+      .post(`/api/partner/me/spvs/${spvId}/capital-calls`)
+      .set("x-user-id", MANAGING)
+      .send({ amount_minor: 77_000_00, called_at: new Date().toISOString() });
+    expect(r.status).toBe(400);
+    /* The SPECIFIC refusal, not merely "some refusal": the attestation is missing. */
+    expect(String(r.body.error ?? "")).toMatch(/^WAVE211_/);
+    /* And wave 211's promise to the operator is kept in the message they read. */
+    expect(String(r.body.message ?? "")).toContain("Nothing was recorded.");
+    /* The promise is TRUE: no capital call reached the ledger. */
+    expect(spvFundStore.listCapitalCalls(spvId).length).toBe(before);
   });
 
   it("[5. GET /capital-calls] lists it", async () => {
@@ -523,9 +558,15 @@ describe("Wave B adapter routes — requireSignedAgreement gate (writes)", () =>
       const r = await request(app)
         .post(`/api/partner/me/spvs/${spvId}/capital-calls`)
         .set("x-user-id", MANAGING)
-        .send({ amount_minor: 100_00 });
+        /* WAVE 226 · R202 — without an attestation wave 211 refuses this request 400
+           BEFORE the partner-agreement check is reached, so this proof was asserting
+           nothing about the agreement. With a valid attestation the request travels far
+           enough for the ORIGINAL control to answer, and the 403 below is real again. */
+        .send({ ...W226_CAPITAL_CALL_ATT, amount_minor: 100_00 });
       expect(r.status).toBe(403);
       expect(r.body.error).toBe("AGREEMENT_NOT_SIGNED");
+      /* WAVE 226 — and it is the AGREEMENT that refused, not the attestation gate. */
+      expect(String(r.body.error ?? "")).not.toMatch(/^WAVE211_/);
     } finally {
       signPartner(PARTNER_A);
     }

@@ -629,9 +629,41 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
     (committed + funded) figure from Wave 114's projection, in exact `bigint`
     minor units, and a round whose projection refuses contributes NO BAR rather
     than a zero-height one — `cumulativeRaised: null` is what recharts skips. */
+ /* WAVE 180 · ITEM A SITE 7 — THE DEFECT. `cumulativeMinor` accumulated minor
+    units across EVERY round in the series in bigint (correct), but the currency
+    used to turn that running total into chart-major units was read PER ROUND:
+
+      const currency = (view.money?.currency ?? "USD") || "USD";
+      … cumulativeRaised: broken ? null : chartMajorFromMinor(cumulativeMinor, currency)
+
+    So a company with a USD seed and a CA$1,200.00 bridge had the two minor
+    amounts ADDED and the running total divided by whichever round's exponent came
+    last — twice wrong at once, and drawn as a gold bar with no caveat. The
+    company-level KPI above already refuses this case through
+    readCompanyMoneyOnRecord ("mixed_currency"), so the chart contradicted the KPI
+    on the very same screen.
+
+    THE FIX. The currency set is established across the whole series FIRST. More
+    than one ISO code ⇒ no cumulative bar is drawn at all and the chart states why,
+    which is the same answer the KPI gives. NO FX RATE IS APPLIED; this platform
+    holds none. Single-currency behaviour is byte-for-byte what it was. */
+ const seriesCurrencies = useMemo(() => {
+ const set = new Set<string>();
+ for (const r of novapayRounds) {
+ const view = readRoundMoneyOnRecord((r as unknown as Record<string, unknown>).moneyOnRecord);
+ if (view.canPrintFigures && view.money) {
+ const c = String(view.money.currency ?? "").trim().toUpperCase();
+ if (/^[A-Z]{3}$/.test(c)) set.add(c);
+ }
+ }
+ return Array.from(set).sort();
+ }, [novapayRounds]);
+ const seriesCrossCurrency = seriesCurrencies.length > 1;
+ const seriesCurrency = seriesCurrencies.length === 1 ? seriesCurrencies[0]! : "USD";
+
  const valuationSeries = useMemo(() => {
  let cumulativeMinor = BigInt(0);
- let broken = false;
+ let broken = seriesCrossCurrency;
  return novapayRounds.map((r, idx) => {
  const view = readRoundMoneyOnRecord((r as unknown as Record<string, unknown>).moneyOnRecord);
  const subscribed = view.canPrintFigures && view.money ? minorTextToBigInt(view.money.subscribedMinor) : null;
@@ -651,7 +683,7 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  stepUp, // (this round's pre-money / last round's post-money) − 1
  };
  });
- }, [novapayRounds]);
+ }, [novapayRounds, seriesCrossCurrency]);
 
  const snapshotBuild = useMemo(() => {
  if (!securities.data) return { snapshots: [], refusals: [], denominatorLabel: SNAPSHOT_DENOMINATOR_LABEL };
@@ -854,14 +886,28 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  </h3>
  <span className="text-[11px] text-muted-foreground">step-up % vs prior round’s post-money</span>
  </div>
+ {/* WAVE 180 · ITEM A SITE 7 — STATE THE SCOPE OF THE BAR. A NEW static sibling
+     PRECEDING the chart; no existing text node or attribute in this file was
+     reworded, replaced or removed. */}
+ {seriesCrossCurrency ? (
+ <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 p-2" data-testid="panel-cumulative-raised-cross-currency">
+ <p className="text-[11px] text-amber-900" data-testid="text-cumulative-raised-refusal">No cumulative-raised bar is drawn. This company’s rounds record money in {seriesCurrencies.join(" and ")}, and this platform holds no exchange rate to add them into one running total. The post-money valuation line and the step-up badges are unaffected.</p>
+ </div>
+ ) : (
+ <p className="text-[11px] text-muted-foreground mb-2" data-testid="text-cumulative-raised-scope">Cumulative raised is the running subscribed total (committed + funded) over the rounds counted above, in {seriesCurrency}. A round whose figures are undetermined draws no bar, and no later bar either.</p>
+ )}
  <div className="h-64 -ml-3">
  <ResponsiveContainer width="100%" height="100%">
  <ComposedChart data={valuationSeries} margin={{ top: 10, right: 24, bottom: 4, left: 12 }}>
  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
  <XAxis dataKey="closeDate" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} />
- <YAxis yAxisId="left" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickFormatter={(v) => fmtUSD(v, { compact: true })} />
- <YAxis yAxisId="right" orientation="right" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickFormatter={(v) => fmtUSD(v, { compact: true })} />
- <RcTooltip formatter={(v: any, name: any) => [typeof v === "number" ? fmtUSD(v, { compact: true }) : v, name]} />
+ {/* WAVE 180 · ITEM A SITE 7 — the axes and tooltip printed every figure through
+     a USD-hardcoded formatter, so a CAD-only company's chart was labelled in
+     dollars. `fmtUSD` already accepts a currency override; it is now given the
+     currency the series is actually denominated in. */}
+ <YAxis yAxisId="left" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickFormatter={(v) => fmtUSD(v, { compact: true, currency: seriesCurrency })} />
+ <YAxis yAxisId="right" orientation="right" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickFormatter={(v) => fmtUSD(v, { compact: true, currency: seriesCurrency })} />
+ <RcTooltip formatter={(v: any, name: any) => [typeof v === "number" ? fmtUSD(v, { compact: true, currency: seriesCurrency }) : v, name]} />
  <Bar yAxisId="left" dataKey="cumulativeRaised" fill={COLORS.gold} fillOpacity={0.45} name="Cumulative raised" radius={[4, 4, 0, 0]} />
  <Line yAxisId="right" type="monotone" dataKey="postMoney" stroke={COLORS.primary} strokeWidth={2.5} dot={{ r: 4, fill: COLORS.primary, stroke: "white", strokeWidth: 2 }} name="Post-money valuation" />
  <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />

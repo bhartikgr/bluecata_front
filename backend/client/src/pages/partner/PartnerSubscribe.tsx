@@ -17,6 +17,9 @@ import { PartnerShell } from "@/components/partner/PartnerShell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 199 · ITEM B (R173.6) — which cadence this screen offers first, and whether
+   it may advertise monthly at all, is the admin's decision, read live. */
+import { useMonthlyDisplayAllowed } from "@/lib/priceDisplayPolicy";
 
 type Subscription = {
   id: string;
@@ -57,6 +60,21 @@ export default function PartnerSubscribe() {
   const [, navigate] = useLocation(); /* v25.41 Q8 */
   const [cycle, setCycle] = useState<"monthly" | "annual">("monthly");
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
+  /* WAVE 199 · ITEM B · R173.6 — the same defect wave 165 fixed on the partner
+     BILLING tab, still standing here on the partner SUBSCRIBE screen: the state
+     above pre-selects "monthly", the one cadence
+     `partner_pricing_model_config.monthly_purchasable = 0` means checkout refuses,
+     so the first "Get quote" click asked for a price the platform does not sell.
+
+     Following R135.5 exactly as wave 165 did: THE MONTHLY BUTTON IS RETAINED and
+     stays selectable — a partner must be able to see the cadence exists and ask for
+     it. What changes is (a) the cadence in EFFECT defaults to the one the admin
+     offers, and (b) an appended sibling states the availability instead of leaving
+     the partner to discover it from a refusal. The stored default is not edited, so
+     switching monthly back on restores the previous behaviour exactly. */
+  const monthlyDisplayAllowed = useMonthlyDisplayAllowed();
+  const effectiveCycle: "monthly" | "annual" =
+    cycle === "monthly" && !monthlyDisplayAllowed ? "annual" : cycle;
 
   const { data, isLoading, isError, error } = useQuery<SubscriptionResponse>({
     queryKey: ["/api/partner/me/subscription"],
@@ -67,7 +85,9 @@ export default function PartnerSubscribe() {
 
   const quoteMut = useMutation({
     mutationFn: async () => {
-      const r = await apiRequest("POST", "/api/partner/me/subscribe", { cycle });
+      /* WAVE 199 · ITEM B (R173.6) — quote the cadence the platform actually offers,
+         which is the one the button above names. See `effectiveCycle`. */
+      const r = await apiRequest("POST", "/api/partner/me/subscribe", { cycle: effectiveCycle });
       return (await r.json()) as QuoteResponse;
     },
     onSuccess: (j) => {
@@ -166,12 +186,23 @@ export default function PartnerSubscribe() {
                 </Button>
               </div>
 
+              {/* WAVE 199 · ITEM B (R173.6) — an APPENDED static sibling (R143.1: no
+                  copy above is replaced). It is rendered unconditionally and carries
+                  the empty string when monthly is offered, so the sibling shape is
+                  static for the drop gate — the same construction wave 165 used for
+                  `subscribe-cycle-availability` on the billing tab. */}
+              <div className="mb-4 text-[11px] text-amber-900" data-testid="w199-partner-cycle-availability">
+                {monthlyDisplayAllowed
+                  ? ""
+                  : "Monthly is not currently available for purchase, so your price is quoted for the cadence the platform sells. An administrator sets this in Admin → Fees."}
+              </div>
+
               <Button
                 onClick={() => quoteMut.mutate()}
                 disabled={quoteMut.isPending}
                 data-testid="button-get-quote"
               >
-                Get {cycle} price
+                Get {effectiveCycle} price
               </Button>
 
               {quote && (

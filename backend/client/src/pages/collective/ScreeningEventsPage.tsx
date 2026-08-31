@@ -44,6 +44,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Calendar, CalendarPlus, Download, XCircle, CheckCircle2 } from "lucide-react";
+import { describeFailure } from "@/lib/failureMessage";
 
 // ----- Types --------------------------------------------------------------
 
@@ -331,8 +332,9 @@ function EventRow(props: {
 
   /* v25.12 NH4 — toast helper. */
   const { toast } = useToast();
+  /* WAVE 197 #40 — WRITE. Shared by the RSVP and event mutations. */
   const onErr = (label: string) => (e: Error) =>
-    toast({ variant: "destructive", title: `${label} failed`, description: e.message });
+    toast({ variant: "destructive", title: `${label} failed`, description: describeFailure(e, "write") });
 
   const rsvpMut = useMutation({
     mutationFn: async (rsvp: RsvpStatus) => {
@@ -412,7 +414,10 @@ function EventRow(props: {
                 a.remove();
                 URL.revokeObjectURL(url);
               } catch (e) {
-                toast({ variant: "destructive", title: "Could not download ICS", description: (e as Error).message });
+                /* WAVE 197 #41 — READ. A bare `fetch` with no apiRequest in the
+                   path, so nothing sanitised this before. Downloading changes
+                   nothing, so read copy is the true one. */
+                toast({ variant: "destructive", title: "Could not download ICS", description: describeFailure(e, "read") });
               }
             }}
             className="inline-flex items-center text-xs px-3 py-1.5 rounded border border-[#cc0001]/30 text-[#cc0001] hover:bg-[#cc0001]/5"
@@ -579,7 +584,15 @@ function CreateEventDialog(props: {
       onCreated();
     },
     onError: (e: Error) =>
-      toastCreate({ variant: "destructive", title: "Create event failed", description: e.message }),
+      /* WAVE 197 #42 — WRITE, AND THE GATE BLIND SPOT (R169.7).
+         `toastCreate` is a `useToast()` alias (`const { toast: toastCreate }`) and
+         scripts/restyle-drop-detector/detect.mjs:787 matches only
+         /(^|\.)toast$|^toast\.\w+$/, so EVERY literal in this call is invisible
+         to drop:restyle, and guard does not fingerprint toast arguments either.
+         Nothing would have caught a replaced literal here. The literals
+         "destructive" and "Create event failed" are therefore verified BY HAND,
+         byte-for-byte, against artefacts/w197_surface42_BEFORE.txt. */
+      toastCreate({ variant: "destructive", title: "Create event failed", description: describeFailure(e, "write") }),
   });
 
   return (

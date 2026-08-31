@@ -1,3 +1,5 @@
+/* WAVE 190 · ITEM E — the appended reachability disclosure. See its header. */
+import { InvestorReachabilityNotice } from "./InvestorReachabilityNotice";
 import { asArray } from "@/lib/safeArray";
 /**
  * Sprint 9 — Full Messages page (split-pane).
@@ -877,6 +879,25 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  <Send className="h-3.5 w-3.5 mr-1.5" /> Send
  </Button>
  </div>
+{/* ══ WAVE 190 · ITEM E — REACHABILITY IS DISCLOSED, NOT CHANGED ═══════
+     Wave 185 found that an investor can open a direct message with ANY other
+     investor by raw id; the protection is that the other party's NAME is masked,
+     not that contact is refused. The owner is away and delegated the decision:
+     LEAVE THE BEHAVIOUR, ADD THE DISCLOSURE — an investor network whose members
+     can reach each other is a legitimate product and reachability should be a
+     stated feature rather than a surprise, and refusing unconnected messages
+     would be a far larger behaviour change to make unattended.
+
+     APPENDED AS THE LAST STATIC SIBLING inside the composer (R143.1). Every
+     existing literal in this file is untouched byte-for-byte, no text node is
+     replaced, and nothing above is re-ordered — appending at the end cannot
+     renumber a sibling's positional path the way an insertion would.
+
+     INVESTOR-ONLY: a founder's messaging surface is a different audience with a
+     different rule, and stating this on it would be inaccurate. This renders
+     text only — no API call, no policy read, no gate — so the same people are
+     reachable before and after. Proved by a negative control. */}
+ {role === "investor" && <InvestorReachabilityNotice />}
  </div>
  </>
  )}

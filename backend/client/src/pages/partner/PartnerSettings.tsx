@@ -24,6 +24,15 @@ import {
 } from "@/components/ui/select";
 import { COUNTRIES } from "@/lib/profile/data/countries";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
+import { describeFailure } from "@/lib/failureMessage";
+/* WAVE 221 — copy comes from the wave's shared module (fitToGate'd), not retyped. */
+import {
+  wave221SwitchLabel,
+  wave221ConsequenceLine,
+  wave221PlainStatement,
+  wave221NoRetrospectionLine,
+  wave221StateLine,
+} from "@shared/wave221BenchmarkingOptOutCopy";
 
 const TIER_RANK = { catalyst: 1, builder: 2, amplifier: 3, nexus: 4, founding_member: 5 } as const;
 
@@ -59,6 +68,24 @@ const BRANDING_TAB_HIDDEN = true;
 export default function PartnerSettings() {
   const role = useRequirePartnerRole();
   const qc = useQueryClient();
+
+  /* -------- WAVE 221 · benchmarking sharing for this partner firm -------- */
+  const w221 = useQuery<{ ok: boolean; sharingEnabled: boolean; optOutAt: string | null }>({
+    queryKey: ["/api/partner/me/benchmarking-sharing"],
+  });
+  /* Default OFF. While loading, or on failure, the control shows OFF rather than
+     implying the firm's data is already being aggregated. */
+  const w221SharingEnabled = w221.data?.sharingEnabled ?? false;
+  const w221Mut = useMutation({
+    mutationFn: async (sharingEnabled: boolean) => {
+      const r = await apiRequest("PATCH", "/api/partner/me/benchmarking-sharing", { sharingEnabled });
+      return r.json();
+    },
+    onSuccess: () => {
+      /* Re-READ from the server rather than trusting what we think we wrote (§5.10). */
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/benchmarking-sharing"] });
+    },
+  });
   const [tab, setTab] = useState<"profile" | "localization" | "branding" | "notifications">("profile");
   const [form, setForm] = useState<Settings>({});
 
@@ -87,7 +114,8 @@ export default function PartnerSettings() {
       setForm({});
       qc.invalidateQueries({ queryKey: ["/api/partner/me/workspace-settings"] });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Settings save failed", description: e.message }),
+    /* WAVE 197 #50 — WRITE. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Settings save failed", description: describeFailure(e, "write") }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -338,6 +366,39 @@ export default function PartnerSettings() {
           </label>
         </Card>
       )}
+
+      {/* ---- WAVE 221 · benchmarking & matchmaking sharing for the partner firm ----
+          Rendered unconditionally rather than inside a tab, and NOT gated on
+          `canWrite`: R190.10 says users get to turn this off themselves, so hiding
+          the control from a partner user would be exactly the restriction the ruling
+          forbids. It has its own endpoint and saves immediately, so it does not ride
+          on the workspace-settings PATCH accept-list — which is what keeps it out of
+          the "HTTP 200 then serves the old value" failure mode (§5.10). */}
+      <Card className="p-4 space-y-3" data-testid="w221-benchmarking-sharing">
+        <div className="text-sm font-medium">Benchmarking &amp; matchmaking</div>
+        <p className="text-sm text-[var(--cv-color-text-muted)]" data-testid="w221-statement">
+          {wave221PlainStatement("partner")}
+        </p>
+        <label className="flex items-start gap-2 text-sm" data-testid="w221-label">
+          <input
+            type="checkbox"
+            checked={w221SharingEnabled}
+            onChange={(e) => w221Mut.mutate(e.target.checked)}
+            disabled={w221Mut.isPending}
+            data-testid="w221-sharing-switch"
+          />
+          {wave221SwitchLabel("partner")}
+        </label>
+        <p className="text-sm text-[var(--cv-color-text-muted)]" data-testid="w221-consequence">
+          {wave221ConsequenceLine("partner")}
+        </p>
+        <p className="text-sm text-[var(--cv-color-text-muted)]" data-testid="w221-no-retrospection">
+          {wave221NoRetrospectionLine()}
+        </p>
+        <p className="text-sm text-[var(--cv-color-text-muted)]" data-testid="w221-state">
+          {wave221StateLine(!w221SharingEnabled)}
+        </p>
+      </Card>
 
       {canWrite && (
         <div className="mt-4">

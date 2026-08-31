@@ -102,14 +102,140 @@ const HELD_OFF_KEY = "partner_engaged_company_people";
    panel lying about the state of the fix it depends on. What is still TRUE is
    that the rule remains OFF and that the RULING has not been revisited — which
    is the owner's call, not the code's. */
-const HELD_OFF_REASON =
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 192 · ITEM C1 · R160.4 — THE SECOND CONTRADICTION ON THIS SAME RULE.
+   ══════════════════════════════════════════════════════════════════════════════
+   WHAT WAS ON SCREEN, LIVE. The badge for `partner_engaged_company_people` read
+   "ENABLED" — because the owner enabled the rule on live — directly above a
+   paragraph whose own words were "the rule stays off until you decide otherwise"
+   and "This is not an oversight and it is not a pending owner decision". Wave 177
+   fixed a contradiction on this same rule; this is a SECOND one it did not reach.
+
+   WHICH ONE IS THE TRUTH. The badge is not UI opinion: it renders `r.enabled`,
+   which is the server's reading of the `enabled` column on the rule row. The body
+   was a HARDCODED SENTENCE that described a state, and the state moved out from
+   under it. **The badge is the truth and the body text was stale.**
+
+   SO THE BODY NOW FOLLOWS THE STATE, DYNAMICALLY. The state-dependent clauses are
+   derived from `r.enabled` and `r.requiresOwnerDecision` — the SAME two fields the
+   two badges above render — so there is one source of truth and no sentence that
+   can go stale again. A third hardcoded sentence describing the enabled case would
+   have reproduced the defect in the other direction.
+
+   R143.1 — THE LITERALS THAT ARE STILL TRUE DID NOT MOVE. `HELD_OFF_REASON_STABLE`
+   below is the byte-verbatim prefix of the shipped `HELD_OFF_REASON`: the R108.1
+   citation, the cross-organisation privacy warning and the WAVE 144 item 4 note
+   are true in BOTH states and are unchanged, character for character. Only the
+   trailing state-dependent clauses became derived. In the disabled-and-pending
+   state — what the local database holds, and what every shipped assertion was
+   written against — `heldOffReasonForState()` reproduces the shipped
+   `HELD_OFF_REASON` BYTE FOR BYTE. A test asserts exactly that equality, which is
+   what keeps wave 177's C-3/C-4/C-5 assertions green.
+
+   GUARD SAFETY. This paragraph's text is rendered from an EXPRESSION, not a JSX
+   text node, so it is not a `copy` identity in
+   `scripts/silent-drop-guard/extract-inventory.ts` and splitting the constant
+   cannot retire one. No JSX element is added or removed, the `<p>` and its
+   `data-testid` are unchanged, so no panel and no sibling cell is renumbered. */
+
+/** The part that is true whether the rule is on or off. BYTE-VERBATIM prefix of
+ *  the sentence this panel has always shipped (R143.1) — do not reword. */
+const HELD_OFF_REASON_STABLE =
   "HELD OFF DELIBERATELY (R108.1). Switching this on lets a Consortium Partner message the " +
   "ACTIVE members of another organisation — their client companies' people. The privacy " +
   "prerequisite R108.1 item 2 named has been ADDRESSED in WAVE 144 item 4 (the messaging " +
   "directory payload no longer carries cap-table positions, location or capavateAngelNetwork; privacy " +
-  "resolution still covers legal name and visibility only). The RULING itself has not been " +
-  "revisited, so the rule stays off until you decide otherwise. This is not an oversight and " +
-  "it is not a pending owner decision.";
+  "resolution still covers legal name and visibility only).";
+
+/** The DISABLED tail, byte-verbatim as shipped. Kept as its own constant rather
+ *  than rebuilt from fragments, so the equality test below compares real text. */
+const HELD_OFF_TAIL_DISABLED_PENDING =
+  " The RULING itself has not been " +
+  "revisited, so the rule stays off until you decide otherwise. This is not an oversight: it " +
+  "is the pending owner decision the badge above reports, and it stays pending until you make it.";
+
+/** Disabled, and the owner HAS since ruled — so there is no pending decision to
+ *  point at, and claiming one would be the same class of false statement in the
+ *  other direction. */
+const HELD_OFF_TAIL_DISABLED_DECIDED =
+  " The rule is currently OFF, as the badge above reports, and it is off by a decision that has " +
+  "been recorded rather than by a decision still outstanding. Turning it on is a choice available " +
+  "to you here; nothing is waiting on anyone else.";
+
+/** ENABLED. The state the live platform is in, and the state the shipped sentence
+ *  denied. It states what is now permitted, because that is the fact an owner
+ *  auditing this screen needs, and it does not pretend the rule is off. */
+const HELD_OFF_TAIL_ENABLED =
+  " This rule is currently ON, as the badge above reports: a Consortium Partner team member CAN " +
+  "now be offered the active members of any company their organisation holds an active engagement " +
+  "for. The R108.1 caution above is why it was held off, not a description of the rule's present " +
+  "state. The privacy scope stated above still applies in full, and turning the rule off here " +
+  "withdraws the audience again.";
+
+/** ENABLED while the row still marks a decision outstanding. Both facts are
+ *  stated rather than one being suppressed, because suppressing either is how this
+ *  screen came to contradict itself twice. */
+const HELD_OFF_TAIL_ENABLED_PENDING =
+  " The badge above also reports that an owner decision is still recorded as outstanding on this " +
+  "rule, so the audience is live while the ruling behind it has not been closed out. Both of those " +
+  "are true at once; neither is hidden here.";
+
+/**
+ * The body text, DERIVED. Same two fields the badges render, so the paragraph
+ * cannot disagree with the badge above it.
+ *
+ * The disabled-and-pending branch returns the byte-verbatim shipped sentence.
+ */
+export function heldOffReasonForState(args: {
+  enabled: boolean;
+  requiresOwnerDecision: boolean;
+}): string {
+  if (!args.enabled) {
+    return (
+      HELD_OFF_REASON_STABLE +
+      (args.requiresOwnerDecision ? HELD_OFF_TAIL_DISABLED_PENDING : HELD_OFF_TAIL_DISABLED_DECIDED)
+    );
+  }
+  return (
+    HELD_OFF_REASON_STABLE +
+    HELD_OFF_TAIL_ENABLED +
+    (args.requiresOwnerDecision ? HELD_OFF_TAIL_ENABLED_PENDING : "")
+  );
+}
+
+/** The sentence this panel shipped, retained so a test can assert that the
+ *  derived text reproduces it byte for byte in the state it described (R143.1). */
+export const HELD_OFF_REASON_AS_SHIPPED =
+  HELD_OFF_REASON_STABLE + HELD_OFF_TAIL_DISABLED_PENDING;
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 177 · ITEM C · R148.3 item 3 — THE CONTRADICTION, RESOLVED FROM THE DATA.
+   ══════════════════════════════════════════════════════════════════════════════
+   TWO STATEMENTS ABOUT ONE RULE DISAGREED ON SCREEN. The badge above this text
+   read "awaiting an owner decision" while the final clause of the paragraph read
+   "it is not a pending owner decision". Both were rendered, together, for
+   `partner_engaged_company_people`. One of them had to be wrong.
+
+   WHICH ONE, DECIDED BY THE RECORD AND NOT BY PREFERENCE. The badge is not UI
+   opinion: it renders if and only if `r.requiresOwnerDecision` is true, which is
+   the server's reading of `requires_owner_decision` on the rule row. For this
+   rule that column is 1 and `decided_at` is NULL. Migration 0199 establishes what
+   a real ruling looks like — it sets `requires_owner_decision = 0` alongside
+   `decided_at` and `decided_by` (migrations/0199_wave143_partner_team_peers_enable.sql:53-72).
+   That never happened for this rule. So the DATA says a decision is genuinely
+   outstanding, the BADGE reports the data faithfully, and the CLAUSE was the
+   false statement.
+
+   SO ONLY THE CLAUSE MOVED. The badge literal is untouched, byte for byte, and
+   the rest of this paragraph — the R108.1 citation, the WAVE 144 item 4 privacy
+   note, the statement that the rule stays off — is unchanged, because none of it
+   was in conflict with anything. The correction is the smallest one that makes
+   the screen stop contradicting itself.
+
+   WHAT WAS NOT DONE: `requires_owner_decision` was NOT flipped to 0 to silence
+   the badge. That would resolve the contradiction by fabricating a ruling the
+   owner never made, on the very surface whose job is to tell the owner which
+   rulings are still theirs to make. */
 
 /** What audience each rule opens, in one line, so the owner is not asked to
  *  infer scope from a rule key. Keyed by the server's own rule keys; a key this
@@ -281,7 +407,10 @@ export function MessagingAudienceRulesPanel() {
                   className="text-xs font-semibold text-amber-900"
                   data-testid={`admin-audience-rule-held-off-${r.ruleKey}`}
                 >
-                  {HELD_OFF_REASON}
+                  {heldOffReasonForState({
+                    enabled: !!r.enabled,
+                    requiresOwnerDecision: !!r.requiresOwnerDecision,
+                  })}
                 </p>
               ) : null}
               {/* WAVE 144 · ITEM 5 — the SERVER's warning, always visible for any

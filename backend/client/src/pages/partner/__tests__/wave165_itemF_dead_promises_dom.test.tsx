@@ -36,6 +36,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PartnerBilling from "../PartnerBilling";
+/* WAVE 207 · ITEM A — the corrected basis sentence, from the constant the page renders. */
+import { W207_VEHICLE_FEE_WHEN } from "@shared/wave207FeeBasisDimension";
 
 /* The raw code the resolver emits. Asserted ABSENT from the DOM, and present in
    the fixture, so §3 cannot pass by the row rendering nothing at all. */
@@ -51,6 +53,17 @@ vi.mock("@/components/partner/PartnerShell", () => ({
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("wouter", () => ({
   useRoute: () => [true, {}],
+  /* WAVE 207 NOTE — DELIBERATELY NOT REPAIRED HERE.
+     Every test in this file already fails before wave 207 touched it: PartnerBilling
+     was later refactored to drive its tabs off the URL (`useSearch`/`useLocation`),
+     and this mock predates that, so the module mock throws on mount. Adding the two
+     missing exports was tried and gets the component to mount, but `openTab()` below
+     then cannot change tabs, because the tab now comes from a search string this mock
+     cannot make change. Repairing that means rewriting this file's harness, which is
+     a pre-existing failure wave 207 was told not to chase. The §3 assertion below was
+     still corrected, because it demanded copy R195.1 forbids; it is PROVED instead in
+     `client/src/pages/partner/__tests__/wave207_fee_basis_copy_dom.test.tsx`, which
+     mounts this same real component with a search string that opens the tab. */
   Link: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock("@/lib/partner/useRequirePartnerRole", () => ({
@@ -225,12 +238,24 @@ describe("W165 §3 — the fee schedule states when it charges, in words", () =>
     expect(t.toLowerCase(), "'one-off' means once, and the row must say so").toContain("once");
   });
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     CORRECTED BY WAVE 207 · ITEM A · R195.1.
+
+     As written, this test REQUIRED the partner-facing schedule to say the vehicle
+     fee is based on "confirmed capital". R195.1 rules that basis wrong, so the
+     assertion was holding the defect in place. What wave 165 was protecting — that
+     the row states a basis in words, rather than leaving a partner to guess from a
+     soft-circled total — is preserved and now asserted against the shared constant
+     the row renders, plus an explicit refusal of the capital wording.
+     ═════════════════════════════════════════════════════════════════════════ */
   it("T165F.D8: and states the basis, so a partner cannot predict from soft circles", async () => {
     await openTab("tab-fee-schedule");
     const t =
       ((await screen.findByTestId("partner-feeschedule-trigger-spv_deployment")).textContent ?? "").toLowerCase();
-    expect(t).toContain("confirmed capital");
-    expect(t).toContain("soft-circled");
+    expect(t).toBe(W207_VEHICLE_FEE_WHEN.toLowerCase());
+    expect(t.length).toBeGreaterThan(60);
+    expect(t).not.toContain("confirmed capital");
+    expect(t).not.toContain("soft-circled");
   });
 
   it("T165F.D9: the RAW resolver code never reaches the partner", async () => {

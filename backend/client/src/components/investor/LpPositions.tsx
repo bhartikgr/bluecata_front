@@ -28,11 +28,16 @@ import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
    jurisdiction ALREADY stored on the vehicle and already carried on this
    payload (`LpPosition.jurisdiction`). No jurisdiction literal lives here. */
 import { LpTaxDocumentNote } from "@/components/investor/LpTaxDocumentNote";
+import { describeFailure } from "@/lib/failureMessage";
 
 interface LpPosition {
   spvId: string;
   spvName: string;
   jurisdiction: string;
+  /* WAVE 189 · ITEM A · R154.3 — the vehicle's optional, GP-stated legal form,
+     served by `server/lpPositionsStore.ts`. Optional here so an older payload that
+     does not carry it still type-checks and still renders the unresolved hedge. */
+  legalForm?: string | null;
   currency: string;
   positionType: "spv_lp_interest";
   commitmentMinor: number;
@@ -77,9 +82,43 @@ export function LpPositions() {
     queryFn: () => apiRequest("GET", "/api/investor/me/lp-positions").then((r) => r.json()),
   });
 
+  /* ─── WAVE 196 · ITEM B2 ─────────────────────────────────────────────────────
+   * A FAILED LOAD USED TO LOOK EXACTLY LIKE HOLDING NOTHING.
+   *
+   * The single line `if (q.isLoading || q.isError) return null;` meant an LP whose
+   * positions read had FAILED saw the same blank space as an investor who holds no
+   * vehicle interests at all — on the one page where they check what they own.
+   * That is the wave-183 defect (a real state rendering as an absence) on the
+   * investor portfolio, so it is fixed the same way: split the branches and give
+   * the failure its own named block that says what happened.
+   *
+   * THE LOADING BRANCH AND THE ZERO-POSITION BRANCH ARE LEFT EXACTLY AS THEY WERE,
+   * comment included. Rendering nothing for zero positions is the deliberate design
+   * recorded in that comment — a direct cap-table investor's portfolio must be
+   * unchanged by this capability — and printing "you hold no vehicle interests" to
+   * every non-LP investor would be a regression, not a fix. */
+  if (q.isLoading) return null;
+  if (q.isError) {
+    return (
+      <div className="mt-6" data-testid="investor-lp-positions-load-failed">
+        <div className="text-sm font-medium mb-1">Vehicle interests (LP)</div>
+        <div
+          className="rounded-md p-3 text-xs leading-relaxed"
+          style={{ border: "1px solid rgba(140,20,20,0.28)", background: "rgba(140,20,20,0.05)", color: "#7a1212" }}
+          role="alert"
+          data-testid="investor-lp-positions-error"
+        >
+          {describeFailure(
+            q.error,
+            "read",
+            "Your vehicle interests could not be loaded. This is a loading failure, not a statement that you hold none — nothing has been changed, and any interests you hold are still on record. Reload to try again.",
+          )}
+        </div>
+      </div>
+    );
+  }
   // Nothing at all is rendered for an investor with no LP positions, so a
   // direct cap-table investor's portfolio is unchanged by this capability.
-  if (q.isLoading || q.isError) return null;
   const positions = q.data?.positions ?? [];
   if (positions.length === 0) return null;
 
@@ -150,6 +189,26 @@ export function LpPositions() {
               Vehicle net asset value {formatMinorOrUnavailable(p.navTotalMinor, p.currency)} as of {p.navAsOfDate}.
             </div>
           )}
+          {/* ═══════════════════════════════════════════════════════════════════
+              WAVE 191 · ITEM D — THE FUNDING CURRENCY, STATED IN WORDS.
+              ═══════════════════════════════════════════════════════════════════
+              Every figure in this block is already formatted with `p.currency`, so
+              the vehicle's denomination is on this screen — as a GLYPH. "$" is not
+              an instruction: it is shared by the US, Canadian, Singapore, Hong Kong
+              and Australian dollar, and an LP reading it cannot tell which of them
+              to wire. Because Capavate never converts (R156.1), a transfer in the
+              wrong currency is not a shortfall to be topped up — it is an amount the
+              vehicle cannot record at all. So the code is named explicitly, once,
+              beside the numbers it governs.
+
+              DERIVED FROM THE RECORD, NEVER NAMED IN THIS FILE, and not printed at
+              all when the record holds no currency. Appended as a static sibling;
+              nothing above is reworded (R143.1). */}
+          {/^[A-Z]{3}$/.test(p.currency ?? "") && (
+            <div className="text-[11px] mt-2 text-muted-foreground" data-testid="investor-lp-funding-currency">
+              This vehicle is denominated in {p.currency}. Every figure above is {p.currency}, and capital calls must be funded in {p.currency}. Capavate does not convert between currencies, so funds delivered in another currency cannot be applied to your capital account.
+            </div>
+          )}
           {p.hasSideLetter && (
             <div className="text-[11px] mt-1 text-muted-foreground" data-testid="investor-lp-side-letter">
               A side letter applies to your interest in this vehicle. Its terms are shown in your documents.
@@ -161,7 +220,13 @@ export function LpPositions() {
             </div>
           )}
 
-          <LpTaxDocumentNote jurisdiction={p.jurisdiction} />
+          {/* WAVE 189 · ITEM A · R154.3 — `legalForm` now passed. Wave 179 wired the
+              optional legal-form field into the GP surface only, so on a
+              form-dependent jurisdiction the GP saw the conditional RESOLVED while
+              the LP saw the hedge for the same vehicle. `null`/absent — the case for
+              every vehicle whose GP has not stated a form — renders exactly what it
+              rendered before this wave. */}
+          <LpTaxDocumentNote jurisdiction={p.jurisdiction} legalForm={p.legalForm ?? null} />
         </div>
       ))}
     </div>

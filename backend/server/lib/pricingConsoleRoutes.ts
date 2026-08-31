@@ -51,6 +51,14 @@ import { resolveAuthoritativeSpvDeploymentFee, AUTHORITATIVE_SPV_DEPLOYMENT_FEE_
 import { COLLECTIVE_APPLICATION_FEE_KEY } from "../platformFeesStore";
 import { rawDb } from "../db/connection";
 import { PRICE_CACHES } from "./pricingCacheBus";
+/* WAVE 201 · ITEM A — the 240-character `looksHuman` bound. Wave 195's helper,
+   reused rather than re-derived. */
+import { fitToGate } from "../../shared/refusalHeadlineGate";
+/* WAVE 203 · ITEM B — R178.6. Wave 186's EXISTING audit writer and its outcome
+   reporter. Deliberately imported rather than reimplemented: this route must not
+   create a second audit path, and a money-bearing action that fails to reach the
+   ledger has to be loud rather than silent. */
+import { appendAdminAudit, reportAuditWriteOutcome } from "../adminPlatformStore";
 
 /** One administered price, as the console lists it. */
 export interface SourceMapEntry {
@@ -282,6 +290,92 @@ export function registerPricingConsoleRoutes(app: Express): void {
 
       const displayed = resolveLegacyDisplayedFee(partnerId, tier, feeKind);
       const authoritative = resolveAuthoritativeDisplayedFee(partnerId, tier, feeKind);
+      /* ── WAVE 201 · ITEM A — REFUSE AN INCOMPLETE CONFIRMATION ─────────────
+       *
+       * FOUND WHILE VERIFYING THE BADGE, NOT REPORTED TO ME. Because the old
+       * single `divergent` boolean classified a ONE-SIDED gap as a mismatch, the
+       * screen offered this destructive confirmation on rows where one side does
+       * not resolve — and this handler accepted it. `acknowledgeRepoint` would
+       * record a NULL amount, after which `resolveDisplayedFee` returns the
+       * authoritative (erroring) answer to partners for that fee kind. Net
+       * effect of one admin click: a working partner-facing price replaced with
+       * nothing, permanently. Eight of the fifteen live rows offered exactly
+       * that click (measured — build_log/wave201/PROBE_1_current_behaviour.txt).
+       *
+       * R6: refuse rather than proceed on a figure we do not hold. An admin
+       * cannot meaningfully confirm "show them the authoritative amount" when
+       * there is no authoritative amount to show. The UI no longer offers the
+       * button here, but the route is reachable without the UI, so the refusal
+       * lives on the server as well. Defence in depth, not decoration.
+       *
+       * This changes NO charge and writes NOTHING. It declines a write.
+       *
+       * The message is fitted to the 240-character `looksHuman` bound by
+       * `fitToGate` (shared/refusalHeadlineGate.ts) because it surfaces through
+       * `apiRequest` into a toast. */
+      const displayedAnswered = displayed.error === null && displayed.amountMinor !== null;
+      const authoritativeAnswered =
+        authoritative.error === null && authoritative.amountMinor !== null;
+      if (!displayedAnswered || !authoritativeAnswered) {
+        const missingSide =
+          !displayedAnswered && !authoritativeAnswered
+            ? "both"
+            : !displayedAnswered
+              ? "displayed"
+              : "charged";
+        const missingSideName =
+          missingSide === "both"
+            ? "Neither the displayed price nor the charged price"
+            : missingSide === "displayed"
+              ? "The displayed price"
+              : "The charged price";
+        return res.status(400).json({
+          ok: false,
+          error: "COMPARISON_INCOMPLETE",
+          missingSide,
+          message: fitToGate((idBudget) => {
+            const kindFragment = feeKind.slice(0, Math.max(0, idBudget));
+            return (
+              `${missingSideName} could not be resolved for ${kindFragment}, so there is ` +
+              `nothing to compare and nothing to confirm. That is a finding to fill in, not ` +
+              `a mismatch to accept. Set the missing amount first.`
+            );
+          }),
+          displayed,
+          authoritative,
+        });
+      }
+      /* ── WAVE 203 · ITEM B — A REASON IS REQUIRED, NOT OPTIONAL ────────────
+       *
+       * R178.6: the system that DETECTS a discrepancy must not also EXECUTE the
+       * correction in one gesture, otherwise a misreading of the comparison
+       * becomes a billing change. `confirm: true` alone cannot carry that
+       * weight: it was a hardcoded literal in the client mutation body, so it
+       * asserted deliberation without evidencing any.
+       *
+       * The reason is what makes the act deliberate and what makes the ledger
+       * row worth reading later. It was accepted as an OPTIONAL `note` before
+       * this wave, which meant a repoint could be recorded with no stated cause
+       * at all.
+       *
+       * This refusal changes no amount and writes nothing. It declines a write.
+       * The message is fitted to the 240-character `looksHuman` bound with wave
+       * 195's `fitToGate` because it surfaces through `apiRequest` into a toast,
+       * and it names no ALL-CAPS underscore code. */
+      const reasonRaw = typeof b.reason === "string" ? b.reason : typeof b.note === "string" ? b.note : "";
+      const reason = reasonRaw.trim();
+      if (reason === "") {
+        return res.status(400).json({
+          ok: false,
+          error: "REPOINT_REASON_REQUIRED",
+          message: fitToGate(() =>
+            "This changes what a partner is shown, so it needs a stated reason before " +
+            "it can be recorded. Say why the displayed price should move onto the " +
+            "authoritative source, then confirm.",
+          ),
+        });
+      }
+
       const ack = acknowledgeRepoint({
         feeKind,
         displayedAmountMinor: displayed.amountMinor,
@@ -290,9 +384,53 @@ export function registerPricingConsoleRoutes(app: Express): void {
         authoritativeCurrency: authoritative.currency,
         billingPeriod: authoritative.billingPeriod ?? periodForFeeKind(feeKind),
         acknowledgedByUserId: actorOf(req),
-        note: typeof b.note === "string" ? b.note : null,
+        /* WAVE 203 · ITEM B — the required reason is stored in the column
+           migration 0195 already created for it. No new table, no migration. */
+        note: reason,
       });
-      res.json({ ok: true, ack, displayed, authoritative });
+
+      /* ── WAVE 203 · ITEM B — WRITE IT TO THE PERMANENT RECORD ──────────────
+       *
+       * Before this wave NOTHING about a repoint reached `audit_log`: the only
+       * trace was the `pricing_display_repoint_ack` row, which is the decision's
+       * own storage, not the platform ledger. A money-bearing admin action that
+       * does not appear in the audit log is invisible to every review that reads
+       * the ledger — the same family of defect as this wave's Item A.
+       *
+       * ONE writer, wave 186's: `appendAdminAudit` then
+       * `reportAuditWriteOutcome` at bearing "money". No second audit path.
+       *
+       * MONEY: both amounts are recorded as the integer minor units the
+       * resolvers returned, alongside their own currencies. No `Number()`,
+       * `parseInt` or `parseFloat`; no arithmetic; no conversion; nothing
+       * hardcoded. The payload records what the change WAS, not a computed
+       * difference — subtracting across two independently-resolved currencies
+       * would be the kind of quiet assumption R176.1 exists to stop. */
+      const auditEntry = appendAdminAudit(
+        actorOf(req) ?? "unknown",
+        `pricing_display_repoint:${feeKind}`,
+        "pricing.display_repoint_confirmed",
+        {
+          feeKind,
+          tier,
+          partnerId: partnerId || null,
+          reason,
+          oldDisplayedAmountMinor: displayed.amountMinor,
+          oldDisplayedCurrency: displayed.currency,
+          newDisplayedAmountMinor: authoritative.amountMinor,
+          newDisplayedCurrency: authoritative.currency,
+          authoritativeSource: ack.authoritativeSource,
+          billingPeriod: ack.billingPeriod,
+        },
+      );
+      const audited = reportAuditWriteOutcome(auditEntry, {
+        bearing: "money",
+        action: "pricing.display_repoint_confirmed",
+        route: "POST /api/admin/pricing-console/repoint-ack",
+        subject: feeKind,
+      });
+
+      res.json({ ok: true, ack, displayed, authoritative, audited });
     } catch (e) {
       log.error("[pricing-console.repoint-ack] failed:", (e as Error).message);
       res.status(500).json({ ok: false, error: "repoint_ack_failed", message: sanitizeErrorMessage(e) });

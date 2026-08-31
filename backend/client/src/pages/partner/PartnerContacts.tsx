@@ -25,6 +25,8 @@ import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor } from "@/lib/currency";
+import PartnerCsvDownloadButton from "@/components/partner/PartnerCsvDownloadButton"; /* WAVE 179 · ITEM C · R151.2 */
+import { describeFailure } from "@/lib/failureMessage";
 
 /* w-partner F6 — the editable subset of crmMeUpdateSchema, mapped to the
    snake_case keys the server validates. Only CHANGED keys are sent, so an
@@ -62,7 +64,10 @@ function describeContactSaveError(e: Error): string {
       .map(([k, v]) => `${k}: ${v[0]}`);
     if (parts.length > 0) return parts.join("; ");
   }
-  return e.message;
+  /* WAVE 197 #47 — WRITE. Only the RAW TAIL of this helper is wrapped. The
+     field-error branch above builds authored validation prose and is left
+     exactly as it is; that branch is the part that was already correct. */
+  return describeFailure(e, "write");
 }
 
 interface CrmNote { id: string; body: string; createdAt: string; authorId: string | null }
@@ -331,6 +336,20 @@ export default function PartnerContacts() {
           Refreshed from a live CRM update.
         </div>
       )}
+      {/* WAVE 179 · ITEM C · R151.2 — export THIS firm's contacts. A STATIC SIBLING
+          above the existing grid; nothing already on this page is touched. The
+          server calls `listCrmContactsForPartner`, the same partner-scoped read that
+          feeds the list below, in the same order, so the file is this page. */}
+      <div className="mb-4 flex items-center gap-2" data-testid="contacts-export">
+        <PartnerCsvDownloadButton
+          url="/api/partner/me/crm/contacts.csv"
+          filename="crm-contacts.csv"
+          testid="contacts-export-button"
+        />
+        <span className="text-xs text-[var(--cv-color-text-muted)]" data-testid="contacts-export-note">
+          Your firm's contacts only. Search and filters on this page are not applied — the file is the full list.
+        </span>
+      </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {/* Rule #13 create — first AND last required */}
@@ -628,7 +647,11 @@ function ContactLinksPanel({ contactId, links }: { contactId: string; links: Crm
       toast({ title: "Link added" });
     },
     /* The SERVER'S OWN SENTENCE, not an invented one (R58/R77). */
-    onError: (e: unknown) => setLinkError((e as Error).message),
+    /* WAVE 197 #44 — WRITE, and R58/R77 still holds: `describeFailure` RETURNS
+       the server's own sentence when the server actually stated one. It only
+       substitutes copy when the text is a browser exception or carries
+       internal detail — cases where there is no server sentence to respect. */
+    onError: (e: unknown) => setLinkError(describeFailure(e, "write")),
   });
 
   const removeMut = useMutation({
@@ -638,7 +661,8 @@ function ContactLinksPanel({ contactId, links }: { contactId: string; links: Crm
       setLinkError(null);
       void qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts", contactId] });
     },
-    onError: (e: unknown) => setLinkError((e as Error).message),
+    /* WAVE 197 #45 — WRITE (remove link). Same banner as #44. */
+    onError: (e: unknown) => setLinkError(describeFailure(e, "write")),
   });
 
   return (

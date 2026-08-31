@@ -44,6 +44,12 @@ import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { spvEngineStore } from "../spvEngineStore";
 import { recordLpCommitIdentity, listLpInvites } from "../spvLpInviteStore";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_COMMIT_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const PARTNER_ID = "ac_consortium_partner_test_partner_inc";
 let app: express.Express;
@@ -93,9 +99,42 @@ beforeAll(() => {
 });
 
 describe("W112 F1/F2 — both SPV route families report ONE committed figure", () => {
+  /* WAVE 226 · R195.5 + R202 — THE COMPANION INVERSION.
+     Every proof in this suite reaches its convergence assertion by first driving a
+     successful lp-commit. As written, that made an UNGATED commit an unstated
+     precondition of the whole file. Wave 211 retired that contract, so this test is
+     added FIRST to pin the new one from the other side: without the operator
+     attestation the same route refuses, and BOTH families still report zero, so the
+     convergence proofs below cannot be reached by an unattested write.
+
+     R195.5: nothing was deleted to make room for this. The proofs below are re-pointed,
+     not narrowed, and the gate's own HTTP proofs live in
+     `server/__tests__/wave211_money_event_gate_http.test.ts`. */
+  it("WAVE 226 — the SAME commit with NO attestation is refused, and neither family moves", async () => {
+    const spvId = await newSpv("W226 Unattested LpCommit");
+    const before = engineCommittedMinor(spvId);
+    const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      holderFirstName: "Dana",
+      holderLastName: "Whitfield",
+      investorEmail: "w226-unattested@example.com",
+      amount: "10000",
+      shares: "10000",
+    });
+    expect(cm.status).toBe(400);
+    /* The SPECIFIC refusal — the attestation — not merely "some refusal". */
+    expect(String(cm.body.error ?? "")).toMatch(/^WAVE211_/);
+    expect(String(cm.body.message ?? "")).toContain("Nothing was recorded.");
+    /* And the promise is TRUE on BOTH families, which is this file's whole subject.
+       Compared as the same types the passing proofs compare, with no normalising call. */
+    expect(engineCommittedMinor(spvId)).toBe(before);
+    expect(await legacyCommittedMinor(spvId)).toBe(before);
+    expect(spvEngineStore.listSubscriptions(PARTNER_ID, spvId)).toHaveLength(0);
+  });
+
   it("agrees on the lp-commit path (pre-wave: legacy reported 0)", async () => {
     const spvId = await newSpv("W112 Converge LpCommit");
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Dana",
       holderLastName: "Whitfield",
       investorEmail: "w112-dana@example.com",
@@ -163,7 +202,7 @@ describe("W112 F2 — no double-count is possible, by construction", () => {
       investorEmail: "w112-amend@example.com",
       shares: "10000",
     };
-    const first = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { ...body, amount: "10000" });
+    const first = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { ...W226_LP_COMMIT_ATT, ...body, amount: "10000" });
     expect(first.status).toBe(201);
     const afterFirst = await legacyCommittedMinor(spvId);
     expect(afterFirst).toBe(engineCommittedMinor(spvId));
@@ -173,7 +212,7 @@ describe("W112 F2 — no double-count is possible, by construction", () => {
        (spvId, lpUserId, amountMinor), so a changed amount inserts a SECOND row
        and the rollup double-counts. This wave adds no such write, so there is
        nothing to double-count. */
-    const amended = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { ...body, amount: "25000" });
+    const amended = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { ...W226_LP_COMMIT_ATT, ...body, amount: "25000" });
     expect(amended.status).toBe(200);
     expect(amended.body.idempotent).toBe(true);
 
@@ -192,6 +231,7 @@ describe("W112 F2 — no double-count is possible, by construction", () => {
   it("a REPEATED identical submit is idempotent on both families", async () => {
     const spvId = await newSpv("W112 Repeat");
     const body = {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Rae",
       holderLastName: "Okonjo",
       investorEmail: "w112-repeat@example.com",
@@ -216,6 +256,7 @@ describe("W112 F2 — no double-count is possible, by construction", () => {
   it("two CONCURRENT submits cannot both insert", async () => {
     const spvId = await newSpv("W112 Concurrent");
     const body = {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Sam",
       holderLastName: "Oyelaran",
       investorEmail: "w112-concurrent@example.com",
@@ -283,6 +324,7 @@ describe("W112 F3 — a commitment can never render without its ledger entry", (
   it("a real commit — identity AND ledger — DOES render as committed", async () => {
     const spvId = await newSpv("W112 HalfState Positive");
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Whole",
       holderLastName: "State",
       investorEmail: "w112-wholestate@example.com",

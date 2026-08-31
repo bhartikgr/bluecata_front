@@ -41,6 +41,22 @@ import { spvStatusLabel } from "@/lib/partnerDisplay";
 /* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
    R111 Q13 settled it as "Not on record"; this file had invented its own. */
 import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
+/* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form. The jurisdiction on this
+   screen is free text ("Delaware"), so it is CANONICALISED through the engine's own
+   resolver — the same function the server uses on the way in — before the option set
+   is looked up. This is not inference of a legal form; it is agreement about which
+   jurisdiction is being talked about. */
+import { resolveSpvJurisdiction } from "@shared/spvEngine";
+import {
+  spvLegalFormOptions,
+  SPV_LEGAL_FORM_LABELS,
+  SPV_LEGAL_FORM_NOT_STATED_LABEL,
+  SPV_LEGAL_FORM_OPTIONAL_HINT,
+  SPV_LEGAL_FORM_NOT_OFFERED_NOTICE,
+  SPV_LEGAL_FORM_FIELD_LABEL,
+  SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+} from "@shared/spvLegalForm";
+import { describeFailure } from "@/lib/failureMessage";
 
 /* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of SC-1.
  *
@@ -96,6 +112,10 @@ export default function PartnerSpvs() {
   const [form, setForm] = useState({
     spvName: "",
     jurisdiction: "Delaware",
+    /* WAVE 179 · ITEM B · R151.3 — OPTIONAL and DEFAULTS TO NOT STATED. A vehicle
+       created without touching this control records no legal form at all, and every
+       tax surface then renders wave 175's conditional wording exactly as before. */
+    legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
     vintage: currentVintageYear(),
     status: "planned",
     targetSizeMinor: "0",
@@ -143,6 +163,14 @@ export default function PartnerSpvs() {
         wholeUnitsToWireMinor(form.targetSizeMinor, form.currency, "Target size", { allowZero: true }),
         "Target size",
       );
+      /* WAVE 179 · ITEM B — derived HERE, from the jurisdiction as it stands at
+         submit time, using the same shared validator the picker uses. A form that
+         does not belong to the typed jurisdiction is sent as `null`, i.e. NOT STATED,
+         and is never translated into that jurisdiction's nearest equivalent. */
+      const legalFormChoicesAtSubmit = spvLegalFormOptions(resolveSpvJurisdiction(form.jurisdiction));
+      const legalFormForWire = legalFormChoicesAtSubmit.includes(form.legalForm as never)
+        ? form.legalForm
+        : null;
       const res = await apiRequest("POST", "/api/partner/me/spvs", {
         spvName: form.spvName,
         jurisdiction: form.jurisdiction,
@@ -160,6 +188,10 @@ export default function PartnerSpvs() {
            tripping over it. */
         signoffLegalName: form.signoffLegalName,
         signoffAccepted: form.signoffAccepted,
+        /* WAVE 179 · ITEM B · R151.3 — OPTIONAL, and `null` unless a human picked a
+           value. The sentinel never travels; nothing is inferred from the name,
+           the jurisdiction or the status. */
+        legalForm: legalFormForWire,
       });
       return res.json();
     },
@@ -172,13 +204,14 @@ export default function PartnerSpvs() {
         status: "planned",
         targetSizeMinor: "0",
         currency: "USD",
+        legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL, /* WAVE 179 · ITEM B — back to not stated */
         /* Assent is per-SPV and is never carried over to the next one. */
         signoffLegalName: "",
         signoffAccepted: false,
       });
       setShowForm(false);
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Create SPV failed", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Create SPV failed", description: describeFailure(e, "write") }),
   });
 
   /* WAVE 138 · DEFECT A, associate case — the route is
@@ -196,6 +229,22 @@ export default function PartnerSpvs() {
         : "",
     [role.identity],
   );
+
+  /* WAVE 179 · ITEM B — the options for the jurisdiction as typed, canonicalised.
+     EMPTY for the nine jurisdictions wave 175 found are not legal-form dependent,
+     and empty for a jurisdiction string the engine cannot resolve at all — in both
+     cases the picker is not offered and the reason is stated instead. */
+  const spvLegalFormChoices = spvLegalFormOptions(resolveSpvJurisdiction(form.jurisdiction));
+  /* WAVE 179 · ITEM B — the form as it applies to the jurisdiction CURRENTLY typed.
+     Derived rather than cleared on keystroke: a form stated for Singapore and then
+     re-pointed at Delaware is not carried over and is not re-mapped to Delaware's
+     nearest equivalent — it simply reads, and is sent, as NOT STATED. Used both for
+     the picker's value and for the request body, so the screen and the wire cannot
+     disagree, and the server validates it a third time against the persisted
+     jurisdiction regardless. */
+  const effectiveLegalForm = spvLegalFormChoices.includes(form.legalForm as never)
+    ? form.legalForm
+    : SPV_LEGAL_FORM_UNSTATED_SENTINEL;
 
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
@@ -230,6 +279,14 @@ export default function PartnerSpvs() {
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>Jurisdiction</Label>
+              {/* WAVE 179 · ITEM B — THIS HANDLER IS UNTOUCHED, byte-verbatim. An
+                  earlier draft of this wave rewrote it to clear the legal form when the
+                  jurisdiction was retyped; the silent-drop guard correctly read that as
+                  a REMOVED `onChange` expression, and an allow-list entry was not an
+                  option. The same guarantee is now obtained WITHOUT touching this
+                  control, by validating the selected form against the current
+                  jurisdiction at the two boundaries that matter — see
+                  `effectiveLegalForm` below. */}
               <Input value={form.jurisdiction} onChange={(e) => setForm({ ...form, jurisdiction: e.target.value })} data-testid="partner-spv-jurisdiction" />
             </div>
             <div>
@@ -344,6 +401,40 @@ export default function PartnerSpvs() {
             </label>
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">Your name, assent, and a UTC timestamp are recorded for audit (ESIGN/UETA).</div>
           </div>
+          {/* ══ WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form ════════════
+              ADDITIVE BLOCK inserted between two existing siblings. Neither the
+              sign-off card above nor the role note below is altered, and no existing
+              literal or placeholder is reworded (R143.1).
+
+              Both branches always render one node, so the sibling shape does not move
+              with the jurisdiction: either the picker, or the sentence explaining that
+              this jurisdiction has no legal-form-dependent treatment to state. */}
+          <div data-testid="partner-spv-legal-form-block">
+            {spvLegalFormChoices.length > 0 ? (
+              <div className="space-y-1" data-testid="partner-spv-legal-form-field">
+                <Label>{SPV_LEGAL_FORM_FIELD_LABEL}</Label>
+                <select
+                  value={effectiveLegalForm}
+                  onChange={(e) => setForm({ ...form, legalForm: e.target.value })}
+                  className="w-full rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
+                  data-testid="partner-spv-legal-form"
+                >
+                  <option value={SPV_LEGAL_FORM_UNSTATED_SENTINEL}>{SPV_LEGAL_FORM_NOT_STATED_LABEL}</option>
+                  {spvLegalFormChoices.map((lf) => (
+                    <option key={lf} value={lf}>{SPV_LEGAL_FORM_LABELS[lf]}</option>
+                  ))}
+                </select>
+                <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="partner-spv-legal-form-hint">
+                  {SPV_LEGAL_FORM_OPTIONAL_HINT}
+                </div>
+              </div>
+            ) : (
+              <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="partner-spv-legal-form-not-offered">
+                {SPV_LEGAL_FORM_NOT_OFFERED_NOTICE}
+              </div>
+            )}
+          </div>
+
           <div className="text-xs text-rose-700" data-testid="partner-spv-role-note">{spvRoleNote}</div>
           <Button
             onClick={() => create.mutate()}

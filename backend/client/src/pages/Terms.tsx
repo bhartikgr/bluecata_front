@@ -1,3 +1,22 @@
+/* WAVE 210 — THIS PAGE IS RETIRED AS THE SERVED TEXT, AND IS NOT DELETED.
+ *
+ * Everything below the `if (!servingInterimPages)` line is the ORIGINAL 15 June
+ * 2026 page, byte-for-byte, including the sentence that called it an interim
+ * version for the private-beta period. Not one character of it was edited,
+ * moved or re-indented.
+ *
+ * WHY IT IS STILL HERE. Deleting superseded terms is legally wrong: we must
+ * remain able to prove what people were shown. So this text is RETIRED rather
+ * than removed — it renders only when `platform_config` says the platform is
+ * serving version "2026-06-15", which is an owner-level, hash-chained, audited
+ * act, not an edit. The adopted corpus is served by default and on every failure
+ * path, so no user-reachable path renders the interim wording today (owner
+ * decision A5). R167.3: the old default becomes unreachable, not absent.
+ *
+ * WHAT A USER NOW SEES. `AdoptedLegalDocumentPage` renders the five-document
+ * corpus that the signup consent has always attested to, with the registered
+ * party name and a version identity printed on the page.
+ */
 /* v25.26 — Terms of Service stub page.
  *
  * Previously, capavate.com/terms returned the SPA fallback, which rendered
@@ -10,8 +29,16 @@
  * here when ready. Keep the route registered in App.tsx.
  */
 import { Card, CardContent } from "@/components/ui/card";
+import { AdoptedLegalDocumentPage } from "@/components/AdoptedLegalDocumentPage";
+import { useActiveLegalCorpusVersion } from "@/lib/useActiveLegalCorpusVersion";
 
 export default function TermsPage() {
+  /* WAVE 210 — the delegation. Two statements; the existing JSX below is
+   * untouched. The hook defaults to the adopted version before any network read
+   * completes, so the retired text cannot appear on a slow or failed load. */
+  const { servingInterimPages } = useActiveLegalCorpusVersion();
+  if (!servingInterimPages) return <AdoptedLegalDocumentPage docId="terms" />;
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-card">

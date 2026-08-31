@@ -29,7 +29,24 @@ import { GlossaryLink } from "@/components/Glossary";
 import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add security" to Rounds */
 import { HelpTip } from "@/components/HelpTip";
 import { MilestoneBroadcastPanel } from "@/components/founder/MilestoneBroadcastPanel";
-import { currencySymbol } from "@/lib/currency";
+/* WAVE 190 · ITEM A — A SYMBOL MAY ONLY COME FROM A CURRENCY. This screen
+   derived `sym` from `company_profile.legal.region` via `currencySymbol()`, which
+   switches on REGION codes and ends `default: return "$"`. A Hong Kong company
+   therefore rendered `HK$` on its cap table while its own rounds rendered a bare
+   `$` and its investor invitations honestly refused — three currency truths for
+   one company, of which only the refusal was correct. The symbol now comes from
+   the company's recorded currency (`company_default_currency`, surfaced on the
+   active-company DTO as `defaultCurrency`), and where there is no currency on
+   record every money cell prints the stated refusal instead of a fabricated `$`
+   (R6). Nothing is converted (R156.1): only which symbol is printed changes,
+   never an amount. `region` is deliberately KEPT below — it feeds the formula
+   engine, which is a different question from which glyph to print, and
+   `deriveCurrencyFromRegion` (founder/Settings.tsx:78) is deliberately NOT used
+   here: deriving a currency from a jurisdiction is the defect, not the fix. */
+import { symbolOnRecord, moneyOnRecord, symbolCellOnRecord, amountCellOnRecord, ROUND_CURRENCY_NOT_RECORDED_STATEMENT } from "@/lib/currencyOnRecordDisplay";
+/* WAVE 191 · ITEM C.2 — the mixed-currency sibling of wave 190's refusal. Kept as
+   a SEPARATE import statement so the wave-190 line above stays byte-identical. */
+import { MIXED_CURRENCY_ON_RECORD_CELL, mixedCurrencyStatement } from "@/lib/currencyOnRecordDisplay";
 import { MONEY_UNAVAILABLE } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 /* WAVE 147 · R111 Q13 — SCOPE FENCE FOR A MONEY RULING ON A PAGE THAT IS MOSTLY
    NOT MONEY. Q13 fixes the wording for an unknown MONETARY value ("Not on
@@ -210,7 +227,7 @@ let SESSION_VIEW: View = "fully_diluted";
 type ExerciseWarrant = { id?: string; holderName?: string; roundId?: string | null; investorId?: string | null; strike?: number | null; fmv?: number | null; shares?: number | null };
 type ExercisePreview = { sharesIssued: string; cashPaid: string; ppsBasis: string; ledgerAmount: string };
 
-function WarrantExercisePanel({ companyId, warrant, sym, onDone }: { companyId: string; warrant: ExerciseWarrant; sym: string; onDone: () => void }) {
+function WarrantExercisePanel({ companyId, warrant, sym, onDone }: { companyId: string; warrant: ExerciseWarrant; sym: string | null; onDone: () => void }) {
  const { toast } = useToast();
  const [open, setOpen] = useState(false);
  const [mode, setMode] = useState<"cash" | "cashless" | "expire">("cash");
@@ -286,8 +303,8 @@ function WarrantExercisePanel({ companyId, warrant, sym, onDone }: { companyId: 
       {preview && (
        <div className="rounded-md border border-border/60 p-2.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-muted-foreground" data-testid="warrant-exercise-preview">
         <span>Shares to issue</span><span className="font-mono text-right text-foreground">{fmtNum(Number(preview.sharesIssued))}</span>
-        <span>Cash paid</span><span className="font-mono text-right">{sym}{Number(preview.cashPaid).toLocaleString()}</span>
-        <span>Ledger amount</span><span className="font-mono text-right">{sym}{Number(preview.ledgerAmount).toLocaleString()}</span>
+        <span>Cash paid</span><span className="font-mono text-right">{moneyOnRecord(sym, Number(preview.cashPaid).toLocaleString())}</span>
+        <span>Ledger amount</span><span className="font-mono text-right">{moneyOnRecord(sym, Number(preview.ledgerAmount).toLocaleString())}</span>
        </div>
       )}
      </div>
@@ -470,7 +487,86 @@ export default function CapTable() {
    [rows, totals.totalShares],
  );
 
- const sym = currencySymbol(region);
+ /* WAVE 190 · ITEM A — CURRENCY, NOT REGION. `null` means "no currency on
+    record" for this company, and every money cell below prints the stated
+    refusal rather than an amount in a denomination nobody recorded. */
+ const sym = symbolOnRecord(activeCompanyQ.data?.company?.defaultCurrency);
+
+ /* ═══════════════════════════════════════════════════════════════════════════
+    WAVE 191 · ITEM C — THE TWO COMPANY-LEVEL MONEY TOTALS ON THIS PAGE ADD
+    ACROSS ROUNDS, AND ROUNDS CAN NOW BE DENOMINATED DIFFERENTLY.
+    ═══════════════════════════════════════════════════════════════════════════
+    WHAT WAS WRONG. `totals.totalInvested` (`:460`) sums `investmentAmount` over
+    EVERY security in the company, and `safeNoteTotal` (`:498`) sums it over every
+    note and SAFE. Both are then stamped with `sym`, the ONE symbol derived from
+    the company's single `defaultCurrency`. Each security originates in a round,
+    each round carries its own `currency`, and from wave 191 those currencies can
+    differ — so both figures could add a GBP SAFE to a USD SAFE and print the
+    result with a dollar sign. The owner's instruction is explicit: state each
+    currency, never combine them.
+
+    WHAT THIS DOES. It reads the currency of each security's ORIGINATING ROUND
+    (`ApiSecurity.roundId` → `rounds.data`), and reaches one of three verdicts:
+
+      single     every counted security belongs to a round recorded in the same
+                 one currency. Nothing changes — the existing tiles render exactly
+                 as they did. This is the case for every company in the database
+                 today and it must keep working, so it is the negative control.
+      mixed      two or more currencies are present. The combined figure is
+                 REFUSED, and each currency is published with its own subtotal.
+      unknown    at least one counted security's round records no currency, so the
+                 platform does not know what it is being asked to add. It refuses
+                 rather than assuming the company default — assuming it is exactly
+                 the defect wave 190 removed from the symbol.
+
+    WHY THE ARITHMETIC IS THE SAME ARITHMETIC. `investmentAmount` arrives on the
+    wire as a JSON `number`; nothing here parses a string into a number, so no
+    `Number()`, `parseInt` or `parseFloat` is introduced. The per-currency
+    subtotals are summed with the SAME expression the pre-existing totals use, so
+    each subtotal and the old combined figure agree to the last unit. Re-deriving
+    them in `bigint` from the same already-lossy inputs would make the breakdown
+    disagree with the tile beside it and prove nothing about either.
+
+    NOTHING IS CONVERTED (R156.1). No exchange rate is read, and the only thing
+    that changes about an amount is which currency's bucket it lands in. */
+ const investedByCurrency = useMemo(() => {
+  const roundCurrencyById = new Map<string, string>();
+  for (const r of (rounds.data ?? []) as Array<Record<string, unknown>>) {
+   const id = typeof r.id === "string" ? r.id : null;
+   const cur = typeof r.currency === "string" && /^[A-Z]{3}$/.test(r.currency) ? r.currency : null;
+   if (id && cur) roundCurrencyById.set(id, cur);
+  }
+  const invested = new Map<string, number>();
+  const safeNote = new Map<string, number>();
+  let unknownCounted = 0;
+  for (const sec of (securitiesAsOf ?? [])) {
+   const amount = sec.investmentAmount ?? 0;
+   const interest = sec.accruedInterest ?? 0;
+   const isNoteOrSafe = sec.instrument === "note" || sec.instrument === "safe";
+   /* A security carrying no amount cannot mis-denominate anything, so it is not
+      counted as an unknown. Only a security with money on it and no currency
+      behind it forces the refusal. */
+   if (amount === 0 && interest === 0) continue;
+   const roundId = typeof sec.roundId === "string" ? sec.roundId : null;
+   const cur = roundId ? roundCurrencyById.get(roundId) ?? null : null;
+   if (cur === null) { unknownCounted += 1; continue; }
+   invested.set(cur, (invested.get(cur) ?? 0) + amount);
+   if (isNoteOrSafe) safeNote.set(cur, (safeNote.get(cur) ?? 0) + amount + interest);
+  }
+  /* Sorted so the same book always reads in the same order — a breakdown whose
+     row order moved between renders would look like the numbers had moved. */
+  const currencies = Array.from(invested.keys()).sort();
+  const verdict: "single" | "mixed" | "unknown" =
+   unknownCounted > 0 ? "unknown" : currencies.length > 1 ? "mixed" : "single";
+  return { currencies, invested, safeNote, unknownCounted, verdict };
+ }, [securitiesAsOf, rounds.data]);
+
+ /* THE ONE VALUE THAT GATES BOTH EXISTING FIGURES. When the book is not in a
+    single currency this is `null`, and wave 190's `symbolCellOnRecord` /
+    `amountCellOnRecord` / `moneyOnRecord` already print the stated refusal for
+    `null` — so no combined figure reaches the screen and NO existing JSX shape
+    changes. The two-expression-child form of the invested cell is untouched. */
+ const crossRoundSym = investedByCurrency.verdict === "single" ? sym : null;
 
  // Option pool sub-breakdown
  const poolSec = securitiesAsOf?.find((s) => s.instrument === "option" && s.optionStatus);
@@ -783,8 +879,81 @@ export default function CapTable() {
  </div>
  </div>
  <div className="text-[11px] text-muted-foreground">
- Display currency: <span className="font-mono">{sym}</span> · Engine reconstructs from immutable ledger
+ Display currency: <span className="font-mono">{sym ?? ROUND_CURRENCY_NOT_RECORDED_STATEMENT}</span> · Engine reconstructs from immutable ledger
  </div>
+ {/* ═══════════════════════════════════════════════════════════════════════
+     WAVE 191 · ITEM C — WHAT THE "REGION" SELECT ABOVE DOES, AND DOES NOT DO.
+     ═══════════════════════════════════════════════════════════════════════
+     REPORTED FROM LIVE, RE-TESTED AGAINST THIS TREE, AND THE ANSWER CHANGED.
+     A live walkthrough of v26.29.0 found that switching this Region select from
+     HK to US changed a row from "HK$1,500" to "$1,500" — the same number
+     relabelled as a different currency by a user-operable control. That was a
+     real defect and it would have been the worst money defect on this page.
+
+     IT IS NOT PRESENT IN THIS TREE. Wave 190 already repointed the symbol:
+     `sym` is now `symbolOnRecord(company.defaultCurrency)` and is not a function
+     of `region` at all. `region` was traced through every one of its remaining
+     uses in this file — `runEngine`, `regionConventionLabel`,
+     `regionConventionName`, `EngineBadge`, and two `data-region` attributes — and
+     none of them touches a currency symbol or an amount. Switching the select
+     now changes which FORMULA PACK computes the percentages. It cannot relabel
+     money, because money no longer reads it.
+
+     SO WHY THIS NOTE. Two things are still misleading, and both are COPY rather
+     than arithmetic. The select's own help text still promises it "Changes
+     display currency and conversion rules" — which is now false twice over,
+     since it changes neither the display currency nor any conversion (R156.1:
+     this platform performs no conversions at all). And its nine option labels
+     still carry currency glyphs — `US ($)`, `HK (HK$)` — which invite exactly
+     the reading the live tester came away with.
+
+     WHY THE FIX IS AN APPENDED SENTENCE AND NOT A REWRITE. R143.1: the help text
+     and all nine option labels are existing copy strings that `npm run guard` and
+     `npm run drop:restyle` fingerprint, and deleting or rewording them scores as
+     a removed copy string. The control is also not removed — a silent drop is
+     forbidden and it has a legitimate job. So the correction is stated here, as a
+     static sibling, immediately below the line that names the real display
+     currency. RECOMMENDED FOR A LATER WAVE, with the owner's sign-off, since it
+     is a deliberate copy change and not a defect fix: reword the help text to
+     name the formula pack only, and drop the glyphs from the nine option labels
+     so the control cannot be misread in the first place. */}
+ <p className="text-[11px] text-muted-foreground" data-testid="captable-region-scope-note">
+  The Region select picks which jurisdiction&rsquo;s formulas compute the percentages on this page. It does not change the currency of any amount and it never converts one currency into another. Every figure here is shown in the currency on this company&rsquo;s record, whatever Region is selected.
+ </p>
+ {/* ── WAVE 191 · ITEM C.2 — EACH CURRENCY, ON ITS OWN, WITH NO COMBINED FIGURE.
+     Rendered only when there is something to disclose. In the single-currency
+     case this block is absent and the page reads exactly as it did before, which
+     is the negative control the proofs assert. */}
+ {investedByCurrency.verdict === "mixed" && (
+  <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px] space-y-1" data-testid="captable-invested-mixed-currency">
+   <p className="font-medium" data-testid="captable-invested-mixed-headline">{MIXED_CURRENCY_ON_RECORD_CELL}</p>
+   <p data-testid="captable-invested-mixed-statement">{mixedCurrencyStatement(investedByCurrency.currencies)}</p>
+   <p className="text-muted-foreground" data-testid="captable-invested-mixed-basis">
+    Included: every security on this cap table that carries an amount, grouped by the currency of the round it was issued in.
+   </p>
+   <ul className="space-y-0.5" data-testid="captable-invested-by-currency">
+    {investedByCurrency.currencies.map((c) => (
+     <li key={c} className="flex items-baseline justify-between gap-3 font-mono tabular-nums" data-testid={`captable-invested-currency-${c}`}>
+      <span>{c}</span>
+      <span>{moneyOnRecord(symbolOnRecord(c), (investedByCurrency.invested.get(c) ?? 0).toLocaleString())}</span>
+     </li>
+    ))}
+   </ul>
+  </div>
+ )}
+ {investedByCurrency.verdict === "unknown" && (
+  <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px] space-y-1" data-testid="captable-invested-currency-unknown">
+   {/* The RIGHT refusal for this case. "More than one currency" would be the wrong
+       fact here: the problem is not two currencies, it is a round that states
+       none, and wave 190 already owns the one sentence for that. */}
+   <p data-testid="captable-invested-unknown-statement">
+    {ROUND_CURRENCY_NOT_RECORDED_STATEMENT}
+   </p>
+   <p className="text-muted-foreground" data-testid="captable-invested-unknown-reason">
+    {investedByCurrency.unknownCounted} of this company&rsquo;s recorded securities belong to a round that states no currency, so Capavate does not know what it is being asked to add. This is not the same as zero, and Capavate will not show a zero total for a figure it does not hold. Set a currency on those rounds to see this figure.
+   </p>
+  </div>
+ )}
  </CardContent>
  </Card>
 
@@ -934,7 +1103,7 @@ export default function CapTable() {
      not recorded at all. No unit conversion is introduced: the happy-path
      expression is unchanged and these columns stay MAJOR units (R16).
      A genuine 0 principal still renders "<sym>0". */}
- <span className="font-mono tabular-nums">{s.investmentAmount == null ? MONEY_UNAVAILABLE : `${sym}${s.investmentAmount.toLocaleString()}`}</span>
+ <span className="font-mono tabular-nums">{s.investmentAmount == null ? MONEY_UNAVAILABLE : moneyOnRecord(sym, s.investmentAmount.toLocaleString())}</span>
  </div>
  {s.accruedInterest != null && s.accruedInterest > 0 && (
  <div className="flex justify-between text-muted-foreground">
@@ -949,7 +1118,7 @@ export default function CapTable() {
      test that could only be made to pass by weakening the guard.
      It stays fenced rather than removed so the next sweep does not re-file it:
      if the `> 0` condition is ever relaxed, THIS becomes a real defect. */}
- <span className="font-mono tabular-nums">{sym}{(s.accruedInterest ?? 0).toLocaleString()}</span>
+ <span className="font-mono tabular-nums">{moneyOnRecord(sym, (s.accruedInterest ?? 0).toLocaleString())}</span>
  </div>
  )}
  {s.maturityDate && (
@@ -960,7 +1129,12 @@ export default function CapTable() {
  {notesAndSafes.length > 0 && (
  <div className="flex justify-between font-medium pt-1.5">
  <span>Total</span>
- <span className="font-mono tabular-nums">{sym}{safeNoteTotal.toLocaleString()}</span>
+ {/* WAVE 191 · ITEM C.2 — `crossRoundSym`, not `sym`. This figure adds notes and
+     SAFEs from DIFFERENT rounds, so it may only wear a symbol when every one of
+     them is denominated the same way. When they are not, wave 190's existing
+     refusal prints instead of a combined number, and the per-currency breakdown
+     below states each currency on its own. */}
+ <span className="font-mono tabular-nums">{moneyOnRecord(crossRoundSym, safeNoteTotal.toLocaleString())}</span>
  </div>
  )}
  </CardContent>
@@ -980,10 +1154,10 @@ export default function CapTable() {
  <div key={w.id} className="border-b border-border/60 pb-1.5 last:border-0">
  <div className="flex justify-between items-center gap-2"><span className="font-medium">{safeHolderName(w.holderName, w.investorId)}</span><div className="flex items-center gap-1.5"><Badge variant="outline" className="text-[10px]">{fmtNum(w.shares)} sh</Badge>{companyId && <WarrantExercisePanel companyId={companyId} warrant={w} sym={sym} onDone={() => { queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "securities"] }); queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "cap-table"] }); }} />}</div></div>
  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-muted-foreground">
- <span>Strike</span><span className="font-mono text-right">{sym}{w.strike?.toFixed(2) ?? "—"}</span>
- <span>FMV</span><span className="font-mono text-right">{sym}{w.fmv?.toFixed(2) ?? "—"}</span>
+ <span>Strike</span><span className="font-mono text-right">{w.strike == null ? "—" : moneyOnRecord(sym, w.strike.toFixed(2))}</span>
+ <span>FMV</span><span className="font-mono text-right">{w.fmv == null ? "—" : moneyOnRecord(sym, w.fmv.toFixed(2))}</span>
  <span>Remaining life</span><span className="font-mono text-right">{remainingYrs != null ? `${remainingYrs.toFixed(1)} yrs` : "—"}</span>
- <span>Intrinsic value</span><span className="font-mono text-right text-foreground">{intrinsic != null ? `${sym}${intrinsic.toLocaleString()}` : "—"}</span>
+ <span>Intrinsic value</span><span className="font-mono text-right text-foreground">{intrinsic != null ? moneyOnRecord(sym, intrinsic.toLocaleString()) : "—"}</span>
  </div>
  </div>
  );
@@ -1224,7 +1398,7 @@ export default function CapTable() {
  ) : groupView ? (
  <GroupedHoldings rows={enrichedRows} sym={sym} viewerId={viewerId} view={view} />
  ) : (
- <FlatHoldings rows={enrichedRows} sym={sym} totalSharesNum={totalSharesNum} totalInvested={totals.totalInvested} viewerId={viewerId} view={view} />
+ <FlatHoldings rows={enrichedRows} sym={sym} totalSym={crossRoundSym} totalSharesNum={totalSharesNum} totalInvested={totals.totalInvested} viewerId={viewerId} view={view} />
  )}
  </div>
  </CardContent>
@@ -1567,7 +1741,12 @@ const DENOMINATOR_DEFINITION: Record<View, { includes: string; excludes: string;
   },
 };
 
-function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId, view }: { rows: any[]; sym: string; totalSharesNum: number; totalInvested: number; viewerId: string; view: View }) {
+/* WAVE 191 · ITEM C.2 — `totalSym` is a SECOND, NARROWER symbol, added beside the
+   existing `sym` rather than replacing it. Per-ROW amounts keep `sym`: a row is one
+   security in one round and one currency, so it is correct already and must not
+   start refusing. Only the FOOTER TOTAL, which adds across rounds, reads
+   `totalSym`, which is `null` unless every counted round shares one currency. */
+function FlatHoldings({ rows, sym, totalSym, totalSharesNum, totalInvested, viewerId, view }: { rows: any[]; sym: string | null; totalSym: string | null; totalSharesNum: number; totalInvested: number; viewerId: string; view: View }) {
  const displayedTotal = displayedOwnershipTotal(rows);
  return (
  <table className="w-full text-xs" data-testid="table-captable">
@@ -1578,7 +1757,7 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId, view
  <td className="px-4 py-3" colSpan={6}>Total</td>
  <td className="px-2 py-3 text-right font-mono tabular-nums">{fmtNum(totalSharesNum)}</td>
  <td />
- <td className="px-2 py-3 text-right font-mono tabular-nums">{sym}{totalInvested.toLocaleString()}</td>
+ <td className="px-2 py-3 text-right font-mono tabular-nums">{symbolCellOnRecord(totalSym)}{amountCellOnRecord(totalSym, totalInvested.toLocaleString())}</td>
  <td colSpan={2} />
  {/* ═════════════════════════════════════════════════════════════
      WAVE 58b · DEFECT 6 — DERIVED FROM THE ROWS ABOVE, NEVER ASSERTED.
@@ -1662,7 +1841,7 @@ function FlatHoldings({ rows, sym, totalSharesNum, totalInvested, viewerId, view
  );
 }
 
-function GroupedHoldings({ rows, sym, viewerId, view }: { rows: any[]; sym: string; viewerId: string; view: View }) {
+function GroupedHoldings({ rows, sym, viewerId, view }: { rows: any[]; sym: string | null; viewerId: string; view: View }) {
  return (
  <table className="w-full text-xs" data-testid="table-captable">
  {holdingsHeaders(view)}
@@ -1683,7 +1862,7 @@ function GroupedHoldings({ rows, sym, viewerId, view }: { rows: any[]; sym: stri
  <td colSpan={6} className="px-4 py-2 font-semibold uppercase tracking-wide text-[10px]">{g.label} <span className="ml-2 text-muted-foreground normal-case">{groupRows.length} holder{groupRows.length === 1 ? "" : "s"}</span></td>
  <td className="px-2 py-2 text-right font-mono tabular-nums font-semibold">{fmtNum(Number(groupShares))}</td>
  <td />
- <td className="px-2 py-2 text-right font-mono tabular-nums font-semibold">{groupInvested ? `${sym}${Math.round(groupInvested).toLocaleString()}` : "—"}</td>
+ <td className="px-2 py-2 text-right font-mono tabular-nums font-semibold">{groupInvested ? moneyOnRecord(sym, Math.round(groupInvested).toLocaleString()) : "—"}</td>
  <td colSpan={2} />
  <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{ownershipPercentCellText(groupPct)}%<span className="sr-only"> of {VIEW_DENOMINATOR_LABEL[view]} on the {VIEW_LABEL[view]} view</span></td>
  </tr>
@@ -1696,7 +1875,7 @@ function GroupedHoldings({ rows, sym, viewerId, view }: { rows: any[]; sym: stri
  );
 }
 
-function HoldingRow({ r, sym, idx, viewerId, view }: { r: any; sym: string; idx: number; viewerId: string; view: View }) {
+function HoldingRow({ r, sym, idx, viewerId, view }: { r: any; sym: string | null; idx: number; viewerId: string; view: View }) {
  const orig = r.orig as ApiSecurity | undefined;
  const round = r.round as ApiRound | undefined;
  const rights: string[] = [];
@@ -1755,8 +1934,8 @@ function HoldingRow({ r, sym, idx, viewerId, view }: { r: any; sym: string; idx:
  <td className="px-2 py-2.5 text-muted-foreground truncate max-w-[140px]">{r.series ?? "—"}</td>
  <td className="px-2 py-2.5 text-muted-foreground text-[10px]">{orig?.issuedAt ? fmtDate(orig.issuedAt) : "—"}</td>
  <td className="px-2 py-2.5 text-right font-mono tabular-nums">{fmtNum(Number(r.shares))}</td>
- <td className="px-2 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{orig?.pricePerShare != null ? `${sym}${orig.pricePerShare.toFixed(4)}` : "—"}</td>
- <td className="px-2 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{r.invested ? `${sym}${parseFloat(r.invested).toLocaleString()}` : "—"}</td>
+ <td className="px-2 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{orig?.pricePerShare != null ? moneyOnRecord(sym, orig.pricePerShare.toFixed(4)) : "—"}</td>
+ <td className="px-2 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{r.invested ? moneyOnRecord(sym, parseFloat(r.invested).toLocaleString()) : "—"}</td>
  <td className="px-2 py-2.5 text-center">
  {orig?.vesting ? (
  <Tooltip>

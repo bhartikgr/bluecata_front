@@ -47,11 +47,34 @@ import {
      Edit-terms modal so all three surfaces say the same thing. */
   describeDiscount,
 } from "@/lib/engineDemo";
-import { currencySymbol, fmtCurrency } from "@/lib/currency";
+import { fmtCurrency } from "@/lib/currency";
+/* WAVE 190 · ITEM A — the four panels below derived their currency symbol from
+   `round.region`, a column that is NULL on 1045 of 1045 rows, so `?? "US"` made
+   every figure on this screen a US dollar figure regardless of denomination. A
+   REGION IS NOT A CURRENCY. The symbol now comes from `rounds.currency`, and
+   where that is genuinely absent the screen refuses and names the missing fact
+   instead of printing a `$` it cannot stand behind (R6). Nothing is converted
+   (R156.1) — only which symbol is printed changes, never an amount. */
+import {
+  symbolOnRecord,
+  moneyOnRecord,
+  /* The two-child form, kept because the drop guard inventories a `td`'s
+     expression-child COUNT and ORDER — see the module note. */
+  symbolCellOnRecord,
+  amountCellOnRecord,
+  ROUND_CURRENCY_NOT_RECORDED_STATEMENT,
+} from "@/lib/currencyOnRecordDisplay";
 import { Progress } from "@/components/ui/progress";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useTermSheetStore } from "@/lib/termsheet/store";
 import { signSES, captureSessionMetadata, type SESSignature } from "@/lib/esign/ses";
+/* WAVE 209 · ITEM A §209.2(d) (decision B1; R187.1) — the soft-circle signature
+ * record no longer carries an invented network address; this document row states
+ * what it does carry. */
+import {
+  signerAddressDisplay,
+  SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE,
+} from "@/lib/esign/wave209SignerMetadata";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 /* WAVE 111 — the ONE interpreter of liquidation preference, participation and the
    participation cap, shared with the exit waterfall and the term sheet. */
@@ -1952,7 +1975,9 @@ function RoundLifecycleProgress({ state, pipeline }: { state: string; pipeline?:
 }
 
 function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles: SoftCircle[] }) {
- const sym = currencySymbol(round.region ?? "US");
+ /* WAVE 190 · ITEM A — currency, not region. `null` means "no currency on
+    record" and every amount below prints the stated refusal instead. */
+ const sym = symbolOnRecord(round.currency);
  const lead = softCircles.find((s) => s.investorName === round.leadInvestor);
  return (
  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -1966,7 +1991,7 @@ function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles:
  <div className="font-semibold text-base text-foreground">{round.leadInvestor}</div>
  {lead && (
  <>
- <div className="text-muted-foreground">Soft-circled <span className="font-mono text-foreground">{sym}{lead.amount.toLocaleString()}</span></div>
+ <div className="text-muted-foreground">Soft-circled <span className="font-mono text-foreground">{moneyOnRecord(sym, lead.amount.toLocaleString())}</span></div>
  <div className="text-muted-foreground">Status: <Badge variant="outline" className="text-[10px] capitalize ml-1">{lead.status}</Badge></div>
  </>
  )}
@@ -2041,7 +2066,8 @@ export function UseOfProceedsNarrative({ text }: { text: string }) {
  );
 }
 export function UseOfProceeds({ round }: { round: Round }) {
- const sym = currencySymbol(round.region ?? "US");
+ /* WAVE 190 · ITEM A — see the import note. Currency, never region. */
+ const sym = symbolOnRecord(round.currency);
  const raw = round.useOfProceeds ?? null;
  const narrative = typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
  const data: UseOfProceedsRow[] = Array.isArray(raw) ? raw : [];
@@ -2050,7 +2076,21 @@ export function UseOfProceeds({ round }: { round: Round }) {
  <Card>
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4 text-[hsl(0_100%_40%)]" />Use of proceeds <HelpTip>How the round capital will be deployed. Standard pitch-deck slide; investors review this before committing. Aim for explicit per-bucket % + dollar amounts.</HelpTip></CardTitle>
- <p className="text-sm text-muted-foreground mt-0.5">{round.name} target: {fmtCurrency(round.targetAmount, round.region ?? "US", { compact: true })}. Actual deployment to be reported quarterly per IRA.</p>
+ {/* WAVE 190 · ITEM A — this was the tree's ONLY production caller of
+     `fmtCurrency`, whose `region = "US"` default is exactly how a non-US
+     round target came to be printed with a dollar sign. The compaction is
+     kept and no amount changes; the symbol now comes from the currency,
+     and a round with no currency recorded says so instead. */}
+ {/* `fmtCurrency` OWNS THE COMPACTION THRESHOLDS (B/M/K) and is the only
+     place they are written down; re-deriving them here would be the exact
+     duplicate-rule drift this platform keeps being bitten by. So it is still
+     called for the NUMBER, and the `$` its region argument unavoidably
+     produces is replaced by the on-record symbol. The substitution is
+     anchored (`/^\$/`) so it can only ever touch a leading symbol, and it is
+     asserted by test: a CAD round renders `C$`, never `$` and never `C$$`.
+     When `targetAmount` is null `fmtCurrency` returns an em dash, which has
+     no leading `$` and is passed through unchanged — honest, not a zero. */}
+ <p className="text-sm text-muted-foreground mt-0.5">{round.name} target: {sym === null ? ROUND_CURRENCY_NOT_RECORDED_STATEMENT : fmtCurrency(round.targetAmount, "US", { compact: true }).replace(/^\$/, sym)}. Actual deployment to be reported quarterly per IRA.</p>
  </CardHeader>
  <CardContent>
  {narrative ? (
@@ -2067,7 +2107,7 @@ export function UseOfProceeds({ round }: { round: Round }) {
  <div key={i} data-testid={`uop-row-${i}`}>
  <div className="flex justify-between text-sm mb-1">
  <span className="font-medium">{row.category}</span>
- <span className="font-mono tabular-nums">{sym}{row.amount.toLocaleString()} <span className="text-muted-foreground ml-1.5">{row.percent}%<span className="sr-only"> of the total committed capital</span></span></span>
+ <span className="font-mono tabular-nums">{moneyOnRecord(sym, row.amount.toLocaleString())} <span className="text-muted-foreground ml-1.5">{row.percent}%<span className="sr-only"> of the total committed capital</span></span></span>
  </div>
  <div className="h-2 rounded-full bg-secondary overflow-hidden">
  <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${row.percent}%` }} />
@@ -2076,7 +2116,7 @@ export function UseOfProceeds({ round }: { round: Round }) {
  ))}
  <div className="flex justify-between text-sm pt-3 border-t border-border font-semibold">
  <span>Total committed</span>
- <span className="font-mono tabular-nums">{sym}{total.toLocaleString()} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>
+ <span className="font-mono tabular-nums">{moneyOnRecord(sym, total.toLocaleString())} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>
  </div>
  </div>
  )}
@@ -2238,7 +2278,10 @@ function DocumentsTab({ roundId, softs, navigate }: { roundId: string; softs: So
  <span>{fmtUSD(sig.amount)}</span>
  <span className="font-mono"><Hash className="h-3 w-3 inline" /> {sig.signature.hash.slice(0, 12)}…</span>
  {sig.founderConfirmation && <Badge variant="outline" className="text-[10px]">founder confirmed</Badge>}
+ {/* WAVE 209 · ITEM A §209.2(d) — APPENDED SIBLING (R143.1: nothing above is replaced). */}
+ <span data-testid={`text-sc-signer-address-${sig.softCircleId}`}>Signer network address: {signerAddressDisplay(sig.signature.ipAddress)}</span>
  </div>
+ <div className="text-xs text-muted-foreground mt-0.5" data-testid={`text-sc-address-not-captured-${sig.softCircleId}`}>{SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE}</div>
  </div>
  <Button size="sm" variant="ghost" onClick={() => toast({ title: "Open soft-circle", description: `View document hash ${sig.signature.hash.slice(0, 16)}…` })} data-testid={`button-view-sc-${sig.softCircleId}`}><Eye className="h-3.5 w-3.5 mr-1" /></Button>
  </li>
@@ -2355,7 +2398,8 @@ function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, sig
 function ScenariosPanel({ round }: { round: Round }) {
  const { toast } = useToast();
  const scenarios = round.scenarios ?? [];
- const sym = currencySymbol(round.region ?? "US");
+ /* WAVE 190 · ITEM A — see the import note. Currency, never region. */
+ const sym = symbolOnRecord(round.currency);
  return (
  <Card>
  <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
@@ -2393,8 +2437,8 @@ function ScenariosPanel({ round }: { round: Round }) {
  {!isBase && (isUp ? <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-300/60">+ up</Badge> : <Badge variant="outline" className="text-[10px] text-rose-600 border-rose-300/60">− down</Badge>)}
  </div>
  <div className="space-y-1.5 text-xs">
- <div className="flex justify-between"><span className="text-muted-foreground">Pre-money</span><span className="font-mono tabular-nums">{sym}{(s.preMoney / 1e6).toFixed(1)}M</span></div>
- <div className="flex justify-between"><span className="text-muted-foreground">Post-money</span><span className="font-mono tabular-nums">{sym}{((s.preMoney + s.raise) / 1e6).toFixed(1)}M</span></div>
+ <div className="flex justify-between"><span className="text-muted-foreground">Pre-money</span><span className="font-mono tabular-nums">{moneyOnRecord(sym, `${(s.preMoney / 1e6).toFixed(1)}M`)}</span></div>
+ <div className="flex justify-between"><span className="text-muted-foreground">Post-money</span><span className="font-mono tabular-nums">{moneyOnRecord(sym, `${((s.preMoney + s.raise) / 1e6).toFixed(1)}M`)}</span></div>
  <div className="flex justify-between"><span className="text-muted-foreground">New investor %<span className="ml-1"> of fully-diluted</span></span><span className="font-mono tabular-nums">{s.dilutionPct.toFixed(1)}%</span></div>
  <div className="flex justify-between border-t border-border/60 pt-1.5"><span className="text-muted-foreground">Founder % after<span className="ml-1"> of fully-diluted</span></span><span className="font-mono tabular-nums font-semibold">{s.founderPctAfter.toFixed(1)}%</span></div>
  </div>
@@ -2411,13 +2455,14 @@ function ScenariosPanel({ round }: { round: Round }) {
 
 function TranchesPanel({ round }: { round: Round }) {
  const tranches = round.tranches ?? [];
- const sym = currencySymbol(round.region ?? "US");
+ /* WAVE 190 · ITEM A — see the import note. Currency, never region. */
+ const sym = symbolOnRecord(round.currency);
  const totalCommitted = tranches.reduce((s, t) => s + t.amount, 0);
  return (
  <Card>
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2"><Layers className="h-4 w-4 text-[hsl(38_92%_50%)]" />Tranche structure <HelpTip>Larger rounds often release capital in tranches tied to milestones. Each tranche is a separate funding event in the ledger.</HelpTip></CardTitle>
- <p className="text-sm text-muted-foreground mt-0.5">Total round size {sym}{totalCommitted.toLocaleString()} across {tranches.length} tranches. Each tranche commitment is recorded permanently.</p>
+ <p className="text-sm text-muted-foreground mt-0.5">Total round size {moneyOnRecord(sym, totalCommitted.toLocaleString())} across {tranches.length} tranches. Each tranche commitment is recorded permanently.</p>
  </CardHeader>
  <CardContent>
  <table className="w-full text-sm" data-testid="table-tranches">
@@ -2434,7 +2479,7 @@ function TranchesPanel({ round }: { round: Round }) {
  {tranches.map((t, i) => (
  <tr key={i} className="border-b border-border/60" data-testid={`tranche-${i}`}>
  <td className="px-2 py-2.5 font-medium">{t.name}</td>
- <td className="px-2 py-2.5 text-right font-mono tabular-nums">{sym}{t.amount.toLocaleString()}</td>
+ <td className="px-2 py-2.5 text-right font-mono tabular-nums">{symbolCellOnRecord(sym)}{amountCellOnRecord(sym, t.amount.toLocaleString())}</td>
  <td className="px-2 py-2.5 text-muted-foreground text-xs">{t.condition}</td>
  <td className="px-2 py-2.5 text-muted-foreground text-xs">{fmtDate(t.expectedDate)}</td>
  <td className="px-2 py-2.5 text-center">

@@ -1756,7 +1756,86 @@ export function registerBridgeRoutes(app: Express): void {
       if (env.auditChain.hash !== expected) { broken = i; break; }
       prior = env.auditChain.hash;
     }
-    res.json({ ok: broken === -1, brokenAt: broken, totalLinks: outbox.length });
+
+    /* ═════════════════════════════════════════════════════════════════════
+     * WAVE 181 · ITEM C — R148.3 item 1: `CHAIN ✗ BROKEN AT #0`, 732 queued,
+     * 0 delivered. THE BYTES ARE FINE. THE WORD "BROKEN" IS THE DEFECT.
+     * ═════════════════════════════════════════════════════════════════════
+     * The walk above starts from the genesis constant and assumes `outbox[0]`
+     * IS the first link ever written. It is not, and cannot be, because
+     * `outbox` is not the chain — it is the QUEUE:
+     *
+     *   · hydrateBridgeStore() restores only status IN
+     *     ('queued','delivering','archived'). Every DELIVERED envelope — and on
+     *     a healthy system that is most of them — is absent from this array
+     *     while its hash still lives on in the `priorHash` of the rows that
+     *     remain.
+     *   · clearBridgeOutbox() DELETEs dead_letter rows outright. Its comment is
+     *     accurate that it "never touches audit history", but it does remove
+     *     chain ancestors this walk expects to find.
+     *
+     * So `brokenAt === 0` is structurally INCAPABLE of being evidence of
+     * tampering: index 0 has no predecessor inside the walked set to disagree
+     * with. It reports "I could not establish a starting point", which is
+     * exactly what a drained or pruned queue looks like. The meaningful breaks
+     * are at i > 0, where two SURVIVING neighbours contradict each other.
+     *
+     * The mirror-image lie also existed: an EMPTY outbox yields broken === -1
+     * → ok:true → the badge read "INTACT" over zero records.
+     *
+     * CHAIN SEMANTICS ARE NOT ALTERED. `ok`, `brokenAt` and `totalLinks` keep
+     * their exact previous values and meanings; the sha256 body string is
+     * untouched. What follows is pure DIAGNOSIS added alongside them, so the
+     * screen can name which of four states it is in instead of shouting
+     * "BROKEN" at a drained queue.
+     *
+     * The discriminator: recompute the first failing envelope's hash from ITS
+     * OWN stored priorHash. If that reproduces the stored hash, the envelope's
+     * bytes are internally consistent and only its PREDECESSOR is missing from
+     * the walked set. If it does not, the bytes really are wrong. */
+    const verifiableLinks = outbox.filter((e) => !!e.envelope.auditChain).length;
+    let chainState: "empty" | "no_verifiable_start" | "intact" | "broken";
+    let firstEnvelopePriorHash: string | null = null;
+    let selfConsistentAtBreak: boolean | null = null;
+
+    if (outbox.length === 0 || verifiableLinks === 0) {
+      chainState = "empty";
+    } else if (broken === -1) {
+      chainState = "intact";
+    } else {
+      const brokenEnv = outbox[broken].envelope;
+      const brokenChain = brokenEnv.auditChain;
+      firstEnvelopePriorHash = brokenChain?.priorHash ?? null;
+      if (brokenChain) {
+        selfConsistentAtBreak =
+          brokenChain.hash ===
+          sha256(`${brokenChain.priorHash}|${brokenEnv.eventId}|${brokenEnv.eventType}|${brokenEnv.aggregateId}|${brokenEnv.occurredAt}`);
+      }
+      /* Break at the very FIRST link, whose own bytes recompute correctly →
+         missing predecessor, not corruption. Anything else is a real break. */
+      chainState =
+        broken === 0 && selfConsistentAtBreak === true ? "no_verifiable_start" : "broken";
+    }
+
+    res.json({
+      ok: broken === -1,
+      brokenAt: broken,
+      totalLinks: outbox.length,
+      /* WAVE 181 — additive diagnosis. The three fields above are unchanged. */
+      chainState,
+      verifiableLinks,
+      firstEnvelopePriorHash,
+      selfConsistentAtBreak,
+      queueIsNotTheWholeChain: true,
+      diagnosis:
+        chainState === "empty"
+          ? "The outbox holds no verifiable envelopes. There is nothing to verify — which is not the same as verified-intact."
+          : chainState === "intact"
+            ? "Every verifiable envelope still in the outbox links to its predecessor, and every hash recomputes."
+            : chainState === "no_verifiable_start"
+              ? "The earliest envelope still in the queue does not begin at genesis, because the envelopes it chains back to were delivered or dead-letter-cleared and are no longer in the queue. Its own hash recomputes correctly from its stored priorHash. No tampering is indicated."
+              : "Two envelopes that are BOTH still in the queue disagree, or an envelope hash does not recompute from its stored priorHash. Escalate.",
+    });
   });
 }
 

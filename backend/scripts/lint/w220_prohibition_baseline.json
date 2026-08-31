@@ -1,0 +1,52 @@
+{
+  "wave": 220,
+  "note": "ENUMERATED, JUSTIFIED BASELINE of prohibited-phrase hits present in the tree when the fence shipped. The fence is a RATCHET: any count rising, or any new file:term pair, fails the build. Lowering a count never fails \u2014 but deleting copy is forbidden by R195.5, so the honest way to lower one is to retire the claim in place behind an identifier flag, which leaves the source hit and the baseline entry intact.",
+  "justifications": {
+    "client/src/components/home3compo/": "FROZEN \u2014 every file in this directory is on the enforced 48-entry sacred list and a tenth waiver is not available to be sought. Wave 220 reports these hits as unfixed Class A/B findings in W220_INVENTORY.md and W220_FOR_THE_OWNER.md. They cannot be corrected from this layer.",
+    "client/src/pages/founder/Collective.tsx": "RETIRED IN PLACE, NOT DELETED (R195.5). The three superseded claims are retained as unreachable JSX behind the identifier flag W228_RENDER_SUPERSEDED_COPY so neither gate reads wave 228's correction as a silent copy drop. Wave 220 adds a second such block behind W220_RENDER_SUPERSEDED_COPY. The source hits are intentional; nothing renders.",
+    "client/src/components/AccreditationForm.tsx": "LATENT, reported not fixed. The 'awaiting compliance review' toast is reachable only when a caller passes onSubmit, which the component's only mount does not do (wave 215). The accreditation self-certification is a \u00a77 mechanical-step item and its text is not rewritten by this wave.",
+    "client/src/pages/investor/Signup.tsx": "Class C \u2014 'Accredited \u2014 third-party verified' is an option the INVESTOR selects about their own status. Removing it would narrow a field's choices, forbidden by R190.10.",
+    "client/src/pages/admin/": "Operator-only surface. Labels over stored operator flags. No external assurance is asserted to an investor. Recorded so that the same words appearing on an investor-facing file would be a NEW file:term pair and fail.",
+    "client/src/pages/investor/Profile.tsx": "Wave 227's retired 'Verified' badge copy, retained in place behind an identifier flag for the same R195.5 reason.",
+    "client/src/lib/legalDocs.ts": "Legal document corpus. Contains the adopted texts; their wording is an owner and counsel matter and no wave may edit an adopted legal document's body.",
+    "server/": "Server-side message and policy strings. Where these are honest refusals they are protected by \u00a77 item 19; where they are findings they are reported in W220_INVENTORY.md.",
+    "client/src/pages/CompanyDetails.tsx": "Founder-entered governance booleans. Wave 220 appends an attribution line rather than editing the labels.",
+    "client/src/pages/investor/ApplyToCollective.tsx": "Wave 220 retires the 'licensed KYC provider' sentence and the 'Identity verification & KYC' header in place behind an identifier flag; the source hits remain by design.",
+    "client/src/components/investor/PromoteToCollectiveDialog.tsx": "Wave 220 retires the diligence-pass sentence in place behind an identifier flag; the source hit remains by design.",
+    "client/src/components/partner/SpvDetailTabs.tsx": "Wave 220 appends a disclosure sibling under the 'Investor KYC & accreditation' header and does not touch the header literal (R143.1).",
+    "client/src/pages/founder/Welcome.tsx": "Class B, REPORTED NOT FIXED. 'Every cap-table commit is independently verified by two engines' overstates the scope of a mechanism that is REAL: server/captableCommitStore.ts:10 gates the `funded` transition on cap-table-engine and cap-table-engine-ref reconciling. The word is accurate for that transition; 'every commit' and 'always reconcile' are not. The correction turns on enumerating exactly which transitions are gated, so it is reported for the owner rather than guessed at.",
+    "shared/consortiumAgreement.ts": "ADEQUATE ITEM 1 of the nineteen (LEGAL_TECH_BUILD_DOC \u00a77). Clause 4.3 places KYC/AML/CTF and sanctions screening on the PARTNER \u2014 'precisely the risk allocation your requirement needs'. This is the correct allocation, not a Capavate claim. NOT TO BE TOUCHED.",
+    "shared/wave211MoneyEventAttestation.ts": "An HONEST REFUSAL, protected by \u00a77 item 19: 'Capavate does not verify this person's identity, wealth, status, eligibility or source of funds, does not perform customer due diligence or sanctions screening on them'. The phrase appears in a NEGATION. The fence is a count ratchet, not a semantic reader; enumerating negated uses in the baseline is how it stays green without being taught to guess at polarity.",
+    "shared/wave217PartnerComplianceAttestation.ts": "PRIOR ART, Class D. This is wave 217's own COMPLIANCE_FORBIDDEN_WORDS list \u2014 the platform already refuses 'verified', 'verify', 'vetted', 'screened', 'pre-qualified', 'prequalified', 'approved' in partner-compliance copy, asserted by its DOM test against that one exported list. This fence generalises the same idea platform-wide.",
+    "client/src/lib/legalDocsV2.ts": "Adopted legal document corpus, v2. Same reason as legalDocs.ts."
+  },
+  "counts": {
+    "client/src/components/AccreditationForm.tsx::awaiting compliance review": 1,
+    "client/src/components/AccreditationForm.tsx::compliance review": 1,
+    "client/src/components/home3compo/AudiencesSection.jsx::independent verification": 1,
+    "client/src/components/home3compo/CredibilitySection.jsx::verified accredited": 1,
+    "client/src/components/home3compo/DynamicCRM.jsx::verified, not self-reported": 1,
+    "client/src/components/home3compo/MultiplierSection.jsx::independent verification": 1,
+    "client/src/components/home3compo/PlatformSection.jsx::independent verification": 1,
+    "client/src/components/investor/PromoteToCollectiveDialog.tsx::diligence pass": 1,
+    "client/src/lib/legalDocs.ts::independent verification": 1,
+    "client/src/lib/legalDocs.ts::independently verified": 3,
+    "client/src/lib/legalDocs.ts::sanctions screening": 1,
+    "client/src/pages/founder/Collective.tsx::accreditation re-verification": 2,
+    "client/src/pages/founder/Collective.tsx::independent verification": 1,
+    "client/src/pages/founder/Collective.tsx::kyc sweep": 2,
+    "client/src/pages/founder/Collective.tsx::verified accreditation": 2,
+    "client/src/pages/founder/Welcome.tsx::independently verified": 1,
+    "client/src/pages/investor/ApplyToCollective.tsx::licensed kyc provider": 1,
+    "client/src/pages/investor/Profile.tsx::accreditation re-verification": 2,
+    "client/src/pages/investor/Profile.tsx::accreditation verified": 2,
+    "client/src/pages/investor/Signup.tsx::third-party verified": 1,
+    "server/notificationsStore.ts::kyc verified": 1,
+    "shared/consortiumAgreement.ts::sanctions screening": 1,
+    "shared/wave211MoneyEventAttestation.ts::sanctions screening": 1,
+    "shared/wave217PartnerComplianceAttestation.ts::pre-qualified": 1
+  },
+  "hand_entered_after_remediation": {
+    "client/src/components/investor/PromoteToCollectiveDialog.tsx::diligence pass": "WAVE 220 \u00b7 A4. Added BY HAND, not by --emit-baseline, so it appears in a diff. The rendered claim was WITHDRAWN; this single remaining hit is the superseded literal RETIRED IN PLACE behind the identifier flag W220_RENDER_SUPERSEDED_COPY, which R195.5 requires (nothing may be deleted). The fence's own failure message says a new prohibited phrase is not fixed by baselining it \u2014 that message is aimed at a NEW CLAIM, and it is recorded in W220_TESTS.md that this entry is the one place wave 220 answered its own fence with an enumeration rather than a withdrawal. A mounted-DOM test asserts the phrase does not render."
+  }
+}

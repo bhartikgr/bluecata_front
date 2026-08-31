@@ -35,6 +35,7 @@ import {
   getCompaniesForFounder,
   type FounderCompanyMembership,
 } from "../multiCompanyStore";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 let server: http.Server;
@@ -99,7 +100,7 @@ describe("BUG 034 — Edit-Terms persists instrument extras", () => {
     const create = await request(app)
       .post("/api/rounds")
       .set("x-user-id", "u_maya_chen")
-      .send(withRoundDates({
+      .send(w212Attest(withRoundDates({
         companyId: "co_novapay",
         name: "BUG 034 Note Round",
         instrument: "convertible_note",
@@ -107,7 +108,7 @@ describe("BUG 034 — Edit-Terms persists instrument extras", () => {
         targetAmount: 500_000,
         valuationCap: 8_000_000,
         discount: 20,
-      }));
+      })));
     expect([200, 201]).toContain(create.status);
     noteRoundId = create.body?.id;
     expect(noteRoundId).toBeTruthy();

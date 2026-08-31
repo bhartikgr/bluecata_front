@@ -13,6 +13,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { installV14TestIdentity } from "./_v14TestIdentity";
+import { w217Declare } from "./_w217ComplianceFixture";
 import express from "express";
 import http from "node:http";
 
@@ -82,7 +83,13 @@ describe("Wave F4 FIX F4-3 (E2E-7): POST /api/consortium-applications anonymous"
 
   it("valid body to /api/consortium-applications returns 201 (created)", async () => {
     const { app } = await buildApp();
-    const body = {
+    // WAVE 217 (2026-08-30) — the four compliance-declaration fields were ADDED
+    // here; nothing was removed. This route now refuses an application with no
+    // declaration (422), so the "valid body" this test asserts on has to carry
+    // one, exactly as the real screen sends it. The other three tests in this
+    // file assert only `not 401 / not 403 / < 500`, and 422 satisfies all three,
+    // so they are deliberately left alone.
+    const body = w217Declare({
       organizationName: "F4-3 Test Partners",
       contactName: "F4-3 Tester",
       contactEmail: "f43@test.example",
@@ -92,7 +99,7 @@ describe("Wave F4 FIX F4-3 (E2E-7): POST /api/consortium-applications anonymous"
       portfolioCompanyCount: 10,
       expectedChapter: "chap_keiretsu_canada",
       introMessage: "F4-3 valid-body submission for the canonical /api/consortium-applications alias.",
-    };
+    });
     const r = await rawRequest(app, "POST", "/api/consortium-applications", body);
     expect(r.status, `Got ${r.status}, expected 201`).toBe(201);
     expect(r.body.applicationId).toBeDefined();

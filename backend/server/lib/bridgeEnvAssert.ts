@@ -3,6 +3,15 @@
  *
  * W-COLLECTIVE Wave 1 — v4 §1.5. NON-SACRED. Reports; NEVER aborts boot.
  *
+ * WAVE 187 UPDATE (R159.2, OPTION A). The findings below now describe the REAL
+ * Collective receiver at `/api/bridge/collective-receive`
+ * (`server/lib/collectiveBridgeReceiver.ts`) rather than the pre-187 assumption
+ * that no receiver existed. Three changes: the configured URL's PATH is now
+ * verified (pointing production at the `_mock` route is a hard error — the exact
+ * mistake R148.2 caught by hand), the host is checked to be a path on
+ * capavate.com and never DEAD_HOST, and the two secret findings are downgraded
+ * to warn because the real receiver verifies against both secrets.
+ *
  * WHY THIS EXISTS. The legacy Collective bridge was pointed at
  * `https://collective.capavate.com/api/bridge/inbox`. That DNS name does not
  * resolve. Every outbound POST failed, and the outbox grew to 568 events / 0
@@ -54,6 +63,26 @@ export interface BridgeEnvReport {
 /** The host that does not exist. Any bridge URL naming it is a hard error. */
 const DEAD_HOST = "collective.capavate.com";
 
+/**
+ * WAVE 187 (R159.2 — the owner chose OPTION A: build a REAL receiver).
+ *
+ * Until wave 187 the only inbound endpoint in the tree was
+ * `/api/_mock_collective/inbound`, a test double. R148.2 is explicit about the
+ * consequence: *"I told Avi to set COLLECTIVE_WEBHOOK_URL. If he does that today,
+ * he will point production at a route named `_mock` and immediately fire 732 real
+ * events at it."* That was a human-judgement catch. It is now a machine check.
+ *
+ * These findings describe the receiver that ACTUALLY EXISTS, replacing the older
+ * assumptions that (a) there was no receiver at all and (b) an outbound/inbound
+ * secret mismatch was fatal.
+ */
+const REAL_RECEIVER_PATH = "/api/bridge/collective-receive";
+/** The mock. Pointing production here is the R148.2 mistake, now a hard error. */
+const MOCK_RECEIVER_PATH = "/api/_mock_collective/inbound";
+/** The Collective is a PATH on these hosts. It is NOT a subdomain. */
+const EXPECTED_HOSTS = ["capavate.com", "www.capavate.com"];
+const DEV_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "::1"];
+
 const truthy = (v: string | undefined): boolean =>
   ["1", "true", "yes", "on"].includes(String(v ?? "").trim().toLowerCase());
 
@@ -95,20 +124,72 @@ export function inspectBridgeEnv(env: NodeJS.ProcessEnv = process.env): BridgeEn
     );
   }
 
-  // Outbound signer and inbound verifier read DIFFERENT variables; the bridge is
-  // a self-loop, so unequal secrets mean every self-POST 401s and dead-letters.
+  /* WAVE 187 — THE RECEIVER PATH IS NOW CHECKED, not assumed.
+     A URL that resolves but points at the wrong path is the failure R148.2
+     caught by hand. Both branches below are what a preflight must refuse. */
+  if (effectiveUrl) {
+    let urlPath = "";
+    let urlHost = "";
+    try {
+      const parsed = new URL(effectiveUrl);
+      urlPath = parsed.pathname.replace(/\/+$/, "") || "/";
+      urlHost = parsed.hostname.toLowerCase();
+    } catch {
+      add(
+        "error",
+        "receiver_url_unparseable",
+        "The configured outbound bridge URL is not a parseable absolute URL, so the receiver path cannot be verified.",
+      );
+    }
+    if (urlPath) {
+      if (urlPath === MOCK_RECEIVER_PATH) {
+        add(
+          "error",
+          "receiver_is_the_mock",
+          `The outbound bridge URL points at ${MOCK_RECEIVER_PATH}, which is the in-process TEST DOUBLE. Point it at the real receiver ${REAL_RECEIVER_PATH} instead; delivering real events into the mock records no outcome and applies nothing.`,
+        );
+      } else if (urlPath !== REAL_RECEIVER_PATH) {
+        add(
+          "error",
+          "receiver_path_unknown",
+          `The outbound bridge URL's path is not the real Collective receiver. It must end with ${REAL_RECEIVER_PATH} — that is the only endpoint that verifies the signature, enforces idempotency, applies the event and records an outcome per event.`,
+        );
+      }
+    }
+    if (urlHost && !EXPECTED_HOSTS.includes(urlHost) && !DEV_HOSTS.includes(urlHost)) {
+      add(
+        "warn",
+        "receiver_host_unexpected",
+        `The outbound bridge URL host is neither ${EXPECTED_HOSTS.join(" nor ")} nor a local development host. The Collective is a PATH on capavate.com, not a separate host.`,
+      );
+    }
+  }
+
+  /* WAVE 187 — DOWNGRADED error → warn, with the reason stated.
+     The old text said unequal secrets mean "every outbound event will fail
+     inbound HMAC verification and dead-letter". That was true of the mock and of
+     the pre-wave-187 inbound route, which verified ONLY against
+     BRIDGE_INBOUND_HMAC_SECRET. The real receiver verifies against a CANDIDATE
+     SET — the outbound secret first, then the inbound secret — each in constant
+     time. So a mismatch no longer dead-letters anything. Leaving this at `error`
+     would make the preflight exit non-zero on a configuration that now works,
+     and a check that lies in the safe direction is still a check that lies. */
   if (effectiveUrl && webhookSecret && inboundSecret && webhookSecret !== inboundSecret) {
     add(
-      "error",
+      "warn",
       "secret_mismatch",
-      "COLLECTIVE_WEBHOOK_SECRET and BRIDGE_INBOUND_HMAC_SECRET differ. The bridge is a self-loop: every outbound event will fail inbound HMAC verification and dead-letter.",
+      "COLLECTIVE_WEBHOOK_SECRET and BRIDGE_INBOUND_HMAC_SECRET differ. This is no longer fatal: the real Collective receiver verifies against both secrets, so signed events still verify. Setting them to the same value is still cleaner.",
     );
   }
+  /* WAVE 187 — also downgraded, and for the same reason: the real receiver
+     verifies with COLLECTIVE_WEBHOOK_SECRET, which is the secret the outbound
+     signer actually used, so the inbound variable is no longer required for the
+     self-POST to verify. */
   if (effectiveUrl && webhookSecret && !inboundSecret) {
     add(
-      "error",
+      "warn",
       "inbound_secret_missing",
-      "An outbound bridge URL and secret are set but no BRIDGE_INBOUND_HMAC_SECRET / BRIDGE_HMAC_SECRET is configured, so the self-POST cannot be verified.",
+      "BRIDGE_INBOUND_HMAC_SECRET / BRIDGE_HMAC_SECRET is unset. The real Collective receiver verifies with COLLECTIVE_WEBHOOK_SECRET, so outbound delivery still verifies; the older /api/bridge/inbound endpoint will fall back to its insecure default secret.",
     );
   }
 
@@ -123,6 +204,14 @@ export function inspectBridgeEnv(env: NodeJS.ProcessEnv = process.env): BridgeEn
   if (!enabled) {
     add("info", "bridge_disabled", "BRIDGE_ENABLED is off. Outbound bridge delivery is intentionally inert.");
   }
+  /* WAVE 187 — state plainly that a real receiver now exists, and that its
+     existence is NOT the same as the bridge being on. R148.2's reasoning holds:
+     the queued backlog must not fire until a human decides. */
+  add(
+    "info",
+    "receiver_ready",
+    `A real Collective receiver exists at ${REAL_RECEIVER_PATH}. It verifies the signature, enforces idempotency by primary key, applies what it can and records an outcome and reason for every event (readable at /api/admin/bridge/receiver-log). It does NOT switch the bridge on — that needs BRIDGE_ENABLED plus COLLECTIVE_WEBHOOK_URL and COLLECTIVE_WEBHOOK_SECRET, which is an owner action.`,
+  );
   if (!webhookUrl && legacyUrl) {
     add(
       "warn",

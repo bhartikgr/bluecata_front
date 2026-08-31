@@ -50,8 +50,10 @@
  * live row holds. Leaving the false sentence in the header of the file that edits
  * this fee is how a 100× error gets "restored" by the next reader.
  */
-import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useCallback, useMemo, useState } from "react";
+/* WAVE 188 · ITEM D req 3 — `useSearch`/`useLocation` make the active tab
+ * bookmarkable, following the convention wave 180 established on partner Billing. */
+import { Link, useLocation, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { AppCard } from "@/components/ui/app-card";
@@ -125,6 +127,23 @@ import AdminCollectivePaymentPLPage from "@/pages/admin/CollectivePaymentPL";
 import AdminCollectivePaymentSchedulesPage from "@/pages/admin/CollectivePaymentSchedules";
 /* WAVE 131 (R96 req 7) — a storage key is not a label. */
 import { humanizeMachineKey, billingPeriodPhrase, planTierLabel } from "@/lib/partnerDisplay";
+/* WAVE 203 · ITEM B — R178.6. The confirmation surface lives in its own file so
+   this one keeps a four-line diff and every copy literal here stays verbatim. */
+import { W203RepricingConfirmDialog } from "@/components/admin/W203RepricingConfirmDialog";
+/* WAVE 207 · ITEM A · R195.1 — THE BASIS, NOT THE NUMBER.
+   Every sentence on this screen that said a vehicle fee is decided by the capital
+   confirmed in the vehicle is still in this file, byte-identical, on a branch gated by
+   `isCapitalFeeBasisDimension()` (R143.1: append, never replace a literal). Migration
+   0217's CHECK constraint refuses every token that satisfies that gate, so the old words
+   are preserved and provable without being rendered. Nothing here touches an amount. */
+import {
+  DEFAULT_FEE_BASIS_DIMENSION,
+  isCapitalFeeBasisDimension,
+  W207_VEHICLE_FEE_WHEN,
+  W207_VEHICLE_FEE_BASIS,
+  W207_PERMITTED_DIMENSIONS_SENTENCE,
+  W207_BANDING_KEPT_SENTENCE,
+} from "@shared/wave207FeeBasisDimension";
 
 /* ==========================================================================
  * Money helpers (single implementation for the whole fee area — the audit's
@@ -1481,7 +1500,13 @@ function ConsortiumPromotionsTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="Partner fee overrides (fee kind, tier or platform default, size bands, effective windows).">
+        {/* WAVE 207 · ITEM A · R143.1 — the wave-131 literal is kept byte-identical on the
+            arm a capital basis would select; migration 0217 refuses every such value, so
+            the arm below is the one that renders. Bands survive (the owner asked for that
+            flexibility); what changes is what they are read against. */}
+        <SectionTitle hint={isCapitalFeeBasisDimension(DEFAULT_FEE_BASIS_DIMENSION)
+          ? "Partner fee overrides (fee kind, tier or platform default, size bands, effective windows)."
+          : "Partner fee overrides (fee kind, tier or platform default, effective windows). Bands are not read against capital."}>
           Partner fee schedules
         </SectionTitle>
         <div className="mt-4">
@@ -2826,6 +2851,486 @@ function majorStringToMinor(major: string, currency: string): number {
   return minor;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 188 · R159.3 — MAKING THIS SCREEN READABLE BY A NON-TECHNICAL OWNER.
+ *
+ * THE DEFECT, IN THE OWNER'S OWN WORDS:
+ *   "Is there a better way for me to see the 'Tier slug'? Maybe a dynamic
+ *    dropdown? I have no idea how to actually read this or what the figures are."
+ *
+ * WAVE 158 (R158.1) told the owner to "just set a per-tier price here" and closed.
+ * That answer was wrong, and R159.3 says why: THE OWNER CANNOT SET A PRICE THEY
+ * CANNOT READ. `partner_fee_schedules` holds only platform-wide (`tier IS NULL`)
+ * rows and zero per-tier rows, so a tier price never matched and this screen fell
+ * back to a real platform-wide row labelled "Platform default" — two words that
+ * tell an owner nothing about which row answered or what to do about it.
+ *
+ * The data gap is real. The reason it persisted for a whole wave is that the
+ * surface was unreadable. So this block adds, for every fee row: what the fee is,
+ * WHEN it is charged, what it is BASED ON, and WHERE THE NUMBER CAME FROM — and
+ * where a per-tier value is genuinely absent it says exactly that and says how to
+ * set it, instead of printing "Platform default" and stopping.
+ *
+ * THE STANDARD IS NOT INVENTED HERE. The partner-facing schedule
+ * (client/src/pages/partner/PartnerBilling.tsx, AGG_FEE_KIND_TRIGGERS and
+ * AGG_VIA_LABELS) already does this well, and R159.3 says to match it. The
+ * sentences below are the SAME sentences a partner reads, so the admin and the
+ * partner cannot be told two different stories about the same fee.
+ *
+ * NOTHING HERE CHANGES AN AMOUNT. There is no arithmetic on money in this block
+ * at all — no Number(), no parseInt, no parseFloat, no multiplication. It renders
+ * amounts the server already resolved and explains where they came from.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** One live tier, as the server reports it. `labelIsFallback` is the honest flag
+ *  for "this tier has no human-readable name on record" — the UI then shows the
+ *  slug plus a STATED fallback, never a blank and never an invented name. */
+export interface TierChoiceWire {
+  slug: string;
+  label: string;
+  labelIsFallback: boolean;
+  state: string;
+}
+
+interface FeeAdminDisplayPolicyWire {
+  singleTierMode: boolean;
+  canonicalTierSlug: string | null;
+  canonicalTierLabel: string | null;
+  refusal: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  notes: string | null;
+  tiers: TierChoiceWire[];
+  offeredTiers: TierChoiceWire[];
+}
+
+interface BillingPeriodOfferWire {
+  annualOffered: boolean;
+  monthlyOffered: boolean;
+  model: string;
+  forbidX12Derivation: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  notes: string | null;
+}
+
+const FEE_ADMIN_POLICY_URL = "/api/admin/fee-admin-display-policy";
+const BILLING_PERIOD_OFFER_URL = "/api/admin/billing-period-offer";
+
+/**
+ * The ONE tier list every picker on this page reads.
+ *
+ * Before this wave the page carried its own compiled-in array of five raw slugs
+ * (`PFS_TIERS`), which could not see a sixth tier an admin created and showed the
+ * owner `founding_member` instead of `Founding Member`. The tier catalogue route's
+ * own comment already stated the rule this hook now honours: "Every picker on
+ * every surface reads this, so no screen can carry its own list of five."
+ */
+function useFeeAdminDisplayPolicy() {
+  return useAdminQuery<{ ok?: boolean; policy?: FeeAdminDisplayPolicyWire }>(FEE_ADMIN_POLICY_URL);
+}
+
+/** The human name to show for a tier. Never blank, never invented. */
+export function tierChoiceLabel(t: TierChoiceWire): string {
+  /* A tier with no display name on record is shown as its slug plus a stated
+     fallback, so the owner can see that the missing name is a DATA gap and not a
+     rendering bug. Making one up would be worse than showing the slug. */
+  return t.labelIsFallback ? `${t.slug} (no display name on record)` : t.label;
+}
+
+/* ── PLAIN LANGUAGE FOR EVERY FEE KIND ──────────────────────────────────────
+   Three separate facts, because the owner asked three separate questions:
+   WHAT it is, WHEN it is charged, and WHAT IT IS BASED ON. An unmapped fee kind
+   falls back to its own label rather than being dropped from the table. */
+
+/** What the fee is, in words. Same wording the partner sees. */
+export const W188_FEE_KIND_PLAIN: Record<string, string> = {
+  subscription_monthly: "Subscription — monthly",
+  subscription_annual: "Subscription — annual",
+  spv_deployment: "SPV deployment",
+  spv_management_per_lp_quarter: "SPV management",
+  spv_closing_bonus: "SPV closing bonus",
+};
+
+/** WHEN it is charged. The first three are byte-for-byte the sentences the
+ *  partner-facing schedule already shows (PartnerBilling AGG_FEE_KIND_TRIGGERS),
+ *  so admin and partner cannot be told two different stories. */
+export const W188_FEE_KIND_WHEN: Record<string, string> = {
+  spv_deployment:
+    "Charged once, when this SPV is marked Deployed. Based on confirmed capital at that moment — soft-circled interest is not counted.",
+  subscription_annual: "Charged at checkout, then once per annual period while the subscription is active.",
+  subscription_monthly: "Charged at checkout, then once per monthly period while the subscription is active.",
+  spv_management_per_lp_quarter:
+    "Charged every quarter, for each investor on the vehicle's register at the end of that quarter.",
+  spv_closing_bonus: "Charged once, when the vehicle closes.",
+};
+
+/** WHAT IT IS BASED ON — the thing that decides how big the number is. */
+export const W188_FEE_KIND_BASIS: Record<string, string> = {
+  spv_deployment:
+    "The size of the vehicle. Each size band below has its own amount, and the band the confirmed capital falls into is the one that is charged.",
+  subscription_annual: "A flat amount per year. It does not change with the size of anything.",
+  subscription_monthly: "A flat amount per month. It does not change with the size of anything.",
+  spv_management_per_lp_quarter: "The number of investors on the register, counted once per quarter.",
+  spv_closing_bonus: "A flat amount per closing.",
+};
+
+/** WHERE THE NUMBER CAME FROM. Same vocabulary the partner reads
+ *  (PartnerBilling AGG_VIA_LABELS) plus the two rows this screen itself edits. */
+export const W188_SOURCE_PLAIN: Record<string, string> = {
+  partner_override: "Negotiated for this partner",
+  tier_default: "This tier's own rate",
+  platform_default: "Platform default",
+  db: "Configured rate",
+  default: "Fallback rate",
+  partner_tier_price_authoritative: "This tier's published price",
+  platform_fee_authoritative: "Platform fee, as published",
+};
+
+/**
+ * The four sentences R159.3 Item B req 2 asks for, rendered under a fee row.
+ *
+ * WHY THIS IS NOT A NEW TABLE COLUMN: wave 182 established that adding a `td`
+ * renumbers every sibling cell and trips the panels inventory. This renders INSIDE
+ * the existing first cell as an added sibling, so no cell is created and no cell
+ * is renumbered.
+ */
+export function W188FeeRowExplanation({
+  feeKind,
+  tier,
+  testId,
+  basisDimension = DEFAULT_FEE_BASIS_DIMENSION,
+}: {
+  feeKind: string;
+  /** `null` for a platform-wide row — which is the whole point of req 3. */
+  tier: string | null;
+  testId: string;
+  /* WAVE 207 · ITEM A — which basis this row declares. Optional and defaulted, so every
+     existing call site keeps working unchanged. The default is the only value migration
+     0217 lets a row hold without bands, and no permitted value is capital, so the
+     capital sentences below cannot render for any row the database will accept. */
+  basisDimension?: string;
+}) {
+  const when = W188_FEE_KIND_WHEN[feeKind];
+  const basis = W188_FEE_KIND_BASIS[feeKind];
+  /* WAVE 207 · ITEM A · R195.1 — a vehicle fee is the one kind whose WHEN and BASIS
+     sentences named capital. For that kind the wave-207 sentences render instead; every
+     other fee kind is untouched and still reads exactly as wave 188 wrote it. */
+  const isVehicleFee = feeKind === "spv_deployment";
+  const capitalBasisDeclared = isCapitalFeeBasisDimension(basisDimension);
+  const showLegacyCapitalCopy = isVehicleFee && capitalBasisDeclared;
+  const showW207Copy = isVehicleFee && !capitalBasisDeclared;
+  return (
+    <div className="mt-1 space-y-1 text-xs text-muted-foreground" data-testid={testId}>
+      {when && (!isVehicleFee || showLegacyCapitalCopy) ? <div data-testid={`${testId}-when`}>{when}</div> : null}
+      {basis && (!isVehicleFee || showLegacyCapitalCopy) ? <div data-testid={`${testId}-basis`}>{basis}</div> : null}
+      {showW207Copy ? (
+        <>
+          <div data-testid={`${testId}-when-flat`}>{W207_VEHICLE_FEE_WHEN}</div>
+          <div data-testid={`${testId}-basis-flat`}>{W207_VEHICLE_FEE_BASIS}</div>
+          <div data-testid={`${testId}-permitted-dimensions`}>{W207_PERMITTED_DIMENSIONS_SENTENCE}</div>
+        </>
+      ) : null}
+      {tier ? (
+        <div data-testid={`${testId}-source`}>
+          This amount comes from the rate set for this one tier, so only partners on
+          that tier are charged it.
+        </div>
+      ) : (
+        /* R159.3 Item B req 3 — where a per-tier value is genuinely absent, SAY
+           EXACTLY THAT and SAY HOW TO SET IT. "Platform default" on its own is the
+           two-word answer that defeated the owner for a whole wave. */
+        <div data-testid={`${testId}-source`}>
+          This amount comes from the platform-wide rate, because no separate rate has
+          been set for any single tier. Every consortium partner is charged it. To
+          charge one tier differently, use "New fee schedule" above, pick that tier
+          from the Tier list, and enter its amount — this row stays as the amount for
+          everyone else.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 188 · ITEM A · R159.3 — "ONE TIER FOR ALL CONSORTIUM PARTNERS".
+ *
+ * THE OWNER'S WORDS: "How can I mute 'tiers' so that I only have one tier for all
+ * consortium partners?"
+ *
+ * MUTE, NEVER DELETE. The owner's standing rule is "I'd rather add than delete",
+ * and R159.3 forbids removing functionality. Every tier row, every tier price and
+ * every line of tier code survives; this switch changes which tiers the ADMIN
+ * PICKERS on this page offer, and nothing else.
+ *
+ * IT CANNOT MOVE A CHARGED AMOUNT. The policy lives in its own table that no
+ * charge path opens (server/lib/partnerFeeAdminDisplayPolicy.ts explains why that
+ * separation is the whole design). The tier lifecycle admin below is deliberately
+ * left UNFILTERED so the full machinery stays reachable while the mode is on —
+ * an owner who cannot see the way back will not touch the switch.
+ *
+ * NO HARDCODED TIER NAME (R156.2). Turning the mode on without choosing a tier is
+ * REFUSED with the missing fact named. The platform never picks one, not even when
+ * exactly one tier happens to be priced.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+export function W188SingleTierModeCard() {
+  const { toast } = useToast();
+  const q = useFeeAdminDisplayPolicy();
+  const policy = q.data?.policy;
+  const [draftSlug, setDraftSlug] = useState<string>("");
+
+  /* The dropdown shows the stored choice until the owner picks another. */
+  const chosen = draftSlug || policy?.canonicalTierSlug || "";
+
+  const save = useMutation({
+    mutationFn: async (body: { singleTierMode: boolean; canonicalTierSlug?: string | null }) => {
+      const res = await apiRequest("PUT", FEE_ADMIN_POLICY_URL, body);
+      const json = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+      /* A refusal is a sentence for the owner, not a status code. Surfacing the
+         server's own words means the reason is never paraphrased into something
+         the owner cannot act on. */
+      if (!res.ok || !json.ok) throw new Error(json.message || json.error || "Could not save.");
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [FEE_ADMIN_POLICY_URL] });
+      toast({ title: "Saved", description: "Your tier setting was saved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Not saved", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <AppCard data-testid="card-w188-single-tier">
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-base font-semibold" data-testid="heading-w188-single-tier">
+            One tier for all consortium partners
+          </h3>
+          <p className="text-sm text-muted-foreground" data-testid="help-w188-single-tier">
+            Turn this on and the tier lists on this page will offer only the one tier
+            you choose, so you are not asked to pick between five every time. Nothing
+            is deleted: the other tiers still exist, partners on them are unaffected,
+            and no amount anyone is charged changes either way. Turn it off to see all
+            of them again.
+          </p>
+        </div>
+
+        {q.isError ? (
+          <p className="text-sm text-destructive" data-testid="error-w188-single-tier">
+            Could not load the tier setting.
+          </p>
+        ) : !policy ? (
+          <p className="text-sm text-muted-foreground" data-testid="loading-w188-single-tier">
+            Loading the tier setting…
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {/* The state, in one sentence, before any control. */}
+            <p className="text-sm" data-testid="state-w188-single-tier">
+              {policy.singleTierMode && policy.canonicalTierLabel
+                ? `Right now: only ${policy.canonicalTierLabel} is offered in the tier lists on this page. The other ${String(policy.tiers.length - 1)} tiers still exist and are untouched.`
+                : `Right now: all ${String(policy.tiers.length)} tiers are offered in the tier lists on this page.`}
+            </p>
+
+            {/* A refusal the server reported — stated, never worked around. */}
+            {policy.refusal ? (
+              <div
+                className="flex items-start gap-1.5 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900"
+                data-testid="refusal-w188-single-tier"
+              >
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span>{policy.refusal}</span>
+              </div>
+            ) : null}
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id="w188-single-tier-mode"
+                checked={policy.singleTierMode}
+                disabled={save.isPending}
+                onCheckedChange={(next) =>
+                  save.mutate({
+                    singleTierMode: next,
+                    /* Turning ON sends the choice. Turning OFF sends nothing, so the
+                       choice is REMEMBERED and the owner is not asked to re-answer
+                       a question they have already answered. */
+                    ...(next ? { canonicalTierSlug: chosen || null } : {}),
+                  })
+                }
+                data-testid="switch-w188-single-tier-mode"
+              />
+              <Label htmlFor="w188-single-tier-mode">Use one tier for all consortium partners</Label>
+            </div>
+
+            <div>
+              <Label htmlFor="w188-canonical-tier">Which tier</Label>
+              <select
+                id="w188-canonical-tier"
+                className={SELECT_CLASS}
+                value={chosen}
+                onChange={(e) => setDraftSlug(e.target.value)}
+                data-testid="select-w188-canonical-tier"
+              >
+                <option value="">— choose a tier —</option>
+                {policy.tiers.map((t) => (
+                  <option key={t.slug} value={t.slug} data-testid={`option-w188-canonical-${t.slug}`}>
+                    {tierChoiceLabel(t)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="help-w188-canonical-tier">
+                Read from the live tier list, so it always matches the tiers that
+                actually exist. The platform will not choose one for you.
+              </p>
+            </div>
+
+            <Button
+              size="sm"
+              disabled={save.isPending}
+              onClick={() =>
+                save.mutate({
+                  singleTierMode: policy.singleTierMode,
+                  canonicalTierSlug: chosen || null,
+                })
+              }
+              data-testid="button-w188-save-single-tier"
+            >
+              <Save className="h-3.5 w-3.5 mr-1.5" />
+              Save tier setting
+            </Button>
+          </div>
+        )}
+      </div>
+    </AppCard>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 188 · ITEM C · R159.3 — ANNUAL IS THE OFFER; MONTHLY EXISTS BUT IS NOT
+ * OFFERED.
+ *
+ * THE OWNER'S WORDS: "Remember, I don't want to have 'monthly' at this point
+ * (although it should be an option on the platform). I want annual fees. This is
+ * why this pricing section is sometimes confusing to navigate."
+ *
+ * WHAT WAS ACTUALLY WRONG. The setting ALREADY EXISTED in the database
+ * (`partner_pricing_model_config.monthly_purchasable` / `annual_purchasable`) and
+ * ALREADY read annual-only, exactly as the owner wanted. But nothing in the tree
+ * ever wrote it and no screen ever showed it, so the owner could not see that the
+ * thing they asked for was already true — which is precisely why the section reads
+ * as confusing. The fix is therefore to SHOW the setting, not to change it.
+ *
+ * MONTHLY IS NOT DELETED. Its price column, its fee kind, its labels, its
+ * resolver branch and its per-partner override editor are all untouched, and this
+ * card can re-open it in one click. Turning BOTH off is refused, because that
+ * would leave partners with nothing they could buy.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+export function W188BillingPeriodOfferCard() {
+  const { toast } = useToast();
+  const q = useAdminQuery<{ ok?: boolean; offer?: BillingPeriodOfferWire }>(BILLING_PERIOD_OFFER_URL);
+  const offer = q.data?.offer;
+
+  const save = useMutation({
+    mutationFn: async (body: { annualOffered: boolean; monthlyOffered: boolean }) => {
+      const res = await apiRequest("PUT", BILLING_PERIOD_OFFER_URL, body);
+      const json = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || !json.ok) throw new Error(json.message || json.error || "Could not save.");
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [BILLING_PERIOD_OFFER_URL] });
+      toast({ title: "Saved", description: "Your billing period setting was saved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Not saved", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <AppCard data-testid="card-w188-billing-period">
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-base font-semibold" data-testid="heading-w188-billing-period">
+            What partners can buy: yearly or monthly
+          </h3>
+          <p className="text-sm text-muted-foreground" data-testid="help-w188-billing-period">
+            This decides which billing period a partner is offered at checkout.
+            Monthly is fully built and stays on the platform whether it is offered or
+            not — switching it off does not remove it, and switching it back on needs
+            no development work. At least one period has to stay on, or there would be
+            nothing for a partner to buy.
+          </p>
+        </div>
+
+        {q.isError ? (
+          <p className="text-sm text-destructive" data-testid="error-w188-billing-period">
+            Could not load the billing period setting.
+          </p>
+        ) : !offer ? (
+          <p className="text-sm text-muted-foreground" data-testid="loading-w188-billing-period">
+            Loading the billing period setting…
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm" data-testid="state-w188-billing-period">
+              {offer.annualOffered && !offer.monthlyOffered
+                ? "Right now: partners are offered yearly billing only. Monthly is supported on the platform but is not being offered."
+                : offer.monthlyOffered && !offer.annualOffered
+                  ? "Right now: partners are offered monthly billing only. Yearly is supported on the platform but is not being offered."
+                  : "Right now: partners are offered both yearly and monthly billing."}
+            </p>
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id="w188-annual-offered"
+                checked={offer.annualOffered}
+                disabled={save.isPending}
+                onCheckedChange={(next) =>
+                  save.mutate({ annualOffered: next, monthlyOffered: offer.monthlyOffered })
+                }
+                data-testid="switch-w188-annual-offered"
+              />
+              <Label htmlFor="w188-annual-offered">Offer yearly billing</Label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id="w188-monthly-offered"
+                checked={offer.monthlyOffered}
+                disabled={save.isPending}
+                onCheckedChange={(next) =>
+                  save.mutate({ annualOffered: offer.annualOffered, monthlyOffered: next })
+                }
+                data-testid="switch-w188-monthly-offered"
+              />
+              <Label htmlFor="w188-monthly-offered">Offer monthly billing</Label>
+            </div>
+
+            {/* The distinction the owner asked for, spelled out where they will read
+                it: SUPPORTED is not the same as OFFERED. */}
+            {!offer.monthlyOffered ? (
+              <div
+                className="flex items-start gap-1.5 rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground"
+                data-testid="note-w188-monthly-supported"
+              >
+                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span>
+                  Monthly is still supported on the platform: its price can still be
+                  set, an existing monthly subscription keeps billing monthly, and a
+                  monthly rate can still be negotiated for an individual partner. It is
+                  simply not presented as a choice to new buyers.
+                </span>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </AppCard>
+  );
+}
+
 /* ---------- RS-1: Collective payment schedules ------------------------- */
 
 function CollectiveScheduleSection() {
@@ -3253,8 +3758,20 @@ function CollectiveScheduleSection() {
 
 /* ---------- RS-2: Consortium partner fee schedules --------------------- */
 
-function PartnerFeeScheduleSection() {
+export function PartnerFeeScheduleSection() {
   const { toast } = useToast();
+  /* WAVE 188 · ITEM B — the live tier list, replacing this page's own compiled-in
+     array of five slugs. `offeredTiers` already has the single-tier display policy
+     applied by the server, so the picker and the policy cannot disagree. */
+  const policyQuery = useFeeAdminDisplayPolicy();
+  const policy = policyQuery.data?.policy;
+  const tierOptions: TierChoiceWire[] = policy?.offeredTiers ?? [];
+  /* When the mode is on, SAY SO here rather than letting four tiers silently
+     vanish from a list the owner remembers being longer. */
+  const singleTierNotice =
+    policy?.singleTierMode && policy.canonicalTierLabel
+      ? `Showing only ${policy.canonicalTierLabel}, because "one tier for all consortium partners" is turned on in the Config tab. The other tiers still exist. Leave it on platform default to charge every consortium partner the same amount.`
+      : null;
   const [feeKindFilter, setFeeKindFilter] = useState("__all__");
   const [showCreate, setShowCreate] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -3356,7 +3873,13 @@ function PartnerFeeScheduleSection() {
 
   return (
     <AppCard>
-      <SectionTitle hint="OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. SPV deployment fees use stepped size bands.">
+      {/* WAVE 207 · ITEM A · R195.1 — the precedence chain is unchanged and is what decides
+          the number (R156). Only the final sentence changed: it named capital as the basis.
+          The original is preserved verbatim on the capital arm (R143.1), which migration
+          0217 makes unreachable for any row the database will accept. */}
+      <SectionTitle hint={isCapitalFeeBasisDimension(DEFAULT_FEE_BASIS_DIMENSION)
+        ? "OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. SPV deployment fees use stepped size bands."
+        : "OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. " + W207_VEHICLE_FEE_BASIS + " " + W207_BANDING_KEPT_SENTENCE}>
         Consortium partner fee schedules
       </SectionTitle>
       <div className="mt-4">
@@ -3419,6 +3942,22 @@ function PartnerFeeScheduleSection() {
                 </div>
                 <div>
                   <Label htmlFor="pfs-tier">Tier (blank = platform default)</Label>
+                  {/* WAVE 188 · ITEM B · R159.3 — THE DROPDOWN THE OWNER ASKED FOR.
+
+                      BEFORE: this list came from `PFS_TIERS`, a compiled-in array of
+                      five raw slugs, and each option's text was the slug itself — so
+                      the owner was shown `founding_member` and asked to know what it
+                      meant. It also could not see a sixth tier an admin created on
+                      the Fee Schedules tab immediately above.
+
+                      NOW: the options come from the live tier rows, and each shows
+                      the tier's human name. The submitted VALUE is the same slug
+                      string in the same field, so nothing downstream changes.
+
+                      The blank platform-default option is kept as a STATIC SIBLING
+                      with its text unchanged (R143.1 — a replaced text node scores
+                      as a removed copy string), and the dynamic options are appended
+                      after it. */}
                   <select
                     id="pfs-tier"
                     className={SELECT_CLASS}
@@ -3426,12 +3965,20 @@ function PartnerFeeScheduleSection() {
                     onChange={(e) => setForm({ ...form, tier: e.target.value })}
                     data-testid="select-new-fee-tier"
                   >
-                    {PFS_TIERS.map((t) => (
-                      <option key={t || "__platform__"} value={t}>
-                        {t === "" ? "— (platform default)" : t}
+                    <option value="">— (platform default)</option>
+                    {tierOptions.map((t) => (
+                      <option key={t.slug} value={t.slug} data-testid={`option-pfs-tier-${t.slug}`}>
+                        {tierChoiceLabel(t)}
                       </option>
                     ))}
                   </select>
+                  {/* Where the list came from, and what "blank" actually means — the
+                      owner asked "I have no idea how to actually read this". */}
+                  <p className="mt-1 text-xs text-muted-foreground" data-testid="help-pfs-tier">
+                    {singleTierNotice
+                      ? singleTierNotice
+                      : "Read from the tiers that actually exist. Leave it on platform default to charge every consortium partner the same amount."}
+                  </p>
                 </div>
                 <div>
                   <Label htmlFor="pfs-amount">Amount (major units)</Label>
@@ -3514,9 +4061,36 @@ function PartnerFeeScheduleSection() {
                   const editing = editId === r.id;
                   return (
                     <TableRow key={r.id} data-testid={`row-pfs-${r.id}`}>
-                      <TableCell>{labelFor(FEE_KIND_LABELS, r.fee_kind)}</TableCell>
+                      {/* WAVE 188 · ITEM B req 2 — EVERY FIGURE EXPLAINS ITSELF.
+                          The explanation goes INSIDE this existing cell as an added
+                          sibling, not into a new column: wave 182 established that
+                          adding a `td` renumbers every sibling cell and trips the
+                          panels inventory. The existing label node is untouched. */}
+                      <TableCell>
+                        {labelFor(FEE_KIND_LABELS, r.fee_kind)}
+                        <W188FeeRowExplanation
+                          feeKind={r.fee_kind}
+                          tier={r.tier}
+                          testId={`explain-pfs-${r.id}`}
+                        />
+                      </TableCell>
                       <TableCell>
                         {r.tier ? <Badge variant="secondary">{r.tier}</Badge> : "—"}
+                        {/* The tier column showed a raw slug, or an em dash with no
+                            explanation of what "no tier" meant. Both now say which
+                            partners the row applies to, in words. */}
+                        <div className="mt-1 text-xs text-muted-foreground" data-testid={`tierwho-pfs-${r.id}`}>
+                          {r.tier
+                            ? `Applies to partners on the ${tierChoiceLabel(
+                                policy?.tiers.find((t) => t.slug === r.tier) ?? {
+                                  slug: r.tier,
+                                  label: r.tier,
+                                  labelIsFallback: true,
+                                  state: "unknown",
+                                },
+                              )} tier only.`
+                            : "Applies to every consortium partner — no tier has its own amount for this fee."}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {editing ? (
@@ -3614,6 +4188,20 @@ function FeeSchedulesTab() {
           there was NO surface anywhere in the product that could create one.
           Placed ABOVE the schedules deliberately: a fee band for a tier that
           does not exist is meaningless. Nothing on this tab was removed. */}
+      {/* WAVE 188 · ITEMS A + C · R159.3 — the two decisions the owner asked to be
+          able to make, ADDED ABOVE the machinery they govern, because a setting
+          placed after the thing it controls gets read second.
+
+            A: "How can I mute 'tiers' so that I only have one tier for all
+               consortium partners?"
+            C: "I don't want to have 'monthly' at this point (although it should be
+               an option on the platform). I want annual fees."
+
+          Both are DISPLAY-AND-OFFER settings held in the database and reversible
+          from here. Neither moves a fee amount, and neither deletes a tier row or
+          the monthly code path. The three sections below are untouched. */}
+      <W188SingleTierModeCard />
+      <W188BillingPeriodOfferCard />
       <PartnerTierLifecycleAdmin />
       <CollectiveScheduleSection />
       <PartnerFeeScheduleSection />
@@ -3790,9 +4378,80 @@ interface RepointRowDto {
   displayed: SourcedAmountDto;
   authoritative: SourcedAmountDto;
   divergent: boolean;
+  /* WAVE 201 · ITEM A — the server's three-valued answer. Optional on the wire
+     so a client held in a browser tab across a deploy that predates the server
+     change degrades to the old two-state rendering rather than crashing. It is
+     never DEFAULTED to "match": an absent field means the server did not tell
+     us, and W201_dvcState below treats not-told-us as a finding. */
+  comparisonState?: "match" | "mismatch" | "incomplete";
+  missingSide?: "displayed" | "charged" | "both" | null;
   acknowledged: boolean;
   ack: { acknowledgedByUserId: string | null; acknowledgedAt: string } | null;
 }
+
+/* ==========================================================================
+ * WAVE 201 · ITEM A — THREE STATES, VISUALLY AND TEXTUALLY DISTINCT.
+ *
+ * THE OWNER'S RULING (R173.7): "'We cannot compare' and 'the two disagree' are
+ * different facts and must be visually and textually distinct … This is a
+ * finding, not an OK, and not a mismatch. Do not collapse the third into either
+ * of the others."
+ *
+ * WHAT THE SCREEN DID BEFORE, verified by reading it and by executing the server
+ * resolver against a copy of the live database rather than trusting a report
+ * (build_log/wave201/W201_PREFLIGHT.md §1):
+ *
+ *   • both sides resolve and agree      → "Displayed matches charged"   correct
+ *   • both sides resolve and disagree   → red "Confirm repricing"       correct
+ *   • ONE side does not resolve         → red "Confirm repricing"       WRONG: an
+ *     incomplete control shown as a mismatch, with a destructive button that
+ *     would have replaced a working price with nothing.
+ *   • NEITHER side resolves             → "Displayed matches charged"    WRONG: the
+ *     false assurance — `null !== null` is false, so the old single boolean read
+ *     as "no divergence" and the screen passed a comparison it never made.
+ *
+ * R143.1 COMPLIANCE. All three existing labels — "Repointed — confirmed",
+ * "Confirm repricing", "Displayed matches charged" — are KEPT BYTE-VERBATIM,
+ * including the em dash, and the `Button` JSX and its `data-testid` are
+ * untouched. The new state is an ADDED BRANCH and ADDED STATIC SIBLINGS inside
+ * the EXISTING State cell. No `td`/`TableCell` and no `TableHead` is added, so
+ * no sibling cell is renumbered (wave 182), and no loop variable is renamed, so
+ * no tab identity is retired (wave 188).
+ * ======================================================================== */
+
+/** Which of the three facts this row carries. Never guesses a pass. */
+function W201_dvcState(row: RepointRowDto): "match" | "mismatch" | "incomplete" {
+  /* An absent field means an older server that cannot tell us. Treated as a
+     FINDING, because "we were not told whether these agree" is exactly the
+     thing R173.7 forbids reporting as OK. */
+  if (row.comparisonState === undefined || row.comparisonState === null) {
+    const displayedAnswered = row.displayed.error === null && row.displayed.amountMinor !== null;
+    const chargedAnswered =
+      row.authoritative.error === null && row.authoritative.amountMinor !== null;
+    if (!displayedAnswered || !chargedAnswered) return "incomplete";
+    return row.divergent ? "mismatch" : "match";
+  }
+  return row.comparisonState;
+}
+
+/** WAVE 201 · ITEM A.3 — NAME WHICH SIDE IS MISSING, never merely that
+ *  something is wrong. R143.4's principle: Capavate will not show a figure it
+ *  does not hold, and it will say which figure it does not hold. */
+function W201_missingSideLabel(row: RepointRowDto): string {
+  const side =
+    row.missingSide ??
+    (row.displayed.error !== null || row.displayed.amountMinor === null
+      ? row.authoritative.error !== null || row.authoritative.amountMinor === null
+        ? "both"
+        : "displayed"
+      : "charged");
+  if (side === "both") return "Cannot compare — neither price on file";
+  if (side === "displayed") return "Cannot compare — no displayed price on file";
+  return "Cannot compare — no charged price on file";
+}
+
+/** The audit reading, stated in words so it does not depend on noticing a colour. */
+const W201_FINDING_NOTE = "This is a finding, not a match and not a mismatch.";
 
 interface RepointResponse {
   ok?: boolean;
@@ -3800,11 +4459,22 @@ interface RepointResponse {
   secondTablePurpose?: string;
 }
 
-function DisplayedVsChargedTab() {
+export function DisplayedVsChargedTab() {
   const { toast } = useToast();
+  /* WAVE 188 · ITEM B — the tier list behind the dropdown that replaces this tab's
+     free-text "Tier slug" box. `offeredTiers` has the single-tier display policy
+     already applied by the server. */
+  const policyQuery = useFeeAdminDisplayPolicy();
+  const policy = policyQuery.data?.policy;
+  const dvcTierOptions: TierChoiceWire[] = policy?.offeredTiers ?? [];
   const [tier, setTier] = useState("");
   const [partnerId, setPartnerId] = useState("");
   const [submitted, setSubmitted] = useState<{ tier: string; partnerId: string } | null>(null);
+  /* WAVE 203 · ITEM B — R178.6. The mismatch row awaiting a DELIBERATE
+     confirmation. Detection stays on this screen; remediation moves behind
+     `W203RepricingConfirmDialog`, which names both amounts and the affected
+     party and captures a reason. Never set from the cannot-compare branch. */
+  const [pendingRepoint, setPendingRepoint] = useState<RepointRowDto | null>(null);
 
   const qs = useMemo(() => {
     if (!submitted) return null;
@@ -3820,7 +4490,10 @@ function DisplayedVsChargedTab() {
   });
 
   const ack = useMutation({
-    mutationFn: async (feeKind: string) => {
+    /* WAVE 203 · ITEM B — the reason now travels with the confirmation. It is
+       captured by the dialog, required by it, and required again by the server.
+       Still NO AMOUNT is sent from the browser. */
+    mutationFn: async ({ feeKind, reason }: { feeKind: string; reason: string }) => {
       if (!submitted) throw new Error("Choose a tier first.");
       return apiRequest("POST", "/api/admin/pricing-console/repoint-ack", {
         feeKind,
@@ -3829,9 +4502,11 @@ function DisplayedVsChargedTab() {
         /* The confirmation IS the payload. No amount is sent from the browser —
            both numbers are re-resolved on the server at confirmation time. */
         confirm: true,
+        reason,
       });
     },
     onSuccess: () => {
+      setPendingRepoint(null);
       queryClient.invalidateQueries({ queryKey: [`/api/admin/pricing-console/repoint?${qs ?? ""}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-console/source-map"] });
       toast({
@@ -3854,14 +4529,52 @@ function DisplayedVsChargedTab() {
         </SectionTitle>
         <div className="flex flex-wrap items-end gap-3">
           <div>
+            {/* WAVE 188 · ITEM B · R159.3 — THIS IS THE FIELD THE OWNER ASKED ABOUT.
+
+                THE OWNER'S WORDS: "Is there a better way for me to see the 'Tier
+                slug'? Maybe a dynamic dropdown? I have no idea how to actually read
+                this or what the figures are."
+
+                BEFORE: a free-text box whose placeholder was `consortium_partner`
+                — which is NOT one of the five real tiers, so an owner who typed
+                what the box suggested got nothing back and had no way to tell a
+                wrong guess from a broken screen.
+
+                NOW: a dropdown of the tiers that actually exist, showing their
+                human names. The existing "Tier slug" label is KEPT BYTE-VERBATIM as
+                a static sibling (R143.1 — a replaced text node scores as a removed
+                copy string, and drop:restyle catches a class of copy change that
+                guard does not, so a REPLACEMENT was rejected here on purpose). The
+                plain-English heading is ADDED as a new node underneath it, so the
+                owner reads "Which tier" and nothing existing is disturbed. */}
             <Label htmlFor="dvc-tier">Tier slug</Label>
-            <Input
+            <div className="text-xs text-muted-foreground" data-testid="help-dvc-tier-heading">
+              Which tier — pick one from the list
+            </div>
+            <select
               id="dvc-tier"
+              className={SELECT_CLASS}
               value={tier}
               onChange={(e) => setTier(e.target.value)}
-              placeholder="consortium_partner"
               data-testid="input-dvc-tier"
-            />
+            >
+              <option value="">— choose a tier —</option>
+              {dvcTierOptions.map((t) => (
+                <option key={t.slug} value={t.slug} data-testid={`option-dvc-tier-${t.slug}`}>
+                  {tierChoiceLabel(t)}
+                </option>
+              ))}
+            </select>
+            {policyQuery.isError ? (
+              <p className="mt-1 text-xs text-destructive" data-testid="error-dvc-tier-list">
+                Could not load the tier list. No tier names are being guessed — reload
+                the page to try again.
+              </p>
+            ) : dvcTierOptions.length === 0 ? (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="empty-dvc-tier-list">
+                No tiers are on record yet. Create one on the Fee Schedules tab first.
+              </p>
+            ) : null}
           </div>
           <div>
             <Label htmlFor="dvc-partner">Partner id (optional)</Label>
@@ -3882,6 +4595,59 @@ function DisplayedVsChargedTab() {
           </Button>
         </div>
 
+        {/* WAVE 188 · ITEM B req 2 — how to read the table below, before reading it.
+            R159.3 was raised because the owner was asked to check this screen for a
+            mismatch and could not tell what any column meant. */}
+        <div className="mt-3 rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground" data-testid="help-dvc-howtoread">
+          How to read this: "Displayed now" is the amount a partner sees on their own
+          billing page today. "Authoritative" is the amount the platform would
+          actually bill them. When those two differ, the partner is being shown the
+          wrong figure, and the button in the last column moves their page onto the
+          amount they are really charged. "Not resolvable" means no amount has been
+          configured at all — that is a gap to fill, not a zero.
+        </div>
+        {/* WAVE 201 · ITEM A — ADDED as a sibling underneath the wave 188 help
+            text, which is kept byte-verbatim above (R143.1: a replaced text node
+            scores as a removed copy string). */}
+        <div
+          className="mt-2 rounded border border-amber-300 bg-amber-50/60 p-2 text-xs text-amber-900"
+          data-testid="help-dvc-three-states"
+        >
+          There are three possible answers here, not two. "Displayed matches charged"
+          means both figures were found and they agree. "Confirm repricing" means both
+          figures were found and they disagree. "Cannot compare" means one of the two
+          figures is not on file at all, so nothing was compared — that is a finding to
+          fill in, and it is deliberately not shown as either agreement or disagreement.
+        </div>
+
+        {/* WAVE 201 · ITEM A.1 — THE COUNT. The owner's words: "In audit terms an
+            incomplete control is a finding, not a pass." So findings are counted
+            as their own number, next to but never inside the match count and
+            never inside the mismatch count. A reader sees how many of these
+            fifteen questions were actually answered without reading fifteen
+            rows. Rendered only once a comparison has been run, so an empty
+            screen never implies a clean result. */}
+        {rows.length > 0 ? (
+          <div
+            className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"
+            data-testid="dvc-summary-counts"
+          >
+            <span data-testid="dvc-count-compared">
+              Rows examined: {rows.length}
+            </span>
+            <span data-testid="dvc-count-match">
+              Match: {rows.filter((row) => W201_dvcState(row) === "match").length}
+            </span>
+            <span data-testid="dvc-count-mismatch">
+              Mismatch: {rows.filter((row) => W201_dvcState(row) === "mismatch").length}
+            </span>
+            <span className="font-medium text-amber-700" data-testid="dvc-count-incomplete">
+              Cannot compare — findings:{" "}
+              {rows.filter((row) => W201_dvcState(row) === "incomplete").length}
+            </span>
+          </div>
+        ) : null}
+
         <Table className="mt-4" data-testid="dvc-table">
           <TableHeader>
             <TableRow>
@@ -3896,7 +4662,20 @@ function DisplayedVsChargedTab() {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.feeKind} data-testid={`dvc-row-${r.feeKind}`}>
-                <TableCell className="font-medium">{labelFor(FEE_KIND_LABELS, r.feeKind)}</TableCell>
+                <TableCell className="font-medium">
+                  {labelFor(FEE_KIND_LABELS, r.feeKind)}
+                  {/* Added inside the existing cell, never as a new column (wave 182:
+                      a new `td` renumbers sibling cells and trips the inventory). */}
+                  <div className="mt-1 text-xs font-normal text-muted-foreground" data-testid={`dvc-what-${r.feeKind}`}>
+                    {W188_FEE_KIND_PLAIN[r.feeKind] ?? labelFor(FEE_KIND_LABELS, r.feeKind)}
+                    {/* WAVE 207 · ITEM A — the vehicle fee's WHEN sentence named confirmed
+                        capital. Its wave-188 form is retained on the capital arm (R143.1);
+                        every other fee kind still renders exactly what wave 188 wrote. */}
+                    {r.feeKind === "spv_deployment" && !isCapitalFeeBasisDimension(DEFAULT_FEE_BASIS_DIMENSION)
+                      ? ` — ${W207_VEHICLE_FEE_WHEN}`
+                      : W188_FEE_KIND_WHEN[r.feeKind] ? ` — ${W188_FEE_KIND_WHEN[r.feeKind]}` : ""}
+                  </div>
+                </TableCell>
                 <TableCell data-testid={`dvc-period-${r.feeKind}`}>{periodLabel(r.billingPeriod)}</TableCell>
                 <TableCell data-testid={`dvc-displayed-${r.feeKind}`}>
                   {r.displayed.error ? (
@@ -3923,15 +4702,50 @@ function DisplayedVsChargedTab() {
                 </TableCell>
                 <TableCell>
                   <code className="text-xs">{r.authoritativeSource}</code>
+                  {/* WAVE 188 · ITEM B req 2 — the owner said "I have no idea how to
+                      actually read this". A storage key in a <code> tag is exactly
+                      what they meant. The machine key is KEPT (an engineer reading
+                      this tab needs it) and the plain-English name is added under
+                      it, using the SAME vocabulary the partner-facing schedule uses
+                      so both surfaces name a source the same way. */}
+                  <div className="text-xs text-muted-foreground" data-testid={`dvc-source-plain-${r.feeKind}`}>
+                    {W188_SOURCE_PLAIN[r.authoritativeSource] ??
+                      W188_SOURCE_PLAIN[r.authoritative.computedVia ?? ""] ??
+                      "This source has no plain-English name on record yet."}
+                  </div>
                 </TableCell>
                 <TableCell data-testid={`dvc-state-${r.feeKind}`}>
                   {r.acknowledged ? (
                     <Badge variant="secondary">Repointed — confirmed</Badge>
+                  ) : W201_dvcState(r) === "incomplete" ? (
+                    /* WAVE 201 · ITEM A — THE THIRD STATE. Distinct in SHAPE (a
+                       badge, not a button — there is no action to offer, because
+                       repointing a display onto a source that cannot answer would
+                       replace a price with nothing), distinct in COLOUR (amber
+                       warning, not destructive red and not neutral outline), and
+                       distinct in TEXT, which names WHICH side is missing. No
+                       confirmation is offered here and the server refuses one
+                       even if the route is called directly. */
+                    <div className="flex flex-col gap-1" data-testid={`dvc-incomplete-${r.feeKind}`}>
+                      <Badge
+                        variant="outline"
+                        className="w-fit border-amber-500 bg-amber-50 text-amber-800"
+                        data-testid={`badge-dvc-incomplete-${r.feeKind}`}
+                      >
+                        {W201_missingSideLabel(r)}
+                      </Badge>
+                      <span
+                        className="text-xs text-amber-700"
+                        data-testid={`dvc-finding-note-${r.feeKind}`}
+                      >
+                        {W201_FINDING_NOTE}
+                      </span>
+                    </div>
                   ) : r.divergent ? (
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => ack.mutate(r.feeKind)}
+                      onClick={() => setPendingRepoint(r)}
                       disabled={ack.isPending}
                       data-testid={`button-dvc-confirm-${r.feeKind}`}
                     >
@@ -3952,6 +4766,19 @@ function DisplayedVsChargedTab() {
           </p>
         ) : null}
       </AppCard>
+
+      {/* WAVE 203 · ITEM B — the deliberate step. Rendered ONCE, outside the
+          table, and only ever populated from the mismatch branch above. */}
+      <W203RepricingConfirmDialog
+        subject={pendingRepoint}
+        tier={submitted?.tier ?? ""}
+        partnerId={submitted?.partnerId ?? ""}
+        pending={ack.isPending}
+        onCancel={() => setPendingRepoint(null)}
+        onConfirm={(reason) => {
+          if (pendingRepoint) ack.mutate({ feeKind: pendingRepoint.feeKind, reason });
+        }}
+      />
 
       <AppCard>
         <SectionTitle hint="It is no longer a second price list. It survives for one different, named purpose: per-partner negotiated overrides and their history, recorded against the authoritative catalogue price rather than replacing it.">
@@ -3976,7 +4803,7 @@ function DisplayedVsChargedTab() {
  * unrouted but never consolidated, so nothing is dropped (R96 req 6) and no
  * third consolidation page was created. Every retired URL deep-links to its tab
  * via `initialTab` — see App.tsx. */
-const TABS = [
+export const TABS = [
   { key: "source-map", label: "Price Source Map" },
   { key: "capavate-annual", label: "Capavate Annual Plan" },
   { key: "capavate-pricing", label: "Capavate Pricing & Gateway" },
@@ -3998,14 +4825,153 @@ const TABS = [
   { key: "config", label: "Config" },
 ] as const;
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 188 · ITEM D · R159.3 — GROUPING NINETEEN TABS SO AN ADMIN CAN FIND THINGS.
+ *
+ * THE OWNER'S WORDS: "Strictly a UI fix (no functionality change required). The
+ * above tabs should be better organized/categorized so that the admin can navigate
+ * more easily."
+ *
+ * NOTHING IS REMOVED OR RENAMED. Every one of the nineteen keys and labels above is
+ * still rendered, and the labels are DERIVED FROM `TABS` rather than re-typed here,
+ * so no label can drift by a byte (R143.1: a REPLACED text node scores as a REMOVED
+ * copy string). Reorganising here means adding headings and reordering the nav, not
+ * removing anything.
+ *
+ * WHY THIS IS A FLAT ARRAY AND NOT NESTED GROUPS — the hard-won constraint:
+ *   The silent-drop guard records `TabsList`'s direct children as a multiset of
+ *   tokens (`scripts/silent-drop-guard/extract-inventory.ts`, childMembershipRecords).
+ *   Today `TabsList` has exactly ONE child token — the mapped expression — giving
+ *   `child={expr}#1` and `childorder={expr}`. Wrapping each group in its own <div>
+ *   would REPLACE `child={expr}#1` with `child=div#N`, and a vanished child token is
+ *   precisely what the guard scores as a drop. So the list keeps ONE mapped
+ *   expression, and the map emits either a heading or a trigger per flat item.
+ *   Group headings carry no `value`, so they are not counted as tabs and the 319
+ *   baseline cannot fall.
+ *
+ * THE ORDER FOLLOWS THE BUSINESS, NOT THE FILE. What the platform sells first, then
+ * each product line, then money operations that cut across all of them, then the
+ * diagnostic screens an owner only opens when something looks wrong.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The groups, and which existing tab keys belong to each. KEYS ONLY — no label is
+ *  written here, so a label can never be accidentally rewritten. */
+export const TAB_GROUPS: ReadonlyArray<{ key: string; heading: string; tabKeys: readonly string[] }> = [
+  {
+    key: "start-here",
+    heading: "Start here",
+    tabKeys: ["source-map", "config"],
+  },
+  {
+    key: "consortium-partners",
+    heading: "Consortium partners",
+    tabKeys: ["fee-schedules", "tier-prices", "consortium-promotions", "commission-rates", "partner-pl"],
+  },
+  {
+    key: "capavate-founders",
+    heading: "Capavate (founders)",
+    tabKeys: ["capavate-annual", "capavate-pricing", "pricing-models"],
+  },
+  {
+    key: "collective-members",
+    heading: "Collective (members)",
+    tabKeys: [
+      "collective-tiers",
+      "collective-subscriptions",
+      "collective-payment-schedules",
+      "collective-pl",
+    ],
+  },
+  {
+    key: "money-in-money-out",
+    heading: "Money in, money out",
+    tabKeys: ["payments", "ledger-invoices", "application-fee", "discount-codes"],
+  },
+  {
+    key: "check-and-diagnose",
+    heading: "Check and diagnose",
+    tabKeys: ["displayed-vs-charged"],
+  },
+];
+
+/** A heading, or one of the nineteen existing tabs. */
+type TabNavItem =
+  | { kind: "group"; key: string; heading: string }
+  | { kind: "tab"; key: string; label: string };
+
+/**
+ * The flat nav sequence: heading, its tabs, next heading, its tabs…
+ *
+ * BUILT BY LOOKUP, AND EVERY TAB IS ACCOUNTED FOR. Labels come from `TABS`, so they
+ * are byte-verbatim by construction. A key listed in a group that does not exist in
+ * `TABS` is skipped rather than rendered as a blank chip; and any tab NOT listed in
+ * any group is appended under a final heading rather than silently disappearing —
+ * so a future wave that adds a twentieth tab and forgets to group it still gets a
+ * visible tab, which is the whole point of "no silent drops".
+ */
+export function buildTabNavItems(): TabNavItem[] {
+  const byKey = new Map<string, string>(TABS.map((t) => [t.key, t.label]));
+  const out: TabNavItem[] = [];
+  const placed = new Set<string>();
+
+  for (const g of TAB_GROUPS) {
+    const present = g.tabKeys.filter((k) => byKey.has(k));
+    if (present.length === 0) continue;
+    out.push({ kind: "group", key: g.key, heading: g.heading });
+    for (const k of present) {
+      out.push({ kind: "tab", key: k, label: byKey.get(k) as string });
+      placed.add(k);
+    }
+  }
+
+  const ungrouped = TABS.filter((t) => !placed.has(t.key));
+  if (ungrouped.length > 0) {
+    out.push({ kind: "group", key: "ungrouped", heading: "Everything else" });
+    for (const t of ungrouped) out.push({ kind: "tab", key: t.key, label: t.label });
+  }
+  return out;
+}
+
+/* ── ITEM D req 3 — A BOOKMARKABLE TAB ─────────────────────────────────────
+   The convention is wave 180's on partner Billing (PartnerBilling.tsx), which in
+   turn took it from InvitationDetail.tsx: an exported parser, `useSearch()` to
+   read, `navigate()` to write, and a PUSH rather than a replace so the browser's
+   Back button can leave a tab. An absent or unrecognised `?tab=` falls back to the
+   default instead of rendering an empty page. `initialTab` still wins when no
+   `?tab=` is present, so the two preserved legacy admin URLs keep working. */
+export const ADMIN_FEES_TAB_DEFAULT: string = TABS[0].key;
+
+export function parseAdminFeesTabParam(search: string): string | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const t = params.get("tab");
+  return t && TABS.some((x) => x.key === t) ? t : null;
+}
+
 /** WAVE 4A — `initialTab` lets the two preserved legacy admin URLs
  *  (`/admin/collective-payment-schedules`, `/admin/partner-fees`) deep-link
  *  straight into the Fee Schedules tab of THIS one consolidated page instead
  *  of re-routing the retired standalone pages. See App.tsx. */
 export default function AdminFeesConsolidated({ initialTab }: { initialTab?: string } = {}) {
-  const [tab, setTab] = useState<string>(
-    TABS.some((t) => t.key === initialTab) ? (initialTab as string) : TABS[0].key,
+  /* WAVE 188 · ITEM D req 3 — the URL is now the tab's home, so the owner can
+     bookmark one. Precedence: `?tab=` (what the owner bookmarked) → `initialTab`
+     (the two preserved legacy admin URLs) → the first tab. */
+  const search = useSearch();
+  const [pathname, navigate] = useLocation();
+  const urlTab = parseAdminFeesTabParam(search);
+  const tab =
+    urlTab ??
+    (TABS.some((t) => t.key === initialTab) ? (initialTab as string) : ADMIN_FEES_TAB_DEFAULT);
+  /* PUSH, not replace: wave 180's deliberate deviation, so Back leaves the tab
+     instead of leaving the page. The path comes from useLocation() and is never
+     hardcoded, so the legacy URLs keep their own address. */
+  const setTab = useCallback(
+    (next: string) => {
+      navigate(`${pathname}?tab=${next}`);
+    },
+    [navigate, pathname],
   );
+
+  const navItems = buildTabNavItems();
 
   return (
     <div data-testid="admin-fees-consolidated">
@@ -4016,12 +4982,33 @@ export default function AdminFeesConsolidated({ initialTab }: { initialTab?: str
       />
       <PageBody>
         <Tabs value={tab} onValueChange={setTab}>
+          {/* WAVE 188 · ITEM D — ONE mapped child, deliberately. See the note on
+              TAB_GROUPS: wrapping the groups in <div>s would remove this list's only
+              child token and score as a drop. Headings and triggers are siblings in
+              the same sequence instead. */}
           <TabsList className="flex-wrap h-auto" data-testid="admin-fees-tablist">
-            {TABS.map((t) => (
-              <TabsTrigger key={t.key} value={t.key} data-testid={`tab-trigger-${t.key}`}>
-                {t.label}
-              </TabsTrigger>
-            ))}
+            {/* THE MAP VARIABLE IS STILL NAMED `t`, AND THAT IS LOAD-BEARING. The
+                guard identifies a tab by the literal source text of its `value`
+                expression: this trigger's identity is `<expr:t.key>`. Renaming the
+                variable to `item` retired `<expr:t.key>` and the guard correctly
+                reported a REMOVED tab — nineteen tabs still rendered, but the one it
+                had a baseline for was gone. `value={t.key}` and `{t.label}` are
+                therefore kept byte-identical to the previous version. */}
+            {navItems.map((t) =>
+              t.kind === "group" ? (
+                <span
+                  key={`group-${t.key}`}
+                  className="basis-full w-full pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  data-testid={`tab-group-${t.key}`}
+                >
+                  {t.heading}
+                </span>
+              ) : (
+                <TabsTrigger key={t.key} value={t.key} data-testid={`tab-trigger-${t.key}`}>
+                  {t.label}
+                </TabsTrigger>
+              ),
+            )}
           </TabsList>
 
           <TabsContent value="source-map" className="mt-4">

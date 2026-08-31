@@ -42,6 +42,14 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
    route's Edit-terms warning all read it, so no two of them can disagree. */
 import { readLiquidationTermFacts } from "../shared/liquidationTermsReader";
 import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 exponent, never a hardcoded *100 */
+/* WAVE 180 · ITEM A SITE 6 — the platform's cross-currency contract. Same
+ * helpers wave 21 installed and wave 35 used for the founder-channel totals. */
+import {
+  addToBucket,
+  singleCurrencyScalar,
+  bucketsToArray,
+  type CurrencyBuckets,
+} from "./lib/currencyScalar";
 /* WAVE 35 F6/F7/F8/F9 — the ONE shared decision for every cap-table sink that
    authorises with a `capTablePositions.some(...)` equality check. An SPV is a
    company in the sacred ledger, so an LP PASSES `gate("investor.onCapTableOf")`
@@ -80,6 +88,8 @@ import { registerCommsTiersRoutes } from "./commsTiersStore";
 import { registerYourDecisionRoutes } from "./yourDecisionStore";
 import { registerMaIntelligenceRoutes } from "./maIntelligenceStore";
 import { registerCrmRoutes } from "./crmStore";
+/* WAVE 221 — investor + partner benchmarking/matchmaking opt-out (R190.10). */
+import { registerWave221BenchmarkingOptOutRoutes } from "./wave221BenchmarkingOptOutRoutes";
 import { registerCollectiveAppRoutes } from "./collectiveAppStore";
 import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplyStore";
 import { registerInvestorAccreditationRoutes } from "./investorComplianceRoutes"; /* W3-B C-5 — accreditation self-declaration capture */
@@ -149,6 +159,16 @@ import { setFounderOwnershipSecuritiesProvider } from "./lib/founderOwnershipEng
    instead of by editing the sacred file. It MUST be registered BEFORE
    registerCaptableCommitRoutes — same rule as registerRoundMathRoutes above. */
 import { registerComplianceHoldAuditGuard } from "./lib/complianceHoldAuditGuard";
+/* WAVE 195 (R167) — the owner declared every pre-existing cap-table commit USD
+   ("They are all test data so declare them USD"). Two halves live outside the
+   sacred store: the declaration is RECORDED as data in `platform_config` and
+   audited through wave 186's writer, and a pre-router supplies each commit the
+   round's ACTUAL currency — or refuses and names the missing fact — so
+   `server/captableCommitStore.ts:713`'s `?? "USD"` is never reached. It MUST be
+   registered BEFORE registerCaptableCommitRoutes: same rule as
+   registerComplianceHoldAuditGuard and registerRoundMathRoutes above. */
+import { registerWave195CommitCurrencyRoutes } from "./wave195CommitCurrencyRoutes";
+import { ensureCommitCurrencyDeclaration } from "./lib/wave195CommitCurrencyDeclaration";
 import { registerFounderOpsRoutes } from "./founderOpsRoutes";
 /* WAVE 130 — the shareholder register: record a holder with NO round in
    existence, both first-run scenarios, and explicit cap-table visibility. */
@@ -169,7 +189,13 @@ import { registerBridgeRoutes } from "./bridgeStore";
 import { registerNotificationsRoutes } from "./notificationsStore";
 import { registerEmailRoutes } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
-import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog } from "./adminPlatformStore";
+import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog, reportAuditWriteOutcome } from "./adminPlatformStore";
+/* WAVE 212 · R186.2 — the authorised sign-off a founder must give before a round
+   exists. Enforced in the creation handler below, not on a button. */
+import {
+  wave212RoundCreationPreflight,
+  wave212RecordAfterCreate,
+} from "./lib/wave212RoundCreationGate";
 import { registerAdminV25Routes } from "./adminV25Store";
 import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById, updateRound as roundsStoreUpdate, suggestUniqueRoundName, roundNameExistsForCompany } from "./roundsStore";
 // v25.45 Bug C — durable backing for the LEGACY in-memory invitationStore array.
@@ -208,6 +234,8 @@ import { companies as canonicalCompanies, rounds as canonicalRounds, softCircles
 import { getRecentEvents as getTelemetryEvents } from "./sprint10Telemetry";
 import { registerBridgeRuntimeRoutes } from "./lib/bridgeRuntime";
 import { registerBridgeOutboundGuard } from "./lib/bridgeOutboundGuard"; /* v25.48.2 Q1 — neutralize legacy outbound bridge in prod */
+import { registerWave197BridgeInboundLeakGuard } from "./lib/wave197BridgeInboundLeakGuard"; /* WAVE 197 R169 — strip internal detail from the SACRED bridgeRuntime inbound 500 without opening the frozen file */
+import { registerCollectiveBridgeReceiverRoutes } from "./lib/collectiveBridgeReceiver"; /* WAVE 187 (R159.2 Option A) — the REAL Collective receiver */
 import { registerSyncDashboardRoutes } from "./lib/syncDashboard";
 import { registerMigrationRoutes } from "./lib/migrationRunner";
 import { backfillAllowDms } from "./lib/allowDmsBackfill"; /* W-FIX2 F2 — reversible allowDms default-ON backfill */
@@ -297,6 +325,13 @@ import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* 
    hard refusal on money-in, so the override ledger + a dry-run "why is this
    blocked" endpoint are a RELEASE CONDITION, not a follow-up. */
 import { registerAdminSpvLaunchGateRoutes } from "./adminSpvLaunchGateRoutes";
+/* WAVE 206 / R182.2 — the owner-facing, database-backed bridge configuration and
+ * the staged, dry-run-by-default backlog drain. Purely ADDITIVE: three new admin
+ * paths. It does NOT touch `maySendOutboundBridge()`, the existing drain guard,
+ * the background worker, or the frozen `server/lib/bridgeRuntime.ts` — which is
+ * why enabling delivery from the admin screen cannot drain the backlog. */
+import { registerWave206BridgeDeliveryRoutes } from "./wave206BridgeDeliveryRoutes";
+import { ensureWave206BridgeConfigKeys } from "./lib/wave206BridgeDeliveryConfig";
 import { registerAdminCompedMembershipRoutes } from "./adminCompedMembershipRoutes";
 import { installLaunchGateSettings } from "./lib/spvEligibilityGate";
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
@@ -381,7 +416,16 @@ import { registerMessagingRoutes } from "./messagingStore";
  * DMs (self / guest / unresolved) before the SACRED messagingStore handler runs.
  * The sacred store (Tier-1 #12) is NOT edited; enforcement lives at this layer. */
 import { registerLegacyMessagingCanDmGuard } from "./legacyMessagingCanDmGuard";
+/* WAVE 189 · ITEM B · R159.6 — LP conversations are a FIRM record, not one person's.
+ * Mounted BEFORE registerMessagingRoutes, for the same reason and by the same pattern
+ * as the canDM guard above: the SACRED messagingStore (Tier-1 #12) is NOT edited, so
+ * the widening lives at this layer. It ONLY ADDS — it intercepts a read exclusively
+ * when the caller is a non-participant, non-admin active member of the same partner
+ * organisation as a participant on an LP thread, i.e. exactly the request the sacred
+ * handler was about to refuse. Every other request falls through untouched. */
+import { registerPartnerLpThreadVisibilityRoutes } from "./partnerLpThreadVisibilityRoutes";
 import { registerPartnerWorkspaceV19Routes } from "./partnerWorkspaceV19Store";
+import { registerPartnerExportRoutes } from "./partnerExportRoutes"; /* WAVE 179 · ITEM C · R151.2 — read-only CSV exports of the partner's OWN data (LP roster, SPV fees, CRM contacts) */
 // Wave B (v26.4.0) Stage 2 — the 10 legacy /api/partner/me/spvs/:id/* child
 // routes are now registered by the engine-backed adapter, which imports the
 // engine's `engine*` methods (all of which delegate to spvFundStore
@@ -459,6 +503,16 @@ import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 /* v25.33 — Consortium Partner Payment Model admin fee/agreement/tax routes. */
 import { registerPartnerFeeAdminRoutes } from "./lib/partnerFeeAdminRoutes";
+/* WAVE 199 · ITEM B (R173.6) — read-only, any-authenticated-persona view of the
+   billing-period offer the admin already controls, so no frontend surface has to
+   assume monthly is displayable. See server/lib/priceDisplayPolicyRoutes.ts. */
+import { registerPriceDisplayPolicyRoutes } from "./lib/priceDisplayPolicyRoutes";
+/* WAVE 202 · ITEMS A + B (R178.1 / R178.2) — the owner's PER-PRICE billing-period
+   choice (annual, monthly, or both) plus the plain-language price report that tells
+   him what each price is for and where on the frontend it appears. Admin-only, and
+   mounted under /api/admin so the router-level requireAdmin gate covers it. The
+   public read-only door stays registerPriceDisplayPolicyRoutes above. */
+import { registerPricePeriodOfferAdminRoutes } from "./lib/pricePeriodOfferAdminRoutes";
 /* v25.33 Consortium Partner Payment Model — partner self-service endpoints
    (subscription / spv-fees / tax-forms / agreement). Additive; separate file. */
 import { registerPartnerSelfServiceRoutes } from "./lib/partnerSelfServiceRoutes";
@@ -475,6 +529,16 @@ import { registerWave15ReportingRoutes } from "./lib/wave15ReportingRoutes";
 /* WAVE 15 — ORP-033/053/062, A-2, A-3b, CP-BRG-07. Reachability for engines that
  * existed with no route (and, for ORP-062, an inventory computed from THIS app). */
 import { registerWave15Routes } from "./lib/wave15Routes";
+/* WAVE 190 · ITEM D · R157.2 — the payment-gateway PRESENCE disclosure. Read-only
+   and admin-gated; see the module header for why it is its own file. */
+import { registerWave190PaymentGatewayRoutes } from "./lib/wave190PaymentGatewayRoutes";
+/* WAVE 192 · ITEM A · R164 — the platform truth surface. Read-only and
+   admin-gated for the operational detail; `healthzBypassFields()` additionally
+   carries THREE booleans on the PUBLIC `/api/healthz`, because an alarm about the
+   identity bypass cannot be gated behind the authentication the bypass defeats.
+   See `server/lib/wave192PlatformTruthSurface.ts` for the whole argument. */
+import { registerWave192PlatformTruthRoutes } from "./lib/wave192PlatformTruthRoutes";
+import { healthzBypassFields } from "./lib/wave192PlatformTruthSurface";
 /* v25.34 Collective Payment Model — parallel/additive to v25.33. Admin CRUD +
    member quote-only self-service. Separate files; touches no Avi write path. */
 import { registerCollectivePaymentAdminRoutes } from "./lib/collectivePaymentAdminRoutes";
@@ -578,6 +642,10 @@ import { companies as _allCompanies } from "./mockData";
 // Sprint-fix: production auth middleware
 import { requireAuth, requireAdmin, requireAuthenticated } from "./lib/authMiddleware";
 import { log } from "./lib/logger";
+/* WAVE 183 · ITEM B FIX 1b — the ledger-derived replacement for the demo-seed
+   portfolio handler. Non-sacred module; see its header for the money and
+   unknown-field discipline it enforces. */
+import { derivePortfolioPositions } from "./lib/investorPortfolioProjection";
 /* WAVE 58e · D2 (R31-a) — ONE range rule for the two term fields a date was
    coerced into on live. Imported from `shared/` so this route and the founder
    screens cannot diverge; see the block in that file for the authorities. */
@@ -1137,6 +1205,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerYourDecisionRoutes(app);
   registerMaIntelligenceRoutes(app);
   registerCrmRoutes(app);
+  registerWave221BenchmarkingOptOutRoutes(app); /* WAVE 221 — R190.10 user-controlled opt-out */
   registerCollectiveAppRoutes(app);
   registerFounderCollectiveApplyRoutes(app);
   registerInvestorAccreditationRoutes(app); /* W3-B C-5 — accreditation self-declaration capture */
@@ -1302,6 +1371,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
      Express matches in registration order and the sacred handler ends the
      request, so a hook registered after this line would never run. */
   registerComplianceHoldAuditGuard(app);
+  /* WAVE 195 · ITEM A (R167) — record the owner's declaration ONCE, as data, before
+     any route can need it. Idempotent: `ensurePlatformConfigKey` returns the
+     existing row untouched, so re-running boot appends no second declaration and
+     no second audit row. It reads `captable_commits` to count what it covers and
+     writes NOTHING to that table — the hash-chained ledger stays byte-for-byte as
+     it is. If it cannot be recorded, commits that cannot derive a currency from
+     their round REFUSE rather than assume one. */
+  ensureCommitCurrencyDeclaration();
+  /* WAVE 195 · ITEM B (R167) — BEFORE the sacred commit handlers, deliberately.
+     Express matches in registration order and the sacred handler ends the
+     request, so a hook registered after this line would never run and the
+     `?? "USD"` default at captableCommitStore.ts:713 would stay reachable. */
+  registerWave195CommitCurrencyRoutes(app);
   registerCaptableCommitRoutes(app);
   registerFounderOpsRoutes(app); /* v25.54 G0-1 seed-founder-shares + G0-2 round archive */
   registerShareholderRegisterRoutes(app); /* WAVE 130 — shareholder register + first run + visibility */
@@ -1366,8 +1448,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * drain routes so it matches first and short-circuits any outbound send when
    * the legacy bridge is disabled / has no real receiver (no 501, no DLQ). */
   registerBridgeOutboundGuard(app);
+  /* WAVE 197 / R169 Item A.3 — SAME SLOT, SAME REASON, DIFFERENT MECHANISM.
+   * `server/lib/bridgeRuntime.ts` is SACRED (entry 11 of 48) and its inbound
+   * webhook handler returns `(err as Error).message` at :254. This guard must be
+   * registered BEFORE registerBridgeRuntimeRoutes so Express runs it first; it
+   * does NOT short-circuit — it wraps res.json for that one request, calls
+   * next(), and lets the frozen handler do all the work. Only the text of a
+   * failure field is replaced, and the raw text is logged. */
+  registerWave197BridgeInboundLeakGuard(app);
   registerBridgeRoutes(app);
   registerBridgeRuntimeRoutes(app);
+  /* WAVE 187 (R159.2 — the owner chose Option A: build a REAL receiver).
+   * ADDITIVE. `/api/_mock_collective/inbound` is deliberately NOT removed —
+   * sprint12.test.ts, POST /api/admin/bridge/drain and the guard's route
+   * baseline all depend on it, and removing a route is a silent drop.
+   * Registered here (not from bridgeStore) so the import graph stays one-way:
+   * the receiver imports bridgeStore, never the reverse. Mounted under
+   * /api/bridge, which carries no session, CSRF or rate-limit middleware — a
+   * signed webhook could not survive app.use("/api/collective", requireAuthenticated). */
+  registerCollectiveBridgeReceiverRoutes(app);
+  /* WAVE 206 / R182.2 — mounted AFTER the receiver because it imports the
+   * receiver's exported destination registry, and on three NEW paths so it
+   * pre-empts nothing. The three settings rows are seeded idempotently here;
+   * a failure to seed degrades to the environment fallback, never to a broken
+   * boot. */
+  try {
+    ensureWave206BridgeConfigKeys();
+  } catch {
+    /* non-fatal by design — see ensureWave206BridgeConfigKeys */
+  }
+  registerWave206BridgeDeliveryRoutes(app);
   registerSyncDashboardRoutes(app);
   /* v25.48 HIGH-9 — lock the mock-data migration commit out of production at the
    * ROUTE layer (the Sacred migrationRunner.ts is NOT edited). This guard is
@@ -1780,8 +1890,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // matching middleware in registration order). Blocks self-DM, guest, and
   // unresolved recipients with 403 on POST /api/messages + /api/messages/threads.
   registerLegacyMessagingCanDmGuard(app);
+  /* WAVE 189 · ITEM B · R159.6 — MUST stay ABOVE registerMessagingRoutes. Express
+     dispatches in registration order, so moving this line below the next one makes
+     every handler in it unreachable and the widening silently does nothing. */
+  registerPartnerLpThreadVisibilityRoutes(app);
   registerMessagingRoutes(app);
   registerPartnerWorkspaceV19Routes(app);
+  /* WAVE 179 · ITEM C · R151.2 — the partner's own-data CSV exports. Registered
+     after the JSON surfaces they mirror; each route is GET-only, session-scoped,
+     and derives no figure the screen does not already show. */
+  registerPartnerExportRoutes(app);
   // Wave B (v26.4.0) Stage 2 — replaces registerSpvFundRoutes(app) with the
   // engine-backed adapter. Byte-identical wire contract preserved (see
   // spvLegacyAdapters.ts documentation). CP Phase A (CP-028/029/030/031)
@@ -1905,6 +2023,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * requireAdmin gate above protects every endpoint). ------------ */
   registerPartnerFeeAdminRoutes(app);
 
+  /* ------------ WAVE 199 · ITEM B (R173.6) — NOT under /api/admin. This one
+   * endpoint is deliberately outside the admin gate because the surfaces that
+   * must obey the monthly-display policy include founder, partner and Collective
+   * screens, and a prospective buyer sees some of them before they belong to
+   * anything. Read-only; the writer stays admin-only above. ------------ */
+  registerPriceDisplayPolicyRoutes(app);
+
+  /* ------------ WAVE 202 · ITEMS A + B (R178.1 / R178.2) — UNDER /api/admin, so
+   * the router-level requireAdmin gate above protects every endpoint. This is the
+   * WRITER for the owner's per-price annual/monthly choice and the reader for the
+   * plain-language price report. Deliberately NOT beside the public policy route:
+   * a pricing decision is an owner decision and must be attributed to a named
+   * administrator (R158.1). Nothing here is on a charge path. ------------ */
+  registerPricePeriodOfferAdminRoutes(app);
+
   /* ------------ v25.34: Collective Payment Model — admin schedule/entry/invoice
    * CRUD + P&L. Mounted under /api/admin (router-level requireAdmin gate above
    * protects every endpoint). Parallel/additive to the partner fee routes. -- */
@@ -1982,6 +2115,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch { /* never let telemetry break the healthcheck */ }
     let outboxOverflowCount = 0;
     try { outboxOverflowCount = getCommsOverflowCounts().total; } catch { /* ignore */ }
+    /* WAVE 192 · ITEM A · R164 — THE DEV IDENTITY BYPASS, STATED.
+       `server/lib/userContext.ts:537-539` reads
+         if (isProd || bypassDisabled) return null;
+       where `isProd` is `process.env.NODE_ENV === "production"`, so the entire
+       protection against an unauthenticated request resolving to a seeded
+       identity — INCLUDING an administrator one — is one environment variable,
+       and until this wave nothing on the platform stated whether it was set.
+       THREE BOOLEANS, on this PUBLIC endpoint deliberately: an alarm about the
+       identity bypass cannot be gated behind the authentication the bypass
+       defeats. Booleans ONLY, consistent with the rule above — never a secret,
+       never a value, never the raw NODE_ENV. Never let telemetry break the
+       healthcheck: the fields are omitted rather than throwing.
+       The operational detail (audit-ledger health, payment-gateway presence)
+       stays on the admin-gated `GET /api/admin/platform-truth`. */
+    let bypassFields: ReturnType<typeof healthzBypassFields> | null = null;
+    try { bypassFields = healthzBypassFields(); } catch { /* never let telemetry break the healthcheck */ }
     res.json({
       ok: true,
       version,
@@ -1995,6 +2144,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       bridgeOutboundConfigured,
       bridgeOutboxQueued: outbox.filter(e => e.status === "queued").length,
       outboxOverflowCount,
+      devIdentityBypassActive: bypassFields?.devIdentityBypassActive ?? null,
+      disableDevBypassSet: bypassFields?.disableDevBypassSet ?? null,
+      devIdentityBypassAlarm: bypassFields?.devIdentityBypassAlarm ?? null,
       timestamp: new Date().toISOString(),
     });
   });
@@ -2762,6 +2914,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
            untouched and the whole MFN implementation had no application caller.
            A value already on the security WINS, exactly like the six above. */
         mfn: keep("mfn"),
+        /* ── WAVE 194 · ITEM A — THE ISSUING ROUND'S CURRENCY, ON EVERY ROW ─────
+           THE GAP WAVE 193 REPORTED AND COULD NOT CLOSE. Wave 193 taught the
+           engine to refuse to add two differently-denominated post-money SAFE
+           amounts into the YC conversion DENOMINATOR (R165.1), then said plainly:
+           "the production adapter passes no currency into the engine, so the
+           refusal is engine-proven only and cannot fire on live data." THIS is
+           the row the production route reads — `server/routes.ts:1324` hands
+           `buildCompanySecurities` to `registerRoundMathRoutes` as its ONE
+           securities reader, proved to be the only mount in the tree
+           (`build_log/wave194/PROOF_single_registrar.txt`) — so a currency that
+           is not on this row is a currency the engine can never see.
+
+           `keep()` for the same reason as the seven terms above: a currency
+           recorded on the SECURITY is the more specific record and WINS over the
+           round's. Where neither states one the value is `null`, and `null` is
+           carried as absence all the way down — the adapter omits the key
+           entirely rather than sending a blank, so `statedCurrencies` counts it
+           as nothing stated and an all-absent cap table computes exactly as it
+           did yesterday. That is not a nicety: all 1045 rounds on record have a
+           NULL currency. NOTHING IS DEFAULTED OR CONVERTED HERE (R156.1). */
+        currency: keep("currency"),
       } as Record<string, unknown>;
     });
   }
@@ -3224,6 +3397,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (numericTerm("pricePerShare")) return;
     if (numericTerm("minTicket")) return;
     if (typeof body.closeDate === "string" && body.closeDate.length > 0) updates.closeDate = body.closeDate;
+    /* ════════════════════════════════════════════════════════════
+       WAVE 191 · ITEM A.4 — THE ROUND CURRENCY EDIT PATH, WHICH DID NOT EXIST.
+       ════════════════════════════════════════════════════════════
+       WHAT WAS WRONG, traced rather than assumed. `roundsStore.UPDATE_WHITELIST`
+       has mapped `currency: "currency"` for several waves, and
+       `POST /api/rounds` has forwarded `body.currency` since v24.2 — but THIS,
+       the only round-update route in the tree, never read `body.currency` at all.
+       So a currency could be set at creation and then never corrected, and a
+       client that PATCHed one got a 200 with the value silently discarded.
+
+       WHY THE SHAPE CHECK IS `/^[A-Z]{3}$/` AND NOT A CATALOGUE LOOKUP. Wave 190's
+       `currencySymbolForCurrency` accepts exactly this shape and refuses anything
+       else, so a value that passes here is guaranteed to be renderable rather
+       than becoming a refusal the founder cannot explain. Uppercasing is NOT done
+       for the caller: `"usd"` is rejected with a message, because quietly
+       rewriting a money field the user typed is the defect this whole wave exists
+       to remove — the same defect, in the same wave, that Item B examines on the
+       vehicle side.
+
+       THERE IS NO BACKFILL AND NO DEFAULT. An absent `currency` leaves the round
+       exactly as it was, including NULL. The 1045 rounds recorded with no currency
+       stay that way, refusing to render a symbol, until somebody sets one here.
+       That is the owner's instruction and it is the honest state.
+
+       A CURRENCY CANNOT BE CLEARED BACK TO NULL. `null` and `""` are rejected
+       rather than written: amounts already recorded against a stated currency
+       would become undenominated, which is a worse record than either state. */
+    if (body.currency !== undefined) {
+      if (typeof body.currency !== "string" || !/^[A-Z]{3}$/.test(body.currency)) {
+        return res.status(400).json({
+          error: "invalid_currency",
+          message:
+            "A round's currency must be a three-letter ISO 4217 code in capitals, such as USD, CAD or HKD. Capavate will not guess or reformat what was sent, and it holds no exchange rate, so the code recorded here is the currency an investor must actually send.",
+        });
+      }
+      updates.currency = body.currency;
+    }
     if (typeof body.termsSummary === "string") updates.termsSummary = body.termsSummary;
     /* WAVE 107 - F1-B. The wizard's two narrative fields, given the edit surface
        they never had. Mirrors the `termsSummary` line above exactly: a string is
@@ -3788,7 +3998,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (bag[gk] === undefined) continue;
       const gv = validateGovernanceTermStored(gk, bag[gk]);
       if (!gv.ok) {
-        return res.status(400).json({ error: gv.error, field: gv.field, message: gv.message });
+        /* WAVE 198 · ITEM C · R166.2 — `gv.message` is 484-495 characters for every
+           governance key, and the client discards any `message` of 240 or more, so
+           this refusal has been arriving as a generic "something went wrong" since
+           it was written. The short gated headline now travels as `message` (which
+           is the only field the client reads) and the FULL original text is
+           preserved byte-for-byte as `guidance`. Nothing is deleted. */
+        return res.status(400).json({ error: gv.error, field: gv.field, message: gv.refusalHeadline, guidance: gv.message });
       }
       updates[gk] = gv.value; // null = explicit removal
     }
@@ -4647,8 +4863,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.json([]);
     }
   });
-  // C3 (v24.0): portfolio still returns [] until the marks store lands.
-  app.get("/api/investor/portfolio", requireAuth, (_req, res) => res.json([]));
+  /* WAVE 183 · ITEM B FIX 1b (second site) — the legacy sibling of portfolio2.
+
+     WAS: `app.get("/api/investor/portfolio", requireAuth, (_req, res) => res.json([]))`
+     with the comment "portfolio still returns [] until the marks store lands".
+     The marks store landing was never what stood between an LP and their own
+     commits: a committed amount is a fact whether or not a mark exists. This
+     route is what `client/src/pages/investor/ClaimPositions.tsx:82` invalidates
+     after a successful "Check for earlier investments", so it was also the route
+     most likely to be read straight after a claim — and it answered `[]`.
+
+     It now serves the SAME derivation as portfolio2, from the same function, so
+     the two keys cannot drift apart and tell one investor two different stories
+     about the same holdings. */
+  app.get("/api/investor/portfolio", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    try {
+      return res.json(derivePortfolioPositions(ctx.userId));
+    } catch (err) {
+      log.warn("[w183 portfolio] derivation failed:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "PORTFOLIO_DERIVATION_FAILED" });
+    }
+  });
 
   /* v25.11 NM5 — watchlist is now derived from the canonical softCircleStore
    * (DB-backed). Investors who have soft-circled a round see those rounds
@@ -4750,7 +4987,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       invitedCompanies: ctx.investor?.invitedRounds?.map(r => r.companyId) ?? [],
     });
   });
-  app.get("/api/investor/portfolio2", requireAuth, (_req, res) => res.json(investorPortfolio));
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 183 · ITEM B FIX 1b — THIS ROUTE SERVED A DEMO SEED TO REAL LPs.
+
+     WAS, verbatim:
+         app.get("/api/investor/portfolio2", requireAuth,
+                 (_req, res) => res.json(investorPortfolio));
+
+     `investorPortfolio` is `server/mockData.ts:1220` —
+     `DEMO_SEED_ENABLED ? _seed_investorPortfolio : []`. In production that is a
+     hardcoded `[]`, and `PortfolioCompanySwitcher` renders `[]` as the sentence
+     "Your portfolio is empty". The `_req` parameter name records the whole
+     defect: the handler never asked WHO was calling, so it could not have
+     returned their positions even in principle.
+
+     NOW: derived from the caller's own committed cap-table rows, alias-aware via
+     the same `resolveInvestorIdSet` the entitlement gate uses after FIX 1a — so
+     the gate and the payload cannot disagree about which ids belong to this
+     investor. Money crosses as integer minor units in a string with its
+     currency; every field the ledger does not hold is `null` plus a reason code
+     in `unknown[]`. See `server/lib/investorPortfolioProjection.ts`.
+
+     THE SEED IS NOT KEPT AS A FALLBACK. Substituting demo positions when the
+     derivation returns nothing would re-create the exact fabrication this fix
+     removes, one branch lower down. An investor who holds nothing gets `[]`,
+     which is now a TRUE statement produced by reading the ledger rather than an
+     assumption produced by ignoring it.
+     ══════════════════════════════════════════════════════════════════════════ */
+  app.get("/api/investor/portfolio2", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    try {
+      return res.json(derivePortfolioPositions(ctx.userId));
+    } catch (err) {
+      /* FAIL LOUD. A 500 renders the platform's "this is a loading failure, not
+         an empty list" refusal, which is TRUE. Returning `[]` here would be the
+         original bug wearing a try/catch. */
+      log.warn("[w183 portfolio2] derivation failed:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "PORTFOLIO_DERIVATION_FAILED" });
+    }
+  });
 
   /* v25.11 NM5 — activity feed now derives from the investor's actual
    * captable commits + soft-circle history (DB-backed). Previously empty. */
@@ -7467,6 +7743,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ ok: false, error: "CLOSE_DATE_REQUIRED", message: "Target close date is required." });
       }
     }
+    /* ══════════════════════════════════════════════════════════════════════════
+       WAVE 212 · ITEM A · R186.2 — THE AUTHORISED SIGN-OFF, ENFORCED HERE.
+       ══════════════════════════════════════════════════════════════════════════
+       Before this wave, one click created a live round carrying terms, a valuation
+       and a price per share that other people then relied on, with no confirmation
+       of any kind and nothing recorded. The wizard's disabled button is NOT the
+       gate — this is; a direct API call with no sign-off is refused right here.
+
+       PLACED BEFORE THE NUMERIC COERCION BELOW ON PURPOSE. The figures recited in
+       the attestation must be the ones the founder typed, not values this handler
+       has since coerced or derived, so the pre-flight runs while `body` still holds
+       what the caller sent. It also runs AFTER the ownership, archive and date
+       checks so that every refusal those already issue keeps its existing code and
+       message: this wave adds a refusal, it does not renumber anyone else's.
+
+       A REFUSAL HERE CREATES NOTHING. Nothing has been written at this point. */
+    const w212Facts = {
+      companyName:
+        ctx.founder.companies.find((c) => c.companyId === companyId)?.companyName
+        ?? companies.find((c) => c.id === companyId)?.name
+        ?? null,
+      roundName: typeof body.name === "string" ? body.name : null,
+      pricePerShareRaw: (body.pricePerShare ?? null) as string | number | null,
+      targetAmountRaw: (body.targetAmount ?? null) as string | number | null,
+      currency: typeof body.currency === "string" ? body.currency : null,
+    };
+    const w212Gate = wave212RoundCreationPreflight(req, w212Facts);
+    if (!w212Gate.ok) {
+      return res.status(w212Gate.refusal.status).json(w212Gate.refusal.payload);
+    }
     // v23.9 A2/AV-03 — numeric coercion + validation. The round-form sends
     // human-typed money strings ("500,000", "$1,000,000"); a bare Number()
     // on those yields NaN which used to reach roundsStore and surface as a
@@ -8053,7 +8359,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (bag[gk] === undefined) continue;
         const gv = validateGovernanceTermStored(gk, bag[gk]);
         if (!gv.ok) {
-          return res.status(400).json({ ok: false, error: gv.error, field: gv.field, message: gv.message });
+          /* WAVE 198 · ITEM C · R166.2 — see the sibling governance-term refusal
+             above: short gated headline as `message`, full original text preserved
+             byte-for-byte as `guidance`. */
+          return res.status(400).json({ ok: false, error: gv.error, field: gv.field, message: gv.refusalHeadline, guidance: gv.message });
         }
         if (gv.value === null) delete bag[gk];
         else bag[gk] = gv.value;
@@ -8141,6 +8450,69 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         message: (err as Error).message,
       });
     }
+    /* WAVE 212 · ITEM B — RECORD THE SIGN-OFF, OR THE ROUND IS NOT USABLE.
+       The round row now exists, so the sign-off can be written onto it (§212.3 puts
+       it in columns on this row, which is why it cannot be written first). The
+       recorder writes all nine columns in one statement and READS THE ROW BACK,
+       comparing every field; anything short of that is a failure and the caller is
+       told plainly that nothing usable was created. The round is NOT deleted —
+       R195.5 — so an unsigned round is visibly unsigned rather than silently
+       treated as signed. Both outcomes go through wave 186's audit writer; there is
+       no second audit path. */
+    const w212Record = wave212RecordAfterCreate({
+      roundId: newRound.id,
+      accepted: w212Gate.accepted,
+      signedBy: String(ctx.userId ?? ""),
+      roundName: typeof body.name === "string" ? body.name : null,
+    });
+    if (!w212Record.ok) {
+      reportAuditWriteOutcome(
+        appendAdminAudit(
+          String(ctx.userId ?? "unknown"),
+          `round:${newRound.id}`,
+          "round_creation_attestation_not_recorded",
+          {
+            roundId: newRound.id,
+            companyId,
+            failureCode: w212Record.code,
+            failureDetail: w212Record.detail,
+            attestationVersion: w212Gate.accepted.version,
+          },
+        ),
+        {
+          bearing: "identity",
+          action: "round_creation_attestation_not_recorded",
+          route: "POST /api/rounds",
+          subject: newRound.id,
+        },
+      );
+      return res.status(w212Record.refusal.status).json(w212Record.refusal.payload);
+    }
+    reportAuditWriteOutcome(
+      appendAdminAudit(
+        String(ctx.userId ?? "unknown"),
+        `round:${newRound.id}`,
+        "round_creation_attestation_recorded",
+        {
+          roundId: newRound.id,
+          companyId,
+          attestationVersion: w212Record.record.version,
+          attestationTextSha256: w212Record.record.attestationTextSha256,
+          signedName: w212Record.record.signedName,
+          signedAt: w212Record.record.signedAt,
+          /* The marker, not the address: an audit reader learns whether an address
+             was captured without the address being copied into a second store. */
+          ipCapture: w212Record.record.ipCapture,
+          strippedClientKeys: w212Gate.accepted.strippedKeys,
+        },
+      ),
+      {
+        bearing: "identity",
+        action: "round_creation_attested",
+        route: "POST /api/rounds",
+        subject: newRound.id,
+      },
+    );
     // Keep the legacy in-memory `rounds` array in sync so the dozens of
     // existing read-paths (rounds.find / rounds.filter) keep working without
     // a wide refactor. The DB row above is the durable source of truth.
@@ -8379,6 +8751,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ WAVE 15 M-1d / M-5: footnote binding + accrued carry -------- */
   registerWave15ReportingRoutes(app);
   registerWave15Routes(app);
+  registerWave190PaymentGatewayRoutes(app); /* WAVE 190 · ITEM D */
+  registerWave192PlatformTruthRoutes(app); /* WAVE 192 · ITEM A */
 
   // C4 (v24.0): these endpoints were never implemented — they returned a
   // fake `{ ok: true }` to the client, silently swallowing the request and
@@ -8810,12 +9184,28 @@ interface AdminCompanyFullRow {
   stage: string;
   hq: string;
   maScore: number;
-  totalRaisedMinor: number;
-  currency: string;
+  /* WAVE 180 · ITEM A SITE 6 — null when the company's closed rounds span more
+   * than one currency. See the reducer below and server/lib/currencyScalar.ts.
+   * A number here is always denominated in `currency`; `currency` is null in
+   * exactly the cases where the scalar is null. */
+  totalRaisedMinor: number | null;
+  currency: string | null;
+  /** Every ISO code found across this company's closed rounds, sorted. */
+  raisedCurrencies: string[];
+  /** Why `totalRaisedMinor` is null, for the renderer to state on screen. */
+  totalRaisedUnavailableReason: "needs_fx_conversion" | "no_data" | null;
+  /** The authoritative per-currency breakdown of closed-round raises. */
+  totalRaisedByCurrency: Array<{ currency: string; minor: number }>;
   activeRoundsCount: number;
   totalRoundsCount: number;
   softCircles30d: number;
-  softCircle30dAmountMinor: number;
+  /* WAVE 180 · ITEM A SITE 6 — same contract, separate scalar: soft circles are
+   * their own rows with their own `soft_circles.currency`. */
+  softCircle30dAmountMinor: number | null;
+  softCircle30dCurrency: string | null;
+  softCircle30dCurrencies: string[];
+  softCircle30dUnavailableReason: "needs_fx_conversion" | "no_data" | null;
+  softCircle30dByCurrency: Array<{ currency: string; minor: number }>;
   dataroomFiles: number;
   reportsPublished: number;
   events30d: number;
@@ -8885,23 +9275,43 @@ export function registerAdminCompaniesFullRoute(app: Express) {
       const closedRounds = companyRounds.filter((r) => r.state === "closed" || r.state === "funded");
       const activeRounds = companyRounds.filter((r) => r.state !== "closed" && r.state !== "funded");
 
-      const roundCurrency = (companyRounds[0] as { currency?: string } | undefined)?.currency ?? "USD";
+      const companyRoundCurrency = (companyRounds[0] as { currency?: string } | undefined)?.currency ?? "USD";
       /* WAVE 33 OQ-33-2 sinks 2 and 3 — both reductions below used to hardcode
        * `Math.round(x * 100)`, an ISO 4217 exponent of 2. `roundCurrency` is
        * the currency this very row EMITS alongside both figures, so the
        * exponent is derived from it. For JPY (exponent 0) the old form
-       * reported every admin raise and soft-circle total 100x too large. */
-      const totalRaisedMinor = closedRounds.reduce((sum, r) => {
+       * reported every admin raise and soft-circle total 100x too large.
+       *
+       * WAVE 180 · ITEM A SITE 6 — WAVE 33 fixed the EXPONENT and left the
+       * SUMMATION wrong. `roundCurrency` was hoisted to the FIRST round's code
+       * and then used for every round and every soft circle, so a company that
+       * raised in two currencies had one code's exponent applied to the other's
+       * amounts and the two added together. `rounds.currency` and
+       * `soft_circles.currency` are per-row columns; the row's own code is now
+       * read per row and each currency accumulates in its own bucket. Where a
+       * row carries no code the company-level value is used, which is exactly
+       * what every row used before, so a single-currency company is byte-for-byte
+       * unchanged. Two currencies now yield an explicit null scalar plus the
+       * breakdown, per server/lib/currencyScalar.ts — this platform has no FX
+       * rate source and none is invented here. */
+      const raisedBuckets: CurrencyBuckets = {};
+      for (const r of closedRounds) {
+        const roundCurrency = (r as { currency?: string }).currency || companyRoundCurrency;
         const raw = (r as { raisedAmount?: number }).raisedAmount ?? 0;
-        return sum + toMinor(raw, roundCurrency);
-      }, 0);
+        addToBucket(raisedBuckets, roundCurrency, toMinor(raw, roundCurrency));
+      }
+      const raisedScalar = singleCurrencyScalar(raisedBuckets, companyRoundCurrency);
+      const totalRaisedMinor = raisedScalar.available ? raisedScalar.minor : null;
 
       const allSoftCircles = softCircleListForCompany(c.id);
       const softCircles30d = allSoftCircles.filter((sc) => now - new Date(sc.createdAt).getTime() < THIRTY_DAYS);
-      const softCircle30dAmountMinor = softCircles30d.reduce(
-        (sum, sc) => sum + toMinor(sc.amount ?? 0, roundCurrency),
-        0,
-      );
+      const softCircleBuckets: CurrencyBuckets = {};
+      for (const sc of softCircles30d) {
+        const roundCurrency = (sc as { currency?: string }).currency || companyRoundCurrency;
+        addToBucket(softCircleBuckets, roundCurrency, toMinor(sc.amount ?? 0, roundCurrency));
+      }
+      const softCircleScalar = singleCurrencyScalar(softCircleBuckets, companyRoundCurrency);
+      const softCircle30dAmountMinor = softCircleScalar.available ? softCircleScalar.minor : null;
 
       // v25.48 DATA-2 (V-8) — counts from the CANONICAL DB stores, not the mockData
       // arrays (which are empty on live and made these admin metrics always 0).
@@ -8935,11 +9345,18 @@ export function registerAdminCompaniesFullRoute(app: Express) {
         hq: c.hq,
         maScore: (c as { maScore?: number }).maScore ?? 0,
         totalRaisedMinor,
-        currency: roundCurrency,
+        currency: raisedScalar.available ? raisedScalar.currency : null,
+        raisedCurrencies: raisedScalar.available ? [raisedScalar.currency] : raisedScalar.currencies,
+        totalRaisedUnavailableReason: raisedScalar.available ? null : raisedScalar.reason,
+        totalRaisedByCurrency: bucketsToArray(raisedBuckets),
         activeRoundsCount: activeRounds.length,
         totalRoundsCount: companyRounds.length,
         softCircles30d: softCircles30d.length,
         softCircle30dAmountMinor,
+        softCircle30dCurrency: softCircleScalar.available ? softCircleScalar.currency : null,
+        softCircle30dCurrencies: softCircleScalar.available ? [softCircleScalar.currency] : softCircleScalar.currencies,
+        softCircle30dUnavailableReason: softCircleScalar.available ? null : softCircleScalar.reason,
+        softCircle30dByCurrency: bucketsToArray(softCircleBuckets),
         dataroomFiles,
         reportsPublished,
         events30d,

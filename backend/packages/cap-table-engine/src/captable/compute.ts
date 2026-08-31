@@ -32,6 +32,10 @@ import { resolveFormula } from "../formulas/registry.js";
    function instead of reproducing the expression (Wave 70 had to duplicate it
    character-for-character to stop D4 coming back). */
 import { exactYearsElapsedString } from "../primitives/timeElapsed.js";
+/* WAVE 193 · R165.1 — the ONE place that decides whether a set of money amounts
+   is commensurable, so the absent-vs-mixed judgement cannot drift between the
+   conversion denominator and the exit waterfall. See `primitives/currencySet.ts`. */
+import { isMixedCurrency, describeStatedCurrencies } from "../primitives/currencySet.js";
 
 export function computeCapTable(opts: ComputeOptions): CapTableResult {
   const region: Region = opts.formulaRegion;
@@ -594,6 +598,173 @@ export class ZeroPricingDenominatorError extends Error {
   }
 }
 
+/**
+ * WAVE 193 · R165.1 — THE CONVERSION DENOMINATOR REFUSAL.
+ *
+ * THE DEFECT THIS EXISTS TO STOP. `buildPricedRound` sums the investment amounts
+ * of every post-money SAFE on the ledger (`totalPostMoneySafeAmt`) with NO
+ * currency check, and that sum is SUBTRACTED FROM THE SAFE'S CAP to form the
+ * divisor that re-bases `companyCapitalization`:
+ *
+ *     sharesIssued = SAFE_amount * S0 / (cap - sum(post_money_SAFE_amounts))
+ *
+ * `investmentAmount` is documented in types.ts as "Decimal-as-string in
+ * `currency`" — the field's own contract says the number is meaningless without
+ * its sibling unit — and the sum never reads that sibling. So a company holding
+ * post-money SAFEs in two currencies does not get a mislabelled figure. It gets
+ * a WRONG SHARE COUNT for the converting SAFE, which then enters
+ * `denominatorShares`, which sets the round's PRICE PER SHARE, which sets the new
+ * investor's share count, and which is the denominator of
+ * `ownershipPercent` for EVERY HOLDER ON THE CAP TABLE. Silent, because no
+ * symbol looks wrong and the numbers are internally consistent — merely computed
+ * across incommensurable units.
+ *
+ * WHY A REFUSAL AND NOT A CONVERSION. R156.1, owner ruling, verbatim: "I would
+ * rather stay clear of any online FX rates. If an SPV or a round is in one
+ * currency, it is up to the investor to deliver exactly in that currency." There
+ * is no rate in this platform and there will not be one. `cap - sum` across two
+ * units is not a quantity; any number produced from it is invented, and a founder
+ * would sign it. The same reasoning as `ZeroPricingDenominatorError` above, one
+ * field across.
+ *
+ * WHY IT IS THROWN AT THE POINT OF USE AND NOT WHERE THE SUM IS COMPUTED. The
+ * sum is only ever CONSUMED by a post-money SAFE with a positive cap; a
+ * pre-money, uncapped or discount-only SAFE never consults it. Throwing where
+ * the sum is built would refuse cap tables the corrupt sum never touches.
+ * Equally, the throw must NOT sit inside the `effectiveCap.gt(0)` branch: when
+ * mixing drives `effectiveCap` to zero or below, the rebase is silently SKIPPED
+ * and the SAFE converts against the unrebased `companyCap` — a different wrong
+ * answer, equally silent. So it fires for every post-money SAFE with a positive
+ * cap on a mixed set, before either branch is taken.
+ *
+ * WHAT IS *NOT* A REFUSAL. An ABSENT currency is not a currency (see
+ * `primitives/currencySet.ts` for the full reasoning and the census). All-absent
+ * — which is every cap table on the platform today — computes exactly as it does
+ * now, byte for byte.
+ */
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * WAVE 198 · ITEM B · R165.1 — THE OTHER HALF OF THE SAFES.
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * `MixedCurrencyConversionError` below guards the post-money DENOMINATOR — a SUM.
+ * This one guards the CONVERSION ITSELF, which is where a pre-money SAFE's money
+ * meets the round's money: `convertSafeToPreferred` weighs the SAFE's valuation
+ * cap against `seriesPricePerShare`. Wave 194 pinned the gap as ADV-3; a pre-money
+ * SAFE in another currency returned a 200 with share counts.
+ *
+ * A SEPARATE CLASS, DELIBERATELY, RATHER THAN WIDENING THE EXISTING ONE. R170.1
+ * and wave 194's byte-identity proof both rest on the post-money refusal's exact
+ * message and envelope. Reusing that class would have meant editing its sentence
+ * to describe two different arithmetic surfaces, and that sentence names the
+ * post-money SAFE formula specifically because that is what a founder has to
+ * change. Two causes, two sentences, neither weakened.
+ *
+ * THE HEADLINE INTERPOLATES NOTHING, for the reason wave 194 recorded on its
+ * sibling: `client/src/lib/queryClient.ts` shows a server message only when it is
+ * strictly under 240 characters, so a headline built from a joined list of codes
+ * plus a round id is only as short as the data happens to be — and would be
+ * silently swallowed on exactly the messy data most likely to trigger it. The
+ * specifics are not lost: they travel in `refusalGuidance`, in `statedCurrencies`,
+ * and in the route's `refusal`, `refusalName`, `field` and `securityId` keys.
+ *
+ * NO CURRENCY CODE IS NAMED (R156.2). NOTHING IS CONVERTED (R156.1).
+ */
+export class MixedCurrencyConversionInputError extends Error {
+  readonly code = "mixed_currency_safe_conversion" as const;
+  readonly field = "shares" as const;
+  constructor(
+    readonly roundId: string,
+    readonly safeId: string,
+    /** The distinct STATED codes found, already sorted and joined for reading. */
+    readonly statedCurrencies: string,
+    readonly convertingSafeCount: number,
+  ) {
+    super(
+      `Round "${roundId}" cannot be priced: the ${convertingSafeCount} SAFEs converting into it are ` +
+      `recorded in more than one currency (${statedCurrencies}), and Capavate does not convert ` +
+      `currency. Converting SAFE "${safeId}" weighs its valuation cap against this round's price per ` +
+      `share, and that price is derived from the round's own pre-money valuation. Comparing a cap ` +
+      `recorded in one currency with a price per share derived in another is not a comparison, so the ` +
+      `SAFE's share count, the round's price per share and EVERY holder's ownership percentage would ` +
+      `be wrong — and nothing on the screen would look wrong. Capavate will not report that as a cap ` +
+      `table. Record all of this company's converting SAFEs and this round in a single currency, or ` +
+      `price them in separate rounds, and this will compute.`,
+    );
+    this.name = "MixedCurrencyConversionInputError";
+  }
+  readonly refusalHeadline =
+    "This round cannot be priced yet: the SAFEs converting into it are recorded in " +
+    "more than one currency, and Capavate does not convert currency, so there is no " +
+    "honest share count to report.";
+  /** The unabridged explanation. Same text as `message`, named for the envelope. */
+  get refusalGuidance(): string {
+    return this.message;
+  }
+}
+
+export class MixedCurrencyConversionError extends Error {
+  readonly code = "mixed_currency_conversion_denominator" as const;
+  readonly field = "shares" as const;
+  constructor(
+    readonly roundId: string,
+    readonly safeId: string,
+    /** The distinct STATED codes found, already sorted and joined for reading. */
+    readonly statedCurrencies: string,
+    readonly postMoneySafeCount: number,
+  ) {
+    super(
+      `Round "${roundId}" cannot be priced: the post-money SAFEs converting into it are recorded in ` +
+      `more than one currency (${statedCurrencies}), and Capavate does not convert currency. The ` +
+      `post-money SAFE formula subtracts the TOTAL of all ${postMoneySafeCount} converting post-money ` +
+      `SAFE amounts from SAFE "${safeId}"'s valuation cap, and uses the result as the denominator that ` +
+      `sets its share count. Adding amounts recorded in different currencies produces a number that ` +
+      `is not a quantity, so the share count, the round's price per share and EVERY holder's ownership ` +
+      `percentage would be wrong — and nothing on the screen would look wrong. Capavate will not ` +
+      `report that as a cap table. Record all of this company's converting post-money SAFEs in a ` +
+      `single currency, or price them in separate rounds, and this will compute.`,
+    );
+    this.name = "MixedCurrencyConversionError";
+  }
+  /* ── WAVE 194 · ITEM A — A REFUSAL THAT FIRES BUT CANNOT BE READ HAS NOT FIRED
+     ─────────────────────────────────────────────────────────────────────────────
+     MEASURED IN THIS WAVE'S PREFLIGHT: the `message` above is ~800 characters, and
+     `client/src/lib/queryClient.ts:60-65` shows a server message on screen only
+     when `serverMessage.length < 240` (strictly — 239 is the maximum) and it
+     contains a lower-case letter. Anything else is replaced wholesale by
+     `friendlyMessageForStatus(res.status)`. So the moment wave 194 made this
+     refusal reachable, a founder would have been shown "Something went wrong.
+     Please try again." while the true reason sat unread in the response body.
+     That is R166.2 exactly — wave 192's 244-character headline missed the same
+     gate by four characters — and it would have been introduced BY THE VERY WAVE
+     whose job is to make this protection reachable. A refusal nobody can read is
+     the same class of defect as a refusal that cannot fire.
+
+     So the sentence is split, and NEITHER HALF IS LOST. `refusalHeadline` is what
+     a human reads; `refusalGuidance` carries the full explanation for the panel,
+     the log and the API consumer; and `message` is left byte-for-byte untouched so
+     that nothing which reads it today changes. `server/roundMathRoutes.ts` prefers
+     the headline for `message` ONLY when an error carries one, which is why the
+     other named refusals sharing that catch keep their wording exactly.
+
+     THE HEADLINE INTERPOLATES NOTHING, DELIBERATELY. Its length has to be provable
+     for all inputs, and a headline built from a joined list of codes plus a round
+     id is only as short as the data happens to be — five stated codes and a long
+     round id would sail past 240 and silence the refusal again, on precisely the
+     messy data most likely to trigger it. The specifics are not dropped: they
+     travel in `refusalGuidance`, in `statedCurrencies`, and in the route's
+     `refusal`, `refusalName`, `field` and `securityId` keys. NO CURRENCY CODE
+     APPEARS IN IT (R156.2), it is not an ALL-CAPS underscore code, and its length
+     is asserted by test rather than eyeballed. */
+  readonly refusalHeadline =
+    "This round cannot be priced yet: the post-money SAFEs converting into it are " +
+    "recorded in more than one currency, and Capavate does not convert currency, " +
+    "so there is no honest share count to report.";
+  /** The unabridged explanation. Same text as `message`, named for the envelope. */
+  get refusalGuidance(): string {
+    return this.message;
+  }
+}
+
 type PricedRoundBuild = {
   ledger: Security[];
   newInvestorShares: bigint;
@@ -816,6 +987,69 @@ function buildPricedRound(
       .filter((s) => s.safe?.type === "post_money_cap")
       .reduce((acc, s) => acc.add(D(s.investmentAmount ?? "0")), D(0));
 
+    /* WAVE 193 · R165.1 — THE UNITS OF THE SUM ON THE THREE LINES ABOVE.
+
+       `totalPostMoneySafeAmt` adds `investmentAmount` across post-money SAFEs
+       and reads no `currency`. These two constants capture the units of exactly
+       that set — the same `.filter` predicate, so they cannot drift apart from
+       the sum they describe — and are consulted at the point of USE below.
+       Computed here, next to the sum, so the two are read together. */
+    const postMoneySafesInSum = resolvedSafes.filter((s) => s.safe?.type === "post_money_cap");
+    const sumIsMixedCurrency = isMixedCurrency(postMoneySafesInSum.map((s) => s.currency));
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       WAVE 198 · ITEM B · R165.1 — THE PROTECTION ABOVE COVERS ONLY HALF THE SAFES.
+       ══════════════════════════════════════════════════════════════════════════
+       Wave 194 measured and pinned the gap (its ADV-3): a PRE-money SAFE in
+       another currency did NOT refuse, and returned a 200 with share counts.
+
+       THE PRE-MONEY PATH WAS TRACED RATHER THAN ASSUMED TO MIRROR POST-MONEY, AND
+       IT DOES NOT. There is no pre-money SUM to guard. `totalPostMoneySafeAmt`
+       above is post-money only, and each pre-money SAFE converts INDEPENDENTLY in
+       the loop below against `companyCap`, which is a SHARE count, not money.
+
+       So the money-on-money combination happens one level down, inside
+       `convertSafeToPreferred`: the SAFE's `cap` (in the SAFE's currency) is
+       compared with and min'd against `seriesPricePerShare` (`pps`, derived from
+       the ROUND's `preMoneyValuation`), and `purchaseAmount` is then divided by
+       the resulting `conversionPrice`. Comparing a cap recorded in one currency
+       with a price per share derived in another is exactly as meaningless as
+       adding them, and the result is not discarded: it becomes `result.safeShares`
+       -> the converted holder row -> `denominatorShares` -> the round's price per
+       share -> EVERY holder's `ownershipPercent`. The R165.1 harm in full, with
+       nothing on the screen looking wrong.
+
+       WHY THE SET IS *ALL* CONVERTING SAFES AND NOT "THE PRE-MONEY ONES". Every
+       SAFE that reaches `convertSafeToPreferred` has its cap weighed against the
+       same single `pps`, so the codes that must agree are the codes of the whole
+       converting set. Defining it that way closes three reachable shapes with one
+       condition, and the third was found only by reading this loop:
+         1. a pure pre-money mixed set;
+         2. a CROSS-BRANCH set — pre-money in one currency, post-money in another
+            — which the post-money sum cannot see because it filters that SAFE out;
+         3. a POST-money SAFE whose cap is absent or zero. The guard below is
+            gated on `safeCap.gt(0)`, so such a SAFE skips it entirely and still
+            reaches the conversion, where its discount is applied to a `pps` in
+            another currency. A `type`-based guard would have missed it.
+
+       ORDERING, WHICH R170.1 DEPENDS ON. This does NOT replace or reorder the
+       post-money refusal. That throw sits above the conversion call in the SAME
+       loop iteration, so for a capped post-money SAFE in a mixed sum
+       `MixedCurrencyConversionError` still fires first, with its message, code and
+       422 envelope byte-untouched — wave 194's proof stands.
+
+       SAME RULE, NOT A STRICTER ONE: refuse iff there are ≥ 2 distinct DEFINED
+       codes after normalisation (`isMixedCurrency`, wave 198 Item A). ABSENT still
+       computes — all 1045 existing rounds record no currency and every one of them
+       must keep working. NO currency is named here (R156.2) and nothing is
+       converted (R156.1).
+
+       SACRED CODE IS NOT IMPLICATED. `roundCarryForwardEngine.ts`'s
+       `computeConversionProjections` (WAIVER-7) is not on this path; this file is
+       not in the sacred manifest; `:823`/`:851` are not written. */
+    const convertingSafes = resolvedSafes.filter((s) => s.safe);
+    const conversionSetIsMixedCurrency = isMixedCurrency(convertingSafes.map((s) => s.currency));
+
     /* v25.20 Lane 2 NC1 — companyCap is a BigInt; convert to Decimal for math. */
     const companyCapDecimal = D(companyCap.toString());
 
@@ -829,6 +1063,21 @@ function buildPricedRound(
       const safeCap = D(safe.safe.cap ?? "0");
       let denominator = companyCap.toString();
       if (safe.safe.type === "post_money_cap" && safeCap.gt(0)) {
+        /* WAVE 193 · R165.1 — REFUSE BEFORE THE SUM IS USED, NOT AFTER.
+           This is the only expression in the engine that consumes
+           `totalPostMoneySafeAmt`. Placed ABOVE the `effectiveCap` computation
+           because `effectiveCap.gt(0)` is itself decided by the corrupt sum, so a
+           check inside that branch would let the fall-through case out silently.
+           See `MixedCurrencyConversionError` for why this refuses instead of
+           converting (R156.1) and why absence is not mixing. */
+        if (sumIsMixedCurrency) {
+          throw new MixedCurrencyConversionError(
+            round.id,
+            safe.id,
+            describeStatedCurrencies(postMoneySafesInSum.map((s) => s.currency)),
+            postMoneySafesInSum.length,
+          );
+        }
         // Effective cap (cap − sum of post-money SAFE $) so that
         // companyCap / effectiveCap == correct expansion factor.
         const effectiveCap = safeCap.minus(totalPostMoneySafeAmt);
@@ -841,6 +1090,19 @@ function buildPricedRound(
           const rebased = companyCapDecimal.mul(safeCap).div(effectiveCap);
           denominator = rebased.toFixed(0);
         }
+      }
+      /* WAVE 198 · ITEM B — REFUSE BEFORE THE UNITS MEET, NOT AFTER.
+         Placed immediately above the call because THIS is where a cap recorded in
+         one currency is weighed against a price per share derived in another. See
+         the block beside `conversionSetIsMixedCurrency` for why the set is every
+         converting SAFE and why this cannot displace the post-money refusal. */
+      if (conversionSetIsMixedCurrency) {
+        throw new MixedCurrencyConversionInputError(
+          round.id,
+          safe.id,
+          describeStatedCurrencies(convertingSafes.map((s) => s.currency)),
+          convertingSafes.length,
+        );
       }
       const result = convertSafeToPreferred({
         purchaseAmount: safe.investmentAmount ?? "0",
@@ -972,7 +1234,34 @@ function buildPricedRound(
       shares: newInvestorShares,
       pricePerShare: pps.toFixed(),
       investmentAmount: round.investmentAmount,
-      currency: round.currency ?? "USD",
+      /* ── WAVE 194 · ITEM C, SITE 1 — `?? "USD"` REMOVED, AND IT WAS REACHABLE ──
+         This read `currency: round.currency ?? "USD"`, and the right-hand side was
+         not a theoretical fallback: `projectPostClose`
+         (`shared/roundMathEngineAdapter.ts:2359`) synthesises the
+         `issue_preferred_round` transaction and NEVER sets `round.currency`, so
+         every priced-round projection the production route
+         (`GET /api/founder/rounds/:id/round-math`) has ever served stamped the new
+         investors' preferred security "USD" — a currency nobody stated, on a
+         platform whose 1045 rounds all record NULL. `views.ts:107` then copies
+         `v.sec.currency` onto the holder row, so the constant became a per-holder
+         attribute of the cap table.
+
+         WHY OMIT RATHER THAN SUBSTITUTE SOMETHING ELSE. R156.2: where a value is
+         not configured, refuse and name the missing fact — never fall back to a
+         constant. There is nothing to refuse here (a cap table is perfectly
+         computable without knowing its denomination, and 1045 rounds prove it), so
+         the honest representation of "nobody said" is ABSENCE. Deriving one from
+         another security's currency would be an inference, and inferring is how
+         the denominator defect happened in the first place.
+
+         IT CANNOT MOVE A BYTE OF THE PRODUCTION RESPONSE, AND THAT WAS MEASURED,
+         NOT ASSUMED: the route's `rowsOf` emits holderId, holderName, holderType,
+         kind, shares, ownershipPercent, ownershipPercentUnit, denominatorKey,
+         denominatorLabel and denominatorShares — `currency` is not among them —
+         and wave 193's golden fixture states `currency: "USD"` explicitly on its
+         round, so the `??` was never taken there either. Both facts are re-proved
+         by the byte-equality test through the real route. */
+      ...(round.currency ? { currency: round.currency } : {}),
       preferred: {
         liquidationPreferenceMultiple: round.liquidationPreferenceMultiple ?? 1,
         participating: round.participating ?? false,

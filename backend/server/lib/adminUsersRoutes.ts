@@ -27,6 +27,16 @@ import { emitMutation } from "./eventBus";
 import { hashPassword } from "./auth";
 import { DEMO_SEED_ENABLED } from "./demoGate";
 import { appendAdminAudit } from "../adminPlatformStore";
+/* WAVE 197 / R169 Item A.2 — this file returned raw exception text in a
+   response body. Admin-only is not a licence to leak: the body still crosses
+   the wire and still lands in a browser, and the owner's instruction is
+   verbatim "I don't want any exposure of our internal process." The EXISTING
+   sanitiser is wired; no second sanitiser was written. Every site keeps or
+   gains a log.error carrying the full raw message, so nothing an engineer had
+   is lost — the detail moves from the response to the log. */
+import { sanitizeErrorMessage } from "./sanitize";
+import { readFailureMessage, writeFailureMessage } from "./wave197FailureCopy";
+import { log } from "./logger";
 
 /* SEED_USERS — Avi's original demo personas. v25.31.1 keeps this verbatim
  * but treats it as a read-only constant. It is used ONLY in demo mode to
@@ -147,7 +157,13 @@ export function registerAdminUsersRoutes(app: Express): void {
       if (String(e?.message || "").includes("UNIQUE")) {
         return res.status(409).json({ error: "email_taken" });
       }
-      return res.status(500).json({ error: "db_insert_failed", detail: String(e?.message || e) });
+      /* WAVE 197 — WRITE. The UNIQUE branch above is authored copy and stays
+         exactly as it is; only this raw tail is sanitised. */
+      log.error("[adminUsersRoutes.invite] insert failed:", String(e?.message || e));
+      return res.status(500).json({
+        error: "db_insert_failed",
+        detail: sanitizeErrorMessage(e, writeFailureMessage("inviting this user")),
+      });
     }
 
     const created: AdminUser = {
@@ -317,7 +333,14 @@ export function registerAdminUsersRoutes(app: Express): void {
       res.json({ entries });
     } catch (e) {
       // Genuine DB failure — surface honestly. No process-local fallback.
-      res.status(500).json({ error: "audit_log_read_failed", detail: String((e as any)?.message || e) });
+      /* WAVE 197 — "surface honestly" is kept: the admin is still told the read
+         failed and that nothing changed. What is removed is the driver text,
+         which is honesty for a machine, not for a person. It is logged. */
+      log.error("[adminUsersRoutes.auditLog] read failed:", String((e as any)?.message || e));
+      res.status(500).json({
+        error: "audit_log_read_failed",
+        detail: sanitizeErrorMessage(e, readFailureMessage("the admin audit log")),
+      });
     }
   });
 

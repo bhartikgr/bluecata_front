@@ -38,6 +38,9 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlement } from "@/lib/entitlement";
+/* WAVE 199 · ITEM B (R173.6) — whether a monthly figure may be shown is the
+   admin's decision, read live. See client/src/lib/priceDisplayPolicy.ts. */
+import { useMonthlyDisplayAllowed } from "@/lib/priceDisplayPolicy";
 import { useRef } from "react";
 import { LegalConsentCheckbox, type LegalConsentCheckboxRef } from "@/components/LegalConsentCheckbox";
 import capavateLogoUrl from "@/assets/capavate-logo.png";
@@ -134,6 +137,14 @@ function PlanCard({
     ? Math.round(tier.annualPriceCents / 12)
     : 0;
   const isFree = isFreeTier(tier);
+  /* WAVE 199 · ITEM B (R173.6). `monthlyMinor` above is UNCHANGED and still
+     computed — the capability is not being removed, and a monthly figure is still
+     available to this card the moment the admin offers monthly. What changes is
+     that the plan card no longer ASSERTS a monthly price the platform does not
+     sell. Note what the fallback branch actually was: annual ÷ 12, i.e. the exact
+     x12 derivation `partner_pricing_model_config.forbid_x12_derivation = 1`
+     forbids, printed as if it were a price on record. */
+  const monthlyDisplayAllowed = useMonthlyDisplayAllowed();
 
   return (
     <button
@@ -160,9 +171,14 @@ function PlanCard({
           {!isFree && (
             <>
               <div className="text-[10px] text-muted-foreground">/ year</div>
+              {/* WAVE 199 · ITEM B (R173.6) — the monthly parenthetical is shown
+                  only while the admin offers monthly. The annual figure above is
+                  untouched, so this card always states a price. */}
+              {monthlyDisplayAllowed && (
               <div className="text-[10px] text-muted-foreground">
                 ({fmtMoney(monthlyMinor, tier.currency)}/mo)
               </div>
+              )}
             </>
           )}
         </div>
@@ -212,6 +228,9 @@ export default function FounderSubscribe() {
   const { toast } = useToast();
   const { data: entCtx } = useEntitlement();
   const companyId = entCtx?.founder?.activeCompanyId ?? "";
+  /* WAVE 199 · ITEM B (R173.6) — the order summary's "/mo equivalent" line asks
+     the admin, exactly as the plan cards do. */
+  const monthlyDisplayAllowed = useMonthlyDisplayAllowed();
 
   /* v25.43 R3-8 — Subscribe gate (evaluated below, after all hooks, to honour
    * the Rules of Hooks). Per Ozan's QA (EDITS-version2-CAPAVATE.pptx, slide 1):
@@ -567,6 +586,13 @@ export default function FounderSubscribe() {
                       {!isFree && (
                         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                           <span>Billed annually</span>
+                          {/* WAVE 199 · ITEM B (R173.6) — "/mo equivalent" is the
+                              x12 derivation forbidden by
+                              partner_pricing_model_config.forbid_x12_derivation,
+                              so it is shown only while the admin offers monthly.
+                              "Billed annually" beside it is the fact that is
+                              always true and always stays. */}
+                          {monthlyDisplayAllowed && (
                           <span>
                             {fmtMoney(
                               selectedTier.monthlyPriceCents > 0
@@ -576,6 +602,7 @@ export default function FounderSubscribe() {
                             )}
                             /mo equivalent
                           </span>
+                          )}
                         </div>
                       )}
                       <div className="flex items-center justify-between text-[11px] text-muted-foreground">

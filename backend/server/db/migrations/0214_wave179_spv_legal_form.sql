@@ -1,0 +1,55 @@
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WAVE 179 · ITEM B · R151.3 — THE OPTIONAL LEGAL-FORM COLUMN.
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WHAT THE FIELD IS FOR. Wave 175 researched the investor tax document for all
+-- sixteen recorded SPV jurisdictions and found that in SEVEN of them (singapore,
+-- ireland, australia, uae, jersey, guernsey, luxembourg) the answer does not
+-- depend on the jurisdiction at all — it depends on the vehicle's LEGAL FORM.
+-- Capavate recorded the jurisdiction and nothing else, so for those seven the
+-- platform states BOTH branches and chooses neither. This column lets a general
+-- partner state which one actually applies, so the surface can narrow to it.
+--
+-- ── NULLABLE, NO DEFAULT, AND THAT IS THE WHOLE DESIGN ───────────────────────
+-- The field is OPTIONAL and defaults to NOT STATED. `NULL` is not a placeholder
+-- for a value the platform hopes to learn later: it is the honest and correct
+-- state of every vehicle whose general partner has not told us, and every surface
+-- renders wave 175's unchanged conditional wording while it is NULL.
+--
+-- ── ZERO ROWS ARE TOUCHED ────────────────────────────────────────────────────
+-- There is no UPDATE in this file and there is no DEFAULT clause, so SQLite gives
+-- every existing row NULL without rewriting it. NO VEHICLE IS BACKFILLED. This
+-- matters more here than in most migrations: a back-fill would have to GUESS a
+-- legal form, and a guessed legal form would silently flip a hedged tax statement
+-- into a confident wrong one on a real investor-facing surface. Backfilling from
+-- the jurisdiction is exactly the inference R151.3 forbids.
+--
+-- ── NO CHECK CONSTRAINT, DELIBERATELY (contrast with 0209) ───────────────────
+-- Migration 0209 added `spv_lp_invite.origin` WITH a CHECK constraint, because
+-- that column's three values are a closed platform vocabulary that will not grow.
+-- This column's vocabulary is RESEARCH: it is the set of legal forms wave 175
+-- sourced per jurisdiction, and it grows whenever a jurisdiction is added or a
+-- further form is sourced. A CHECK list in SQLite cannot be altered without
+-- rebuilding the table, so pinning the vocabulary in the schema would mean a
+-- table rebuild of `spv` — the vehicle table — every time the research is
+-- extended. Validation therefore lives in ONE place, `shared/spvLegalForm.ts`
+-- (`resolveSpvLegalForm`), which is also the only thing that decides which forms
+-- a given jurisdiction may offer, and which reads an unrecognised value as
+-- "not stated" rather than as an error. A value that is not valid for the
+-- vehicle's jurisdiction can therefore never be rendered as a tax position.
+--
+-- ── WHY THERE IS ALSO AN ENSURE-ON-READ ──────────────────────────────────────
+-- `server/db/connection.ts` creates the `spv` table idempotently on boot and is a
+-- SACRED file that may not be edited, so a freshly-created database (every test
+-- database) gets the table WITHOUT this column no matter what this file says.
+-- `server/spvLegalFormStore.ts` therefore carries `ensureSpvLegalFormColumn()`,
+-- following the identical pattern `ensureSpvLpInviteOriginColumn`
+-- (`server/spvLpInviteStore.ts:85`) established for migration 0209 for exactly
+-- this reason. The two are byte-equivalent in effect: one ALTER, no data change.
+--
+-- ── NO INDEX ─────────────────────────────────────────────────────────────────
+-- Nothing queries BY legal form. It is read for a vehicle already being read by
+-- primary key. An index here would be dead weight on every SPV write.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE spv
+  ADD COLUMN legal_form TEXT;

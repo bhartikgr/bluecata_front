@@ -12,11 +12,17 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { StateBadge, EmptyState } from "@/components/common";
+
 import { Plus, Briefcase, Calendar, Users, ArrowRight, Lock, Archive, ArchiveRestore } from "lucide-react";
+
 import { fmtUSD, fmtPct, fmtDate } from "@/lib/format";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+/* WAVE 191 · ITEM A.4 — the SAME currency catalogue the create wizard and the
+   partner vehicle wizard read (`client/src/lib/currencyOptions.ts`, which states
+   its own source). Not a list typed into this file: R156.2. */
+import { buildCurrencyOptions } from "@/lib/currencyOptions";
 /* WAVE 58b · DEFECT 2 + DEFECT 3 — the pool edit surface uses the SAME derivation
    function as the create wizard and the SAME base reconciler as the engine path,
    so a pool edited here cannot produce a different number from one created in the
@@ -221,7 +227,43 @@ import {
    R111 Q13 settled it as "Not on record"; this file had invented its own. */
 import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
 
-type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null; createdAt?: string | null };
+/* ── WAVE 191 · ITEM A / R156.2 + R143.1 ──────────────────────────────────────
+   THE HARDCODED "(USD)" LABELS, MADE HONEST WITHOUT BEING REMOVED.
+   ─────────────────────────────────────────────────────────────────────────────
+   WHAT WAS WRONG. This dialog's money labels read "Target amount (USD)",
+   "Min ticket (USD)", "Price per share (USD)", "Valuation cap (USD)" and
+   "Strike price (USD)" for EVERY round in EVERY jurisdiction. A Hong Kong
+   company editing an HKD round was told, in the label, that the figure it was
+   typing was US dollars. That is not a missing currency — it is a false one,
+   asserted in copy, which is worse.
+
+   WHY THE LITERALS ARE STILL THERE, BYTE FOR BYTE. R143.1: a replaced text node
+   scores as a REMOVED copy string on `npm run guard` and `npm run drop:restyle`,
+   and this platform does not delete copy to fix copy. So each "(USD)" label is
+   left exactly as it was and this note is APPENDED AS A STATIC SIBLING. When the
+   round's recorded currency is not USD the sibling says so plainly, and the
+   reader is left in no doubt which of the two to believe.
+
+   IT RENDERS NOTHING WHEN THERE IS NOTHING TO SAY — no currency on record (the
+   state 1045 rounds are in, already covered by wave 190's refusals), or a round
+   genuinely denominated in USD, where the existing label is simply correct. */
+/* Exported so the rule below can be proved BY RENDERING it, rather than by
+   reading the source of a page too large to mount in jsdom. */
+export function CurrencyLabelNote({ currency, testid }: { currency: string; testid: string }) {
+  if (!/^[A-Z]{3}$/.test(currency)) return null;
+  if (currency === "USD") return null;
+  return (
+    <p className="text-[11px] text-amber-600 leading-relaxed" data-testid={testid}>
+      Recorded in {currency}, not US dollars. The label above is not this round&rsquo;s currency; {currency} is. Capavate never converts between currencies.
+    </p>
+  );
+}
+
+/* WAVE 191 · ITEM A.4 — one catalogue, shared with the create wizard. */
+const CURRENCY_OPTIONS = buildCurrencyOptions();
+
+
+type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null; createdAt?: string | null; /* WAVE 191 · ITEM A.4 — the round's own recorded currency. Optional and nullable because 1045 rounds have none and this wave does not backfill; `server/roundsStore.ts:140` already returns it. */ currency?: string | null };
 
 // BUG 034 — group instruments so the Edit-Terms dialog can show the right
 // field set. Priced rounds use pre/post-money + PPS; SAFEs and notes use a
@@ -543,6 +585,15 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
   );
   const [pricePerShare, setPricePerShare] = useState(round.pricePerShare ?? 0);
   const [minTicket, setMinTicket] = useState(round.minTicket ?? 0);
+  /* ── WAVE 191 · ITEM A.4 — THE ROUND CURRENCY, EDITABLE FOR THE FIRST TIME ──
+     SEEDED FROM THE ROUND'S OWN RECORD, and from nothing else. `?? ""` keeps a
+     round that has no currency in the "not stated" state when the dialog opens,
+     so opening and saving an unrelated term cannot quietly stamp a currency onto
+     a round nobody has denominated. There is no company fallback here on purpose:
+     on the CREATE wizard the company default is a helpful suggestion for a new
+     record, but on an EXISTING round it would be a guess about money already
+     recorded. */
+  const [currency, setCurrency] = useState(round.currency ?? "");
   const [closeDate, setCloseDate] = useState(round.closeDate);
   const [termsSummary, setTermsSummary] = useState(round.termsSummary ?? "");
   /* WAVE 107 - F1-B: THE WIZARD'S TWO NARRATIVE FIELDS, EDITABLE FOR THE FIRST
@@ -830,6 +881,10 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
          round holding the structured row array is never overwritten with a
          flattened paragraph. */
       const common: Record<string, unknown> = { name: name.trim(), targetAmount, minTicket, closeDate, termsSummary, notes: roundNotes };
+      /* WAVE 191 · ITEM A.4 — sent ONLY when it is a well-formed code, so an
+         untouched blank never PATCHes `currency` at all and the server's
+         no-backfill rule is honoured from both ends. */
+      if (/^[A-Z]{3}$/.test(currency)) common.currency = currency;
       if (useOfProceedsIsText) common.useOfProceeds = useOfProceeds;
       /* ═════════════════════════════════════════════════════════════
          WAVE 61b · R50 — DO NOT SEND A ZERO NOBODY TYPED.
@@ -1053,6 +1108,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             {/* WAVE 164 · R130.2 (S13) — a target is a GOAL. Stated here because a
                 partner read "target" as a ceiling, which is the original defect. */}
             <Label>Target amount (USD)</Label>
+            <CurrencyLabelNote currency={currency} testid="edit-target-currency-note" />
             <div className="text-xs text-muted-foreground">
               The fundraising goal for this round, not a limit. Commitments are never blocked for passing it.
             </div>
@@ -1060,7 +1116,48 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           </div>
           <div>
             <Label>Min ticket (USD)</Label>
+            <CurrencyLabelNote currency={currency} testid="edit-min-ticket-currency-note" />
             <MoneyInput value={minTicket} onChange={setMinTicket} className="mt-1" data-testid="input-min-ticket" />
+          </div>
+          {/* ── WAVE 191 · ITEM A.4 — SET OR CORRECT THE ROUND'S CURRENCY ─────────
+              APPENDED AS A STATIC SIBLING. This is the ONLY edit path for a round's
+              currency in the platform, and it is why nothing is backfilled: the
+              1045 rounds recorded without one are set here, deliberately, one at a
+              time, by someone who knows which currency the round was actually
+              raised in. Nothing is guessed on their behalf.
+
+              MODELLED ON THE PARTNER VEHICLE WIZARD, which is the proven pattern in
+              this codebase: the same `buildCurrencyOptions()` catalogue, the same
+              "this platform will not invent one" posture, and the same rule that an
+              explicit entry is never silently overwritten.
+
+              UNLIKE A VEHICLE, A ROUND'S CURRENCY REMAINS EDITABLE. A vehicle's
+              denomination is immutable once created because commitments, fees and
+              tax forms are recorded against it. A round that has never been
+              denominated has to become editable or the 1045 existing rounds could
+              never be corrected at all. */}
+          <div>
+            <Label>Round currency</Label>
+            <div className="text-xs text-muted-foreground">
+              The currency this round is recorded in. Capavate never converts between currencies, so this is the currency an investor must actually send.
+            </div>
+            <Select value={currency} onValueChange={setCurrency}>
+              <SelectTrigger className="mt-1" data-testid="select-edit-round-currency"><SelectValue placeholder="Not stated for this round" /></SelectTrigger>
+              <SelectContent>
+                {CURRENCY_OPTIONS.map((c) => (
+                  <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {currency === "" ? (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed" data-testid="edit-round-currency-absent">
+                This round records no currency, so Capavate shows no currency symbol against its figures. It will not invent one. Choose a currency to state it on the record.
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed" data-testid="edit-round-currency-statement">
+                Saving will record this round in {currency}. Every commitment and cap-table entry for it is denominated in {currency}.
+              </p>
+            )}
           </div>
 
           {family === "priced" && (
@@ -1075,6 +1172,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
               </div>
               <div>
                 <Label>Price per share (USD)</Label>
+                <CurrencyLabelNote currency={currency} testid="edit-pps-currency-note" />
                 <MoneyInput value={pricePerShare} onChange={setPricePerShare} className="mt-1" data-testid="input-pps" />
               </div>
             </>
@@ -1084,6 +1182,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             <>
               <div>
                 <Label>Valuation cap (USD)</Label>
+                <CurrencyLabelNote currency={currency} testid="edit-cap-currency-note" />
                 <MoneyInput value={valuationCap} onChange={setValuationCap} className="mt-1" data-testid="input-valuation-cap" />
                 {/* WAVE 69 · V-1 — the R50 range refusal, from the SAME shared
                     validator the server calls, beside the field it is about.
@@ -1582,6 +1681,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             <>
               <div>
                 <Label>Strike price (USD)</Label>
+                <CurrencyLabelNote currency={currency} testid="edit-strike-currency-note" />
                 <Input type="number" step="0.01" min={0} value={strikePrice} onChange={e => setStrikePrice(Number(e.target.value))} className="mt-1" data-testid="input-strike-price" />
                 {/* WAVE 69 · V-1 — the `min={0}` attribute above is LEFT ALONE on
                     purpose (OQ-6): HTML `min` does not block typing and is not what

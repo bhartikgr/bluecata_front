@@ -87,13 +87,77 @@ export function applyWaveC2ClientScopeSchema(db: DbLike): void {
           id                       TEXT PRIMARY KEY NOT NULL,
           partner_crm_contact_id   TEXT NOT NULL REFERENCES partner_crm_contacts(id),
           partner_attribution_id   TEXT NOT NULL REFERENCES partner_attributions(id),
-          scoped_by_user_id        TEXT NOT NULL REFERENCES users(id),
+          scoped_by_user_id        TEXT NOT NULL,
           scoped_at                TEXT NOT NULL,
           created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
           created_by               TEXT,
           UNIQUE (partner_crm_contact_id, partner_attribution_id)
         );
       `);
+    } else {
+      /* ══════════════════════════════════════════════════════════════════
+         WAVE 178 · ITEM B — CONVERGE A DATABASE THAT STILL CARRIES 0134's
+         `scoped_by_user_id ... REFERENCES users(id)`.
+
+         That FK is the proved cause of a 100%-failing "Add to client" button:
+         with `PRAGMA foreign_keys = ON` (connection.ts:160) an acting partner
+         whose session userId has no `users` row makes the INSERT raise
+         `FOREIGN KEY constraint failed`, which the store rethrows and the route
+         turns into a bare 500. Migration 0213 rebuilds the table — but this heal
+         exists because the heal is the only path that runs on EVERY boot.
+
+         IT IS ALSO LOAD-BEARING FOR A REASON THAT CANNOT BE FIXED ELSEWHERE:
+         `server/db/connection.ts` is SACRED (frozen hash, WAVE50) and its inline
+         baseline at :4782-4791 still creates this table WITH the users FK. That
+         statement cannot be edited. Ordering is what saves it — this heal is
+         called at connection.ts:524, EARLIER in `applyInlineMigrations` than the
+         baseline array at :4782, and both are `CREATE TABLE IF NOT EXISTS`. So on
+         a fresh database the corrected CREATE above wins and the sacred baseline's
+         statement is a no-op; on a database that already has the legacy shape,
+         the rebuild below converges it.
+
+         Same V33-1-B1 contract as the rest of this file: guarded, idempotent, and
+         it never throws — the outer catch keeps boot alive.
+         ══════════════════════════════════════════════════════════════════ */
+      const declared = db.prepare(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='partner_crm_contact_client_scope'`
+      ).get() as { sql?: string } | undefined;
+      const ddl = String(declared?.sql ?? "");
+      /* Match only the actor column's reference. `partner_crm_contact_id` and
+         `partner_attribution_id` also carry REFERENCES clauses and must be left
+         exactly as they are, so the test is anchored on scoped_by_user_id. */
+      const hasLegacyActorFk = /scoped_by_user_id[^,]*REFERENCES\s+users\s*\(/i.test(ddl);
+      if (hasLegacyActorFk) {
+        log.warn(
+          "[wave-c2-client-scope] legacy actor FK detected on partner_crm_contact_client_scope " +
+          "(scoped_by_user_id REFERENCES users(id)); rebuilding without it — wave 178 item B"
+        );
+        db.exec(`
+          DROP TABLE IF EXISTS partner_crm_contact_client_scope_w178_new;
+          CREATE TABLE partner_crm_contact_client_scope_w178_new (
+            id                       TEXT PRIMARY KEY NOT NULL,
+            partner_crm_contact_id   TEXT NOT NULL REFERENCES partner_crm_contacts(id),
+            partner_attribution_id   TEXT NOT NULL REFERENCES partner_attributions(id),
+            scoped_by_user_id        TEXT NOT NULL,
+            scoped_at                TEXT NOT NULL,
+            created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            created_by               TEXT,
+            UNIQUE (partner_crm_contact_id, partner_attribution_id)
+          );
+          INSERT INTO partner_crm_contact_client_scope_w178_new
+            (id, partner_crm_contact_id, partner_attribution_id, scoped_by_user_id,
+             scoped_at, created_at, created_by)
+          SELECT
+             id, partner_crm_contact_id, partner_attribution_id, scoped_by_user_id,
+             scoped_at, created_at, created_by
+          FROM partner_crm_contact_client_scope;
+          DROP TABLE partner_crm_contact_client_scope;
+          PRAGMA legacy_alter_table = ON;
+          ALTER TABLE partner_crm_contact_client_scope_w178_new
+            RENAME TO partner_crm_contact_client_scope;
+          PRAGMA legacy_alter_table = OFF;
+        `);
+      }
     }
 
     // Index is its own IF NOT EXISTS statement — safe to run every boot

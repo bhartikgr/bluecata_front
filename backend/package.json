@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "26.29.0",
+  "version": "26.39.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -57,6 +57,8 @@
     "perf:smoke": "tsx scripts/perf_smoke.ts",
     "test:pglite": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/portable-pglite.test.ts",
     "test:hash-replay": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/hash-chain-replay.test.ts",
+    "lint:prohibition-fence": "node scripts/lint-prohibition-fence.mjs",
+    "w220:census": "tsx scripts/w220-copy-census.ts",
     "lint:date-only-render-fence": "tsx scripts/lint/dateOnlyRenderFence.ts",
     "drop:restyle:test": "vitest run --config scripts/restyle-drop-detector/vitest.restyle.config.ts"
   },

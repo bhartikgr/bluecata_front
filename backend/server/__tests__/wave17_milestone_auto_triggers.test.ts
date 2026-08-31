@@ -49,6 +49,7 @@ import {
 } from "../lib/wave17MilestoneAutoTriggers";
 import { emitBridgeEvent } from "../bridgeStore";
 import { notifyCascadeSideEffects } from "../lib/roundCloseCascade";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const ADMIN = "u_admin";
@@ -60,7 +61,7 @@ async function createDraftRound(companyId: string, name: string): Promise<string
     .set("x-user-id", ADMIN)
     /* openDate is mandatory on POST /api/rounds (OPEN_DATE_REQUIRED / CLOSE_DATE_REQUIRED) — measured,
        not assumed: the request 400s without it. */
-    .send({ companyId, name, type: "seed", state: "draft", targetAmount: 1_000_000, openDate: new Date().toISOString().slice(0, 10), closeDate: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10) });
+    .send(w212Attest({ companyId, name, type: "seed", state: "draft", targetAmount: 1_000_000, openDate: new Date().toISOString().slice(0, 10), closeDate: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10) }));
   expect(res.status, JSON.stringify(res.body)).toBe(200);
   return res.body.id as string;
 }

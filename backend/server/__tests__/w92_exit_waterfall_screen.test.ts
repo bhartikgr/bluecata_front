@@ -48,6 +48,7 @@ import { Decimal } from "decimal.js";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ADMIN = "u_admin";
 const STAMP = `w92${Math.random().toString(36).slice(2, 8)}`;
@@ -96,14 +97,14 @@ async function buildCompany(
   expect(seeded.status, `seed ${tag}`).toBeLessThan(400);
   let i = 0;
   for (const c of classes) {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId, name: `${STAMP} ${tag} class${i}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: c.amount,
       pricePerShare: c.amount / c.shares, sharesAuthorized: 40_000_000,
       preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
       liquidationPreference: c.lp, seniority: c.seniority,
       ...(c.cap === undefined ? {} : { capParticipation: c.cap }),
-    });
+    }));
     expect(created.status, `round create ${tag}${i}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
     const roundId = String((created.body as { id: string }).id);
     const back = await request(app).post("/api/founder/captable/backfill-investor")

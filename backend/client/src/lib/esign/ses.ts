@@ -5,14 +5,27 @@
  * tier compliant for the EU and the UK; framework portable to other regions.
  *
  * The signer types their full legal name, agrees to a click-through intent
- * statement, and the system captures IP, user agent, timestamp, session ID,
- * and chains the signature to the previous signature on the same document.
+ * statement, and the system records the user agent, timestamp and session id it
+ * can observe in the browser, states plainly that it did NOT observe a network
+ * address, and chains the signature to the previous signature on the same
+ * document.
  *
  * We use the engine's stable SHA-256 (cap-table-engine/primitives/hash.ts) so
  * every signature is verifiable on the same hash function the rest of the
  * audit chain uses.
+ *
+ * WAVE 209 · ITEM A (decision B1; R187.1) — THIS MODULE USED TO INVENT THE IP
+ * ADDRESS. `captureSessionMetadata()` computed it as
+ * `198.51.100.<two char codes of a tab id>` — RFC 5737 documentation space,
+ * which can never be a real client address — and `signSES()` sealed that fiction
+ * inside the signature hash. The header above used to claim "the system captures
+ * IP", which was not true of anything this file did. Both are corrected. See
+ * `./wave209SignerMetadata.ts` for the two honest options and which flow gets
+ * which; the durable address, where one exists, is stamped SERVER-side by
+ * `POST /api/founder/term-sheets` through the one hardened resolver.
  */
 import { sha256 } from "@capavate/cap-table-engine";
+import { EVIDENCE_FIELD_NOT_CAPTURED, captureClientSignerAddress } from "./wave209SignerMetadata";
 
 export type SESDocumentType = "softcircle" | "termsheet" | "subscription" | "side-letter";
 export type SESSignerRole = "founder" | "investor" | "admin";
@@ -24,6 +37,12 @@ export interface SESSignaturePayload {
   signerEmail: string;
   signerRole: SESSignerRole;
   intentText: string;          // the click-through text the signer agreed to
+  /* WAVE 209 — STILL A REQUIRED `string`, DELIBERATELY. `verifySES()` re-hashes
+   * every key it finds, so dropping this key or making it optional would change
+   * the canonical JSON and make EVERY SIGNATURE ALREADY WRITTEN fail its own
+   * verification. The key is kept; the value is either a real address stated by
+   * a server or the explicit `"not captured"` sentinel. It is never a fiction,
+   * and never blank. */
   ipAddress: string;
   userAgent: string;
   timestamp: string;           // ISO 8601
@@ -55,20 +74,40 @@ export function verifySES(sig: SESSignature): boolean {
 }
 
 /**
- * Best-effort capture of browser session metadata. In server-side contexts
- * the IP is set explicitly by the caller; in the preview the IP is derived
- * client-side from a visible-but-anonymized session token so demos render.
+ * Capture the session metadata a BROWSER CAN ACTUALLY OBSERVE, and say so about
+ * the one thing it cannot.
+ *
+ * WAVE 209. The address is the explicit `"not captured"` sentinel on every
+ * client path, because a browser cannot observe its own public network address
+ * and this platform will not supply a value it does not hold (R143.4, applied to
+ * evidence). Where the signature is submitted to the server, the server stamps
+ * the peer it observed onto the durable record as `serverObservedSignerIp`; that
+ * is the option R187.1 prefers and it is used wherever a durable record exists.
+ *
+ * The user agent is likewise reported only when there is a `navigator` to report
+ * it from. The previous `"node"` fallback was a synthesised user agent inside a
+ * signature record — a smaller instance of the same class as the invented
+ * address, and removed for the same reason.
+ *
+ * THE RETURN SHAPE IS UNCHANGED, BY DESIGN. Five call sites read these four keys
+ * by name and some build SES payloads from them. Adding a key here (for example
+ * the not-captured reason) would change the canonical JSON of any payload built
+ * by spreading this object, and therefore its hash. The reason text lives in
+ * `./wave209SignerMetadata.ts` as a separate constant instead.
  */
 export function captureSessionMetadata(): { ipAddress: string; userAgent: string; sessionId: string; timestamp: string } {
-  const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "node";
+  const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : EVIDENCE_FIELD_NOT_CAPTURED;
   // Stable per-tab session id without persistent storage (sandbox-safe).
   const w = (typeof window !== "undefined" ? window : {}) as { __capavateSessionId?: string };
   if (!w.__capavateSessionId) {
     w.__capavateSessionId = `ses_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   }
-  // For the preview we surface a non-real but deterministic-per-tab IP marker.
-  const ipAddress = `198.51.100.${(((w.__capavateSessionId.charCodeAt(4) + w.__capavateSessionId.charCodeAt(5)) % 250) + 2)}`;
-  return { ipAddress, userAgent, sessionId: w.__capavateSessionId, timestamp: new Date().toISOString() };
+  return {
+    ipAddress: captureClientSignerAddress(),
+    userAgent,
+    sessionId: w.__capavateSessionId,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 /** Append a new signature to a chain (oldest-first list). Returns extended chain. */

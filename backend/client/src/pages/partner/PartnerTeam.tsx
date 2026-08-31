@@ -7,6 +7,11 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole, isManagingPartner } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+/* WAVE 214 · surface 3 — one literal, shared with the server that hashes it. */
+import {
+  WAVE214_PARTNER_TEAM_INVITE_AUTHORITY_STATEMENT,
+  WAVE214_PARTNER_TEAM_INVITE_CONSEQUENCE,
+} from "@shared/wave214ThirdPartyAuthorityCopy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 /* v25.12 NH6 — surface invite + remove failures (seat limit, network, etc). */
@@ -16,6 +21,7 @@ import { safePersonDisplayName } from "@/lib/personName"; /* W3.2 — name slot 
 import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
 /* 2a — display/CRM titles (distinct from the 5 permission tiers). */
 import { PARTNER_TITLES } from "@shared/partnerTitles";
+import { describeFailure } from "@/lib/failureMessage";
 
 /* v25.50 Phase 7 (7b) — comprehensive, properly-labeled positions list. The 5
    canonical values are enforced server-side (invite endpoint); this maps each to
@@ -67,8 +73,9 @@ export default function PartnerTeam() {
 
   /* v25.12 NH6 — toast helper. */
   const { toast } = useToast();
+  /* WAVE 197 #52 — WRITE. Shared by the seat and invite mutations. */
   const onErr = (label: string) => (e: Error) =>
-    toast({ variant: "destructive", title: `${label} failed`, description: e.message });
+    toast({ variant: "destructive", title: `${label} failed`, description: describeFailure(e, "write") });
 
   /* v25.23 NH-R — the server returns a one-time `plainToken` on invite create.
      We surface it inline (with copy-to-clipboard) for 60s, then clear it. This
@@ -88,16 +95,30 @@ export default function PartnerTeam() {
   // Clean up the timer if the component unmounts while a token is showing.
   useEffect(() => () => { if (tokenTimerRef.current) clearTimeout(tokenTimerRef.current); }, []);
 
+  /* WAVE 214 · surface 3 — the authority tick. A tick and not a typed name here:
+     this invitation adds a colleague to the inviter's own firm, which is a weaker
+     claim than creating an account for someone at another company, and the brief
+     is explicit that the confirmation must be proportionate. */
+  const [authorityConfirmed, setAuthorityConfirmed] = useState(false);
+
   const inviteMut = useMutation({
     /* v25.33 — apiRequest() throws ApiError on non-2xx, so the prior `if (!res.ok)`
        guard (here and in removeMut below) was unreachable dead code. The thrown
        ApiError reaches onError unchanged, preserving the failure toast. */
     mutationFn: async (): Promise<{ invitation: { invitedEmail: string }; plainToken: string }> => {
-      const res = await apiRequest("POST", "/api/partner/me/team/invitations", { email, subRole, title });
+      const res = await apiRequest("POST", "/api/partner/me/team/invitations", {
+        email, subRole, title,
+        /* Sent verbatim so the server hashes the bytes actually rendered. */
+        authorityConfirmed,
+        authorityStatementShown: WAVE214_PARTNER_TEAM_INVITE_AUTHORITY_STATEMENT,
+      });
       return res.json();
     },
     onSuccess: (data) => {
       setEmail("");
+      /* WAVE 214 — the confirmation is per-invitee; it must not carry forward to
+         the next person the inviter types in. */
+      setAuthorityConfirmed(false);
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/team"] });
       // v25.23 NH-R — capture + surface the one-time plainToken.
       if (data?.plainToken) {
@@ -251,7 +272,27 @@ export default function PartnerTeam() {
               {POSITIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
-          <Button data-testid="invite-btn" disabled={!email || inviteMut.isPending} onClick={() => inviteMut.mutate()}>
+          {/* WAVE 214 · surface 3 — appended as a new static sibling inside the
+              existing form; no existing label or button literal is edited
+              (R143.1). The statement deliberately does not say an email is sent,
+              because this route does not send one — it returns a link the inviter
+              sends themselves (see the banner below). */}
+          <div className="flex flex-col gap-1 basis-full" data-testid="invite-authority-block">
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid="invite-authority-tick"
+                checked={authorityConfirmed}
+                onChange={(e) => setAuthorityConfirmed(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span data-testid="invite-authority-statement">{WAVE214_PARTNER_TEAM_INVITE_AUTHORITY_STATEMENT}</span>
+            </label>
+            <div className="text-[11px] text-[var(--cv-color-text-muted)] pl-6" data-testid="invite-authority-consequence">
+              {WAVE214_PARTNER_TEAM_INVITE_CONSEQUENCE}
+            </div>
+          </div>
+          <Button data-testid="invite-btn" disabled={!email || !authorityConfirmed || inviteMut.isPending} onClick={() => inviteMut.mutate()}>
             {inviteMut.isPending ? "Inviting…" : "Invite"}
           </Button>
         </div>

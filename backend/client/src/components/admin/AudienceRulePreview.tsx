@@ -65,6 +65,12 @@ interface PreviewResponse {
   audienceCount?: number;
   audienceUserIds?: string[];
   statement?: string;
+  /* WAVE 177 · ITEM B — the SPECIFIC reason a partner rule reached nobody, from
+     live data. Present only for the two partner-scoped rules and only when the
+     audience is genuinely empty; null otherwise, and nothing is rendered for
+     null. Deliberately a SEPARATE field from `statement` so the existing
+     sentence keeps being rendered byte-for-byte (R143.1). */
+  emptyReason?: string | null;
 }
 
 /** R77 — the server's role token is machine vocabulary. Say what it MEANS. An
@@ -143,6 +149,15 @@ export function AudienceRulePreview({ ruleKey }: { ruleKey: string }) {
       ids,
       /* Zero is a RESULT. Distinguished from "we could not read the count". */
       reachesNobody: typeof result.audienceCount === "number" && result.audienceCount === 0,
+      /* Server-authored, verbatim. Empty string and null both collapse to null so
+         a blank reason can never render as an empty paragraph pretending to be an
+         answer. This component does NOT author a reason of its own: a locally
+         authored explanation is one edit away from disagreeing with the data it
+         claims to explain. */
+      emptyReason:
+        typeof result.emptyReason === "string" && result.emptyReason.trim().length > 0
+          ? result.emptyReason
+          : null,
     };
   }, [result]);
 
@@ -207,6 +222,23 @@ export function AudienceRulePreview({ ruleKey }: { ruleKey: string }) {
               This rule reaches nobody for this person. That is a real result, not a failure to
               look: either they have no relationships of this kind on record, or the records this
               rule reads are empty.
+            </p>
+          ) : null}
+
+          {/* WAVE 177 · ITEM B · R148.3 item 5 — A SEPARATE, ADDITIONAL PARAGRAPH.
+              The node above is untouched: its literal is byte-identical to what
+              wave 167 shipped and it still renders whenever the rule reaches
+              nobody. This one is a STATIC SIBLING that appears only when the
+              server could name the actual reason, so the honest-but-ambiguous
+              sentence above is narrowed rather than replaced (R143.1).
+
+              WHY IT MATTERS: the paragraph above offers two possible reasons and
+              stops. On live, the true one was the first — the partner user had no
+              membership row at all — and finding that out cost a human a
+              cross-reference of two separate admin pages (R148.1). */}
+          {view.reachesNobody && view.emptyReason !== null ? (
+            <p className="text-xs" data-testid={`audience-preview-reason-${ruleKey}`}>
+              What the live records actually show: {view.emptyReason}
             </p>
           ) : null}
 

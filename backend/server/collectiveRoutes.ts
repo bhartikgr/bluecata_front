@@ -30,6 +30,17 @@ import { getConsortiumPartnerId } from "./consortiumLinkStore";
 import { getConsortiumPartnerDisplayName } from "./adminContactsStore";
 import { getChannelByCompany, listChannels, TRANSACTION_PREP_THREADS } from "./transactionPrepStore";
 import { listContacts } from "./adminContactsStore";
+/* WAVE 185 · ITEM C — admin-invoked ONLY. Imported for its three exported
+   functions; this module has no import-time side effect and nothing here runs on
+   boot. See the route comments at the foot of this file. */
+import {
+  seedW185CollectiveTestData,
+  statusW185CollectiveTestData,
+  purgeW185CollectiveTestData,
+} from "./lib/w185CollectiveTestSeed";
+/* The SAME admin gate the rest of the platform's admin surfaces use. Seeding and
+   purging are administrative acts and must not be reachable by a member. */
+import { requireAdmin } from "./lib/authMiddleware";
 // v25.45 ROUND 2 (F13b) — privacy resolver: every rendered user name MUST route
 // through resolveDisplayName so the founder/member privacy toggles take effect.
 import { resolveDisplayName } from "./lib/userPrivacyResolver";
@@ -1694,5 +1705,46 @@ export function registerCollectiveRoutes(app: Express): void {
     });
 
     res.json({ channels: rows, total: rows.length, threadAnchors: TRANSACTION_PREP_THREADS });
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 185 · ITEM C · OWNER RULING Q8 — THE COLLECTIVE TEST-MEMBER SEEDER,
+     REACHABLE ONLY BY AN ADMIN DELIBERATELY ASKING FOR IT.
+     ══════════════════════════════════════════════════════════════════════════
+     RULE 3 OF THE BRIEF: "Seed via a migration or an explicit admin-invoked
+     seeder, NEVER ON BOOT." A migration would have violated the same rule it was
+     offered as an alternative to — migrations run automatically at production
+     start — so wave 185 consumes NO migration number and the mechanism is these
+     three POST routes behind `requireAdmin`. A production start that nobody
+     clicks creates nothing.
+
+     THE PURGE SHIPS WITH THE SEED. R156.4 / Q12 says the owner will clear this
+     data very soon, so the removal path is written and proved in the same wave
+     rather than left as a document describing SQL somebody would have to run by
+     hand — which is the exact failure mode Item B exists to end. */
+  app.post("/api/admin/collective/w185-test-seed", requireAdmin, (_req: Request, res: Response) => {
+    try {
+      return res.json(seedW185CollectiveTestData());
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "W185_SEED_FAILED", message: (err as Error).message });
+    }
+  });
+
+  /* Read-only. Lets an admin see what is present before deciding to seed or
+     purge, so neither action is taken blind. */
+  app.get("/api/admin/collective/w185-test-seed", requireAdmin, (_req: Request, res: Response) => {
+    try {
+      return res.json(statusW185CollectiveTestData());
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "W185_SEED_STATUS_FAILED", message: (err as Error).message });
+    }
+  });
+
+  app.post("/api/admin/collective/w185-test-seed/purge", requireAdmin, (_req: Request, res: Response) => {
+    try {
+      return res.json(purgeW185CollectiveTestData());
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "W185_PURGE_FAILED", message: (err as Error).message });
+    }
   });
 }

@@ -22,37 +22,67 @@ import type { PartnerTier } from "../adminContactsStoreShim";
 /* WAVE 56 (R36) — the tier domain is DATA, read from partner_tier_lifecycle. */
 import { tierDomainSlugs, isTierInDomain } from "./partnerTierDomain";
 
-/* ---------------------------------------------------------------------------
- * Fallback mirror of Avi's COMMISSION_RATE literal
- * (server/partnerConsortiumRoutes.ts). Mirrored, NOT imported, to avoid a
- * circular import. Kept byte-equivalent in VALUE to Avi's table; Avi's source
- * remains the single ultimate fallback for his own call site.
- * ------------------------------------------------------------------------- */
-const FALLBACK_COMMISSION_RATE: Record<string, number> = {
-  catalyst: 0.02,
-  builder: 0.03,
-  amplifier: 0.04,
-  nexus: 0.05,
-  founding_member: 0.06,
-};
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 184 · ITEM B · R156.2 — THE FALLBACK RATE TABLE IS GONE.
+ *
+ * Owner, verbatim: "ALL fees are dynamic (https://capavate.com/admin/fees). I
+ * believe I had set the annual fee to be at $240 but this should never be
+ * hardcoded. None of the fees should be hardcoded anywhere."
+ *
+ * WHAT USED TO STAND HERE. Two constants:
+ *
+ *   const FALLBACK_COMMISSION_RATE = { catalyst: 0.02, builder: 0.03,
+ *     amplifier: 0.04, nexus: 0.05, founding_member: 0.06 };
+ *   const DEFAULT_RATE = 0.02;
+ *
+ * WHY THEY WERE A DEFECT AND NOT A SEED. A seed is written into the database
+ * once and read back from the database thereafter. These were never written
+ * anywhere: `getCommissionRate()` returned them, with `source: "default"`, when
+ * the database read SUCCEEDED and simply found no row — i.e. a compiled-in
+ * commission rate standing in for a database value, on a surface that reports
+ * partner commission (the partner Fee Schedule card) and on the path that
+ * inserts `partner_billing_entries`. `listCommissionRates()` printed them on
+ * the ADMIN fee surface as though they were configured. That is exactly the
+ * class of thing R156.2 forbids: a fallback on a money surface.
+ *
+ * WHY REMOVING THEM CANNOT CHANGE A CONFIGURED AMOUNT. All five tiers are
+ * seeded into `partner_commission_rate_config` by BOTH
+ * migrations/0058_v25_38_partner_commission_rate_config.sql AND the
+ * server/db/connection.ts bootstrap (`INSERT OR IGNORE`, same five values). On
+ * any migrated database the row exists, `source` is "db", and these constants
+ * were already unreachable. The only behaviour that changes is a database whose
+ * row has been DELETED: it now gets the named refusal below instead of a
+ * compiled-in rate. Reported explicitly in W184_BUILD.md.
+ *
+ * AVI-CODE PRESERVATION. Avi's own `COMMISSION_RATE` literal in
+ * server/partnerConsortiumRoutes.ts is NOT touched by this wave — not removed,
+ * not modified, not overridden. It remains reachable on a transient DB read
+ * failure, which is reported as a residual needing an owner ruling rather than
+ * decided here.
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Ultimate default for an unknown / unmapped tier — matches Avi's
- * `COMMISSION_RATE[tier] ?? 0.02` floor.
- *
- * WAVE 56 (R36) — THIS IS NO LONGER A FLOOR FOR AN UNKNOWN TIER.
- * `getCommissionRate()` used to fall through to this constant for ANY tier it
- * did not recognise, returning 200 OK and a plausible number: a brand-new tier
- * silently earned catalyst's 2% on real revenue, with nothing logged and
- * nothing thrown. The comment further down this file claimed writes were
- * validated "so a bogus tier can never create a phantom row" — true of the
- * write path, and the READ path had no such protection.
- *
- * The constant is retained ONLY as the effective-rate display value for the
- * five tiers that carry it in `FALLBACK_COMMISSION_RATE` (catalyst is 0.02 by
- * its own configuration, not by default), and it is never selected on this
- * module's own initiative for a tier that is not in that table. An unknown tier
- * is REFUSED BY NAME — see `UnknownCommissionTierError`. */
-const DEFAULT_RATE = 0.02;
+/** WAVE 184 · ITEM B · R156.2 — the refusal for a DB read that FAILED, as
+ * distinct from a DB read that succeeded and found no row. The distinction
+ * matters: "no rate is configured" is a data fix an admin can make, while "the
+ * rate could not be read" is not, and telling a partner to go set a field that
+ * is already set would be a false statement. Callers that only need to know
+ * "was this the unconfigured case?" use `isUnknownCommissionTierError`, which
+ * deliberately does NOT match this error. */
+export const E_COMMISSION_RATE_UNREADABLE = "PARTNER_COMMISSION_RATE_UNREADABLE";
+
+export class CommissionRateUnreadableError extends Error {
+  readonly code = E_COMMISSION_RATE_UNREADABLE;
+  readonly tier: string;
+  constructor(tier: string, cause: unknown) {
+    super(
+      `${E_COMMISSION_RATE_UNREADABLE}: the commission rate for tier "${tier}" could not be read ` +
+        `from partner_commission_rate_config (${cause instanceof Error ? cause.message : String(cause)}). ` +
+        `No rate has been assumed: this build carries no compiled-in commission rate.`,
+    );
+    this.name = "CommissionRateUnreadableError";
+    this.tier = tier;
+  }
+}
 
 export interface ResolvedCommissionRate {
   rate: number;
@@ -109,27 +139,33 @@ export function isUnknownCommissionTierError(err: unknown): err is UnknownCommis
  * the platform and nobody would have been told. Behaviour for the five
  * configured tiers is UNCHANGED — this fix only removes the guess.
  *
- * On a DB read error the literal mirror still answers for the five tiers it
- * covers, so fee math does not throw because of a transient read. A tier that is
- * in NEITHER the config table NOR the mirror has no rate at all, and that is a
- * refusal, not a number.
+ * WAVE 184 (R156.2) — STEP 2 IS GONE. The mirror of Avi's literal used to answer
+ * here whenever the read succeeded and found no row, which made a compiled-in
+ * number the effective source for a commission rate. There is now no step 2:
+ * either the database has the rate, or the answer is a refusal. A DB read that
+ * FAILS is reported as its own distinct fault (`CommissionRateUnreadableError`)
+ * rather than being papered over with a constant, so the two are never confused
+ * on a money surface.
+ *
+ * Precedence as of wave 184:
+ *   1. partner_commission_rate_config row for the tier → { source: "db" }
+ *   2. read failed            → CommissionRateUnreadableError
+ *   3. read succeeded, no row → UnknownCommissionTierError
  */
 export function getCommissionRate(tier: PartnerTier | string): ResolvedCommissionRate {
+  let row: { rate: number } | undefined;
   try {
-    const row = rawDb()
+    row = rawDb()
       .prepare(`SELECT rate FROM partner_commission_rate_config WHERE tier = ?`)
       .get(tier) as { rate: number } | undefined;
-    if (row && typeof row.rate === "number" && Number.isFinite(row.rate)) {
-      return { rate: row.rate, source: "db" };
-    }
-  } catch {
-    // fall through to the literal mirror below
+  } catch (err) {
+    throw new CommissionRateUnreadableError(String(tier), err);
   }
-  const fallback = FALLBACK_COMMISSION_RATE[tier as string];
-  if (typeof fallback === "number") {
-    return { rate: fallback, source: "default" };
+  if (row && typeof row.rate === "number" && Number.isFinite(row.rate)) {
+    return { rate: row.rate, source: "db" };
   }
-  // NO FLOOR. Refuse by name.
+  /* NO MIRROR, NO FLOOR. The rate is a database question and the database has
+   * no answer for this tier. Refuse by name. */
   throw new UnknownCommissionTierError(String(tier));
 }
 
@@ -285,17 +321,12 @@ export function listCommissionRates(): CommissionRateConfigRow[] {
         source: "db" as const,
       };
     }
-    const mirrored = FALLBACK_COMMISSION_RATE[slug];
-    if (typeof mirrored === "number") {
-      return {
-        tier,
-        rate: mirrored,
-        updatedAt: null,
-        updatedBy: null,
-        source: "default" as const,
-      };
-    }
-    // No row, no mirror: the rate is genuinely UNSET. Reported as such.
+    /* WAVE 184 · ITEM B · R156.2 — the branch that used to stand here returned
+     * `FALLBACK_COMMISSION_RATE[slug]` with `source: "default"`, so the ADMIN
+     * fee surface printed a compiled-in commission rate as if it had been
+     * configured. A rate with no row is UNSET, and the admin reading this list
+     * needs to see that it is unset — that is the whole point of the list. No
+     * number is substituted. */
     return {
       tier,
       rate: null,

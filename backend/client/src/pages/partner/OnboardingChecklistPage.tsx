@@ -25,6 +25,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
+import { describeFailure } from "@/lib/failureMessage";
 
 /* ----------------- checklist definition ----------------- */
 
@@ -142,6 +143,27 @@ type State = Record<string, boolean>;
 const AGREEMENT_KEY = "signed_partner_agreement";
 const AGREEMENT_SIGN_PATH = "/collective/partner/agreement";
 
+/* ── WAVE 219 · ITEM 3 — THE RETENTION LINK, AND A CORRECTION TO THE SPEC ──────
+ * The build document says the retention acknowledgement links to `/settings/privacy`
+ * "which does not exist", and `spec/OWNER_RULINGS_2026_08_13.md:9652` says the same.
+ * BOTH ARE WRONG, verified before building anything: the route is registered at
+ * `client/src/App.tsx:1546` and renders `client/src/pages/settings/PrivacyPage.tsx`.
+ *
+ * The real defect is narrower and different in kind. The path appears only inside the
+ * item's `description` STRING — "…See /settings/privacy." — rendered as plain text at
+ * the description div below. A partner reading a legal acknowledgement is shown a path
+ * they must retype by hand. "A broken link inside a legal acknowledgement is worse
+ * than none" — this one is not broken, it is simply not a link.
+ *
+ * FIXED BY APPENDING A STATIC SIBLING (R143.1). The description literal is
+ * BYTE-UNTOUCHED — no literal replaced, no handler expression rewritten — and the
+ * anchor is added as the LAST sibling inside the item body, after the existing
+ * agreement link. Inserting it mid-block is what tripped the positional panel guard in
+ * wave 221; the last-sibling placement is the fix that wave found. */
+const PRIVACY_SETTINGS_PATH = "/settings/privacy";
+const RETENTION_ITEM_KEY = "data_retention_acked";
+const RETENTION_LINK_LABEL = "Open Settings → Privacy to read the retention policy →";
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     credentials: "include",
@@ -198,7 +220,11 @@ export default function PartnerOnboardingChecklistPage() {
         setAgreementSigned(null);
       }
     } catch (e) {
-      setError((e as Error).message);
+      /* WAVE 197 #55 — READ. the local `fetchJson` helper uses a bare `fetch` and
+         `await r.json()`, so a network TypeError or a JSON SyntaxError reaches
+         the error banner (data-testid="error-banner") with nothing in between. Loading changes
+         nothing, so read copy is the true one. */
+      setError(describeFailure(e, "read"));
     } finally {
       setLoading(false);
     }
@@ -228,7 +254,10 @@ export default function PartnerOnboardingChecklistPage() {
     } catch (e) {
       // Roll back the optimistic toggle using the captured previous state.
       setState(prev);
-      setError((e as Error).message);
+      /* WAVE 197 #56 — WRITE. The rollback above restores the LOCAL view; it
+         does not undo a server change, and the PATCH may have applied before
+         the failure surfaced. So the copy must not claim nothing was saved. */
+      setError(describeFailure(e, "write"));
     } finally {
       setSaving(false);
     }
@@ -386,6 +415,20 @@ export default function PartnerOnboardingChecklistPage() {
                             data-testid="link-sign-agreement"
                           >
                             Sign the Consortium Partner Agreement →
+                          </a>
+                        )}
+                        {/* WAVE 219 · ITEM 3 — appended as the LAST sibling. Rendered
+                            unconditionally for the retention item, not only while it is
+                            unticked: a partner who has already acknowledged the policy
+                            must still be able to reach it, and gating it on `!done`
+                            would take a route away from someone who had it (R190.10). */}
+                        {it.key === RETENTION_ITEM_KEY && (
+                          <a
+                            href={PRIVACY_SETTINGS_PATH}
+                            className="text-xs text-[var(--cv-color-primary)] underline"
+                            data-testid="link-data-retention-privacy"
+                          >
+                            {RETENTION_LINK_LABEL}
                           </a>
                         )}
                       </div>

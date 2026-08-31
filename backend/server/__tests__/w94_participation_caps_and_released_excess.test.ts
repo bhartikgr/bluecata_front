@@ -57,6 +57,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound, updateRound } from "../roundsStore";
 import { PARTICIPATION_CAP_MAX, validateParticipationCapStored } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ADMIN = "u_admin";
 const STAMP = `w94${Math.random().toString(36).slice(2, 8)}`;
@@ -106,14 +107,14 @@ async function buildCompany(
   expect(seeded.status, `seed ${tag}`).toBeLessThan(400);
   let i = 0;
   for (const c of classes) {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId, name: `${STAMP} ${tag} class${i}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: c.amount,
       pricePerShare: c.amount / c.shares, sharesAuthorized: 40_000_000,
       preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
       liquidationPreference: c.lp, seniority: c.seniority,
       ...(c.cap === undefined ? {} : { capParticipation: c.cap }),
-    });
+    }));
     expect(created.status, `round create ${tag}${i}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
     const roundId = String((created.body as { id: string }).id);
     if (c.capDirect !== undefined) {
@@ -544,16 +545,16 @@ describe("W94 · the three write fences, and the domain they share", () => {
       fdPreMoneyShares: 13_000_000, liquidationPreference: "1x participating",
     };
     const bad = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send({ ...body, name: `${STAMP} w1 bad`, capParticipation: "FULL_RATCHET" });
+      .send(w212Attest({ ...body, name: `${STAMP} w1 bad`, capParticipation: "FULL_RATCHET" }));
     expect(bad.status).toBe(400);
     expect((bad.body as { error: string }).error).toBe("invalid_capParticipation");
 
     const zero = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send({ ...body, name: `${STAMP} w1 zero`, capParticipation: 0 });
+      .send(w212Attest({ ...body, name: `${STAMP} w1 zero`, capParticipation: 0 }));
     expect(zero.status, "0 is refused rather than read as no cap").toBe(400);
 
     const good = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send({ ...body, name: `${STAMP} w1 good`, capParticipation: "2x" });
+      .send(w212Attest({ ...body, name: `${STAMP} w1 good`, capParticipation: "2x" }));
     expect(good.status).toBe(200);
     /* Readable back, NORMALISED TO A NUMBER — the same shape the other two writers
        store, so the three cannot drift (R21). */
@@ -566,12 +567,12 @@ describe("W94 · the three write fences, and the domain they share", () => {
     const companyId = `co_${STAMP}_w2`;
     await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)
       .send({ companyId, companyName: "W94 w2", legalName: "W94 w2, Inc." });
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId, name: `${STAMP} w2`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 5_000_000,
       pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000,
       fdPreMoneyShares: 13_000_000, liquidationPreference: "1x participating",
-    });
+    }));
     expect(created.status).toBe(200);
     const id = String((created.body as { id: string }).id);
 
@@ -601,12 +602,12 @@ describe("W94 · the three write fences, and the domain they share", () => {
     const companyId = `co_${STAMP}_w3`;
     await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)
       .send({ companyId, companyName: "W94 w3", legalName: "W94 w3, Inc." });
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId, name: `${STAMP} w3`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 5_000_000,
       pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000,
       fdPreMoneyShares: 13_000_000, liquidationPreference: "1x participating",
-    });
+    }));
     const id = String((created.body as { id: string }).id);
     const bad = await request(app).patch(`/api/founder/rounds/${id}`).set("x-user-id", ADMIN)
       .send({ capParticipation: "FULL_RATCHET" });

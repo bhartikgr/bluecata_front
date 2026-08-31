@@ -323,9 +323,21 @@ describe("PaymentSurface — Decimal.js cent reconciliation", () => {
     expect(a.entry.id).toBe(b.entry.id);
   });
 
-  it("softCircleRates supports 7 currencies", () => {
-    const r = softCircleRates();
-    expect(Object.keys(r).sort()).toEqual(["CAD", "CNY", "EUR", "GBP", "HKD", "SGD", "USD"]);
+  /* WAVE 184 · R156.1 — SUPERSEDED, and rewritten in place rather than deleted.
+   *
+   * This case asserted that `softCircleRates()` returned a rate for each of the
+   * seven supported currencies. Owner ruling R156.1 removed currency conversion
+   * from the platform outright — "it is up to the investor to deliver exactly in
+   * that currency" — so there is no rate map to return and the function refuses
+   * by name instead. The seven-currency fact it was really pinning still holds and
+   * is still asserted: the route reports seven SUPPORTED DENOMINATIONS. What is
+   * gone is the claim that any of them can be converted into another. */
+  it("softCircleRates no longer converts: it refuses by name (R156.1)", () => {
+    expect(() => softCircleRates()).toThrow(/CURRENCY_CONVERSION_NOT_SUPPORTED/);
+    let caught: unknown = null;
+    try { softCircleRates(); } catch (e) { caught = e; }
+    /* Never a blank and never a fabricated { USD: 1 }: the rule is stated. */
+    expect((caught as Error).message).toContain("no exchange rate");
   });
 
   it("coupon applied: net amount = amount - discount", () => {

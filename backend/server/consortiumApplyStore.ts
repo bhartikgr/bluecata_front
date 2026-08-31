@@ -73,6 +73,22 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 import { sendEmail } from "./lib/emailSender";
 import { CONSORTIUM_AGREEMENT_VERSION } from "@shared/consortiumAgreement";
+/* WAVE 217 · R190.8 · Decision A9 — the partner compliance attestation. The
+   declaration wording, the five-value regulatory-status union and the gate all
+   live in ONE shared module so the sentence the applicant READS on
+   `ConsortiumApplyPage.tsx` and the sentence this server REBUILDS and COMPARES
+   are the same bytes. The §4 quote inside it is SLICED from the signed agreement
+   by WAVE 213's `consortiumAgreementSection` helper — this wave writes no second
+   slicer and retypes no signed clause. */
+import {
+  COMPLIANCE_FIELD_ATTESTED,
+  COMPLIANCE_FIELD_EVIDENCE,
+  COMPLIANCE_FIELD_STATUS,
+  COMPLIANCE_FIELD_TEXT,
+  COMPLIANCE_FIELD_VERSION,
+  verifyComplianceAttestation,
+  type RegulatoryStatus,
+} from "@shared/wave217PartnerComplianceAttestation";
 // A8 (v24.0) — approval must also provision the partner-workspace authz records
 // (admin consortium_partner contact + owner team membership) so the approved
 // partner can actually reach /api/partner/me. requirePartnerAuth reads these.
@@ -157,6 +173,16 @@ export interface ConsortiumApplicationRow {
   agreementSignedName: string | null;
   agreementSignedAt: string | null;
   agreementSignatureHash: string | null;
+  // WAVE 217 · R190.8 — the compliance attestation, made once at registration.
+  // Additive and nullable, exactly like agreement* above, and likewise NOT part
+  // of chainPayload so the row's hash chain stays stable for every application
+  // that already exists. NULL means "this application predates the declaration",
+  // which is never read as a regulatory answer (R176.1).
+  complianceAttestedAt: string | null;
+  complianceAttestationVersion: string | null;
+  complianceAttestationText: string | null;
+  regulatoryStatus: RegulatoryStatus | null;
+  complianceEvidenceRef: string | null;
 }
 
 /* ============================================================
@@ -244,7 +270,189 @@ function rowToApp(r: any): ConsortiumApplicationRow {
     agreementSignedName: r.agreement_signed_name ?? r.agreementSignedName ?? null,
     agreementSignedAt: r.agreement_signed_at ?? r.agreementSignedAt ?? null,
     agreementSignatureHash: r.agreement_signature_hash ?? r.agreementSignatureHash ?? null,
+    // WAVE 217 — the compliance declaration. Defaulted to `null`, NOT to `""`
+    // and NOT to a status value: a pre-217 row has made no declaration, and
+    // rendering an absence as an answer is the R176.1 defect. `regulatoryStatus`
+    // is cast rather than validated here because the DB `CHECK` in migration
+    // 0222 and the HTTP gate are the two places that decide what may be stored;
+    // a reader must show what IS stored, not silently repair it.
+    complianceAttestedAt: r.compliance_attested_at ?? r.complianceAttestedAt ?? null,
+    complianceAttestationVersion:
+      r.compliance_attestation_version ?? r.complianceAttestationVersion ?? null,
+    complianceAttestationText:
+      r.compliance_attestation_text ?? r.complianceAttestationText ?? null,
+    regulatoryStatus:
+      (r.regulatory_status ?? r.regulatoryStatus ?? null) as RegulatoryStatus | null,
+    complianceEvidenceRef:
+      r.compliance_evidence_ref ?? r.complianceEvidenceRef ?? null,
   };
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 217 — MAKING MIGRATION 0222's COLUMNS EXIST, AND WHY THIS IS HERE.
+ *
+ * FOUND BY RUNNING THE TESTS, not by reasoning in advance. Two things came out of
+ * it and both changed the design:
+ *
+ *   1. This tree has TWO schema paths. `migrations/*.sql`, run by
+ *      `npm run db:migrate`, is the real one and is where 0222 lives. A separate
+ *      inline bootstrap inside `server/db/connection.ts` builds the sandbox, dev
+ *      and `:memory:` test databases. `server/db/connection.ts` is on the list of
+ *      files NO WAVE MAY TOUCH, so this wave cannot register its ALTERs there —
+ *      and WAVE 211's migration-0220 columns are absent from it for exactly the
+ *      same reason.
+ *
+ *   2. MY FIRST FIX WAS WRONG. I tried to degrade gracefully by omitting the five
+ *      keys from the drizzle `.values()` when the columns were missing. That does
+ *      nothing: drizzle names EVERY column of the declared table in its INSERT,
+ *      supplying NULL for keys the caller omitted. The insert still failed with
+ *      "table consortium_applications has no column named
+ *      compliance_attested_at". A conditional spread cannot make drizzle emit a
+ *      narrower column list, and I only learned that because `w2_consortium`
+ *      went from 3 pre-existing failures to 5.
+ *
+ * SO THE COLUMNS ARE MADE TO EXIST, idempotently, exactly as WAVE 211 does it
+ * (`server/wave211MoneyEventAttestationStore.ts`) and as the tree's
+ * `server/lib/applyWave*Schema.ts` installers do: the DDL is READ OUT OF
+ * MIGRATION 0222 rather than re-typed, so there is ONE copy of the schema
+ * change. A re-typed copy would be a second version of the migration, which is
+ * the same defect class as two legal corpora (R187.2) and two accreditation
+ * paths (R187.5).
+ *
+ * NOTHING IS DELETED and nothing is rewritten: `ADD COLUMN` on a table that
+ * already has the column is skipped, existing rows keep NULL, and NULL remains a
+ * legal `regulatory_status` so no pre-217 application is retro-refused (R195.5).
+ * Presence is INSPECTED with a PRAGMA on every call rather than cached in a
+ * module boolean, because a cached `true` would answer "already done" for a
+ * second in-memory database that has none of them.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** The five columns migration 0222 adds. The order is the migration's order. */
+const W217_COMPLIANCE_COLUMNS = [
+  "compliance_attested_at",
+  "compliance_attestation_version",
+  "compliance_attestation_text",
+  "regulatory_status",
+  "compliance_evidence_ref",
+] as const;
+
+const W217_MIGRATION_BASENAME = "0222_wave217_partner_compliance_attestation.sql";
+
+/** Both mirrors are candidates; whichever is readable is used. They are identical. */
+function w217MigrationCandidatePaths(): string[] {
+  const cwd = process.cwd();
+  return [
+    `${cwd}/server/db/migrations/${W217_MIGRATION_BASENAME}`,
+    `${cwd}/migrations/${W217_MIGRATION_BASENAME}`,
+  ];
+}
+
+/**
+ * The `ALTER TABLE … ADD COLUMN …` statements, taken from migration 0222.
+ *
+ * COMMENT LINES ARE DROPPED BEFORE ANY CONCLUSION IS DRAWN from the text: the
+ * migration's header is prose and must never be executed or matched against. The
+ * subject here is SQL, not string literals, so stripping comments is correct.
+ * Each statement is applied on its own because SQLite adds one column per ALTER
+ * and because a column that already exists must not abort the ones after it.
+ */
+function w217ReadAlterStatements(): string[] {
+  const req = createRequire(import.meta.url);
+  const fs = req("node:fs") as typeof import("node:fs");
+  let sql: string | null = null;
+  for (const p of w217MigrationCandidatePaths()) {
+    try {
+      if (fs.existsSync(p)) {
+        sql = fs.readFileSync(p, "utf8");
+        break;
+      }
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (sql == null) return [];
+  return sql
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("--"))
+    .join("\n")
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => /^ALTER\s+TABLE/i.test(s));
+}
+
+/** Which of the five the live table actually has. INSPECTED, never assumed. */
+export function wave217PresentColumns(): string[] {
+  try {
+    const info = rawDb()
+      .prepare("PRAGMA table_info('consortium_applications')")
+      .all() as Array<{ name?: string }>;
+    const have = new Set(info.map((c) => String(c.name ?? "")));
+    return W217_COMPLIANCE_COLUMNS.filter((c) => have.has(c));
+  } catch {
+    return [];
+  }
+}
+
+/** True only when ALL FIVE are present. A partial migration reads as false. */
+export function wave217StorageAvailable(): boolean {
+  return wave217PresentColumns().length === W217_COMPLIANCE_COLUMNS.length;
+}
+
+export type Wave217EnsureOutcome =
+  | { ok: true; added: string[] }
+  | { ok: false; reason: string };
+
+/**
+ * Make the five columns exist. Idempotent, and safe to call on every submit.
+ *
+ * It is called immediately before the insert rather than at module load because
+ * a module-load hook runs against whatever database existed then, and the test
+ * suite replaces the database per worker.
+ */
+export function wave217EnsureComplianceColumns(): Wave217EnsureOutcome {
+  const present = new Set(wave217PresentColumns());
+  const missing = W217_COMPLIANCE_COLUMNS.filter((c) => !present.has(c));
+  if (missing.length === 0) return { ok: true, added: [] };
+
+  const statements = w217ReadAlterStatements();
+  if (statements.length === 0) {
+    log.error(
+      `[wave217] cannot read ${W217_MIGRATION_BASENAME}; the numbered migration ` +
+        `must be applied by \`npm run db:migrate\` before partner applications ` +
+        `can record a compliance declaration.`,
+    );
+    return { ok: false, reason: `MIGRATION_NOT_READABLE:${W217_MIGRATION_BASENAME}` };
+  }
+
+  const added: string[] = [];
+  const db = rawDb();
+  for (const stmt of statements) {
+    if (!/ALTER\s+TABLE\s+consortium_applications\b/i.test(stmt)) continue;
+    const col = /ADD\s+COLUMN\s+([A-Za-z0-9_]+)/i.exec(stmt)?.[1];
+    if (col == null) continue;
+    if (!(W217_COMPLIANCE_COLUMNS as readonly string[]).includes(col)) continue;
+    if (present.has(col)) continue;
+    try {
+      db.prepare(stmt).run();
+      added.push(col);
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      /* "duplicate column name" means another caller won the race. Not a failure. */
+      if (!/duplicate column/i.test(msg)) {
+        log.error(`[wave217] ALTER failed for ${col}: ${msg}`);
+      }
+    }
+  }
+  const stillMissing = W217_COMPLIANCE_COLUMNS.filter(
+    (c) => !wave217PresentColumns().includes(c),
+  );
+  if (stillMissing.length > 0) {
+    return { ok: false, reason: `COLUMNS_MISSING:${stillMissing.join(",")}` };
+  }
+  if (added.length > 0) {
+    log.info(`[wave217] self-healed consortium_applications columns: ${added.join(", ")}`);
+  }
+  return { ok: true, added };
 }
 
 function chainPayload(a: ConsortiumApplicationRow): Record<string, unknown> {
@@ -499,6 +707,27 @@ const publicApplySchema = z.object({
   // future version bump is captured on the record.
   agreementSignedName: z.string().max(160).optional().nullable(),
   agreementVersion: z.string().max(64).optional().nullable(),
+  // ── WAVE 217 · R190.8 · Decision A9 — THE PARTNER COMPLIANCE ATTESTATION ──
+  // These five keys are declared as `z.unknown()` ON PURPOSE, and the reason
+  // matters. Zod is NOT the gate here; `verifyComplianceAttestation()` below is.
+  // If zod typed them, a forged `complianceAttested: "true"` would be rejected
+  // as a 400 `validation_failed` carrying a zod issue array, and the applicant
+  // would see a machine error instead of the sentence that tells them what to do
+  // — while the R176.1 presence-and-type-BEFORE-equality ordering would live in
+  // a schema declaration rather than in code anyone can read and test. So zod
+  // lets every shape through, and the gate does presence, then type, then — only
+  // then — the byte-for-byte equality, returning ONE named refusal code and ONE
+  // measured, human, sub-240-character message per failure.
+  // `.optional()` here does NOT mean optional in effect: the gate REFUSES a
+  // submission that omits them. See publicApplyHandler.
+  [COMPLIANCE_FIELD_ATTESTED]: z.unknown().optional(),
+  [COMPLIANCE_FIELD_TEXT]: z.unknown().optional(),
+  [COMPLIANCE_FIELD_VERSION]: z.unknown().optional(),
+  [COMPLIANCE_FIELD_STATUS]: z.unknown().optional(),
+  // The ONLY genuinely optional one. Typed, because it is stored verbatim and an
+  // over-long or non-string reference should be refused at the boundary. Its
+  // ABSENCE is never penalised: many jurisdictions issue no licence document.
+  [COMPLIANCE_FIELD_EVIDENCE]: z.string().max(200).optional().nullable(),
 });
 
 const adminReviewSchema = z.object({
@@ -573,6 +802,25 @@ export interface SubmitInput {
   // W2-I — agreement sign-off captured at application.
   agreementSignedName?: string | null;
   agreementVersion?: string | null;
+  // WAVE 217 — the compliance declaration, ALREADY VERIFIED by the caller.
+  //
+  // These are OPTIONAL AT THIS LAYER DELIBERATELY, and the reason is recorded so
+  // no later wave "tightens" it and breaks three test files and a bootstrap
+  // script for nothing. `submitApplication` is called from exactly five places:
+  // `publicApplyHandler` (the only HTTP path — both routes share it),
+  // `server/__tests__/w2_consortium.test.ts`,
+  // `server/__tests__/wave51_item4_audit_chain_writers.test.ts` (three sites) and
+  // `scripts/bootstrap_partner_fixture.ts`. None of the latter is reachable over
+  // HTTP. The GATE therefore belongs at the HTTP boundary, where untrusted input
+  // arrives, and this function stays a persister that records what it is given —
+  // the same split the existing `agreementSignedName` already uses. This is
+  // stated plainly in W217_FOR_THE_OWNER.md rather than glossed: an in-process
+  // caller can still write a row with no declaration; no web request can.
+  complianceAttestedAt?: string | null;
+  complianceAttestationVersion?: string | null;
+  complianceAttestationText?: string | null;
+  regulatoryStatus?: RegulatoryStatus | null;
+  complianceEvidenceRef?: string | null;
 }
 
 /* ============================================================
@@ -687,8 +935,37 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
     agreementSignedName: agreementSignedName || null,
     agreementSignedAt,
     agreementSignatureHash,
+    // WAVE 217 — the compliance declaration, as verified at the HTTP boundary.
+    // The TIMESTAMP is taken from THIS server's clock (`now`), never from the
+    // request: R187.1 forbids a client-supplied or fabricated observation, and a
+    // declaration timestamp the declarant controls is not evidence. It is
+    // stamped only when a declaration is actually present, so a row without one
+    // keeps NULL rather than acquiring a time at which nothing happened.
+    complianceAttestedAt:
+      typeof input.complianceAttestationText === "string" &&
+      input.complianceAttestationText.length > 0
+        ? now
+        : (input.complianceAttestedAt ?? null),
+    complianceAttestationVersion: input.complianceAttestationVersion ?? null,
+    complianceAttestationText: input.complianceAttestationText ?? null,
+    regulatoryStatus: input.regulatoryStatus ?? null,
+    // An empty evidence reference is stored as NULL, not as `""`. "They left it
+    // blank" and "they typed nothing into it" are the same fact and must have
+    // one representation, or a later reader will treat `""` as an answer.
+    complianceEvidenceRef:
+      typeof input.complianceEvidenceRef === "string" &&
+      input.complianceEvidenceRef.trim().length > 0
+        ? input.complianceEvidenceRef.trim()
+        : null,
   };
   draft.currHash = computeHash(null, chainPayload(draft));
+
+  // WAVE 217 — make migration 0222's five columns exist before the insert names
+  // them. Idempotent, inspected rather than cached, and OUTSIDE the transaction
+  // because SQLite DDL inside a transaction that later rolls back leaves the
+  // schema in a state neither branch expects. See the installer's comment for why
+  // this is here rather than in the untouchable `server/db/connection.ts`.
+  wave217EnsureComplianceColumns();
 
   const db = getDb();
   db.transaction((tx: any) => {
@@ -726,6 +1003,17 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
         agreementSignedName: draft.agreementSignedName,
         agreementSignedAt: draft.agreementSignedAt,
         agreementSignatureHash: draft.agreementSignatureHash,
+        // WAVE 217 — persisted on the SAME insert, inside the SAME transaction as
+        // the application itself. Not a follow-up write: a declaration that could
+        // fail independently of the application it belongs to would let a row
+        // exist whose applicant is recorded as having declared nothing.
+        // Migration 0222 adds these columns; its `CHECK` on `regulatory_status`
+        // is the last line of defence if a future caller bypasses the gate.
+        complianceAttestedAt: draft.complianceAttestedAt,
+        complianceAttestationVersion: draft.complianceAttestationVersion,
+        complianceAttestationText: draft.complianceAttestationText,
+        regulatoryStatus: draft.regulatoryStatus,
+        complianceEvidenceRef: draft.complianceEvidenceRef,
       })
       .run();
   });
@@ -741,6 +1029,19 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
       organizationName: draft.organizationName,
       partnerType: draft.partnerType,
       expectedChapter: draft.expectedChapter,
+      // WAVE 217 — the declaration's facts APPENDED to the EXISTING audit entry
+      // (R143.1: append static siblings, never replace a literal). No second
+      // audit path and no second audit writer: `appendAdminAudit` is the one the
+      // platform already uses, wave 186 settled that, and this call site is the
+      // one that already existed. The audit records the VERSION, the STATUS, the
+      // JURISDICTION and WHETHER a declaration is present — not the 639-character
+      // sentence, which is already stored verbatim on the row itself and would
+      // bloat every audit page that renders this entry.
+      complianceAttested: draft.complianceAttestedAt !== null,
+      complianceAttestationVersion: draft.complianceAttestationVersion,
+      regulatoryStatus: draft.regulatoryStatus,
+      jurisdiction: draft.jurisdiction,
+      complianceEvidenceProvided: draft.complianceEvidenceRef !== null,
     },
   );
   ssePublish(draft.expectedChapter || "_global", "consortium-apply", {
@@ -1833,6 +2134,65 @@ export function registerConsortiumApplyRoutes(app: Express): void {
       res.status(400).json({ error: "captcha_failed" });
       return;
     }
+
+    /* ═════════════════════════════════════════════════════════════════════════════
+     * WAVE 217 · R190.8 · Decision A9 — THE PARTNER COMPLIANCE GATE.
+     *
+     * SERVER-ENFORCED, NOT A DISABLED BUTTON. Before this wave the ONLY gate on
+     * the acknowledgement was `disabled={submitting || !agreementAccepted ||
+     * !agreementSignedName.trim()}` on `ConsortiumApplyPage.tsx:484` — a client
+     * expression, which a `curl` does not run. A direct POST with no tick and no
+     * name returned 201 on BOTH `/api/public/consortium/apply` and
+     * `/api/consortium-applications`; that was measured and captured before this
+     * code existed (W217_TESTS.md §1).
+     *
+     * It sits HERE, in the one handler both public POST paths share
+     * (`app.post` × 2 below, same `publicApplyHandler`), so the alias cannot be
+     * used to walk around it. That is why it is not duplicated per route.
+     *
+     * WHAT IT DOES NOT GATE, and this is the more important half:
+     *   · It does NOT touch `requireSignedAgreement` (server/lib/
+     *     requireSignedAgreement.ts), which is mounted at 96 partner WRITE sites.
+     *     Adding the declaration as a precondition there would have 403'd every
+     *     ALREADY-REGISTERED partner's writes the instant it deployed, because no
+     *     existing partner has made a declaration that did not exist yesterday.
+     *     The owner said "do not break anything", and trapping a partner out of
+     *     their own account is far worse than a missing declaration for one more
+     *     day. Refused deliberately; escalated to the owner as HIS decision
+     *     (W217_FOR_THE_OWNER.md, "the one thing I did not do").
+     *   · It gates NO login, NO settings, NO reading and NO existing partner's
+     *     ordinary work. It gates exactly one thing: creating a NEW consortium
+     *     partner application. Tests drive login and ordinary partner work with
+     *     this gate live and assert both still complete.
+     * ════════════════════════════════════════════════════════════════════════════ */
+    const compliance = verifyComplianceAttestation({
+      organizationName: body.organizationName,
+      // The declaration NAMES the person making it, so it cannot be recorded
+      // without a name. This is what finally makes the typed legal name
+      // server-required at registration — the pre-existing schema kept it
+      // `.optional().nullable()` on purpose and that stays true for internal
+      // callers; the gate is what requires it over HTTP.
+      signedName: body.agreementSignedName,
+      attested: body[COMPLIANCE_FIELD_ATTESTED],
+      text: body[COMPLIANCE_FIELD_TEXT],
+      version: body[COMPLIANCE_FIELD_VERSION],
+      status: body[COMPLIANCE_FIELD_STATUS],
+    });
+    if (!compliance.ok) {
+      // 422, not 400: the request is well-formed and understood, and it is the
+      // DECLARATION that is missing or wrong. A `validation_failed` 400 with a
+      // zod issue array would have told the applicant nothing they could act on.
+      // `message` is built through `fitToGate()` in the shared module and its
+      // length is asserted in a test, because `client/src/lib/queryClient.ts`
+      // silently drops any server message that is not shorter than 240
+      // characters and has swallowed real refusals four times.
+      res.status(422).json({
+        error: compliance.code,
+        message: compliance.message,
+      });
+      return;
+    }
+
     let row: ConsortiumApplicationRow;
     try {
       row = submitApplication({
@@ -1855,6 +2215,17 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
         agreementSignedName: body.agreementSignedName,
         agreementVersion: body.agreementVersion ?? null,
+        // WAVE 217 — the VERIFIED values only. `compliance.text` is the sentence
+        // this SERVER rebuilt from the shared constant, not the string the client
+        // sent: the two are already proven byte-identical by the gate above, and
+        // persisting the server's own copy means a future change to the gate can
+        // never leave a client-authored sentence in the database.
+        complianceAttestationText: compliance.text,
+        complianceAttestationVersion: compliance.version,
+        regulatoryStatus: compliance.status,
+        // OPTIONAL, and never checked for presence — many jurisdictions issue no
+        // licence document and an exempt partner has nothing to give.
+        complianceEvidenceRef: body[COMPLIANCE_FIELD_EVIDENCE] ?? null,
       });
     } catch (err) {
       log.error("[consortium.apply] submit failed:", err);

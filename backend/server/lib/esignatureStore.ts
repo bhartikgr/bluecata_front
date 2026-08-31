@@ -766,6 +766,28 @@ export function recordSignature(input: {
   ipAddress?: string | null;
   userAgent?: string | null;
   actor?: string | null;
+  /**
+   * WAVE 216 — ADDED BESIDE, NEVER INTO THE HASH (handbook §4.6/§4.7).
+   *
+   * The signer's express intent and consent, and the digest of the exact statement
+   * bytes their screen showed. It is written to the EXISTING append-only
+   * `esign_event` row for this signature, in its EXISTING `detail_json` column.
+   *
+   * IT IS DELIBERATELY NOT AN INPUT TO `signatureHash` OR TO THE COMPLETION CHAIN.
+   * Both of those are hash-chained records over stored columns; adding a field to
+   * either construction would change the digest EVERY HISTORICAL SIGNATURE
+   * re-derives, and every signature already written would stop verifying against
+   * its own stored hash. The join array below is therefore byte-untouched by this
+   * wave, and `w216_historical_signature_still_verifies` proves it.
+   *
+   * Optional, so every existing caller compiles and behaves identically.
+   */
+  intent?: {
+    version: string;
+    intentText: string;
+    consentText: string;
+    statementSha256: string;
+  } | null;
 }): { envelope: EnvelopeRow; recipient: RecipientRow; completed: boolean } {
   requireSchema();
   const env = getEnvelope(input.envelopeId);
@@ -837,7 +859,20 @@ export function recordSignature(input: {
       recipientId: input.recipientId,
       eventKind: me.role === "countersigner" ? "recipient.countersigned" : "recipient.signed",
       actor: input.actor ?? me.email,
-      detail: { signingOrder: me.signingOrder, signatureHash },
+      /* WAVE 216 — the intent keys are APPENDED to the detail this event has
+         always carried. When there is no intent the keys are absent rather than
+         present-and-empty: an empty consent string in an evidence record would
+         read as "they consented to nothing", which is worse than silence. */
+      detail: input.intent
+        ? {
+            signingOrder: me.signingOrder,
+            signatureHash,
+            intentVersion: input.intent.version,
+            intentText: input.intent.intentText,
+            consentText: input.intent.consentText,
+            statementSha256: input.intent.statementSha256,
+          }
+        : { signingOrder: me.signingOrder, signatureHash },
     });
   });
   tx();

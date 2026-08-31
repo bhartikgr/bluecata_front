@@ -41,6 +41,7 @@ import {
 } from "../lib/roundMathDisclosureStore";
 import { updatePlatformConfigValue } from "../lib/platformConfigWriter";
 import { WAVE52B_TABLES } from "../lib/applyWave52bRoundMathSchema";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const STAMP = String(Date.now());
@@ -77,7 +78,7 @@ async function createRound(payload: Record<string, unknown>): Promise<string> {
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
     /* openDate + closeDate are mandatory server-side (W3 Shadie 1a). */
-    .send({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload });
+    .send(w212Attest({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload }));
   if (res.status !== 200) throw new Error(`createRound failed ${res.status} ${JSON.stringify(res.body)} for ${JSON.stringify(payload)}`);
   expect(res.body.ok).toBe(true);
   return res.body.id as string;

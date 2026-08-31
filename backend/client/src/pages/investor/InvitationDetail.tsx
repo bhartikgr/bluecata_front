@@ -73,6 +73,14 @@ import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { useEffect } from "react";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
+/* WAVE 209 · ITEM A §209.2(d) (decision B1; R187.1) — the signature record used
+ * to carry an invented RFC 5737 address. It now carries the explicit
+ * "not captured" sentinel, and this surface says so in words rather than
+ * leaving the reader to guess. */
+import {
+  signerAddressDisplay,
+  SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE,
+} from "@/lib/esign/wave209SignerMetadata";
 import { useTermSheetStore } from "@/lib/termsheet/store";
 import { useEntitlement } from "@/lib/entitlement";
 import { apiRequest, ApiError } from "@/lib/queryClient";
@@ -1525,6 +1533,12 @@ export default function InvitationDetail() {
          <div className="flex items-center gap-1.5 text-xs font-mono" data-testid="text-softcircle-hash">
           <Hash className="h-3 w-3" /> Verifiable hash: <span className="break-all">{mySig.signature.hash}</span>
          </div>
+         {/* WAVE 209 · ITEM A §209.2(d) — APPENDED SIBLINGS. No existing literal on
+             this card is touched (R143.1). */}
+         <div className="flex items-center gap-1.5 text-xs font-mono" data-testid="text-softcircle-signer-address">
+          <Hash className="h-3 w-3" /> Signer network address: <span className="break-all">{signerAddressDisplay(mySig.signature.ipAddress)}</span>
+         </div>
+         <div className="text-xs text-muted-foreground" data-testid="text-softcircle-address-not-captured">{SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE}</div>
          <div className="text-xs text-muted-foreground">You can withdraw before {fmtDate(i.expiresAt)} by clicking <strong>Withdraw soft-circle</strong>.</div>
          <Button size="sm" variant="outline" onClick={() => {
           saveSoftCircleSig({ ...mySig, withdrawn: true });

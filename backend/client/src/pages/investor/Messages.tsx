@@ -38,6 +38,9 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessagesPage } from "@/components/comms/MessagesPage";
 import { MessagingAudienceNotice } from "@/components/comms/MessagingAudienceNotice";
+/* WAVE 189 · ITEM B · R159.6 clause 3 — "Tell the LP." The investor reads their
+   thread here, so the fact that the thread is a FIRM record is stated here. */
+import { LpThreadFirmVisibilityNotice } from "@/components/comms/LpThreadFirmVisibilityNotice";
 import { CommsTiersTabs } from "@/components/comms/CommsTiersTabs";
 import { CommsTierActionsPanel } from "@/components/comms/CommsTierActionsPanel"; /* WAVE 18 ORP-043 */
 import { PageHeader } from "@/components/AppShell";
@@ -223,6 +226,11 @@ export default function Messages() {
       {/* WAVE 33 CP-MSG-01 — sibling at the END; same shared audience notice as
           the partner and founder Messages pages. */}
       <MessagingAudienceNotice className="mt-4" />
+      {/* WAVE 189 · ITEM B · R159.6 clause 3 — ADDITIVE SIBLING at the end, beside
+          the audience notice and replacing no existing node. Renders only when the
+          server confirms a partner firm is actually on the other side of one of this
+          investor's own conversations, so it can never state something untrue. */}
+      <LpThreadFirmVisibilityNotice className="mt-3" />
     </div>
   );
 }

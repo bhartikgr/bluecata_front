@@ -52,6 +52,14 @@ import {
   PUBLIC_MARKET_COMPS,
   type PublicMarketComp,
 } from "./lib/maPublicComps";
+// WAVE 225 · R193.2 — the provenance gate for comparable-transaction data.
+import {
+  compsProvenanceVerdict,
+  compsProvenanceStatement,
+  COMPS_PROVENANCE_STATUS_VERIFIED,
+  COMPS_PROVENANCE_STATUS_NONE_HELD,
+  type CompsProvenanceVerdict,
+} from "./lib/wave225CompProvenance";
 import { type MaPrivacy } from "@shared/schema";
 import { log } from "./lib/logger";
 
@@ -321,19 +329,66 @@ export interface MaCompRow {
   revenueMultiple: number | null;
   sector: string;
   region: string;
+  /**
+   * WAVE 225 — MISNAMED, AND THE NAME WAS PART OF THE MISSTATEMENT.
+   *
+   * This is NOT the source of the transaction figure. It is a Capavate company
+   * in the caller's own scope that happens to share the comparable's sector
+   * string, or an anonymised sector label. Rendered under a column headed
+   * "Source", it manufactured provenance for figures that had none — which is
+   * harder to catch than no provenance at all, because the column looks
+   * answered. Handbook §10 ("a label is not evidence"), §10.6 ("a field name is
+   * not a specification").
+   *
+   * Retained for shape compatibility. The real provenance now travels in
+   * `transactionSource` / `transactionSourceDate` below, and no row is emitted
+   * without them.
+   */
   sourceAttribution: string;
+  /** WAVE 225 — where the transaction figure came from. Never empty on an emitted row. */
+  transactionSource: string;
+  /** WAVE 225 — ISO date on which `transactionSource` reported it. Never empty on an emitted row. */
+  transactionSourceDate: string;
 }
 export interface MaCompsResponse {
   asOfDate: string;
   totalRecords: number;
   exits: MaCompRow[];
+  /**
+   * WAVE 225 · R193.2 — so that a consumer cannot read "empty" as "zero".
+   *
+   * An empty `exits` array is ambiguous on its own: it could mean no comparable
+   * matched the caller's scope or filters, or it could mean the platform holds
+   * no verified comparable-transaction data at all. Those are very different
+   * facts and a downstream reader that conflated them could compute a median
+   * comparable multiple of zero — reinventing the R143.4 defect one system
+   * away. This field states which it is, explicitly.
+   */
+  compsProvenance: CompsProvenanceVerdict;
 }
 
 /**
- * Comparable exits are PUBLIC market comps (real, observable acquisitions),
- * matched to the sectors present in the caller's compsScope. Per the brief,
- * they aggregate regardless of opt-in; attribution is anonymized for any
- * company that has NOT opted into Collective-wide sharing.
+ * Comparable exits, matched to the sectors present in the caller's compsScope.
+ *
+ * WAVE 225 · R193.2 — this docstring previously read "Comparable exits are
+ * PUBLIC market comps (real, observable acquisitions)". That was not
+ * supportable and is corrected here: the library behind this view records no
+ * source and no source date for any of its rows.
+ *
+ * Every candidate now passes through the provenance gate before it can be
+ * emitted, so a row reaches an investor only if the platform can say where its
+ * figures came from and when. Today ZERO rows qualify, and the response carries
+ * an explicit refusal verdict rather than an ambiguous empty list.
+ *
+ * The sector/date filtering below is unchanged and still applies — but note the
+ * order: provenance is decided FIRST. A row that cannot be sourced is not
+ * withheld "because of your scope"; it is withheld because it is unsourced, and
+ * the caller is told so.
+ *
+ * Per the brief, comps aggregate regardless of opt-in; `sourceAttribution` is
+ * anonymized for any company that has NOT opted into Collective-wide sharing.
+ * That field is about privacy, not about where a figure came from — see the
+ * note on MaCompRow.sourceAttribution.
  */
 export function viewComps(
   compsScope: ScopedCompany[],
@@ -351,8 +406,14 @@ export function viewComps(
     }
   }
 
+  // WAVE 225 — the gate. `emitted` is the subset of PUBLIC_MARKET_COMPS that
+  // carries BOTH a source and a real source date. The nine legacy rows carry
+  // neither, so `emitted` is empty and the loop below runs zero times. The array
+  // itself is untouched and nothing is deleted — it is simply not emittable.
+  const { emitted, verdict } = compsProvenanceVerdict(PUBLIC_MARKET_COMPS);
+
   const exits: MaCompRow[] = [];
-  for (const comp of PUBLIC_MARKET_COMPS) {
+  for (const comp of emitted) {
     if (!sectorsPresent.has(comp.sector)) continue;
     if (filters.sector && comp.sector !== filters.sector) continue;
     if (filters.dateFrom && comp.date < filters.dateFrom) continue;
@@ -369,13 +430,42 @@ export function viewComps(
       sourceAttribution: attributedCompany
         ? attributedCompany
         : `Anonymous (sector: ${comp.sector})`,
+      // WAVE 225 — guaranteed non-empty: the gate above admitted this row only
+      // because both were present. The `?? ""` satisfies the optional type and
+      // is unreachable for an emitted row.
+      transactionSource: comp.source ?? "",
+      transactionSourceDate: comp.sourceDate ?? "",
     });
   }
   exits.sort((a, b) => b.date.localeCompare(a.date) || b.valuationUsd - a.valuationUsd);
   return {
-    asOfDate: exits.length ? newestIso(exits.map((e) => e.date)) : new Date().toISOString(),
+    /* WAVE 225 — was `: new Date().toISOString()`. Two problems, both fixed by
+       the same change. (1) HONESTY: an "as of <now>" stamp on a response that
+       carries no comparable transactions asserts the comparables set is current
+       as of this instant. It is not current as of anything — the platform holds
+       no verified transaction at all. (2) DETERMINISM: it made two identical
+       requests differ byte-for-byte, which the owner's brief requires them not
+       to. An empty string is the absence of an as-of date, which is the truth.
+       Verified before changing: no client reads `asOfDate` on the comps view —
+       `client/src/pages/collective/MaIntel.tsx` declares it on `CompsResponse`
+       and never renders it — so no screen loses a date it was displaying. */
+    asOfDate: exits.length ? newestIso(exits.map((e) => e.date)) : "",
     totalRecords: exits.length,
     exits,
+    // WAVE 225 — recomputed from what actually survived scope/date filtering, so
+    // the statement matches the payload rather than the pre-filter candidate set.
+    compsProvenance:
+      exits.length === verdict.verified
+        ? verdict
+        : {
+            status:
+              exits.length > 0
+                ? COMPS_PROVENANCE_STATUS_VERIFIED
+                : COMPS_PROVENANCE_STATUS_NONE_HELD,
+            verified: exits.length,
+            heldUnsourced: verdict.heldUnsourced,
+            statement: compsProvenanceStatement(exits.length, verdict.heldUnsourced),
+          },
   };
 }
 
@@ -394,8 +484,23 @@ export interface MaBenchmarkSector {
     growthRate: number;
     marketShare: number;
     managementTeamStrength: number;
-    revenueMultipleLow: number;
-    revenueMultipleHigh: number;
+    /**
+     * WAVE 225 · R143.4 — `number | null`, and it is ALWAYS null today.
+     *
+     * These two used to be emitted as the literal `0`, with a code comment
+     * calling that "transparent". It was not: the Benchmarks tab renders
+     * `medians[key]` straight into columns headed "Rev × Low" and "Rev × High",
+     * so an accredited investor read a measured median revenue multiple of
+     * ZERO for every sector. No revenue-multiple range is stored at profile
+     * Step 4, so the platform holds no such figure at all.
+     *
+     * "Capavate will not show a zero total for a figure it does not hold."
+     * `null` means not held, and the client renders the not-held treatment
+     * instead of a number.
+     */
+    revenueMultipleLow: number | null;
+    /** WAVE 225 · R143.4 — see revenueMultipleLow. Always null today. */
+    revenueMultipleHigh: number | null;
   } | null;
 }
 export interface MaBenchmarksResponse {
@@ -436,9 +541,14 @@ export function viewBenchmarks(
         growthRate: median(intels.map((i) => i.growthRate)),
         marketShare: median(intels.map((i) => i.marketShare)),
         managementTeamStrength: median(intels.map((i) => i.managementTeamStrength)),
-        // No revenue-multiple range stored at Step 4 → 0 (transparent).
-        revenueMultipleLow: 0,
-        revenueMultipleHigh: 0,
+        // WAVE 225 · R143.4 — these were `0`, described in the removed comment
+        // as "transparent". A zero rendered under "Rev × Low" is not
+        // transparent; it is a measurement claim the platform cannot make. No
+        // revenue-multiple range is stored at Step 4, so the honest value is
+        // "not held" — null — and the client shows the not-held treatment.
+        // Do not restore a zero, and do not substitute an estimate.
+        revenueMultipleLow: null,
+        revenueMultipleHigh: null,
       },
     });
   }

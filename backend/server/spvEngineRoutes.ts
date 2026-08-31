@@ -29,6 +29,18 @@ import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
  * record. Reuse the ONE hardened, fail-closed resolver instead of a local copy. */
 import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+import {
+  partnerMayAttributeSpvToCompany,
+  SPV_TARGET_COMPANY_NOT_YOURS,
+  SPV_TARGET_COMPANY_NOT_YOURS_MESSAGE,
+} from "./lib/partnerCompanyLinkGate"; /* WAVE 179 · ITEM A · R151.1 — the shared six-proof partner↔company predicate */
+/* WAVE 193 · ITEM B · R165.4 — the accept-list of keys the vehicle PATCH actually
+   applies, so the route can no longer answer 200 for a change the store drops. */
+import {
+  assertSpvPatchFullyApplied,
+  isSpvPatchUnappliedError,
+} from "./lib/spvVehiclePatchApplicability";
+import { getSpvLegalForm, setSpvLegalForm } from "./spvLegalFormStore"; /* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal-form annotation, off the vehicle's own write path */
 /* WAVE 154 · ITEM K — the SPV eligibility gate: every company an SPV invests
    into must hold a current paid Capavate membership before the vehicle may be
    created/launched or take money in (R116.3). */
@@ -70,9 +82,35 @@ import {
      and the builder the lp-commit route uses to attach the same split to the
      audit record and the response. */
   isSpvCapRefusalError,
+  /* WAVE 182 · ITEM A · R152 — the closed-vehicle refusal and the shared gate the
+     lp-commit route runs BEFORE it writes anything. */
+  isSpvClosedToNewCapitalError,
+  assertSpvOpenToNewCapital,
   spvCapSplitFiguresForSpv,
+  /* WAVE 193 · ITEM A.5 · R165.1 — the mixed-currency committed-total refusal, so
+     the five guarded totals reach a GP as a stated fact rather than a 500. */
+  isSpvMixedCurrencyTotalError,
 } from "./spvEngineStore";
+/* WAVE 189 · ITEM C · R159.6 — the attestation gate and its refusal, imported from
+   the same module the store sinks use so the route boundary and the store cannot
+   come to disagree about whether a vehicle is attested. */
+/* WAVE 192 · ITEM B1 · R164.3 — `isSpvAttestationUnreadableError` added to the
+   import this file ALREADY had, so the fail-CLOSED refusal is served from the same
+   module as the fail-open one it replaces. */
+import {
+  assertSpvAttestedForNewCapital,
+  isSpvUnattestedDraftError,
+  isSpvAttestationUnreadableError,
+} from "./lib/spvAttestationGate";
+/* WAVE 176 · ITEM B · R147.3(1) — the SAME sentence builder the store uses for the
+   durable `_targetOverages` record, so the warning a partner reads on screen and
+   the warning attached to the record cannot be worded differently. */
+import { spvTargetRaiseWarningSentence } from "@shared/spvCapSplitDisclosure";
 import { appendAdminAudit, isAuditWriteFailure } from "./adminPlatformStore";
+/* WAVE 186 · R159.1 — the two SPV lifecycle writers wave 181 specified and
+   deferred (W181_BUILD.md §5.1). They live in the shared writer module so the
+   actor-resolution rule and the sentinel check are enforced in ONE place. */
+import { auditSpvLpCommitted, auditSpvLpInvited } from "./lib/spvLifecycleAudit";
 import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNKNOWN } from "./lib/percentPolicy";
 /* WAVE 170 · R77 — the opaque support reference for a refusal with no copy, and
    the logger that joins it to the internal code (R77 permits the code in a log). */
@@ -117,6 +155,18 @@ import {
 } from "../shared/spvEngine";
 // WAVE 166 · ITEM D (D-4) — the alias-aware viewer identity set.
 import { viewerInvestorIds } from "./lib/lpIdentityBinding";
+/* WAVE 211 — the partner money gate. Text lives in shared/, capture lives in the
+   store, and this is the one entry point the routes call. */
+import {
+  wave211Preflight,
+  wave211RecordAfter,
+  wave211AuditAttestation,
+} from "./lib/wave211MoneyEventGate";
+import { W211_EVENT_NOUN_DISTRIBUTION } from "../shared/wave211MoneyEventAttestation";
+/* WAVE 227 / ITEM 1 — G6's writer fence. Imported FROM the one accreditation
+   mechanism rather than reimplemented here, so this route cannot drift into being
+   a second mechanism with its own idea of what a jurisdiction is. */
+import { accreditationAssertionRefusal } from "./investorComplianceRoutes";
 
 const WRITE_ROLES = ["managing_partner", "associate", "bd"] as const;
 
@@ -367,6 +417,111 @@ function err(res: Response, e: unknown): Response {
       capSplit: e.capSplit,
     });
   }
+  /* ═════════════════════════════════════════════════════════════════
+     WAVE 182 · ITEM A · R152 / R149.2 — THE CLOSED-VEHICLE REFUSAL, IN WORDS.
+     ═════════════════════════════════════════════════════════════════
+     409, NOT 400, and the reasoning is the one already written for
+     `FUNDS_CONFIRMATION_REQUIRES_COMMITMENT` and `ILLEGAL_SUBSCRIPTION_TRANSITION`
+     above: the request is well formed and the vehicle is real — it is the
+     VEHICLE'S CURRENT STATE that forbids the write.
+
+     `error` is the machine code `SPV_CLOSED_TO_NEW_LPS`, so a support ticket can
+     still be keyed on it (R44: add, do not substitute). What a general partner
+     READS is `message`/`guidance`, which name the vehicle, state that it is closed
+     to new limited partners, state that funds already committed can still be
+     confirmed, and state that it can be reopened for a rolling close. R152 item 3:
+     NEVER an all-capitals underscore code on screen.
+
+     Placed BEFORE the generic copy lookup below so this branch owns the code and
+     no static fallback sentence can shadow the vehicle's own name. */
+  if (isSpvClosedToNewCapitalError(e)) {
+    return res.status(409).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      closedToNewLps: { reason: e.closedReason },
+    });
+  }
+  /* WAVE 189 · ITEM C · R159.6 — THE UNATTESTED-DRAFT REFUSAL, IN WORDS.
+
+     Same shape and same placement reasoning as the closed-vehicle branch directly
+     above, and for the same owner requirement (R159.6 item 4): a refusal must be a
+     STATED FACT, never an ALL-CAPS underscore code on screen. The machine code stays
+     in `error` so no existing assertion on a code changes; the sentence the general
+     partner actually reads is `message` (short enough to survive the 240-character
+     `looksHuman` gate in `client/src/lib/queryClient.ts`) and the unabridged version
+     is `guidance`.
+
+     409 CONFLICT, not 403: the request was authorised and well-formed, and the
+     vehicle's state is what conflicts with it — the same status the close refusal
+     uses, for the same reason. `attestation.required` says which fact is missing and
+     `attestation.attaching` says which of the three kinds of capital was refused,
+     so a caller never has to parse the prose. */
+  if (isSpvUnattestedDraftError(e)) {
+    return res.status(409).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      attestation: { required: true, attaching: e.attachKind },
+    });
+  }
+  /* WAVE 192 · ITEM B1 · R164.3 — AND THE CASE WHERE THE PLATFORM CANNOT TELL.
+
+     `spvIsAttested` used to return `true` — ATTESTED — whenever
+     `spv_launch_signoffs` could not be read. That is a fail-OPEN on the gate wave
+     189 had just built: an unreadable table reported every vehicle attested and
+     let capital attach to an unattested draft, while reporting success. It now
+     refuses, and the refusal NAMES what could not be read.
+
+     REPORTED SEPARATELY from the branch above, not folded into it, because the
+     remedies differ: an unattested draft is fixed by a general partner signing,
+     an unreadable table by an operator restoring it. Telling a GP to sign an
+     attestation they may already have signed would be a false statement.
+     `attestation.unreadable` distinguishes the two for a caller without parsing
+     prose. Same 409 and same body shape — a refusal is a refusal. */
+  /* WAVE 193 · ITEM B · R165.4 — THE DROPPED-FIELD REFUSAL, IN WORDS.
+
+     400, not 409: the body itself asks for something this endpoint does not do,
+     so it is the REQUEST that is wrong, not the vehicle's state. Same body shape
+     as the four branches above — the machine code stays in `error` so nothing that
+     keys on a code changes (R44: add, do not substitute), `message` is the short
+     headline that survives `queryClient.ts`'s 240-character `looksHuman` gate, and
+     `guidance` is the unabridged sentence. `unappliedFields` names the offending
+     keys machine-readably so a caller never parses prose. NEVER an all-caps
+     underscore code on screen (R152 item 3 / R165.4). */
+  if (isSpvPatchUnappliedError(e)) {
+    return res.status(400).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      unappliedFields: e.unappliedFields,
+    });
+  }
+  /* WAVE 193 · ITEM A.5 · R165.1 — THE MIXED-CURRENCY TOTAL REFUSAL, IN WORDS.
+
+     A vehicle whose commitments are recorded in two different currencies has no
+     committed total, no ownership-percentage denominator and no contributed base,
+     because Capavate converts no currency (R156.1). 409, like the closed-vehicle
+     and unattested-draft branches above and for the same reason: the request is
+     well formed and authorised, and it is the VEHICLE'S RECORDED STATE that
+     forbids answering. `mixedCurrency` names which figure refused and which codes
+     were found, so a caller need not parse the sentence. */
+  if (isSpvMixedCurrencyTotalError(e)) {
+    return res.status(409).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      mixedCurrency: { total: e.totalName, statedCurrencies: e.statedCurrencies },
+    });
+  }
+  if (isSpvAttestationUnreadableError(e)) {
+    return res.status(409).json({
+      error: msg,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      attestation: { required: true, attaching: e.attachKind, unreadable: true },
+    });
+  }
   /* Every OTHER code this module can raise that HAS plain-language copy gets the
      sentence attached too. `error` is untouched, so no existing assertion on the
      code changes; a body that previously carried only a code now also carries
@@ -509,6 +664,202 @@ function assertGpCommitInDomain(terms: unknown): void {
   }
 }
 
+/* ══ WAVE 179 · ITEM C · R151.2 — ONE ROSTER PAYLOAD, TWO REPRESENTATIONS ════
+   R151.2 is explicit that an export which disagrees with the screen is worse than
+   no export. The only way to guarantee they agree is for both to be the SAME
+   computation, so the GP LP-roster handler's body is LIFTED HERE VERBATIM and the
+   handler now returns it. The JSON route's response is byte-for-byte what it was;
+   the CSV export in `server/partnerExportRoutes.ts` calls this same function and
+   formats its rows. Nothing is re-derived and no figure is recomputed anywhere.
+
+   `ctx.partnerId` became the `partnerId` argument; that is the only edit. */
+export function buildPartnerLpRosterPayload(
+  partnerId: string,
+  spvId: string,
+  spv: { lpVisibility?: string | null },
+) {
+    const subs = spvEngineStore.listSubscriptions(partnerId, spvId);
+    const names = resolveDisplayNames(subs.map((s) => s.investorId));
+    /* WAVE 106 — READ-TIME IDENTITY REPAIR.
+     *
+     * `resolveDisplayNames` can only resolve an id that belongs to a platform
+     * user. An off-platform LP seated by the commit form carries a derived
+     * `ext_<hash-of-email>` id, which resolves to nothing, and the resolver's
+     * fallback then printed the literal "Pending member" — an anonymous row
+     * holding real money, next to an unrelated "invited" row for the same
+     * human. The LP identity register (spv_lp_invite) holds the name and email
+     * that were actually typed, keyed by the SAME derivation, so the money can
+     * be put back on the person here. This also repairs rows written before
+     * this wave, which is why it is a read and not a migration. */
+    const identities = lpIdentitiesByInvestorId(partnerId, spvId);
+    const total = subs
+      .filter((s) => s.status !== "withdrawn")
+      .reduce((a, s) => a + s.commitmentMinor, 0);
+    /* ══════════════════════════════════════════════════════════════
+       WAVE 161 · BATCH 3 ITEM A (A20/A21) — THE GP ROSTER'S DENOMINATOR.
+       ══════════════════════════════════════════════════════════════
+       `total` above sums EVERY non-withdrawn subscription, and `ownershipPct`
+       divides by it, so a committed LP's ownership was diluted by other
+       people's non-binding indications. The row already carried `status`, so
+       the STAGE was visible — the PERCENTAGE never was.
+
+       `ownershipPct` keeps its exact value (no client render changes, R44:
+       add). What is added: the same figure under an honest name, the
+       confirmed-capital share (`null`, not 0, for a row that is not committed),
+       the stage in words, and the vehicle-level split so the GP can see how
+       much of what is listed is actually capital. */
+    const rosterSplit = spvStageSplit(subs);
+    /* ══════════════════════════════════════════════════════════════════
+       WAVE 182 · ITEM B · R152.3 — "CONFIRMED" WAS NEVER SAYABLE FROM THIS PAYLOAD.
+       ══════════════════════════════════════════════════════════════════
+       THE DEFECT IS VOCABULARY, NOT WORKFLOW. The two-step flow — commit, then
+       confirm funds received — is CORRECT and is not changed by one line of this
+       wave. What was wrong is that the roster read "Committed" both BEFORE and
+       AFTER the general partner confirmed the wire, so the register could not tell
+       a promise from money in the account.
+
+       ALREADY DERIVABLE — SO THIS IS A DISPLAY FIX, NOT A SCHEMA CHANGE. The state
+       has been persisted all along, in `terms._fundsConfirmations` keyed by
+       investor id, and `spvEngineStore.confirmedByInvestor` is the read-only getter
+       that already existed for it. No column, no table, no migration.
+
+       PRESENCE, NOT AMOUNT. The question this answers is "has the general partner
+       confirmed receipt for this limited partner", and a confirmation recorded for
+       a zero or short receipt is still a confirmation (`computeFundsConfirmation`
+       flags a mismatch and never blocks). Reading the amount to answer a yes/no
+       question would introduce a money comparison for nothing.
+
+       NOTHING IS WRITTEN. This wave does not touch `confirmFundsReceived`, and it
+       performs no `terms` merge — which is the whole point of reading through the
+       existing getter rather than reaching into the blob: a one-level-deep merge
+       mistake here would delete `_fundsConfirmations` and break every K-1.
+
+       ADDITIVE. `fundsConfirmed` is a NEW key beside the existing ones; `status`,
+       `stage`, `stageLabel` and `isConfirmedCapital` keep their exact names, values
+       and meanings, so no existing reader (including wave 179's CSV export, which
+       shares this builder) can trip on it. */
+    const fundsConfirmedInvestorIds = new Set(
+      Object.keys(spvEngineStore.confirmedByInvestor(partnerId, spvId)).map((k) => String(k).trim()),
+    );
+    const subscribers = subs.map((s) => {
+      const idn = names.get(String(s.investorId).trim());
+      const identity = identities.get(String(s.investorId).trim());
+      const identityName = identity ? lpInviteDisplayName(identity) : null;
+      /* `resolveDisplayNames` always returns a renderable `name`, but when it
+       * resolved nothing that name is a PLACEHOLDER ("Pending member"). A
+       * placeholder must never beat a real name the operator typed, so the
+       * register wins whenever the resolver did not actually resolve. */
+      const resolvedName = idn?.resolved ? idn.name : null;
+      return {
+        investorId: s.investorId,
+        name: resolvedName ?? identityName ?? idn?.name ?? null,
+        email: idn?.email ?? identity?.email ?? null,
+        commitmentMinor: s.commitmentMinor,
+        status: s.status,
+        ownershipPct: total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
+        /* WAVE 161 · ITEM A (A20) — stage words and BOTH denominators, per row. */
+        stage: s.status,
+        stageLabel: spvSubscriptionStageLabelForRegister(s.status),
+        isConfirmedCapital: s.status === "committed",
+        /* WAVE 182 · ITEM B · R152.3 — a SEPARATE fact from `isConfirmedCapital`,
+           which means "committed on the register". This one means "the general
+           partner has confirmed the funds were received". Conflating them is how
+           the roster came to say the same word for both. */
+        fundsConfirmed: fundsConfirmedInvestorIds.has(String(s.investorId).trim()),
+        ownershipPctOfAllStages:
+          total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
+        ownershipPctOfConfirmedCapital:
+          s.status === "committed"
+            ? rosterSplit.confirmedCapitalMinor > 0
+              ? s.commitmentMinor / rosterSplit.confirmedCapitalMinor
+              : 0
+            : null,
+      };
+    });
+    /* An identity row whose LP is already on the roster above is NOT repeated
+     * here: they are one limited partner, and listing them twice is the defect
+     * this wave exists to remove. Nothing is lost — the subscriber entry now
+     * carries their name, email, amount and status. */
+    const seatedInvestorIds = new Set(
+      subs.filter((s) => s.status !== "withdrawn").map((s) => String(s.investorId).trim()),
+    );
+    /* ═══ WAVE 112 · FINDING 3 — A COMMITMENT CANNOT RENDER WITHOUT ITS
+     * LEDGER ENTRY. ═══
+     *
+     * THE LIE (OPEN_ITEMS B-38, Reviewer B). The lp-commit route writes the LP
+     * identity row (status `committed`) BEFORE the sacred cap-table ledger
+     * entry, across two stores with no shared transaction. If the ledger write
+     * failed, the row still said `committed` and this read printed `committed`
+     * straight out of the register — an LP presented as committed while holding
+     * $0. It fails SAFELY for accounting (the money genuinely is not there) but
+     * it is a lie on a screen, and a GP chasing a wire that was never asked for
+     * is a real cost.
+     *
+     * WHY THE READER AND NOT A ROLLBACK. `commitFunded` lives in the SACRED
+     * captableCommitStore with its own transaction; `spv_lp_invite` is a
+     * separate rawDb write. A true transaction across both is NOT AVAILABLE
+     * within this wave’s scope, and inventing a rollback the storage layer
+     * cannot honour would be worse than the defect. So the READ becomes the
+     * invariant: this route will not call an LP committed unless it can see the
+     * ledger entry under the deterministic id the writer used
+     * (`lpCommitInvitationId`, the ONE derivation both sides share).
+     *
+     * FAIL CLOSED. The ledger is read ONCE for the whole roster, and if that
+     * read throws, EVERY unseated invite is reported unconfirmed rather than
+     * optimistically committed — an unreadable ledger is not evidence that
+     * money exists.
+     *
+     * NOT A DEMOTION OF REAL LPs. An LP whose commitment did land is already in
+     * `subscribers` above (this list is only the UNSEATED remainder), so the
+     * honest path cannot hide a genuine commitment; a w112_ test pins that
+     * positive case alongside the negative one. */
+    let ledgerInvitationIds: Set<string> | null = null;
+    try {
+      ledgerInvitationIds = new Set(getLedger().map((e) => String(e.invitationId)));
+    } catch {
+      ledgerInvitationIds = null;
+    }
+    const invites = listLpInvites(partnerId, spvId)
+      .filter((i) => !seatedInvestorIds.has(lpInvestorIdForEmail(i.email)))
+      .map((i) => {
+        const claimsCommitted = i.status === "committed";
+        const hasLedgerEntry =
+          ledgerInvitationIds !== null &&
+          ledgerInvitationIds.has(lpCommitInvitationId(spvId, i.email));
+        const unconfirmed = claimsCommitted && !hasLedgerEntry;
+        return {
+          id: i.id,
+          email: i.email,
+          firstName: i.firstName,
+          lastName: i.lastName,
+          note: i.note,
+          /* The truthful pre-commit state, not the claim the row carries. */
+          status: unconfirmed ? "invited" : i.status,
+          createdAt: i.createdAt,
+          /* Additive disclosure: the register says `committed`, the ledger has
+           * no entry, so this is a half-state and not a commitment. Present
+           * only when that is actually the case, so an ordinary invited LP is
+           * not decorated with a field about a failure that never happened. */
+          ...(unconfirmed ? { commitmentUnconfirmed: true as const } : {}),
+        };
+      });
+    return {
+      spvId,
+      lpVisibility: spv.lpVisibility,
+      subscribers,
+      invites,
+      /* WAVE 161 · ITEM A (A21) — the split, and the words for each
+         denominator, so the screen can say which population it divided by
+         instead of leaving the GP to assume. */
+      split: rosterSplit,
+      splitStatement: spvStageSplitStatement(rosterSplit),
+      denominatorBasis: "all_stages" as const,
+      denominatorLabel: SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
+      confirmedDenominatorLabel: SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
+      basisNote: SPV_REGISTER_ALL_STAGES_BASIS,
+    };
+}
+
 export function registerSpvEngineRoutes(app: Express): void {
   /* ── wizard bootstrap: defaults-over-inputs + carry-basis help ─────────── */
   app.get("/api/partner/me/spv-wizard/defaults", requirePartnerAuth, (req: Request, res: Response) => {
@@ -531,7 +882,32 @@ export function registerSpvEngineRoutes(app: Express): void {
 
   /* ── SPV CRUD ──────────────────────────────────────────────────────────── */
   app.get("/api/partner/me/spv", requirePartnerAuth, (req: Request, res: Response) => {
-    res.json({ spvs: spvEngineStore.listByPartner(req.partnerContext!.partnerId) });
+    const partnerId = req.partnerContext!.partnerId;
+    const spvs = spvEngineStore.listByPartner(partnerId);
+    /* ════════════════════════════════════════════════════════════════
+       WAVE 182 · ITEM C · R152.4(4) — THE CARD NEEDS A FACT IT NEVER HAD.
+       ════════════════════════════════════════════════════════════════
+       The list card renders `carryBasis` and reads it aloud as though it meant a
+       carry is charged. Whether one IS charged lives in `spv_fee`, which is not on
+       `SpvDTO` and is not being added to it — widening the SACRED-adjacent SPV DTO
+       to carry fee state would put a fee fact into every SPV reader in the platform.
+
+       A SEPARATE, ADDITIVE ARRAY INSTEAD. `spvs` is byte-for-byte the same payload
+       it was, so every existing reader of this route is untouched; `carryConfigurations`
+       is a new sibling key that a reader either uses or ignores. It is keyed by
+       `spvId` rather than positional, so it cannot be mis-zipped if the list order
+       ever changes.
+
+       NO MONEY AND NO PERCENTAGE crosses this boundary — only a state and a
+       sentence. An unconfigured carry and a 0% carry are different facts, and this
+       route is not permitted to blur them by shipping a number. */
+    res.json({
+      spvs,
+      carryConfigurations: spvs.map((s) => ({
+        spvId: s.id,
+        ...spvEngineStore.carryConfiguration(partnerId, s.id),
+      })),
+    });
   });
 
   app.post("/api/partner/me/spv", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
@@ -617,6 +993,37 @@ export function registerSpvEngineRoutes(app: Express): void {
         spvEngineStore.validateMandateDraft(mandateDraft as Parameters<typeof spvEngineStore.validateMandateDraft>[0]);
       }
 
+      /* ══ WAVE 179 · ITEM A · R151.1 — THE TARGET-COMPANY FENCE ══════════════
+         "A partner must never attribute an SPV to a client they do not manage."
+
+         `targetCompanyId` has been persisted end-to-end since the canonical engine
+         shipped (column `db/connection.ts:5200`, written in `persistSpv`, read back
+         in the row mapper, rendered on the SPV detail surface). NOTHING VALIDATED
+         IT. The wizard field is a free-text company identifier, so partner A could
+         post partner B's managed client and the platform would persist and display
+         that vehicle as targeting it.
+
+         Placed here deliberately: this is still the PRE-FLIGHT, above the first
+         write (`recordSignoff`), so a refusal leaves no sign-off, no vehicle, no
+         mandate and no fee — the same fail-closed contract wave 86B established
+         for the fee/mandate validation immediately above.
+
+         The predicate is the SIX-PROOF `partnerHasCompanyRelationship`, the same
+         function `partnerRoutes.ts`'s portfolio routes now call — not a second copy
+         of it. Absent/blank stays ALLOWED: this fences attribution, it does not
+         make attribution mandatory. 404, not 403, so the route cannot be used as
+         an existence oracle for other partners' companies. */
+      const targetGate = partnerMayAttributeSpvToCompany(ctx.partnerId, createBody.targetCompanyId);
+      if (!targetGate.ok) {
+        return res.status(404).json({
+          error: SPV_TARGET_COMPANY_NOT_YOURS,
+          message: SPV_TARGET_COMPANY_NOT_YOURS_MESSAGE,
+        });
+      }
+      /* Normalised in place so the store receives the value the fence APPROVED
+         (trimmed, or `null` for the no-target case) rather than the raw body. */
+      createBody.targetCompanyId = targetGate.companyId;
+
       let signoff;
       try {
         signoff = recordSignoff({
@@ -664,6 +1071,20 @@ export function registerSpvEngineRoutes(app: Express): void {
             ctx.userId,
           ))
         : [];
+      /* ══ WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form, at creation ═══
+         Written AFTER the vehicle exists because it is an annotation ON a vehicle,
+         and validated against the jurisdiction the store actually persisted (never
+         against whatever the request claimed), so the two can never disagree.
+
+         AN ABSENT KEY IS THE NORMAL CASE and must remain completely inert: with no
+         `legalForm` in the body, `resolveSpvLegalForm` returns null, the column is
+         written NULL — which is what `ALTER TABLE` already gave it — and every tax
+         surface renders wave 175's wording byte-for-byte as before. NOTHING IS
+         INFERRED from the vehicle's jurisdiction, name or type.
+
+         Not fatal if it cannot be stored: an unconverged database returns what a
+         later read would truthfully say rather than claiming a form was recorded. */
+      const legalForm = setSpvLegalForm(spv.id, spv.jurisdiction, createBody.legalForm);
       /* ADDITIVE. Nothing above was removed, renamed or reordered — `spv` and
          `signoff` keep their names, their shapes and their position. */
       res.status(201).json({
@@ -671,6 +1092,7 @@ export function registerSpvEngineRoutes(app: Express): void {
         signoff: { id: signoff.id, signedAt: signoff.signedAt, attestationVersion: signoff.attestationVersion },
         fees,
         launchComplete: feeDrafts !== null && feeDrafts.length > 0,
+        legalForm,
       });
     } catch (e) { err(res, e); }
   });
@@ -711,8 +1133,52 @@ export function registerSpvEngineRoutes(app: Express): void {
       transfers: spvEngineStore.listTransfers(pid, spv.id),
       capitalAccounts: spvEngineStore.capitalAccounts(pid, spv.id),
       closeSummary: spvEngineStore.closeSummary(pid, spv.id),
+      /* WAVE 179 · ITEM B · R151.3 — ADDITIVE, and `null` for every vehicle that
+         has not been told. Read from `spv.legal_form` through its own store, and
+         validated against THIS vehicle's recorded jurisdiction on the way out, so a
+         value that does not belong to the jurisdiction reads as not stated rather
+         than as a tax position. No existing key above changes shape. */
+      legalForm: getSpvLegalForm(spv.id),
     });
   });
+
+  /* ══ WAVE 179 · ITEM B · R151.3 — STATE THE LEGAL FORM LATER ══════════════
+     R151.3 requires the field on SPV creation AND in SPV settings "so it can be
+     set later". This is the settings half.
+
+     A SEPARATE ROUTE RATHER THAN A KEY ON THE PATCH ABOVE, on purpose: that PATCH
+     goes to `spvEngineStore.updateSpv`, which rewrites the vehicle row, merges the
+     `terms` blob one level deep and re-anchors the audit hash. An optional
+     annotation has no business travelling through the vehicle's own write path, and
+     routing it there would put every legal-form edit inside the merge contract that
+     protects `_fundsConfirmations`.
+
+     WRITE-GATED IDENTICALLY to the PATCH above (`WRITE_ROLES` + signed agreement),
+     and partner-scoped by `getSpv`, which returns null for another partner's
+     vehicle — so a GP cannot annotate a vehicle they do not sponsor.
+
+     CLEARING IS SUPPORTED. `legalForm: null` (or any value that does not validate
+     for this vehicle's jurisdiction) returns the vehicle to NOT STATED, and the tax
+     surfaces then render wave 175's conditional wording exactly as they do today.
+     A GP who states the wrong form must be able to take it back. */
+  app.patch(
+    "/api/partner/me/spv/:spvId/legal-form",
+    requirePartnerAuth,
+    assertSubRole(...WRITE_ROLES),
+    requireSignedAgreement,
+    (req: Request, res: Response) => {
+      try {
+        const pid = req.partnerContext!.partnerId;
+        const spv = spvEngineStore.getSpv(pid, String(req.params.spvId));
+        if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+        /* The jurisdiction is read from the PERSISTED vehicle, never from the
+           request. A caller cannot widen the option set by claiming a different
+           jurisdiction than the one the vehicle records. */
+        const legalForm = setSpvLegalForm(spv.id, spv.jurisdiction, (req.body ?? {}).legalForm);
+        res.json({ spvId: spv.id, legalForm });
+      } catch (e) { err(res, e); }
+    },
+  );
 
   app.patch("/api/partner/me/spv/:spvId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
@@ -723,6 +1189,20 @@ export function registerSpvEngineRoutes(app: Express): void {
       if ("terms" in patchBody) patchBody.terms = normaliseSpvTermsHurdle(patchBody.terms);
       /* WAVE 82 · ITEM 2 — bound the GP commitment at the same boundary. */
       if ("terms" in patchBody) assertGpCommitInDomain(patchBody.terms);
+      /* WAVE 193 · ITEM B · R165.4 — REFUSE A CHANGE THIS ROUTE WOULD DROP.
+
+         `updateSpv` assigns nine fields and silently ignores every other key,
+         and this handler then answered `200 { spv }` with the UNCHANGED vehicle.
+         A general partner correcting the vehicle's currency, its carry basis, its
+         jurisdiction, its type or its target company was told the correction had
+         been saved, and it had not been. The store's refusal to write was
+         correct; reporting it as a success was not.
+
+         Asserted BEFORE `updateSpv`, so a refused request changes nothing at all.
+         See `lib/spvVehiclePatchApplicability.ts` for why this is an accept-list
+         rather than a `currency` special case, and for the enumeration of callers
+         proving no existing caller sends an unapplied key. */
+      assertSpvPatchFullyApplied(patchBody);
       const spv = spvEngineStore.updateSpv(req.partnerContext!.partnerId, String(req.params.spvId), patchBody, req.partnerContext!.userId);
       res.json({ spv });
     } catch (e) { err(res, e); }
@@ -1120,6 +1600,25 @@ export function registerSpvEngineRoutes(app: Express): void {
           issues: parsed.error.flatten(),
         });
       }
+      /* WAVE 227 / ITEM 1 — G6's writer fence, BEFORE the write.
+         This route is the only HTTP path that can put `self_certified` or
+         `verified` on `investor_compliance_profile` without a signed declaration
+         behind it, and until now it accepted `{"accreditationStatus":"verified"}`
+         with no jurisdiction at all — which unlocked the cap-table funding gate
+         and the Collective gates on the strength of one global tick. R189.5:
+         the accreditation tests are mutually incompatible across jurisdictions,
+         so "no global checkbox is possible". The refusal itself lives with the one
+         accreditation mechanism (`investorComplianceRoutes`) and uses that
+         mechanism's own nine-code registry — no second mechanism is created here.
+         Refuses BEFORE `upsertComplianceProfile`, so a refused patch writes
+         nothing, not even the kyc fields. */
+      const w227Refusal = accreditationAssertionRefusal(
+        parsed.data,
+        spvEngineStore.getComplianceProfile(investorId)?.jurisdiction ?? null,
+      );
+      if (w227Refusal) {
+        return res.status(w227Refusal.status).json(w227Refusal.payload);
+      }
       res.json({ profile: spvEngineStore.upsertComplianceProfile(investorId, parsed.data) });
     } catch (e) { err(res, e); }
   });
@@ -1204,7 +1703,70 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.post("/api/partner/me/spv/:spvId/distributions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       assertNoSmuggledSettlement(req.body);
-      res.status(201).json({ distribution: spvEngineStore.recordDistribution(req.partnerContext!.partnerId, String(req.params.spvId), pickDistributionBody(req.body), req.partnerContext!.userId) });
+      /* ══ WAVE 211 · ITEM A · D1/D2 — THE MONEY GATE, BEFORE THE APPEND-ONLY WRITE.
+       * The owner's audit called this "the most severe unguarded action on the
+       * platform": the screen states that a distribution cannot be edited or deleted
+       * once recorded, and then required nothing at all. It now requires a typed full
+       * legal name, three confirmations from draft 03, and the basis of the underlying
+       * determination — SERVER-ENFORCED, not a disabled button.
+       * The pre-flight runs BEFORE `recordDistribution`, so a refusal leaves no row,
+       * no fee obligation and no hash-chain entry behind. Everything above this line
+       * is a pure read or a whitelist. */
+      const w211Ctx = req.partnerContext!;
+      const w211SpvId = String(req.params.spvId);
+      const w211Spv = spvEngineStore.getSpv(w211Ctx.partnerId, w211SpvId);
+      const w211Body = (req.body ?? {}) as Record<string, unknown>;
+      const w211Picked = pickDistributionBody(req.body) as Record<string, unknown>;
+      const w211Gate = wave211Preflight(req, {
+        slot: "distribution",
+        vehicleName: w211Spv?.name ?? null,
+        currency: typeof w211Picked.currency === "string" ? w211Picked.currency : (w211Spv?.currency ?? null),
+        facts: {
+          kind: "money_event",
+          eventNoun: W211_EVENT_NOUN_DISTRIBUTION,
+          vehicleName: w211Spv?.name ?? null,
+          eventType: typeof w211Picked.event === "string" ? w211Picked.event : null,
+          /* The route carries the amount in the currency's smallest units. It is
+             restated in those units and LABELLED as such — never divided to make a
+             prettier sentence, and never defaulted to zero when absent (R-ASSERT). */
+          amountRaw:
+            typeof w211Picked.grossProceedsMinor === "string" || typeof w211Picked.grossProceedsMinor === "number"
+              ? w211Picked.grossProceedsMinor
+              : null,
+          amountUnit: "minor",
+          currency: typeof w211Picked.currency === "string" ? w211Picked.currency : (w211Spv?.currency ?? null),
+          eventDate: typeof w211Body.distributedAt === "string" ? w211Body.distributedAt : null,
+        },
+      });
+      if (!w211Gate.ok) {
+        res.status(w211Gate.refusal.status).json(w211Gate.refusal.payload);
+        return;
+      }
+      const distribution = spvEngineStore.recordDistribution(w211Ctx.partnerId, w211SpvId, pickDistributionBody(req.body), w211Ctx.userId);
+      /* ITEM B — the attestation is recorded against the row it signs, and the
+         request is refused if it cannot be recorded. An unattested distribution is
+         never reported as recorded. The row is NOT deleted on failure (R195.5): it is
+         visibly unattested rather than silently attested. */
+      const w211Rec = wave211RecordAfter({
+        rowId: String((distribution as { id?: unknown })?.id ?? ""),
+        accepted: w211Gate.accepted,
+        signedBy: String(w211Ctx.userId ?? ""),
+        vehicleName: w211Spv?.name ?? null,
+      });
+      wave211AuditAttestation({
+        actor: String(w211Ctx.userId ?? ""),
+        partnerId: w211Ctx.partnerId,
+        spvId: w211SpvId,
+        slot: "distribution",
+        rowId: String((distribution as { id?: unknown })?.id ?? ""),
+        outcome: w211Rec,
+        accepted: w211Gate.accepted,
+      });
+      if (!w211Rec.ok) {
+        res.status(w211Rec.refusal.status).json(w211Rec.refusal.payload);
+        return;
+      }
+      res.status(201).json({ distribution });
     } catch (e) { err(res, e); }
   });
 
@@ -1399,149 +1961,10 @@ export function registerSpvEngineRoutes(app: Express): void {
       const spvId = String(req.params.spvId);
       const spv = spvEngineStore.getSpv(ctx.partnerId, spvId);
       if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-      const subs = spvEngineStore.listSubscriptions(ctx.partnerId, spvId);
-      const names = resolveDisplayNames(subs.map((s) => s.investorId));
-      /* WAVE 106 — READ-TIME IDENTITY REPAIR.
-       *
-       * `resolveDisplayNames` can only resolve an id that belongs to a platform
-       * user. An off-platform LP seated by the commit form carries a derived
-       * `ext_<hash-of-email>` id, which resolves to nothing, and the resolver's
-       * fallback then printed the literal "Pending member" — an anonymous row
-       * holding real money, next to an unrelated "invited" row for the same
-       * human. The LP identity register (spv_lp_invite) holds the name and email
-       * that were actually typed, keyed by the SAME derivation, so the money can
-       * be put back on the person here. This also repairs rows written before
-       * this wave, which is why it is a read and not a migration. */
-      const identities = lpIdentitiesByInvestorId(ctx.partnerId, spvId);
-      const total = subs
-        .filter((s) => s.status !== "withdrawn")
-        .reduce((a, s) => a + s.commitmentMinor, 0);
-      /* ══════════════════════════════════════════════════════════════
-         WAVE 161 · BATCH 3 ITEM A (A20/A21) — THE GP ROSTER'S DENOMINATOR.
-         ══════════════════════════════════════════════════════════════
-         `total` above sums EVERY non-withdrawn subscription, and `ownershipPct`
-         divides by it, so a committed LP's ownership was diluted by other
-         people's non-binding indications. The row already carried `status`, so
-         the STAGE was visible — the PERCENTAGE never was.
-
-         `ownershipPct` keeps its exact value (no client render changes, R44:
-         add). What is added: the same figure under an honest name, the
-         confirmed-capital share (`null`, not 0, for a row that is not committed),
-         the stage in words, and the vehicle-level split so the GP can see how
-         much of what is listed is actually capital. */
-      const rosterSplit = spvStageSplit(subs);
-      const subscribers = subs.map((s) => {
-        const idn = names.get(String(s.investorId).trim());
-        const identity = identities.get(String(s.investorId).trim());
-        const identityName = identity ? lpInviteDisplayName(identity) : null;
-        /* `resolveDisplayNames` always returns a renderable `name`, but when it
-         * resolved nothing that name is a PLACEHOLDER ("Pending member"). A
-         * placeholder must never beat a real name the operator typed, so the
-         * register wins whenever the resolver did not actually resolve. */
-        const resolvedName = idn?.resolved ? idn.name : null;
-        return {
-          investorId: s.investorId,
-          name: resolvedName ?? identityName ?? idn?.name ?? null,
-          email: idn?.email ?? identity?.email ?? null,
-          commitmentMinor: s.commitmentMinor,
-          status: s.status,
-          ownershipPct: total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
-          /* WAVE 161 · ITEM A (A20) — stage words and BOTH denominators, per row. */
-          stage: s.status,
-          stageLabel: spvSubscriptionStageLabelForRegister(s.status),
-          isConfirmedCapital: s.status === "committed",
-          ownershipPctOfAllStages:
-            total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
-          ownershipPctOfConfirmedCapital:
-            s.status === "committed"
-              ? rosterSplit.confirmedCapitalMinor > 0
-                ? s.commitmentMinor / rosterSplit.confirmedCapitalMinor
-                : 0
-              : null,
-        };
-      });
-      /* An identity row whose LP is already on the roster above is NOT repeated
-       * here: they are one limited partner, and listing them twice is the defect
-       * this wave exists to remove. Nothing is lost — the subscriber entry now
-       * carries their name, email, amount and status. */
-      const seatedInvestorIds = new Set(
-        subs.filter((s) => s.status !== "withdrawn").map((s) => String(s.investorId).trim()),
-      );
-      /* ═══ WAVE 112 · FINDING 3 — A COMMITMENT CANNOT RENDER WITHOUT ITS
-       * LEDGER ENTRY. ═══
-       *
-       * THE LIE (OPEN_ITEMS B-38, Reviewer B). The lp-commit route writes the LP
-       * identity row (status `committed`) BEFORE the sacred cap-table ledger
-       * entry, across two stores with no shared transaction. If the ledger write
-       * failed, the row still said `committed` and this read printed `committed`
-       * straight out of the register — an LP presented as committed while holding
-       * $0. It fails SAFELY for accounting (the money genuinely is not there) but
-       * it is a lie on a screen, and a GP chasing a wire that was never asked for
-       * is a real cost.
-       *
-       * WHY THE READER AND NOT A ROLLBACK. `commitFunded` lives in the SACRED
-       * captableCommitStore with its own transaction; `spv_lp_invite` is a
-       * separate rawDb write. A true transaction across both is NOT AVAILABLE
-       * within this wave’s scope, and inventing a rollback the storage layer
-       * cannot honour would be worse than the defect. So the READ becomes the
-       * invariant: this route will not call an LP committed unless it can see the
-       * ledger entry under the deterministic id the writer used
-       * (`lpCommitInvitationId`, the ONE derivation both sides share).
-       *
-       * FAIL CLOSED. The ledger is read ONCE for the whole roster, and if that
-       * read throws, EVERY unseated invite is reported unconfirmed rather than
-       * optimistically committed — an unreadable ledger is not evidence that
-       * money exists.
-       *
-       * NOT A DEMOTION OF REAL LPs. An LP whose commitment did land is already in
-       * `subscribers` above (this list is only the UNSEATED remainder), so the
-       * honest path cannot hide a genuine commitment; a w112_ test pins that
-       * positive case alongside the negative one. */
-      let ledgerInvitationIds: Set<string> | null = null;
-      try {
-        ledgerInvitationIds = new Set(getLedger().map((e) => String(e.invitationId)));
-      } catch {
-        ledgerInvitationIds = null;
-      }
-      const invites = listLpInvites(ctx.partnerId, spvId)
-        .filter((i) => !seatedInvestorIds.has(lpInvestorIdForEmail(i.email)))
-        .map((i) => {
-          const claimsCommitted = i.status === "committed";
-          const hasLedgerEntry =
-            ledgerInvitationIds !== null &&
-            ledgerInvitationIds.has(lpCommitInvitationId(spvId, i.email));
-          const unconfirmed = claimsCommitted && !hasLedgerEntry;
-          return {
-            id: i.id,
-            email: i.email,
-            firstName: i.firstName,
-            lastName: i.lastName,
-            note: i.note,
-            /* The truthful pre-commit state, not the claim the row carries. */
-            status: unconfirmed ? "invited" : i.status,
-            createdAt: i.createdAt,
-            /* Additive disclosure: the register says `committed`, the ledger has
-             * no entry, so this is a half-state and not a commitment. Present
-             * only when that is actually the case, so an ordinary invited LP is
-             * not decorated with a field about a failure that never happened. */
-            ...(unconfirmed ? { commitmentUnconfirmed: true as const } : {}),
-          };
-        });
-      res.json({
-        spvId,
-        lpVisibility: spv.lpVisibility,
-        subscribers,
-        invites,
-        /* WAVE 161 · ITEM A (A21) — the split, and the words for each
-           denominator, so the screen can say which population it divided by
-           instead of leaving the GP to assume. */
-        split: rosterSplit,
-        splitStatement: spvStageSplitStatement(rosterSplit),
-        denominatorBasis: "all_stages" as const,
-        denominatorLabel: SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
-        confirmedDenominatorLabel: SPV_CONFIRMED_CAPITAL_DENOMINATOR_LABEL,
-        basisNote: SPV_REGISTER_ALL_STAGES_BASIS,
-      });
+      /* WAVE 179 · ITEM C · R151.2 — the body of this handler now lives in
+         `buildPartnerLpRosterPayload` above, unchanged, so the CSV export cannot
+         drift from this screen. The response shape is identical. */
+      res.json(buildPartnerLpRosterPayload(ctx.partnerId, spvId, spv));
     },
   );
 
@@ -1567,6 +1990,37 @@ export function registerSpvEngineRoutes(app: Express): void {
       const spv = spvEngineStore.getSpv(ctx.partnerId, spvId);
       if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
       const body = req.body ?? {};
+      /* ══ WAVE 211 · ITEM A · draft 04 Part A — INVITING AN LP IS A REAL STEP.
+       * It was unguarded: no eligibility step, no consent, no disclosure. It now
+       * requires a typed full legal name and draft 04 A6's three confirmations, with
+       * A2's statement that eligibility is the partner's determination and that the
+       * platform does not verify anything about this person (R188.5), and §4 of the
+       * signed Consortium Partner Agreement QUOTED rather than paraphrased.
+       * NO global "I am accredited" tick is offered, because five jurisdictions'
+       * definitions are mutually incompatible and one excludes individuals entirely.
+       * The nine-jurisdiction accreditation component is REFERENCED; wave 215 owns
+       * correcting and wiring it, and no second mechanism is created here.
+       * Placed before `createLpInvite`, so a refusal leaves no invite row. */
+      const w211InviteGate = wave211Preflight(req, {
+        slot: "lp_invitation",
+        vehicleName: spv.name,
+        facts: {
+          kind: "lp_invitation",
+          /* NULL, DELIBERATELY, AND ON BOTH SIDES. R187.3 requires the stored text to
+             be the text SHOWN. The partner client payload carries no registered
+             organisation name, so resolving one here would store a sentence the
+             partner never read. Both sides therefore pass null and the shared builder
+             renders the second-person attribution — which still says, in full, that
+             the invitation is the firm's and not Capavate's. See
+             `W211_PARTNER_SELF_REFERENCE`. */
+          partnerName: null,
+          vehicleName: spv.name,
+          inviteeEmail: typeof body.email === "string" ? body.email : null,
+        },
+      });
+      if (!w211InviteGate.ok) {
+        return res.status(w211InviteGate.refusal.status).json(w211InviteGate.refusal.payload);
+      }
       let invite;
       try {
         invite = createLpInvite(
@@ -1599,6 +2053,42 @@ export function registerSpvEngineRoutes(app: Express): void {
       } catch {
         // best-effort: duplicate_invitation / transport hiccup never fails the
         // GP-side LP invite (the row above is authoritative for GP display).
+      }
+      /* ══ WAVE 186 · ITEM B · R159.1 — THE LP INVITATION IS NOW AUDITED ═════
+       * The second writer wave 181 deferred (W181_BUILD.md §5.1). An invitation
+       * is identity-bearing: it grants a named outsider access to a private
+       * vehicle's subscription flow, and until now the only trace was the invite
+       * row itself, which the GP can delete. Actor is the authenticated partner
+       * user. Placed after the invite row is durable and before the response;
+       * does not refuse the invitation on audit failure (W186_BUILD.md §3). */
+      auditSpvLpInvited({
+        partnerId: ctx.partnerId,
+        spvId,
+        investorEmail: invite.email,
+        inviteId: invite.id ?? null,
+        actor: String(ctx.userId ?? ""),
+      });
+      /* WAVE 211 · ITEM B — the confirmation is recorded against the invite row it
+         signs. The invitation is not reported as sent unless the confirmation is
+         stored and reads back identically. The row is NOT deleted on failure
+         (R195.5); it is visibly unattested. */
+      const w211InviteRec = wave211RecordAfter({
+        rowId: String(invite.id ?? ""),
+        accepted: w211InviteGate.accepted,
+        signedBy: String(ctx.userId ?? ""),
+        vehicleName: spv.name,
+      });
+      wave211AuditAttestation({
+        actor: String(ctx.userId ?? ""),
+        partnerId: ctx.partnerId,
+        spvId,
+        slot: "lp_invitation",
+        rowId: String(invite.id ?? ""),
+        outcome: w211InviteRec,
+        accepted: w211InviteGate.accepted,
+      });
+      if (!w211InviteRec.ok) {
+        return res.status(w211InviteRec.refusal.status).json(w211InviteRec.refusal.payload);
       }
       res.status(201).json({ invite, inviteEmailSent });
     },
@@ -1707,6 +2197,70 @@ export function registerSpvEngineRoutes(app: Express): void {
       }
       const amountMinor = Number(amountMinorExact);
 
+      /* ═══════════════════════════════════════════════════════════════════════
+         WAVE 182 · ITEM A · R152 — A CLOSED VEHICLE DOES NOT TAKE NEW CAPITAL,
+         AND IT REFUSES BEFORE IT WRITES ANYTHING.
+         ═══════════════════════════════════════════════════════════════════════
+         THE DEFECT, AS REPRODUCED ON LIVE. An SPV was moved Open → Closed (the
+         toast "Closed to new LPs" was shown and the close was reported to its
+         limited partners), and an LP was then committed $50,000 through THIS route
+         from the "Commit an LP to the cap table" form. It succeeded with no refusal
+         and no warning, and the close statement recomputed from 1 LP / $400,000 to
+         2 LPs / $450,000 AFTER the close.
+
+         WHY THE GATE IS HERE, AT THIS EXACT LINE, AND NOT HIGHER OR LOWER.
+           · Everything above it is a PURE READ or a pure parse: the ownership
+             lookup, the field validation, and `decimalStringToMinor`. So a refusal
+             here can truthfully say nothing was saved.
+           · Everything below it WRITES. `recordLpCommitIdentity` (next block) puts
+             a row in the LP identity register, and `commitFunded` after it writes
+             the SACRED cap-table ledger line. Refusing after either one would leave
+             an identity, or a ledger entry, for a commitment that was rejected —
+             the half-state this file already fights at WAVE 112 · FINDING 3.
+           · It needs `amountMinor`, which is why it is not at the top: the rule
+             distinguishes an INCREASE from an equal-or-lower idempotent replay, and
+             that cannot be decided before the amount has been parsed exactly.
+
+         THE STORE IS GATED TOO (`projectLpCommitted` calls the same shared assert).
+         This is not belt-and-braces for its own sake: this gate protects the SACRED
+         ledger write ordering, and that one is the floor no future caller of the
+         store can walk around. A disabled button on the form is neither.
+
+         `investorId` is derived by the SAME pure derivation used below
+         (`lpInvestorIdForEmail`) — recomputed rather than moved, so this block adds
+         no reordering to the identity/ledger sequence that follows it. NOT gated:
+         confirming funds on an LP who committed before the close, which is
+         settlement and a different route entirely. */
+      /* Caught and routed through `err()` explicitly, because this handler has no
+         outer try/catch: an uncaught throw here would reach Express's default
+         handler and answer a 500 with an HTML page, so the general partner would
+         see a server failure instead of the refusal. `err()` maps this error to 409
+         WITH its sentence. */
+      try {
+        assertSpvOpenToNewCapital({
+          spvStatus: spv.status,
+          spvName: spv.name,
+          subs: spvEngineStore.listSubscriptions(ctx.partnerId, spvId),
+          investorId: lpInvestorIdForEmail(investorEmail),
+          requestedMinor: amountMinor,
+        });
+        /* WAVE 189 · ITEM C · R159.6 — and the vehicle must be ATTESTED before an LP
+           can be committed to it. Here for the same reason the close gate is here
+           and not only in the store: this is the route that writes the SACRED ledger
+           line, and the refusal has to land BEFORE that write, not after it, or the
+           platform is left holding a ledger entry for a vehicle nobody signed for —
+           exactly the half-state this handler already fights. The store is gated too
+           (`projectLpCommitted` calls the identical assert), so the floor holds for
+           any future caller that reaches the store directly. */
+        assertSpvAttestedForNewCapital({
+          spvId: spv.id,
+          spvName: spv.name,
+          kind: "limited_partner",
+        });
+      } catch (e) {
+        return err(res, e);
+      }
+
       /* ── WAVE 106 · FINDING 1 — WHO THIS COMMITMENT BELONGS TO ─────────────
        * The name and email above used to travel as far as the sacred ledger and
        * then vanish: the roster projection below has no field for either, so the
@@ -1720,6 +2274,44 @@ export function registerSpvEngineRoutes(app: Express): void {
        * the platform knows whose it is: if this write fails, nothing is
        * committed. Nothing is guessed — a commit with no name or no usable email
        * was already refused above and still is. */
+      /* ══ WAVE 211 · ITEM A · draft 04 Part B — A CAP-TABLE COMMITMENT IS NOT A
+       * SOFT CIRCLE, AND THIS SCREEN NEVER SAID SO.
+       * The partner types an amount and an LP appears on the cap table holding it,
+       * with no statement of what that means. Draft 04 B5/B6 is now shown and
+       * confirmed: what a recorded commitment is, that the figures are the partner's
+       * own and are not checked, and that Capavate holds no money and moves none.
+       *
+       * WHY EXACTLY HERE. Everything above is a pure read or a pure parse — the
+       * ownership 404, the field checks, `decimalStringToMinor`, and the two vehicle
+       * asserts. `recordLpCommitIdentity` on the next line WRITES, and `commitFunded`
+       * below it writes the SACRED cap-table ledger. A refusal placed here can
+       * truthfully say nothing was committed; placed one line lower it could not.
+       * The two vehicle asserts keep their position and their precedence: a closed or
+       * unattested vehicle still refuses before this gate is ever reached, so no
+       * partner is asked to sign for a commitment the vehicle would then reject. */
+      const w211CommitGate = wave211Preflight(req, {
+        slot: "lp_commitment",
+        vehicleName: spv.name,
+        currency,
+        facts: {
+          kind: "lp_commitment",
+          /* Null on both sides, for the reason given at the invitation gate above. */
+          partnerName: null,
+          vehicleName: spv.name,
+          investorEmail: investorEmail,
+          /* The whole-unit decimal string the partner typed, restated verbatim and
+             labelled as entered. `amountMinorExact` is NOT used here: showing the
+             minor-unit conversion back to the person who typed "250000" would be
+             showing them a figure they never entered. */
+          amountRaw: amount,
+          amountUnit: "as_entered",
+          currency,
+        },
+      });
+      if (!w211CommitGate.ok) {
+        return res.status(w211CommitGate.refusal.status).json(w211CommitGate.refusal.payload);
+      }
+
       let identity;
       try {
         identity = recordLpCommitIdentity(
@@ -1745,6 +2337,31 @@ export function registerSpvEngineRoutes(app: Express): void {
             "The limited partner's details could not be saved, so nothing has been committed. " +
             "Please try again.",
         });
+      }
+
+      /* WAVE 211 · ITEM B — the confirmation is recorded against the LP identity row
+         that `recordLpCommitIdentity` just returned, BEFORE the sacred ledger write.
+         Sequenced this way on purpose: if the confirmation cannot be stored, no cap
+         table line is created at all, so the platform never holds a cap-table
+         commitment whose confirmation it cannot produce. The identity row is left in
+         place (R195.5 — nothing is deleted) and is visibly unattested. */
+      const w211CommitRec = wave211RecordAfter({
+        rowId: String(identity.invite?.id ?? ""),
+        accepted: w211CommitGate.accepted,
+        signedBy: String(ctx.userId ?? ""),
+        vehicleName: spv.name,
+      });
+      wave211AuditAttestation({
+        actor: String(ctx.userId ?? ""),
+        partnerId: ctx.partnerId,
+        spvId,
+        slot: "lp_commitment",
+        rowId: String(identity.invite?.id ?? ""),
+        outcome: w211CommitRec,
+        accepted: w211CommitGate.accepted,
+      });
+      if (!w211CommitRec.ok) {
+        return res.status(w211CommitRec.refusal.status).json(w211CommitRec.refusal.payload);
       }
 
       /* Deterministic per-LP + per-SPV keys → idempotent re-commit (no dup line).
@@ -1862,6 +2479,39 @@ export function registerSpvEngineRoutes(app: Express): void {
         });
       } catch (e) { return err(res, e); }
 
+      /* ══ WAVE 186 · ITEM B · R159.1 — THE LP COMMITMENT IS NOW AUDITED ══════
+       * Wave 181 proved this gap and deferred it for one honest reason: it could
+       * not resolve the acting user from where it was allowed to edit, and it
+       * refused to write a MONEY row whose actor read "unresolved"
+       * (W181_BUILD.md §5.1; server/lib/spvLifecycleAudit.ts rule 2). Here, in
+       * the route handler, `ctx.userId` is the partner user `requirePartnerAuth`
+       * already authenticated — so the row names a real person.
+       *
+       * PLACED EXACTLY HERE: the sacred ledger line and the roster projection
+       * have both committed, so the row records something that genuinely
+       * happened; and it is before the success response, so no GP is told
+       * "committed" ahead of the attempt to record it. It does NOT refuse the
+       * commitment if the audit write fails — the capital movement is already
+       * durable and refusing now would strand it (W186_BUILD.md §3) — but the
+       * failure is counted into audit-write health and surfaces on
+       * /admin/audit-log instead of vanishing.
+       *
+       * MONEY: `amountMinorExact` is a `bigint` and crosses as a STRING. No
+       * Number()/parseInt/parseFloat, no arithmetic. (`JSON.stringify` throws on
+       * a bigint, so passing one would abort the very write meant to prove this.)
+       * ═════════════════════════════════════════════════════════════════════ */
+      auditSpvLpCommitted({
+        partnerId: ctx.partnerId,
+        spvId,
+        investorEmail,
+        holderName: `${holderFirstName} ${holderLastName}`,
+        amountMinor: String(amountMinorExact),
+        shares,
+        currency,
+        subscriptionId: subscription?.id ?? null,
+        actor: String(ctx.userId ?? ""),
+      });
+
       /* ══ WAVE 151 · ITEM C · R105(2) and R105(3) — THE RECORD.
        *
        * Written only when the cap was ACTUALLY breached, and only for a commit
@@ -1949,6 +2599,24 @@ export function registerSpvEngineRoutes(app: Express): void {
         if (isAuditWriteFailure(auditEntry)) capOverrideRecordFailed = true;
       }
 
+      /* WAVE 176 · ITEM B — see the `targetRaise` block below for the full
+         reasoning. A target of null, zero, or anything not a safe integer means
+         there is no goal to pass, which is NOT an overage: coercing it to 0 would
+         make every commitment on a target-less vehicle read as oversubscribed. */
+      const targetRaiseMinorForWarning = spv.targetRaiseMinor;
+      const targetRaiseExceededByThisCommit =
+        typeof targetRaiseMinorForWarning === "number" &&
+        Number.isSafeInteger(targetRaiseMinorForWarning) &&
+        targetRaiseMinorForWarning > 0 &&
+        capSplit.resultingTotalMinor > targetRaiseMinorForWarning;
+      const targetRaiseWarning =
+        targetRaiseExceededByThisCommit && typeof targetRaiseMinorForWarning === "number"
+          ? spvTargetRaiseWarningSentence(
+              { ...capSplit, targetRaiseMinor: targetRaiseMinorForWarning },
+              currencyExponent(currency),
+            )
+          : "";
+
       /* The committed-only (MONEY basis) figure, for disclosure beside the
          capacity-basis totals above. `canonicalCommittedMinorForSpv` returns a
          `bigint`; it is narrowed here at the route boundary and NEVER placed in a
@@ -2001,6 +2669,42 @@ export function registerSpvEngineRoutes(app: Express): void {
           targetRaiseMinor: spv.targetRaiseMinor,
           overages: spvEngineStore.targetOveragesForSpv(ctx.partnerId, spvId),
           blocked: false,
+          /* ══ WAVE 176 · ITEM B · R147.3(1) — THE WARN HALF OF R130.1, PUT ON THE
+             WIRE. TWO ADDITIVE KEYS; every key above is byte-unchanged.
+
+             THE RECORDING WAS NEVER THE DEFECT. `recordTargetRaiseOverage`
+             (spvEngineStore.ts:3155) has written TARGET_RAISE_EXCEEDED with
+             `blocked: false` since wave 164, and it BUILDS this very sentence —
+             but all four committed-writers call the never-throws wrapper as a
+             bare statement and discard its return value, and `projectLpCommitted`
+             returns only a subscription DTO. So the sentence existed and was
+             thrown away, `overages` above crossed the wire as raw records with no
+             wording and no way to tell which of them THIS commit caused, and the
+             client had no renderer at all. A $9,000,000 commit against a
+             $5,000,000 target therefore produced only "LP committed to the cap
+             table." on live 26.29.0. R130.1 asks for warn AND record; only record
+             shipped.
+
+             NOTHING IS BLOCKED AND NOTHING RECORDED IS CHANGED. This runs after
+             the ledger write and after the projection, on a request that is about
+             to answer 200/201; it is a disclosure, not a gate (R135.3). The cap
+             refusal path and R133.1's four-figure split are untouched.
+
+             NO RIVAL ARITHMETIC. The figures come from `capSplit`, computed above
+             on this same request, whose `resultingTotalMinor` IS
+             `capImpact.resultingTotalMinor` — the total INCLUDING this commitment,
+             measured before the projection so the committing LP's replaced row is
+             not double-counted. The sentence itself is the SHARED
+             `spvTargetRaiseWarningSentence` the store uses for the durable record,
+             so the screen cannot word this differently from the audit trail. All
+             inputs are already-validated minor-unit integers; no money string is
+             parsed here and no `Number()`/`parseInt`/`parseFloat` is introduced.
+
+             `exceeded: false` is reported explicitly, so a caller can tell "did
+             not pass the target" from "this vehicle has no target set"
+             (`targetRaiseMinor: null`). */
+          exceeded: targetRaiseExceededByThisCommit,
+          warning: targetRaiseWarning,
         },
         /* WAVE 106 — the commitment now names its holder in the response, so a
          * caller can see WHO it was attributed to and whether an existing

@@ -150,6 +150,76 @@ interface BridgeModeResponse {
   };
 }
 
+/* WAVE 190 · ITEM D · R157.2 — the payment-gateway disclosure wire shape. Mirrors
+   `BridgeModeResponse` directly above, for the reason R157.4 gives: the bridge
+   panel is the pattern to copy. NOTE WHAT IS NOT IN THIS TYPE — there is no field
+   for a credential VALUE, and there must never be one. `present` is a boolean and
+   that is the whole contract. */
+interface PaymentGatewayDisclosureResponse {
+  ok?: boolean;
+  disclosure?: {
+    gateway: string;
+    mode: string;
+    inputs: Array<{ name: string; present: boolean; required: boolean }>;
+    missingRequired: string[];
+    allRequiredPresent: boolean;
+    webhooks: {
+      readable: boolean;
+      everReceived: boolean;
+      count: number;
+      firstAt: string | null;
+      lastAt: string | null;
+    };
+  };
+}
+
+/* WAVE 192 · ITEM A · R164 — the platform-truth wire shape. NOTE WHAT IS NOT IN
+   THIS TYPE, for the same reason the type above records it: there is no field for a
+   credential VALUE, no field for an environment-variable value, and there must never
+   be one. Every field here is a boolean, a state name, a count or a timestamp.
+   `auditLedger` and `paymentGateway` are NULLABLE on purpose: when Capavate cannot
+   read one of its own health functions, the panel says so rather than rendering a
+   confident blank. */
+interface PlatformTruthResponse {
+  ok?: boolean;
+  truth?: {
+    presenceOnlyStandard: string;
+    nodeEnvState: "production" | "development" | "test" | "other_or_unset";
+    devIdentityBypass: {
+      active: boolean;
+      disableDevBypassSet: boolean;
+      nodeEnvIsProduction: boolean;
+      alarm: boolean;
+      statement: string;
+    };
+    auditLedger: {
+      ok: boolean;
+      status: string;
+      newestRowAt: string | null;
+      newestRowAgeSeconds: number | null;
+      rowsTotal: number | null;
+      writesOkSinceBoot: number;
+      writeFailuresSinceBoot: number;
+      staleAfterHours: number;
+      alarm: boolean;
+    } | null;
+    paymentGateway: {
+      gateway: string;
+      mode: string;
+      allRequiredPresent: boolean;
+      missingRequired: string[];
+      inputs: Array<{ name: string; present: boolean; required: boolean }>;
+      webhooksReadable: boolean;
+      webhooksEverReceived: boolean;
+      webhookCount: number | null;
+      alarm: boolean;
+    } | null;
+    unreadable: string[];
+    anyAlarm: boolean;
+    generatedAt: string;
+  };
+}
+
 function dispositionBadge(d: string) {
   const variant = d === "adopted" ? "default" : d === "retired" ? "secondary" : "destructive";
   return (
@@ -207,6 +277,19 @@ export default function PlatformSurfaces() {
   const bridgeQ = useQuery<BridgeModeResponse>({
     queryKey: ["/api/admin/bridge/mode"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/bridge/mode")).json(),
+  });
+
+  /* WAVE 190 · ITEM D — read-only, admin-gated. Same shape as `bridgeQ` above. */
+  const gatewayQ = useQuery<PaymentGatewayDisclosureResponse>({
+    queryKey: ["/api/admin/payment-gateway/disclosure"],
+    queryFn: async () => (await apiRequest("GET", "/api/admin/payment-gateway/disclosure")).json(),
+  });
+
+  /* WAVE 192 · ITEM A · R164 — one read of the truth surface. The endpoint reuses
+     waves 186 and 190's functions; this page adds no second implementation. */
+  const truthQ = useQuery<PlatformTruthResponse>({
+    queryKey: ["/api/admin/platform-truth"],
+    queryFn: async () => (await apiRequest("GET", "/api/admin/platform-truth")).json(),
   });
 
   const clearMut = useMutation({
@@ -332,6 +415,20 @@ export default function PlatformSurfaces() {
                 removal. No existing trigger is replaced or reworded. */}
             <TabsTrigger value="audience-rules" data-testid="tab-surfaces-audience-rules">
               <Network className="h-4 w-4 mr-1.5" /> Messaging audience
+            </TabsTrigger>
+            {/* WAVE 190 · ITEM D · R157.2 — APPENDED AT THE END OF THE LIST, for the
+                same reason the trigger above records: inserting mid-list renumbers a
+                sibling's positional path and the drop guard reads that as a removal.
+                No existing trigger is replaced or reworded. */}
+            <TabsTrigger value="payment-gateway" data-testid="tab-surfaces-payment-gateway">
+              <Network className="h-4 w-4 mr-1.5" /> Payment gateway
+            </TabsTrigger>
+            {/* WAVE 192 · ITEM A · R164 — APPENDED AT THE END OF THE LIST, for the
+                same reason every trigger above records: inserting mid-list
+                renumbers a sibling's positional path and the drop guard reads that
+                as a removal. No existing trigger is replaced or reworded. */}
+            <TabsTrigger value="platform-truth" data-testid="tab-surfaces-platform-truth">
+              <ShieldCheck className="h-4 w-4 mr-1.5" /> Platform truth
             </TabsTrigger>
           </TabsList>
 
@@ -692,6 +789,179 @@ export default function PlatformSurfaces() {
           {/* ══ WAVE 143 · BATCH 1 · ITEM 4 (R108.1 item 3) ═══════════════ */}
           <TabsContent value="audience-rules" className="mt-4">
             <MessagingAudienceRulesPanel />
+          </TabsContent>
+
+          {/* ══ WAVE 190 · ITEM D · R157.2 ════════════════════════════════
+              "LIVE" AT /admin/fees IS A STATIC LABEL. Nothing checked whether the
+              gateway's variables were present, and the same screen said "No webhook
+              events yet" without saying whether anything had ever listened. The owner
+              reported the gateway unset four times from `bridgeEnvOk` in healthz,
+              which carries no Airwallex field at all.
+
+              THIS PANEL IS PRESENCE-ONLY AND READ-ONLY. It copies the Bridge mode
+              panel above exactly, including its literal about presence, because
+              R157.4 names that panel as the standard. It changes no payment
+              behaviour, creates no charge and touches no gateway configuration.
+              APPENDED as the last tab content — no existing panel is altered. */}
+          <TabsContent value="payment-gateway" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Payment gateway disclosure</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <span className="block" data-testid="text-gateway-mode">
+                  {gatewayQ.data?.disclosure
+                    ? `Gateway: ${gatewayQ.data.disclosure.gateway} · Current mode: ${gatewayQ.data.disclosure.mode}`
+                    : "Loading…"}
+                </span>
+                <span className="block text-muted-foreground" data-testid="text-gateway-readonly">
+                  This panel is read-only by design. It reports the gateway's configuration as the platform
+                  actually sees it; it does not change gateway settings, and no charge is made to read it.
+                </span>
+                {gatewayQ.data?.disclosure && (
+                  <>
+                    <div className="flex flex-wrap gap-2" data-testid="row-gateway-inputs">
+                      {gatewayQ.data.disclosure.inputs.map((i) => (
+                        <Badge
+                          key={i.name}
+                          variant={i.present ? "default" : "destructive"}
+                          data-testid={`badge-gateway-input-${i.name}`}
+                        >
+                          {`${i.name}: ${i.present ? "present" : "absent"}`}
+                        </Badge>
+                      ))}
+                    </div>
+                    {/* THE SAME SENTENCE AS THE BRIDGE PANEL, WORD FOR WORD. Two
+                        surfaces making the same promise in different words is how one
+                        of them stops being believed. */}
+                    <span className="block text-xs text-muted-foreground" data-testid="text-gateway-presence-only">
+                      Presence only — credential values are never returned by the API or rendered here.
+                    </span>
+                    <span className="block" data-testid="text-gateway-required-present">
+                      {gatewayQ.data.disclosure.allRequiredPresent
+                        ? "Every variable this gateway requires is present."
+                        : `Required variables absent: ${gatewayQ.data.disclosure.missingRequired.join(", ")}. The mode shown above is what the platform resolves with what it actually has.`}
+                    </span>
+                    {/* R157.2 item 3 — "No webhook events yet" becomes a fact with a
+                        timestamp, or an honest statement that the record could not be
+                        read. Never a reassuring zero for an unreadable table (R6). */}
+                    <div className="border border-border rounded-md px-3 py-2">
+                      <span className="block font-medium">Webhook events received</span>
+                      <span className="block mt-1" data-testid="text-gateway-webhooks">
+                        {!gatewayQ.data.disclosure.webhooks.readable
+                          ? "Not shown — Capavate could not read the webhook event record, so it will not tell you that none arrived."
+                          : gatewayQ.data.disclosure.webhooks.everReceived
+                            ? `${gatewayQ.data.disclosure.webhooks.count} recorded. First ${gatewayQ.data.disclosure.webhooks.firstAt}, most recent ${gatewayQ.data.disclosure.webhooks.lastAt}.`
+                            : "None have ever been recorded. The record is readable and it is empty, which means no webhook event has reached this platform — not that the check was skipped."}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ══ WAVE 192 · ITEM A · R164 — THE STATES THAT HAD NO SURFACE ══════════
+              THREE NEAR-MISSES THIS WEEK SHARED ONE SHAPE: a safety-critical state
+              with no surface that states it. The audit ledger had written nothing
+              for three months and nothing reported it. The payment gateway was
+              reported unset four times because `bridgeEnvOk` on `/api/healthz` has
+              no Airwallex field at all. And whether the dev identity bypass is off
+              rests on ONE environment variable that nothing on the platform states.
+
+              THIS PANEL DOES NOT COMPUTE ANY OF THOSE FACTS. It renders
+              `/api/admin/platform-truth`, which calls wave 186's
+              `getAuditWriteHealth()` and wave 190's `paymentGatewayDisclosure()` —
+              the SAME functions their own cards use. A second implementation of a
+              health check is a second thing that can be wrong, and then the
+              platform has two answers and no truth.
+
+              APPENDED AS THE LAST `TabsContent`, never inserted. Its own state
+              statements are read-only; nothing here can change auth behaviour.
+
+              CREDENTIALS: presence and state only, never a value — the panel has no
+              field that could carry one, because the endpoint has none either. */}
+          <TabsContent value="platform-truth" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">States the platform can be in, stated</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <span className="block text-muted-foreground" data-testid="text-truth-readonly">
+                  Read-only. This page reports states; it changes none of them, and it does not change
+                  how anyone signs in.
+                </span>
+                {truthQ.isPending && (
+                  <span className="block" data-testid="text-truth-loading">Loading…</span>
+                )}
+                {truthQ.isError && (
+                  <span className="block text-destructive" data-testid="text-truth-error">
+                    Capavate could not read its own state surface. That is itself an unknown state, not a
+                    clean bill of health — do not read this blank panel as “nothing is wrong”.
+                  </span>
+                )}
+                {truthQ.data?.truth && (
+                  <>
+                    {/* THE ALARM COMES FIRST AND LOOKS LIKE AN ALARM. The bypass is
+                        the single most security-sensitive state on the platform, so
+                        "active outside development" is not rendered as a neutral
+                        field in a list. */}
+                    {truthQ.data.truth.devIdentityBypass.alarm ? (
+                      <div className="border border-destructive bg-destructive/10 text-destructive rounded-md px-3 py-2">
+                        <span className="block font-semibold" data-testid="text-truth-bypass-alarm">
+                          {truthQ.data.truth.devIdentityBypass.statement}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="border border-border rounded-md px-3 py-2">
+                        <span className="block" data-testid="text-truth-bypass-state">
+                          {truthQ.data.truth.devIdentityBypass.statement}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-2" data-testid="row-truth-bypass-inputs">
+                      <Badge
+                        variant={truthQ.data.truth.devIdentityBypass.active ? "destructive" : "default"}
+                        data-testid="badge-truth-bypass-active"
+                      >
+                        {`dev identity bypass: ${truthQ.data.truth.devIdentityBypass.active ? "ACTIVE" : "off"}`}
+                      </Badge>
+                      <Badge
+                        variant={truthQ.data.truth.devIdentityBypass.disableDevBypassSet ? "default" : "secondary"}
+                        data-testid="badge-truth-disable-dev-bypass"
+                      >
+                        {`DISABLE_DEV_BYPASS: ${truthQ.data.truth.devIdentityBypass.disableDevBypassSet ? "set" : "not set"}`}
+                      </Badge>
+                      <Badge
+                        variant={truthQ.data.truth.devIdentityBypass.nodeEnvIsProduction ? "default" : "secondary"}
+                        data-testid="badge-truth-node-env"
+                      >
+                        {`NODE_ENV: ${truthQ.data.truth.nodeEnvState}`}
+                      </Badge>
+                    </div>
+                    <div className="border border-border rounded-md px-3 py-2">
+                      <span className="block font-medium">Audit ledger write health</span>
+                      <span className="block mt-1" data-testid="text-truth-audit-ledger">
+                        {!truthQ.data.truth.auditLedger
+                          ? "Not shown — Capavate could not read its own audit write health, so it will not tell you the ledger is fine."
+                          : `${truthQ.data.truth.auditLedger.status}. Writes since boot: ${truthQ.data.truth.auditLedger.writesOkSinceBoot} succeeded, ${truthQ.data.truth.auditLedger.writeFailuresSinceBoot} failed. Newest recorded row: ${truthQ.data.truth.auditLedger.newestRowAt ?? "none on record"}.`}
+                      </span>
+                    </div>
+                    <div className="border border-border rounded-md px-3 py-2">
+                      <span className="block font-medium">Payment gateway configuration</span>
+                      <span className="block mt-1" data-testid="text-truth-payment-gateway">
+                        {!truthQ.data.truth.paymentGateway
+                          ? "Not shown — Capavate could not read its own payment-gateway configuration, so it will not tell you the gateway is set."
+                          : `${truthQ.data.truth.paymentGateway.gateway} in ${truthQ.data.truth.paymentGateway.mode} mode. ${truthQ.data.truth.paymentGateway.allRequiredPresent ? "Every required input is present." : `Required inputs absent: ${truthQ.data.truth.paymentGateway.missingRequired.join(", ")}.`}`}
+                      </span>
+                    </div>
+                    <span className="block text-xs text-muted-foreground" data-testid="text-truth-presence-only">
+                      Presence only — credential values are never returned by the API or rendered here.
+                    </span>
+                  </>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </PageBody>

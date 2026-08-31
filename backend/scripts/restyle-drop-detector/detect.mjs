@@ -783,7 +783,20 @@ function inventory() {
       }
       if (ts.isCallExpression(n)) {
         const e = n.expression.getText(sf);
-        if (/(^|\.)toast$|^toast\.\w+$/.test(e)) {
+        /* WAVE 197 / R169.7 — THE BLIND SPOT, WIDENED AFTER MEASURING IT.
+           The original test matched `toast`, `x.toast` and `toast.method`. It did
+           NOT match `toastCreate`, `toastUpdate` or any other `toast<Verb>` helper,
+           so `client/src/pages/collective/ScreeningEventsPage.tsx` — a live
+           Collective surface — had its user-facing toast copy invisible to this
+           gate entirely. Wave 197 verified that surface's copy BY HAND, byte for
+           byte, because the gate could not.
+           The alternative to widening was to keep hand-verifying, which does not
+           scale and does not survive the next wave. Measured effect of this change
+           is recorded in `build_log/wave197/artefacts/gate_restyle_regex_after.txt`.
+           `toast` and `toast.x` still match exactly as before; the added alternative
+           only ADMITS more call sites, so this can add copy strings to the
+           inventory and can never remove one. */
+        if (/(^|\.)toast$|(^|\.)toast[A-Z]\w*$|^toast\.\w+$/.test(e)) {
           const sv = (x) => {
             if (ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x)) {
               const t = norm(x.text);

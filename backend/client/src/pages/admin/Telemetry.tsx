@@ -22,6 +22,17 @@ import {
  defaultTelemetryStore, ALL_EVENT_TYPES, defaultBenchmarkStore, useSprint3,
 } from "@/lib/sprint3";
 import { funnelDropoff } from "@capavate/telemetry";
+/* WAVE 225 · ITEM B (R193.2) — the observed-round benchmark layer. Every cohort
+   figure on this page now comes from here rather than from the seeded singleton
+   `defaultBenchmarkStore`. `defaultBenchmarkStore` is left in the import above
+   deliberately: it is still the store `useSprint3` and the seed operate on, and
+   removing it would be a deletion for no gain. It is simply no longer READ by
+   this page. */
+import {
+  verifiedCohortBenchmarks,
+  observedCohorts,
+  totalObservedRounds,
+} from "@/lib/wave225BenchmarkProvenance";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
@@ -109,9 +120,28 @@ export default function AdminTelemetry() {
  const [bSector, setBSector] = useState("fintech");
  const [bStage, setBStage] = useState("seed");
  const [bRegion, setBRegion] = useState("US");
- const benchmarks = defaultBenchmarkStore.getCohortBenchmarks({ sector: bSector, stage: bStage, region: bRegion });
+ /* WAVE 225 · ITEM B (R193.2) — these two lines used to read
 
- const allCohorts = defaultBenchmarkStore.listCohorts();
+        const benchmarks = defaultBenchmarkStore.getCohortBenchmarks({...});
+        const allCohorts  = defaultBenchmarkStore.listCohorts();
+
+      and `defaultBenchmarkStore` is seeded with 130 INVENTED rounds across 21
+      cohorts by an unconditional module-load call at
+      `packages/telemetry/src/benchmarks.ts:350`. `addToCohort` has no non-seed,
+      non-test caller anywhere in the tree, so the seed was not "mixed into" real
+      data — it WAS all of the data. Every percentile below, and the "Cohorts"
+      stat, was computed from numbers an author chose and shaped to look like
+      Carta medians.
+
+      Both now read the observed-round store, which only a real `round.closed`
+      can ever write to (see `@/lib/wave225BenchmarkProvenance`). Today that
+      store is empty, so the card refuses and the honest branch already present
+      further down renders. The seed is untouched and still serves the seeded
+      store for preview/dev use — it simply no longer reaches this screen. */
+ const benchmarkResult = verifiedCohortBenchmarks({ sector: bSector, stage: bStage, region: bRegion });
+ const benchmarks = benchmarkResult.percentiles;
+
+ const allCohorts = observedCohorts();
 
  // Sprint 5 — M&A intelligence widgets data
  const roundsQ = useQuery<ApiRound[]>({ queryKey: ["/api/rounds"] });
@@ -162,9 +192,35 @@ export default function AdminTelemetry() {
  { label: "This week", value: durableCounts.thisWeek },
  { label: "All-time", value: durableCounts.allTime },
  { label: "Hash chain", value: stats.chain.valid ? "Unbroken" : `Broken @ ${stats.chain.brokenAt}`, tone: stats.chain.valid ? "positive" : "critical" },
- { label: "Cohorts", value: allCohorts.length, hint: "Active benchmark sets" },
+ /* WAVE 225 — `allCohorts` now counts OBSERVED cohorts only, so this reads 0
+    until a real closed round is recorded. It previously read 21, every one of
+    them seeded. The hint is corrected in the same breath: "Active benchmark
+    sets" implied measurement. */
+ { label: "Cohorts", value: allCohorts.length, hint: "Cohorts with rounds Capavate observed closing" },
  ]}
  />
+ {/* WAVE 225 · ITEM B (R193.2) — corrective sibling for the intro copy above.
+
+     That copy says cohort benchmarks "anonymise telemetry by sector × stage ×
+     region (k-anonymity ≥ 5) to give founders honest peer comparisons". Both
+     halves overstated what exists: there is no founder round telemetry in the
+     benchmark store to anonymise, and the "honest peer comparisons" shown here
+     until this wave were computed from 130 rounds an author invented.
+
+     R143.1 — the `positive` string is NOT edited. `AdminPageIntro` exposes no
+     `children` prop, so a correction cannot be appended inside it structurally,
+     and replacing the literal is exactly what R143.1 forbids. It is corrected
+     here instead, adjacent and unmissable. */}
+ {totalObservedRounds() === 0 ? (
+ <div
+ className="mb-4 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
+ data-testid="telemetry-benchmark-provenance-correction"
+ >
+ Correction to the note above: Capavate has not yet observed a single closed round, so no
+ cohort benchmark is available and none is shown. Any peer-comparison figures previously
+ displayed on this page were seeded preview data, not measurements.
+ </div>
+ ) : null}
  <Tabs defaultValue="funnel" className="w-full">
  <TabsList className="mb-4">
  <TabsTrigger value="funnel" data-testid="tab-tel-funnel"><BarChart3 className="h-3.5 w-3.5 mr-1.5" />Funnel & cohorts</TabsTrigger>
@@ -206,7 +262,21 @@ export default function AdminTelemetry() {
  <PercentileRow label="Time to close (days)" p={benchmarks.timeToCloseDays} fmt={(v) => v.toFixed(0)} />
  </div>
  ) : (
- <div className="text-sm text-muted-foreground italic py-6 text-center border border-dashed border-border rounded-md">No data yet for this cohort. Closed rounds add organically.</div>
+ /* WAVE 225 — the existing honest sentence is kept byte-for-byte (R143.1)
+    and the correction is APPENDED as static siblings. On its own it implies
+    the wait is for THIS cohort to fill up; the fuller truth is that the
+    platform has never recorded a closed round into any cohort, and the
+    figures shown here before this wave were seeded, not measured. */
+ <div className="text-sm text-muted-foreground italic py-6 text-center border border-dashed border-border rounded-md" data-testid="cohort-benchmarks-refusal">No data yet for this cohort. Closed rounds add organically.
+ <p className="not-italic text-xs mt-3 max-w-md mx-auto" data-testid="cohort-benchmarks-refusal-detail">
+ {benchmarkResult.statement}
+ </p>
+ <p className="not-italic text-xs mt-2 max-w-md mx-auto" data-testid="cohort-benchmarks-refusal-basis">
+ Benchmarks are computed only from rounds Capavate observed closing. Seeded, sample and
+ illustrative rounds are excluded, so a cohort with no observed rounds shows no percentiles
+ rather than a plausible-looking estimate.
+ </p>
+ </div>
  )}
  </CardContent>
  </Card>
@@ -478,10 +548,18 @@ function InvestorConcentrationWidget({ securities }: { securities: ApiSecurity[]
 function BurnVsRaiseWidget() {
  // Sprint 5 \u2014 derived signal across the seeded cohort. Synthetic correlation
  // computed from the benchmark store (round duration vs total raise size).
- const cohorts = defaultBenchmarkStore.listCohorts();
+ //
+ // WAVE 225 · ITEM B — the comment above says "seeded" and "Synthetic" and it
+ // was accurate: this widget published a Pearson correlation coefficient, to two
+ // decimal places, computed entirely from 130 invented rounds. A correlation is
+ // a claim about the world; a synthetic one is a fabricated claim about the
+ // world, and a code comment is not a disclosure — the admin reading "r = -0.42"
+ // never saw it. Now sourced from the observed-round store, which is empty until
+ // a real `round.closed` is wired, so the widget shows "—" and says why.
+ const cohorts = observedCohorts();
  const points = cohorts
  .map((c) => {
- const b = defaultBenchmarkStore.getCohortBenchmarks(c.cohort);
+ const b = verifiedCohortBenchmarks(c.cohort).percentiles;
  if (!b || b.count < 3) return null;
  return { cohortLabel: `${c.cohort.sector}/${c.cohort.stage}`, days: b.timeToCloseDays.p50, raise: b.totalRoundSize.p50 };
  })
@@ -517,6 +595,9 @@ function BurnVsRaiseWidget() {
  </li>
  ))}
  {points.length === 0 && <li className="text-muted-foreground italic">Need ≥3 cohorts with sufficient data.</li>}
+ {/* WAVE 225 — appended sibling (R143.1). The line above states a threshold;
+     it does not say that the platform currently holds nothing to measure. */}
+ {points.length === 0 && <li className="text-muted-foreground" data-testid="burn-raise-refusal-detail">No correlation is shown because Capavate has not observed enough closed rounds to compute one. Seeded and sample rounds are excluded from this figure.</li>}
  </ul>
  </CardContent>
  </Card>

@@ -22,6 +22,7 @@ import { AppShell } from "@/components/AppShell";
 import Home from "@/pages/home/Home";
 import LegalTermsPage from "@/pages/Terms"; // v25.26 — stub Terms of Service page (was 404 fallback to login)
 import LegalPrivacyPage from "@/pages/Privacy"; // v25.26 — stub Privacy Policy page (note: separate from @/pages/settings/PrivacyPage which is the settings screen)
+import { AdoptedLegalDocumentPage } from "@/components/AdoptedLegalDocumentPage";
 // Sprint-fix May 14 2026 — import the new guard + boundary components
 import { RequireAuth } from "@/components/RequireAuth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -625,6 +626,13 @@ function AppRouter() {
         <Route path="/terms-of-service" component={LegalTermsPage} />
         <Route path="/privacy" component={LegalPrivacyPage} />
         <Route path="/privacy-policy" component={LegalPrivacyPage} />
+        {/* WAVE 210 — the Cookie Policy, Acceptable Use Policy and Disclaimer
+            existed in the corpus that every signup consent attests to, and no URL
+            reached any of them. Public, additive; the four routes above are
+            unchanged. */}
+        <Route path="/legal/:docId">
+          {(params: { docId: string }) => <AdoptedLegalDocumentPage docId={params.docId} />}
+        </Route>
         {/* CP Phase B — Public consortium-partner application */}
         <Route path="/apply/consortium" component={ConsortiumApplyPage} />
         {/* v25.47 APD-020 — Public Consortium Partner pricing (no auth). */}

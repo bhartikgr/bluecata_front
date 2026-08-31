@@ -32,6 +32,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { getRoundById } from "../roundsStore";
 import { SENIORITY_RANK_MAX, validateSeniorityRankStored } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -201,11 +202,11 @@ async function makeRound(key: string): Promise<{ companyId: string; roundId: str
   const co = await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)
     .send({ companyId, companyName: `W81 ${key}` });
   expect(co.status, `company create ${key}`).toBeLessThan(400);
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Round ${key}`, type: "seed", instrument: "preferred",
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
-  });
+  }));
   expect(created.status, `round create ${key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   return { companyId, roundId: String((created.body as { id: string }).id) };
 }

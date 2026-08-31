@@ -411,6 +411,23 @@ function CompanyDetailsView({
  {profile.ma.accountingFirmName && (
  <div className="col-span-full text-xs text-muted-foreground mt-2">Accounting firm: <span className="font-medium text-foreground">{profile.ma.accountingFirmName}</span></div>
  )}
+ {/* WAVE 220 · CLASS A · A5 — THE RELAY.
+     "Regulatory compliant" and "Financials independently audited" render from
+     profile.ma.isRegulatoryCompliant and profile.ma.isFinanciallyAudited, which
+     are FOUNDER-ENTERED PROFILE BOOLEANS. Shown to an investor inside a
+     "scorecard" with a shield icon and no named source, a self-assessment reads
+     as a finding. Nothing in this tree checks either flag.
+
+     R143.1 — NO LABEL IS REPLACED. Every row, every label and every value is
+     exactly as it was; this is a STATIC SIBLING appended as the LAST child of
+     the grid, so no row renumbers. R190.10 — nothing is hidden and no row is
+     removed: an investor still sees every row they saw before, now with the
+     party who asserted it named. The fix is attribution, not withdrawal,
+     because the underlying statement IS the company's and is not Capavate's to
+     withdraw. */}
+ <div className="col-span-full text-xs text-muted-foreground mt-2 leading-relaxed" data-testid="section-governance-attribution">
+ Every row above is stated by the company on its own profile. Capavate records what the company states and does not check any of it. No row here reflects a check by Capavate or by any third party engaged by Capavate.
+ </div>
  </div>
  </SectionCard>
  )}

@@ -58,6 +58,39 @@ export function wholeUnitsToWireMinor(
 }
 
 /**
+ * WAVE 216 — THE SAME CONVERSION, WITHOUT THE THROW.
+ *
+ * `wholeUnitsToWireMinor` above throws, which is right for a click handler and
+ * impossible during render. Wave 226 pinned the resulting discrepancy: the money-
+ * event attestation panel renders during typing, so it could only show the figure
+ * `as_entered`, while the server stored the recital with the MINOR figure the route
+ * actually received. The two Amount lines therefore disagreed for the same event.
+ *
+ * This wrapper lets the panel restate THE FIGURE THAT GOES ON THE WIRE. It is not a
+ * second converter: it delegates to the one above and returns `null` instead of
+ * throwing while the box holds something that is not yet an amount. No `Number()`,
+ * no `parseInt`, no `parseFloat`, no arithmetic; `parseWholeUnits` and `toWireMinor`
+ * remain the only code that scales anything, in `bigint`.
+ *
+ * `null` is a real answer, not a fallback: while it is `null` the amount cannot be
+ * submitted at all, so no stored recital exists for the rendered one to disagree
+ * with. The caller labels the figure `as_entered` in that window — truthfully,
+ * because that is all it has — and `minor` the moment a wire figure exists.
+ */
+export function wholeUnitsToWireMinorOrNull(
+  raw: string,
+  currency: string,
+  label: string,
+  opts?: { allowZero?: boolean },
+): string | null {
+  try {
+    return wholeUnitsToWireMinor(raw, currency, label, opts);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Widen an already-proven minor-unit digit string for an endpoint whose schema
  * types the field as a JSON number. Refuses rather than losing precision.
  */

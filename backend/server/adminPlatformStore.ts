@@ -58,6 +58,20 @@ import { DbUnavailableError } from "./lib/errors";
    (audit_log.hash_version). server/db/connection.ts is SACRED and cannot be
    extended, so a handle built from its inline DDL needs this. */
 import { ensureRepair1AuditActorBindingSchema } from "./lib/applyRepair1AuditActorBindingSchema";
+/* WAVE 224 · ITEM A — the company CSV export figures, derived from the canonical
+   stores or explicitly refused. Replaces the hardcoded `6500000`, the
+   `Math.random()` bulk raise, and the literal `6` investors / `4` reports that both
+   company exports printed on every row. See the block above the two routes. */
+import {
+  buildCompanyExportFigures as w224BuildCompanyExportFigures,
+  buildCompaniesCsv as w224BuildCompaniesCsv,
+  collectExportCompanies as w224CollectExportCompanies,
+  resolveCompanyName as w224ResolveCompanyName,
+  demoNameMap as w224DemoNameMap,
+} from "./lib/wave224CompanyExportFigures";
+/* The authoritative admin company set (DB rows), so the bulk export stops reading
+   the demo-only `./mockData` array and reporting zero companies on production. */
+import { getAllCompaniesFromDb } from "./multiCompanyStore";
 /* WAVE 93 · ITEM 1 — the shared actor describer (additive, read-only). */
 import { describeActor } from "./lib/actorIdentityDescriber";
 import { resolveCompanyName } from "./lib/userContext";
@@ -609,6 +623,201 @@ export function appendAdminAudit(
  */
 export function isAuditWriteFailure(entry: AuditEntry | null | undefined): boolean {
   return !entry || entry.hash === "";
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 186 · R159.1 — AUDIT-WRITE HEALTH TELEMETRY
+
+   THE DEFECT THIS EXISTS FOR: the ledger stopped recording on the live server
+   in late May and nobody found out until late August. Not because nothing was
+   logged — `appendAudit`'s catch block has emitted `AUDIT_DB_WRITE_FAILED` at
+   error level since v25.23 — but because that line goes to the server process
+   log, which is not a surface any operator or owner reads. Every route still
+   answered 200/201, every screen still rendered the historical ledger, and the
+   product itself never said a word.
+
+   Wave 186 reproduced the failure class locally (see build_log/wave186): chmod
+   the SQLite file named by DATABASE_URL to read-only and every append returns
+   the empty-hash sentinel with "attempt to write a readonly database", while
+   reads keep working perfectly. The counters below are what makes that state
+   VISIBLE: they are read by GET /api/admin/audit-write-health and rendered on
+   the admin audit screen.
+
+   WHY IN PROCESS MEMORY, DELIBERATELY: the condition being reported is "this
+   database cannot be written to". A persisted counter would fail to persist in
+   exactly the situation it is needed. This is process health telemetry, never
+   business data — no product read path is served from it and a restart clears
+   it. That is the correct trade-off here, and it is the only reason an
+   in-memory value is acceptable under the no-memory-storage rule.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** Hours after which a silent ledger is reported as stale rather than healthy. */
+export const AUDIT_WRITE_STALE_AFTER_HOURS = 48;
+
+interface AuditWriteFailureRecord {
+  at: string;
+  message: string;
+  actor: string;
+  entity: string;
+  eventType: string;
+  tenantId: string;
+}
+
+let _auditWriteOkSinceBoot = 0;
+let _auditWriteFailuresSinceBoot = 0;
+let _lastAuditWriteOkAt: string | null = null;
+let _lastAuditWriteFailure: AuditWriteFailureRecord | null = null;
+
+/** Recorded by `appendAudit` on every outcome. Not exported to product code. */
+function noteAuditWriteOk(ts: string): void {
+  _auditWriteOkSinceBoot += 1;
+  _lastAuditWriteOkAt = ts;
+}
+
+function noteAuditWriteFailure(rec: AuditWriteFailureRecord): void {
+  _auditWriteFailuresSinceBoot += 1;
+  _lastAuditWriteFailure = rec;
+}
+
+/** Test-only reset — never called by product code. */
+export function _resetAuditWriteHealthForTest(): void {
+  _auditWriteOkSinceBoot = 0;
+  _auditWriteFailuresSinceBoot = 0;
+  _lastAuditWriteOkAt = null;
+  _lastAuditWriteFailure = null;
+}
+
+export interface AuditWriteHealth {
+  ok: boolean;
+  status: "healthy" | "stale" | "failing" | "unreadable";
+  newestRowAt: string | null;
+  newestRowAgeSeconds: number | null;
+  newestRowAction: string | null;
+  rowsTotal: number | null;
+  writesOkSinceBoot: number;
+  writeFailuresSinceBoot: number;
+  lastWriteOkAt: string | null;
+  lastWriteFailure: AuditWriteFailureRecord | null;
+  staleAfterHours: number;
+  readError: string | null;
+}
+
+/**
+ * WAVE 186 — the health signal an admin can read.
+ *
+ * Answers one question: is the audit ledger recording right now? It reports the
+ * age of the newest row (the number whose three-month drift nobody saw) and the
+ * in-process write-outcome counters. Purely a READ: it appends nothing, so
+ * asking whether auditing works can never itself pollute the ledger.
+ *
+ * `status`:
+ *   failing    — at least one append failed since boot. Loudest state; a real
+ *                write was attempted and lost.
+ *   unreadable — audit_log could not even be queried.
+ *   stale      — readable, no failure observed in THIS process, but the newest
+ *                row is older than AUDIT_WRITE_STALE_AFTER_HOURS. This is the
+ *                state the live server has been in since May, and the state
+ *                nothing used to report.
+ *   healthy    — readable and recent.
+ */
+export function getAuditWriteHealth(now: Date = new Date()): AuditWriteHealth {
+  let newestRowAt: string | null = null;
+  let newestRowAction: string | null = null;
+  let rowsTotal: number | null = null;
+  let readError: string | null = null;
+
+  try {
+    const db: any = rawDb();
+    const totalRow = db.prepare(`SELECT COUNT(*) AS n FROM audit_log`).get() as { n?: number } | undefined;
+    rowsTotal = typeof totalRow?.n === "number" ? totalRow.n : null;
+    /* The SAME ordering the writer uses to find the chain tip and the SAME
+       ordering GET /api/admin/audit-log defaults to, so this age can never
+       disagree with the first row on the admin screen. */
+    const tip = db
+      .prepare(`SELECT created_at AS createdAt, action FROM audit_log ORDER BY created_at DESC, id DESC LIMIT 1`)
+      .get() as { createdAt?: string; action?: string } | undefined;
+    newestRowAt = typeof tip?.createdAt === "string" ? tip.createdAt : null;
+    newestRowAction = typeof tip?.action === "string" ? tip.action : null;
+  } catch (err) {
+    readError = (err as Error).message;
+  }
+
+  let newestRowAgeSeconds: number | null = null;
+  if (newestRowAt) {
+    const parsed = Date.parse(newestRowAt);
+    if (Number.isFinite(parsed)) {
+      newestRowAgeSeconds = Math.max(0, Math.floor((now.getTime() - parsed) / 1000));
+    }
+  }
+
+  let status: AuditWriteHealth["status"];
+  if (_auditWriteFailuresSinceBoot > 0) status = "failing";
+  else if (readError !== null) status = "unreadable";
+  else if (newestRowAgeSeconds !== null && newestRowAgeSeconds > AUDIT_WRITE_STALE_AFTER_HOURS * 3600) status = "stale";
+  else status = "healthy";
+
+  return {
+    ok: status === "healthy",
+    status,
+    newestRowAt,
+    newestRowAgeSeconds,
+    newestRowAction,
+    rowsTotal,
+    writesOkSinceBoot: _auditWriteOkSinceBoot,
+    writeFailuresSinceBoot: _auditWriteFailuresSinceBoot,
+    lastWriteOkAt: _lastAuditWriteOkAt,
+    lastWriteFailure: _lastAuditWriteFailure,
+    staleAfterHours: AUDIT_WRITE_STALE_AFTER_HOURS,
+    readError,
+  };
+}
+
+/**
+ * WAVE 186 — the call-site guard. Use this instead of discarding the return
+ * value of `appendAdminAudit`.
+ *
+ * `isAuditWriteFailure()` (wave 57d) named the sentinel; the call sites still
+ * threw it away. This helper makes checking cheaper than not checking: one
+ * call, and a lost audit row becomes a distinct, greppable, severity-carrying
+ * log line that names the action that went unrecorded — and increments the
+ * counter the health endpoint publishes.
+ *
+ * `bearing` states what was at stake, so whoever reads the log can tell a lost
+ * cosmetic event from a lost capital commitment:
+ *   "money"    — capital moved or was committed.
+ *   "identity" — who someone is, or what they may do, changed.
+ *   "routine"  — everything else.
+ *
+ * It does NOT refuse the action and does NOT throw. That is a deliberate
+ * decision, argued in full in build_log/wave186/W186_BUILD.md §3: at every one
+ * of these call sites the business effect is already committed, so throwing
+ * would strand a real commitment behind a failed log write. The requirement the
+ * owner set is that a commitment must never be SILENTLY unaudited — so this
+ * makes it loud, counts it, and puts it on an admin screen.
+ *
+ * Returns true when the row landed and false when it did not, so a future
+ * caller that genuinely can refuse is free to act on it.
+ */
+export function reportAuditWriteOutcome(
+  entry: AuditEntry | null | undefined,
+  ctx: { bearing: "money" | "identity" | "routine"; action: string; route?: string; subject?: string },
+): boolean {
+  if (!isAuditWriteFailure(entry)) return true;
+  log.error({
+    route: ctx.route ?? "audit",
+    errorType: "AUDIT_ROW_MISSING_AFTER_ACTION",
+    bearing: ctx.bearing,
+    action: ctx.action,
+    subject: ctx.subject ?? null,
+    actor: entry?.actor ?? null,
+    entity: entry?.entity ?? null,
+    tenantId: entry?.tenantId ?? null,
+    writeFailuresSinceBoot: _auditWriteFailuresSinceBoot,
+    message:
+      "AUDIT ROW NOT WRITTEN. The action completed but the ledger did not record it. " +
+      "Check GET /api/admin/audit-write-health and write permissions on the database named by DATABASE_URL.",
+  });
+  return false;
 }
 
 /**
@@ -1436,6 +1645,22 @@ function appendAudit(
      * `AuditEntry` with `hash: ""` and `priorHash: ""` so callers receive a
      * value but the chain in the cache remains uncorrupted. Tests / verifiers
      * can detect the failure via the empty hash sentinel. */
+    /* WAVE 186 · R159.1 — this log line already existed and was already at
+       error level, and the ledger still went unrecorded for three months,
+       because a line in the process log is not a surface anyone reads. The
+       counter below is the part that was missing: it is published by
+       GET /api/admin/audit-write-health and rendered on the admin audit screen,
+       so the NEXT time an append cannot land, the product says so. The catch
+       itself is unchanged (see the v25.23 NH-J rationale above) — throwing here
+       would crash the many call sites that do not wrap this. */
+    noteAuditWriteFailure({
+      at: new Date().toISOString(),
+      message: (err as Error).message,
+      actor,
+      entity,
+      eventType,
+      tenantId,
+    });
     log.error({
       route: "adminPlatformStore.appendAudit",
       errorType: "AUDIT_DB_WRITE_FAILED",
@@ -1444,10 +1669,19 @@ function appendAudit(
       entity,
       eventType,
       tenantId,
+      /* WAVE 186 — how many rows this process has already lost. One lost row is
+         an incident; a rising count is an outage. */
+      writeFailuresSinceBoot: _auditWriteFailuresSinceBoot,
     });
     // Return a sentinel entry; do NOT mirror into auditLog cache.
     return { id, ts, actor, entity, eventType, payload, priorHash: "", hash: "", tenantId };
   }
+
+  /* WAVE 186 · R159.1 — record the SUCCESS too, not only the failure. A health
+     signal that only counts failures cannot distinguish "writing fine" from
+     "nothing has been attempted since boot", and that ambiguity is what let a
+     three-month outage look like a quiet week. */
+  noteAuditWriteOk(ts);
 
   // Mirror into the in-memory cache. Cap the mirror size so it never grows
   // unbounded under heavy write load.
@@ -2121,6 +2355,31 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
   /* v25.47 APD-029 (BLOCKER-6) — audit-chain continuity health. Drives the
    * admin P0 banner. Router-level requireAdmin (routes.ts) gates this. */
+  /* ══ WAVE 186 · R159.1 — THE HEALTH SIGNAL THAT DID NOT EXIST ══════════════
+   * The audit ledger stopped recording on the live server in late May 2026 and
+   * was not noticed until late August. The reason it went unnoticed is simply
+   * that nothing reported it: the chain-health endpoint above answers "is the
+   * history I already have internally consistent?", which stayed a confident
+   * YES the whole time, because a ledger that has stopped accepting rows is
+   * perfectly consistent. Nothing anywhere answered "is it still RECORDING?".
+   *
+   * This endpoint answers exactly that, and nothing else. It is a pure read —
+   * it never appends, so checking whether auditing works cannot itself write to
+   * the ledger. Router-level requireAdmin (routes.ts) gates it, same as its
+   * siblings. Modelled on /admin/platform-surfaces' disclosure pattern: state
+   * the observable fact, do not interpret it away.
+   * ═══════════════════════════════════════════════════════════════════════ */
+  app.get("/api/admin/audit-write-health", (_req: Request, res: Response) => {
+    try {
+      return res.json({ ok: true, health: getAuditWriteHealth() });
+    } catch (err) {
+      /* Deliberately NOT a silent 200-with-empty-health. An unanswerable health
+         question must read as unanswered, never as healthy. */
+      log.error({ route: "admin.audit-write-health", errorType: "AUDIT_WRITE_HEALTH_UNAVAILABLE", message: (err as Error).message });
+      return res.status(503).json({ ok: false, error: "audit_write_health_unavailable" });
+    }
+  });
+
   app.get("/api/admin/audit-chain-health", (_req: Request, res: Response) => {
     try {
       /* WAVE 95 · ITEM 1 · R84 condition 3 — the anchors are served alongside
@@ -2377,22 +2636,68 @@ export function registerAdminPlatformRoutes(app: Express): void {
       return res.status(503).json({ ok: false, error: "db_unavailable", message: "Company stats temporarily unavailable" });
     }
   });
+  /* ============================================================
+   * WAVE 224 · ITEM A — the two company CSV exports.
+   *
+   * WHAT THESE ROUTES USED TO EMIT. Both sent the header
+   * "company_id,name,total_raised_usd,investors,reports" and then a row in which
+   * THREE of the five columns were invented:
+   *   • this route:  `${id},${co?.name ?? id},6500000,6,4`   — a hardcoded raise
+   *   • bulk route:  `${1_500_000 + Math.floor(Math.random()*5_000_000)},6,4`
+   *                                                          — a NEW RANDOM raise
+   *                                                            on every download
+   * `6` investors and `4` reports were literals on every row of both files.
+   *
+   * THE FIX IS TO REFUSE, NEVER TO INVENT (R143.4). Every figure is now derived
+   * from the canonical stores, or the cell is EMPTY and a `total_raised_status`
+   * column on the same row states the reason. No cell ever contains a substitute
+   * number, and zero is never printed for a total the platform does not hold —
+   * zero is a claim.
+   *
+   * The derivation, the currency rules, the bigint rendering boundary and the
+   * MAX_SAFE_INTEGER refusal all live in `./lib/wave224CompanyExportFigures.ts`
+   * so that both routes share ONE expression and cannot drift apart (handbook
+   * §13), and so a disarm harness can break a named function.
+   *
+   * The company SET also changes. Both routes previously read the `./mockData`
+   * `companies` array, which is `DEMO_SEED_ENABLED ? _seed_companies : []`; on
+   * production that is empty, so the bulk export reported that Capavate has no
+   * companies. The DB set is now unioned with the still-demo-gated fixture set.
+   * ============================================================ */
   app.get("/api/admin/companies/:id/export.csv", (req: Request, res: Response) => {
-    const id = req.params.id;
-    const co = companies.find(c => c.id === id);
-    const csv = [
-      "company_id,name,total_raised_usd,investors,reports",
-      `${id},${co?.name ?? id},6500000,6,4`,
-    ].join("\n");
+    /* Express types this project's `req.params.id` as `string | string[]` (a
+       repeated path segment can arrive as an array). The old code only ever
+       interpolated it into a template, which hid that; a parameterised SQL bind
+       does not. The FIRST value is taken rather than joining, because
+       `String(["a","b"])` is `"a,b"`, which is not an id the platform ever issued
+       and would be reported as a real lookup of a fabricated key. */
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? String(rawId[0] ?? "") : String(rawId ?? "");
+    /* A DB-recorded name first; the demo array is only an overlay. `undefined`
+       here means the platform holds no record for this id, which the figure
+       builder reports as `not_available:no_company_record` — NOT as a zero raise.
+       The old code emitted a confident row for any id at all. */
+    const name = w224ResolveCompanyName(id, w224DemoNameMap(companies));
+    const csv = w224BuildCompaniesCsv([w224BuildCompanyExportFigures(id, name)]);
     res.setHeader("content-type", "text/csv");
-    res.setHeader("content-disposition", `attachment; filename="${id}-export.csv"`);
+    /* The id is admin-supplied and reached `setHeader` unfiltered before this wave,
+       so an id containing a newline made Node throw `Invalid character in header
+       content` and the request 500'd with a stack trace. Node fails CLOSED, so this
+       was never header injection — but a 500 is not an answer, and the crafted id
+       is still reported verbatim inside the CSV body where it is properly escaped.
+       Only the FILENAME is reduced to a safe token set. */
+    const filenameId = id.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "company";
+    res.setHeader("content-disposition", `attachment; filename="${filenameId}-export.csv"`);
     res.send(csv);
   });
   app.get("/api/admin/companies/bulk-export.csv", (_req: Request, res: Response) => {
-    const csv = [
-      "company_id,name,total_raised_usd,investors,reports",
-      ...companies.map(c => `${c.id},${c.name},${1_500_000 + Math.floor(Math.random()*5_000_000)},6,4`),
-    ].join("\n");
+    /* Id-sorted so two consecutive downloads are byte-identical: SQL row order is
+       not a guarantee, and a file that reorders itself between downloads is a file
+       whose diffs cannot be trusted. */
+    const set = w224CollectExportCompanies(getAllCompaniesFromDb(), companies);
+    const csv = w224BuildCompaniesCsv(
+      set.map((c) => w224BuildCompanyExportFigures(c.id, c.name)),
+    );
     res.setHeader("content-type", "text/csv");
     res.setHeader("content-disposition", `attachment; filename="capavate-companies.csv"`);
     res.send(csv);
@@ -2904,6 +3209,80 @@ export function registerAdminPlatformRoutes(app: Express): void {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1000) : null;
     const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
 
+    /* ══════════════════════════════════════════════════════════════════════
+     * WAVE 181 · ITEM A/B — THE AUDIT LOG WAS NEVER SILENT. THIS READ WAS.
+     * ══════════════════════════════════════════════════════════════════════
+     * R148.3 item 2 reported the audit log as having no entry in three months:
+     * `/admin/audit-log` filtered 2026-08-25→27 answered "No audit entries match
+     * the current filters — 0 of 1314 total", and the newest row it would show
+     * anywhere was 26 May 2026. Both statements were TRUE OF THE SCREEN and
+     * FALSE OF THE TABLE. Two defects in this handler and its caller produced
+     * them, from a table that was being written the whole time:
+     *
+     *   R1  This query ordered `created_at ASC` and the page asks for
+     *       limit=100&offset=0, so page 1 was the OLDEST 100 of 1314 rows. The
+     *       "most recent entry in the whole log" an admin could see was the
+     *       100th-OLDEST row. Reproduced on this tree's own data.db: page 1 tops
+     *       out at 2026-08-21T13:44:01.560Z while MAX(created_at) is
+     *       2026-08-24T21:08:02.627Z — a gap manufactured entirely by the read.
+     *
+     *   R2  The date range never reached SQL. AuditLog.tsx applied from/to in a
+     *       client-side useMemo OVER THE FETCHED PAGE, while `total` below was
+     *       counted WITHOUT the range. That is precisely how a screen comes to
+     *       say "0 of 1314": the 0 and the 1314 were computed over different
+     *       row sets.
+     *
+     * FIX: the range becomes a real SQL filter (so it reduces BEFORE
+     * pagination, like entity/actor/eventType/tenantId already do), and the item
+     * page defaults to NEWEST-FIRST so an admin who never paginates is looking
+     * at what just happened rather than at the beginning of platform history.
+     *
+     * NOT TOUCHED, DELIBERATELY: the hash/anchor logic. This is a READ. The
+     * writer's tip read, `auditHashBody`, AUDIT_CHAIN_ORDER_SQL_ASC/DESC,
+     * AUDIT_CHAIN_SELECT_SQL and `verifyTenantAuditChain` all keep their own
+     * canonical `created_at ASC, id ASC` chain order, which is a DIFFERENT
+     * concern from how a page of rows is presented to a human. Changing the
+     * presentation order cannot and does not alter chain contents.
+     *
+     * NO BACKFILL. Nothing here writes. This wave adds no historical rows.
+     *
+     * `from` / `to` accept `YYYY-MM-DD` (inclusive of the whole `to` day) or a
+     * full ISO instant. `created_at` is stored as an ISO-8601 UTC string with a
+     * `Z` suffix, so lexicographic comparison IS chronological comparison and
+     * the bounds are evaluated on UTC day boundaries. The screen says so out
+     * loud rather than leaving an admin to guess whose midnight it means. */
+    const orderRaw = String(req.query.order ?? "").trim().toLowerCase();
+    const orderDesc = orderRaw !== "asc"; // default: newest first
+    const fromRaw = String(req.query.from ?? "").trim();
+    const toRaw = String(req.query.to ?? "").trim();
+    /** Lower bound → start of that UTC day when only a date was given. */
+    const dayStart = (v: string): string | null => {
+      if (!v) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v}T00:00:00.000Z`;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    };
+    /** Upper bound → EXCLUSIVE start of the next UTC day, so `to` is inclusive
+     *  of every instant within the day the admin typed. */
+    const dayEndExclusive = (v: string): string | null => {
+      if (!v) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        const d = new Date(`${v}T00:00:00.000Z`);
+        if (Number.isNaN(d.getTime())) return null;
+        d.setUTCDate(d.getUTCDate() + 1);
+        return d.toISOString();
+      }
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    };
+    const fromTs = dayStart(fromRaw);
+    const toTsExclusive = dayEndExclusive(toRaw);
+    /* An unparseable date must NOT silently widen the result to "everything" —
+       that is how a filter comes to lie about what it filtered. It is reported. */
+    const rangeRejected: string[] = [];
+    if (fromRaw && fromTs === null) rangeRejected.push("from");
+    if (toRaw && toTsExclusive === null) rangeRejected.push("to");
+
     try {
       const db = rawDb();
       const where: string[] = ["deleted_at IS NULL"];
@@ -2924,6 +3303,10 @@ export function registerAdminPlatformRoutes(app: Express): void {
       // Wave A-1 (ADR-3 action 5): honor ?tenantId=... as a real filter.
       if (tenantId) { where.push("tenant_id = ?"); binds.push(tenantId); }
       if (q) { where.push("LOWER(payload_json) LIKE ?"); binds.push("%" + q + "%"); }
+      /* WAVE 181 · R2 — the range is now part of BOTH the COUNT and the page,
+         so `total` and the rendered rows are finally counted over the SAME set. */
+      if (fromTs !== null) { where.push("created_at >= ?"); binds.push(fromTs); }
+      if (toTsExclusive !== null) { where.push("created_at < ?"); binds.push(toTsExclusive); }
       const whereSql = "WHERE " + where.join(" AND ");
 
       const totalRow = db.prepare("SELECT COUNT(*) AS n FROM audit_log " + whereSql).get(...binds) as { n: number };
@@ -2932,7 +3315,7 @@ export function registerAdminPlatformRoutes(app: Express): void {
       const limSql = limit !== null ? "LIMIT ? OFFSET ?" : "";
       const itemBinds = limit !== null ? [...binds, limit, offset] : binds;
       const rows = db.prepare(
-        `SELECT id, created_at AS ts, actor_id AS actor, target AS entity, action AS "eventType", payload_json AS "payloadJson", prev_hash AS "priorHash", hash, tenant_id AS "tenantId" FROM audit_log ${whereSql} ORDER BY created_at ASC, id ASC ${limSql}`
+        `SELECT id, created_at AS ts, actor_id AS actor, target AS entity, action AS "eventType", payload_json AS "payloadJson", prev_hash AS "priorHash", hash, tenant_id AS "tenantId" FROM audit_log ${whereSql} ${orderDesc ? "ORDER BY created_at DESC, id DESC" : "ORDER BY created_at ASC, id ASC"} ${limSql}`
       ).all(...itemBinds) as Array<{ id: string; ts: string; actor: string; entity: string; eventType: string; payloadJson: string | null; priorHash: string; hash: string; tenantId: string }>;
 
       const items = rows.map((r) => {
@@ -2957,7 +3340,15 @@ export function registerAdminPlatformRoutes(app: Express): void {
           entityLabel: resolveAuditEntityLabel(r.entity),
         };
       });
-      return res.json({ count: items.length, total, limit: limit ?? total, offset, items });
+      /* WAVE 181 — the response now STATES the window it applied. A screen that
+         cannot name its own filter is how "0 of 1314" became believable. */
+      return res.json({
+        count: items.length, total, limit: limit ?? total, offset, items,
+        order: orderDesc ? "desc" : "asc",
+        rangeFrom: fromTs, rangeToExclusive: toTsExclusive,
+        rangeBasis: "UTC day boundaries on audit_log.created_at",
+        ...(rangeRejected.length > 0 ? { rangeRejected } : {}),
+      });
     } catch (err) {
       // DB unavailable → degrade to mirror so the page never blanks for admins.
       // Wave A-1 v2 (ADR-3 action 5, GPT-5 v1 finding #8b): honor tenantId in
@@ -2970,10 +3361,18 @@ export function registerAdminPlatformRoutes(app: Express): void {
         (actor ? a.actor === actor : true) &&
         (eventType ? a.eventType === eventType : true) &&
         (tenantId ? ((a as unknown as { tenantId?: string }).tenantId ?? "") === tenantId : true) &&
-        (q ? JSON.stringify(a).toLowerCase().includes(q) : true)
+        (q ? JSON.stringify(a).toLowerCase().includes(q) : true) &&
+        /* WAVE 181 — the mirror fallback must apply the SAME range and the SAME
+           default order. Without this, a DB hiccup silently reinstates exactly
+           the defect this wave fixed, on the screen where it matters most. */
+        (fromTs !== null ? a.ts >= fromTs : true) &&
+        (toTsExclusive !== null ? a.ts < toTsExclusive : true)
       );
-      const total = filtered.length;
-      const page = limit !== null ? filtered.slice(offset, offset + limit) : filtered;
+      const ordered = orderDesc
+        ? [...filtered].sort((x, y) => (x.ts === y.ts ? y.id.localeCompare(x.id) : y.ts.localeCompare(x.ts)))
+        : [...filtered].sort((x, y) => (x.ts === y.ts ? x.id.localeCompare(y.id) : x.ts.localeCompare(y.ts)));
+      const total = ordered.length;
+      const page = limit !== null ? ordered.slice(offset, offset + limit) : ordered;
       /* WAVE 93 · ITEM 1 — the mirror fallback must carry the SAME labels, or a
          DB hiccup silently reintroduces raw ids on the admin screen. */
       const items = page.map((a) => {
@@ -2986,7 +3385,13 @@ export function registerAdminPlatformRoutes(app: Express): void {
           entityLabel: resolveAuditEntityLabel((a as unknown as { entity?: string }).entity ?? ""),
         };
       });
-      return res.json({ count: items.length, total, limit: limit ?? total, offset, items, fallback: true });
+      return res.json({
+        count: items.length, total, limit: limit ?? total, offset, items, fallback: true,
+        order: orderDesc ? "desc" : "asc",
+        rangeFrom: fromTs, rangeToExclusive: toTsExclusive,
+        rangeBasis: "UTC day boundaries on audit_log.created_at",
+        ...(rangeRejected.length > 0 ? { rangeRejected } : {}),
+      });
     }
   });
   app.get("/api/admin/audit-log/verify", (req: Request, res: Response) => {

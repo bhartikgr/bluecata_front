@@ -182,6 +182,16 @@ function persistContact(tx: any, c: AdminContact): void {
     .onConflictDoUpdate({
       target: contactsTable.id,
       set: {
+        /* WAVE 200 ITEM A — R173.8. `kind` was written on INSERT and omitted here,
+           so a contact-type change was accepted, hashed into the revision chain,
+           and then dropped: since v25.34 made reads DB-first, the next GET served
+           the OLD kind (not, as reported, only after a restart). The owner ruled
+           the change must PERSIST and be reflected everywhere. Every kind surface
+           reads either this row or the in-memory cache that `updateContact`
+           already sets in the same transaction, so this line is the whole fix.
+           `type` (ContactType) was never affected — it rides in metadataJson,
+           which was already in this set. */
+        kind: c.kind,
         legalName: c.legalName,
         displayName: c.displayName,
         email: c.email,
@@ -503,7 +513,12 @@ function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
 }
 
-function computeRevisionHash(contact: AdminContact): string {
+/* WAVE 204 — R178.8. `export` added (one word; body untouched). The correction
+   script must re-derive a revision's hash to PROVE the snapshot still states the
+   kind that was hashed. Re-implementing this formula elsewhere would create a
+   second authority that can drift from the chain it attests (handbook §8 — never
+   prove a replica), so the platform's own function is exported instead. */
+export function computeRevisionHash(contact: AdminContact): string {
   const body = [
     contact.id,
     contact.version,

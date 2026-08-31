@@ -36,6 +36,11 @@ import { spvBasics, lpOwnNavPosition } from "./spvNavStore";
 import type { SpvNavResult } from "./lib/spvNav";
 import { k1DistributionsForSpv, k1ContributionsForSpv } from "./spvK1Store";
 import { lpOwnSideLetter } from "./spvSideLetterStore";
+/* WAVE 198 · ITEM A · R170 — the ONE definition of currency-code sameness
+   (case + whitespace only; nothing mapped or converted, R156.1). Imported
+   rather than re-implemented so this surface cannot drift from the engine's
+   mixture rule and reintroduce a false refusal. */
+import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 
 /**
  * What an LP's session reaches beyond their own vehicles.
@@ -51,6 +56,19 @@ export interface LpPosition {
   spvId: string;
   spvName: string;
   jurisdiction: string;
+  /* WAVE 189 · ITEM A · R154.3 — THE VEHICLE'S OPTIONAL, GP-STATED LEGAL FORM.
+   *
+   * Wave 179 added `spv.legal_form` and wired it into the GP tax surface only, so a
+   * GP who stated their vehicle's legal form saw the jurisdiction conditional
+   * RESOLVED to one branch while the limited partner — the person who actually files
+   * a return — kept seeing the unresolved hedge on the very same vehicle. This
+   * carries the same stored value to the LP surface.
+   *
+   * `null` WHEN NOT STATED, never a guess. The column is written only from an
+   * explicit selection; nothing here derives it from the jurisdiction, the vehicle's
+   * name or its type, and an empty string is normalised to `null` so "stated as
+   * blank" and "not stated" cannot be told apart downstream. */
+  legalForm: string | null;
   currency: string;
   /** ALWAYS the string literal below. An LP interest must never be mistakable
    *  for a direct holding in the portfolio company: they own a slice of a
@@ -109,11 +127,18 @@ export function lpVehicleIdsFor(investorId: string): string[] {
     .all(investorId) as Array<{ spv_id: string }>).map((r) => r.spv_id);
 }
 
-function spvMeta(spvId: string): { name: string; jurisdiction: string } {
-  const r = rawDb().prepare(`SELECT name, jurisdiction FROM spv WHERE id = ?`).get(spvId) as
-    | { name?: string; jurisdiction?: string }
+function spvMeta(spvId: string): { name: string; jurisdiction: string; legalForm: string | null } {
+  /* WAVE 189 · ITEM A · R154.3 — `legal_form` added to the SELECT. Read-only, one
+     more column on a query that already runs; no new query, no new round trip. */
+  const r = rawDb().prepare(`SELECT name, jurisdiction, legal_form FROM spv WHERE id = ?`).get(spvId) as
+    | { name?: string; jurisdiction?: string; legal_form?: string | null }
     | undefined;
-  return { name: String(r?.name ?? spvId), jurisdiction: String(r?.jurisdiction ?? "") };
+  const legalFormRaw = typeof r?.legal_form === "string" ? r.legal_form.trim() : "";
+  return {
+    name: String(r?.name ?? spvId),
+    jurisdiction: String(r?.jurisdiction ?? ""),
+    legalForm: legalFormRaw.length > 0 ? legalFormRaw : null,
+  };
 }
 
 function ownCommitment(spvId: string, investorId: string): number | null {
@@ -164,7 +189,14 @@ export function lpPositionFor(spvId: string, investorId: string): LpPosition | n
   /* DISTRIBUTIONS — this LP's own net across recorded events. Currencies are
      never summed: a vehicle with mixed-currency distributions refuses. */
   const dists = k1DistributionsForSpv(spvId);
-  const mixedCurrency = new Set([basics.currency, ...dists.map((d) => d.currency)]).size > 1;
+  /* WAVE 198 · ITEM A · R170 — NORMALISED sameness (case + whitespace only,
+     R156.1; nothing mapped or converted). A vehicle recording the same code in
+     different case on its basics and its distributions is single-currency, and
+     this LP's position must still report. Refusing it was a false refusal. */
+  const mixedCurrency =
+    new Set(
+      [basics.currency, ...dists.map((d) => d.currency)].map(normaliseCurrencyForComparison),
+    ).size > 1;
   let distributionsReceivedMinor = 0;
   for (const d of dists) {
     const line = d.allocations.find((a) => a.investorId === investorId);
@@ -196,6 +228,9 @@ export function lpPositionFor(spvId: string, investorId: string): LpPosition | n
     spvId,
     spvName: meta.name,
     jurisdiction: meta.jurisdiction,
+    /* WAVE 189 · ITEM A · R154.3 — carried to the LP tax surface. `null` when the
+       GP has not stated one, which renders exactly what it rendered before. */
+    legalForm: meta.legalForm,
     currency: basics.currency,
     positionType: "spv_lp_interest",
     commitmentMinor,

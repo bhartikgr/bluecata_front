@@ -28,6 +28,15 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+/* WAVE 213 · ITEM C.3 — link + verbatim quote of the signed agreement clause, in
+   place of "ask your Capavate contact". Same shared module the publish panel uses,
+   so there is one quotation mechanism rather than two. */
+import {
+  PUBLISH_CLAUSE_AGREEMENT_HEADING,
+  PUBLISH_CLAUSE_AGREEMENT_LINK_LABEL,
+  PUBLISH_CLAUSE_AGREEMENT_PATH,
+  consortiumAgreementSection,
+} from "@shared/wave213PublishGoverningClause";
 
 interface LockNoticeResponse {
   key: string;
@@ -53,6 +62,10 @@ export default function Lock1NoticePanel() {
       (await apiRequest("GET", "/api/partner/me/pipeline/lock-notice")).json(),
     retry: false,
   });
+
+  /* WAVE 213 · ITEM C.3 — derived once. `null` means the section could not be
+     located in the signed text; it is never rendered and never compared as text. */
+  const agreementConfidentialitySection = consortiumAgreementSection();
 
   return (
     <div className="rounded border p-4 space-y-3" data-testid="lock1-notice-panel">
@@ -109,6 +122,42 @@ export default function Lock1NoticePanel() {
               (WAVE 126 / FINDING 1). Still one server-owned string, still no
               client-side fallback, so the two cannot drift. */}
           {q.data.clientCopy}
+        </div>
+      )}
+      {/* ══════════════════════════════════════════════════════════════════════
+          WAVE 213 · ITEM C — THE ONE GENUINELY WITHHELD TERM IN THE TREE.
+          ══════════════════════════════════════════════════════════════════════
+          The sentence above (`server/lib/lock1Provenance.ts`, rendered on the
+          not-supplied branch) ends "ask your Capavate contact and it will be
+          issued to you". A sweep of 1,059 non-test source files found it to be the
+          only user-facing string in the product that defers a TERM rather than
+          stating it; the other thirteen matches were operational instructions,
+          scope statements, or read-failure refusals.
+
+          THE SENTENCE IS NOT DELETED, NOT EDITED AND NOT UN-RENDERED. R195.5:
+          nothing is deleted — suppress, gate or refuse, but retain the mechanism.
+          Spec 213.2: the withholding sentence is retained in source. And
+          `wave33_pipe10_lock1` pins that this component renders
+          `{q.data.clientCopy}` with no `||` and no `??` fallback, which stays
+          true: what follows is an APPENDED SIBLING of the branch, not a change to
+          the expression, so R143.1 cannot score a replaced text node.
+
+          Item C.3 — the term it defers genuinely lives in the Consortium Partner
+          Agreement, which is competent, signed, enforced fail-closed and must not
+          be modified. So the fix is to LINK to it and QUOTE the relevant clause,
+          NOT to restate it in new words that could diverge from the signed text.
+          The quote is sliced out of CONSORTIUM_AGREEMENT_TEXT at runtime, so it
+          cannot diverge. It renders unconditionally — not only on the not-supplied
+          branch — because the confidentiality clause governs a partner-sourced
+          soft circle whether or not an administrator has typed a bespoke notice.
+
+          `null` from the slice means the section could not be located, and it is
+          never rendered as an empty quote under a heading. */}
+      {agreementConfidentialitySection !== null && (
+        <div className="text-xs mt-2 pt-2 border-t border-[var(--cv-color-border)]" data-testid="lock1-agreement-clause-block">
+          <div className="font-medium" data-testid="lock1-agreement-clause-heading">{PUBLISH_CLAUSE_AGREEMENT_HEADING}</div>
+          <div className="whitespace-pre-line" data-testid="lock1-agreement-clause-quote">{agreementConfidentialitySection}</div>
+          <a href={PUBLISH_CLAUSE_AGREEMENT_PATH} className="underline block mt-1" data-testid="lock1-agreement-clause-link">{PUBLISH_CLAUSE_AGREEMENT_LINK_LABEL}</a>
         </div>
       )}
     </div>

@@ -32,6 +32,9 @@ import { getUserContextForId, listPersonas, registerPersona, registerFounderUser
    `userContext.ts` is SACRED (call-only) and cannot be edited to do it inline. */
 import { bindLpIdentityAfterRegistration } from "./lpIdentityBinding";
 import { setSessionCookie, extractUserIdFromCookie } from "./sessionCookie";
+/* WAVE 214 · D5 — the terms acceptance this route already enforces with a 400
+   was never recorded. One helper, called from BOTH redeem implementations. */
+import { recordRedeemTermsConsent } from "./wave214RedeemConsentRecord";
 /* v25.25.1 emergency fix — static import of JWT_SECRET_MISSING. The v25.25
    shipped version used `await import("./auth")` inside the login handler;
    esbuild emits that as a require(...) call in the CJS bundle, which fails
@@ -655,6 +658,23 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       // current process; durability is best-effort on the legacy route.
       log.warn("[authRoutes] legacy redeem setUserCredential failed (non-fatal):", (err as Error).message);
     }
+
+    /* WAVE 214 · D5 — THE ACCEPTANCE IS FINALLY WRITTEN DOWN.
+
+       `body.agreedToTerms` is enforced with a 400 above and was then discarded.
+       This is the SECOND of the two redeem implementations, and handbook §12.2's
+       lesson is exactly why both are wired: fixing one and reporting on "the
+       platform" would leave every investor/round invitee unrecorded while every
+       team invitee was recorded, or the reverse.
+
+       Placed after the persona and credential writes and before the session, and
+       its result is deliberately not consulted — see the helper's header. */
+    recordRedeemTermsConsent({
+      req,
+      userId: personaId,
+      site: "authRoutes.redeem",
+      subject: `invitation:${r.invitationId}`,
+    });
 
     // Set session cookie so subsequent requests pick up the real persona
     setSessionCookie(res, personaId);

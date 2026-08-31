@@ -14,6 +14,15 @@ import { registerPartnerRoutes } from "../partnerRoutes";
 import { registerPartnerPortfolioCompanyRoutes } from "../partnerPortfolioCompanyRoutes";
 import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { rawDb } from "../db/connection";
+/* WAVE 214 — this route now requires the third-party authority confirmation
+   (typed name + the verbatim statement, hashed server-side). These fixtures are
+   updated to supply it because the ROUTE CONTRACT changed, not because the gate
+   was weakened for tests: the gate itself is proved over HTTP in
+   `server/__tests__/w214_third_party_authority_http.test.ts`. */
+import {
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT as W214_STMT,
+} from "../../shared/wave214ThirdPartyAuthorityCopy";
+const W214_AUTH = { authorityTypedName: "Test Managing Partner", authorityStatementShown: W214_STMT };
 
 const MANAGING = "u_avi_managing";
 
@@ -50,7 +59,7 @@ describe("Wave B1 (3a) adversarial — attribution failure rolls back the compan
     const res = await request(app)
       .post("/api/partner/me/portfolio-companies")
       .set("x-user-id", MANAGING)
-      .send({ companyName, founderEmail: `probe_${Date.now()}@example.com` });
+      .send({ companyName, founderEmail: `probe_${Date.now()}@example.com`, ...W214_AUTH });
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("ATTRIBUTION_LINK_FAILED");

@@ -589,15 +589,43 @@ export function registerRoundMathRoutes(app: Express, readSecurities: Securities
          The HTTP STATUS IS UNCHANGED (422) and the existing `error` value is
          PRESERVED for every cause that produced it before, so no existing client
          branch breaks. `refusal`, `field` and `securityId` are ADDITIVE. */
-      const e = err as Error & { code?: string; field?: string; securityId?: string };
+      /* ── WAVE 194 · ITEM A — AND THE REFUSAL HAS TO BE LEGIBLE WHEN IT ARRIVES ─
+         Wave 194 makes wave 193's mixed-currency refusal reachable through THIS
+         route, and that immediately exposed a second way for a protection to fail
+         silently. `client/src/lib/queryClient.ts:60-65` only shows a server message
+         to a user when it is shorter than 240 characters; anything longer is
+         swapped for a generic "something went wrong". The mixed-currency error's
+         `message` is ~800 characters, so without this the founder would have been
+         told nothing at all about a cap table the platform had just refused to
+         report. That is R166.2's defect — wave 192's 244-character headline — and
+         it is not going to be shipped a second time by the wave that exists to
+         stop protections from being unreachable.
+
+         STRICTLY ADDITIVE, AND THE OTHER REFUSALS DO NOT MOVE. `message` changes
+         ONLY for an error that carries a `refusalHeadline`; the five WAVE 70 named
+         refusals carry none, so their `message` stays byte-for-byte what it was and
+         no existing client branch or test changes. `guidance` is a new key that
+         appears only alongside a headline, so the unabridged sentence is never
+         lost — it is still in the response, still in full, just not in the slot
+         that has a length gate on it. The 422 status and the `error` value are
+         untouched for every cause. */
+      const e = err as Error & {
+        code?: string;
+        field?: string;
+        securityId?: string;
+        refusalHeadline?: string;
+        refusalGuidance?: string;
+      };
       const named = typeof e.code === "string" && e.code !== "";
+      const headline = typeof e.refusalHeadline === "string" && e.refusalHeadline !== "" ? e.refusalHeadline : null;
       return res.status(422).json({
         ok: false,
         error: named ? "ROUND_MATH_TERM_REFUSED" : "ROUND_MATH_COMPUTE_FAILED",
         ...(named
           ? { refusal: e.code, refusalName: e.name, field: e.field ?? null, securityId: e.securityId ?? null }
           : {}),
-        message: (err as Error).message,
+        message: headline ?? (err as Error).message,
+        ...(headline ? { guidance: e.refusalGuidance ?? (err as Error).message } : {}),
       });
     }
 

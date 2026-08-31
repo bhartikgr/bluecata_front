@@ -36,6 +36,7 @@ import request from "supertest";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { roundStoredTerms } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ADMIN = "u_admin";
 const STAMP = `w82r${Date.now().toString(36)}`;
@@ -46,7 +47,7 @@ async function buildPricedRound(key: string): Promise<{ companyId: string; round
   const companyId = `co_${STAMP}_${key}`;
   await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)
     .send({ companyId, companyName: `W82 ${key}` });
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId,
     name: `${STAMP}-${key}-CREATION-NAME`,
     type: "seed",
@@ -58,7 +59,7 @@ async function buildPricedRound(key: string): Promise<{ companyId: string; round
     sharesAuthorized: 40_000_000,
     preMoney: 30_000_000,
     fdPreMoneyShares: 13_000_000,
-  });
+  }));
   expect(created.status).toBe(200);
   return { companyId, roundId: String((created.body as { id?: string }).id ?? "") };
 }

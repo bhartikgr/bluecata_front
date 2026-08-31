@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { INDUSTRY_OPTIONS } from "@/lib/profile/data/enums";
 import { useToast } from "@/hooks/use-toast";
+import { describeFailure } from "@/lib/failureMessage";
 
 type Section = Record<string, unknown>;
 interface PortfolioProfile {
@@ -71,7 +72,9 @@ function describeSaveError(e: Error): string {
       })
       .join("; ");
   }
-  return e.message;
+  /* WAVE 197 #53 — WRITE. Raw tail only; the field-error branch above is
+     authored copy and is untouched. */
+  return describeFailure(e, "write");
 }
 
 export function PartnerPortfolioProfileDialog({

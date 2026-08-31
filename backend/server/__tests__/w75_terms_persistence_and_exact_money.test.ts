@@ -26,6 +26,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
 import { roundStoredTerms } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -53,12 +54,12 @@ async function buildPreferredCompany(key: string, liquidationPreference?: string
     });
   expect(seeded.status, `seed ${key}`).toBe(201);
 
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Under Test ${key}`, type: "seed", instrument: "preferred",
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
     ...(liquidationPreference ? { liquidationPreference } : {}),
-  });
+  }));
   expect(created.status, `round create ${key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
 

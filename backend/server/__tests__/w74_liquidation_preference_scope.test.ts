@@ -34,6 +34,7 @@ import { createRound } from "../roundsStore";
    shared instance the sacred engine imports and once faked a result by ~80 orders
    of magnitude. Same construction as `w79_waterfall_split_seniority_and_clock`. */
 import { Decimal } from "decimal.js";
+import { w212Attest } from "./_w212RoundAttestation";
 const D120 = Decimal.clone({ precision: 120 });
 
 const ROOT = path.resolve(__dirname, "../..");
@@ -83,7 +84,7 @@ async function buildCompany(opts: {
           ? { valuationCap: 20_000_000, discount: 20, interestRate: 8, maturityMonths: 24 }
           : { valuationCap: 20_000_000, discount: 20 };
 
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Under Test ${opts.key}`, type: "seed",
     instrument: opts.instrument, openDate: "2026-01-01", closeDate: "2026-12-31",
     targetAmount: 10_000_000, ...terms,
@@ -91,7 +92,7 @@ async function buildCompany(opts: {
        200 and silently drops this key (W74 finding N-2, see W74_TESTS.md), so
        creation is the only surface that persists it. */
     ...(opts.liquidationPreference ? { liquidationPreference: opts.liquidationPreference } : {}),
-  });
+  }));
   expect(created.status, `round create for ${opts.key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
 

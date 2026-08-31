@@ -113,6 +113,30 @@ export function SpvInvitations() {
               <p className="text-xs text-muted-foreground mt-2" data-testid={`spv-invitation-scope-${s.spvId}`}>
                 {s.scopeCopy}
               </p>
+              {/* ═══════════════════════════════════════════════════════════════
+                  WAVE 191 · ITEM D — TELL THE LP WHICH CURRENCY TO SEND.
+                  ═══════════════════════════════════════════════════════════════
+                  WHAT WAS MISSING. An LP was invited to a vehicle, shown a minimum
+                  cheque, and never once told what currency any of it was in. The
+                  minimum above formats with `s.currency`, so the LP saw a glyph and
+                  had to guess which of several dollars it was; a CAD vehicle and a
+                  USD vehicle both read "$". Since Capavate never converts (R156.1),
+                  an LP who wires the wrong currency has not underpaid or overpaid —
+                  the vehicle simply cannot record what arrived. The currency tag on
+                  the vehicle IS the instruction, so it has to be said in words.
+
+                  DERIVED, NEVER NAMED. The code comes from the vehicle record on the
+                  invitation payload. No currency is written into this file, and if
+                  the record holds none the sentence is not printed at all rather
+                  than defaulting to dollars.
+
+                  APPENDED AS A STATIC SIBLING (R143.1): `scopeCopy` above is
+                  untouched. */}
+              {/^[A-Z]{3}$/.test(s.currency ?? "") && (
+                <p className="text-xs text-muted-foreground mt-1" data-testid={`spv-invitation-currency-${s.spvId}`}>
+                  This vehicle is denominated in {s.currency}. Your commitment is recorded in {s.currency}, and funds must be delivered in {s.currency}. Capavate does not convert between currencies, so a transfer in any other currency cannot be applied to this commitment.
+                </p>
+              )}
             </li>
           ))}
         </ul>

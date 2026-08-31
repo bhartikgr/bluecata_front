@@ -33,6 +33,9 @@ import { rawDb } from "../db/connection";
 import { log } from "./logger";
 import { registerFounderUser, getUserContextForId } from "./userContext";
 import { setSessionCookie } from "./sessionCookie";
+/* WAVE 214 · D5 — the terms acceptance this route already enforces with a 400
+   was never recorded. One helper, called from BOTH redeem implementations. */
+import { recordRedeemTermsConsent } from "./wave214RedeemConsentRecord";
 import {
   getCompanyNameById,
   writeCompanyMembershipRowRaw,
@@ -309,6 +312,25 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
       role: cacheRole,
       now,
       isFirstCompany,
+    });
+
+    /* WAVE 214 · D5 — THE ACCEPTANCE IS FINALLY WRITTEN DOWN.
+
+       `body.agreedToTerms` was enforced with a 400 at the top of this handler
+       and then discarded. It is now recorded in `legal_consents` — the existing
+       table, the existing hash chain, the existing store; no new store.
+
+       Placed HERE, after the atomic redeem transaction has committed and before
+       the session is issued: the redemption is already durable, so this cannot
+       fail one, and the row exists before the user can act on the session.
+       `recordRedeemTermsConsent` never throws and its result is deliberately not
+       consulted — an outage of the consent store must not lock invited users out
+       of the platform. */
+    recordRedeemTermsConsent({
+      req,
+      userId: personaId,
+      site: "teamInviteRedeem.redeem",
+      subject: `company:${row.company_id}`,
     });
 
     // Session ONLY after all durable writes committed.

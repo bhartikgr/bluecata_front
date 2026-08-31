@@ -26,6 +26,14 @@ import { DollarSign, Plus, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { labelFor, FEE_KIND_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
+/* WAVE 207 · ITEM A · R195.1 — the header's final sentence said a vehicle fee is decided
+   by stepped size bands, i.e. by capital. The original sentence is preserved verbatim on
+   the capital arm below (R143.1); migration 0217's CHECK refuses every value that selects
+   it, so the corrected sentence is the one that renders. The bands themselves stay. */
+import {
+  DEFAULT_FEE_BASIS_DIMENSION,
+  isCapitalFeeBasisDimension,
+} from "@shared/wave207FeeBasisDimension";
 
 interface FeeScheduleRow {
   id: string;
@@ -176,7 +184,21 @@ export default function PartnerFeeSchedules() {
 
   return (
     <>
-      <PageHeader title="Partner Fee Schedules" description="Optional OVERRIDES for consortium-partner fees. The BASE subscription price is set per tier on 'Partner Subscription Tiers' (Consortium Partners → Commission & tier pricing) and is what the public /consortium/pricing page advertises AND charges. Rows here only OVERRIDE that base for specific tiers or (via a partner's detail page) individual partners — e.g. to grant a partner an individual discount. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists, the tier base price applies. SPV deployment fees use stepped size bands." />
+      {/* WAVE 207 · ITEM A — see the import note above. */}
+      {/* WAVE 207 · ITEM A · R143.1 — TWO SIBLING HEADERS, NOT ONE CONDITIONAL STRING.
+          A ternary INSIDE the `description` attribute was tried first and broke the
+          silent-drop guard: the extractor only records an attribute as copy when its
+          value is a plain literal, so wrapping it in an expression made the wave-131
+          sentence VANISH from the inventory — a silent drop, even though the bytes were
+          still in the file. Appending a static sibling keeps the original literal in the
+          inventory and adds the corrected one beside it. The corrected string is spelled
+          out here for the same reason (a concatenation is an expression); the sweep test
+          asserts it still equals the shared W207 constants, so the two cannot drift. */}
+      {isCapitalFeeBasisDimension(DEFAULT_FEE_BASIS_DIMENSION) ? (
+        <PageHeader title="Partner Fee Schedules" description="Optional OVERRIDES for consortium-partner fees. The BASE subscription price is set per tier on 'Partner Subscription Tiers' (Consortium Partners → Commission & tier pricing) and is what the public /consortium/pricing page advertises AND charges. Rows here only OVERRIDE that base for specific tiers or (via a partner's detail page) individual partners — e.g. to grant a partner an individual discount. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists, the tier base price applies. SPV deployment fees use stepped size bands." />
+      ) : (
+        <PageHeader title="Partner Fee Schedules" description="Optional OVERRIDES for consortium-partner fees. The BASE subscription price is set per tier on 'Partner Subscription Tiers' (Consortium Partners → Commission & tier pricing) and is what the public /consortium/pricing page advertises AND charges. Rows here only OVERRIDE that base for specific tiers or (via a partner's detail page) individual partners — e.g. to grant a partner an individual discount. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists, the tier base price applies. A flat amount for the vehicle. Any future banding may only count investors, jurisdictions, documents or duration — never capital, so the amount cannot follow the size of the raise. Vehicle fees may use stepped bands, and those bands never read capital." />
+      )}
       <PageBody>
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <Select value={feeKindFilter} onValueChange={setFeeKindFilter}>

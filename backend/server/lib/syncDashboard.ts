@@ -17,6 +17,16 @@ import { getOutbox, getInbox, ALL_OUTBOUND_EVENT_TYPES, ALL_INBOUND_EVENT_TYPES,
 import { computeDrift, seedSnapshot } from "./driftDetector";
 import { ALL_INBOUND_HANDLERS, assertInboundRegistryComplete } from "./bridgeInbound";
 import { rawDb } from "../db/connection";
+/* WAVE 197 / R169 Item A.2 — this file returned raw exception text in a
+   response body. Admin-only is not a licence to leak: the body still crosses
+   the wire and still lands in a browser, and the owner's instruction is
+   verbatim "I don't want any exposure of our internal process." The EXISTING
+   sanitiser is wired; no second sanitiser was written. Every site keeps or
+   gains a log.error carrying the full raw message, so nothing an engineer had
+   is lost — the detail moves from the response to the log. */
+import { sanitizeErrorMessage } from "./sanitize";
+import { readFailureMessage } from "./wave197FailureCopy";
+import { log } from "./logger";
 
 export type DriftStatus = "clean" | "drifted" | "never_synced";
 
@@ -161,7 +171,14 @@ export function registerSyncDashboardRoutes(app: Express): void {
       const rows = computeDriftFromDb();
       res.json({ rows, source: "sync_snapshots" });
     } catch (e) {
-      res.status(500).json({ error: "drift_read_failed", detail: String((e as any)?.message || e) });
+      /* WAVE 197 — `detail` is what queryClient surfaces as the server message,
+         so it is a rendered field, not an internal one. Full raw text logged
+         first; this handler logged nothing before. */
+      log.error("[syncDashboard.drift] read failed:", String((e as any)?.message || e));
+      res.status(500).json({
+        error: "drift_read_failed",
+        detail: sanitizeErrorMessage(e, readFailureMessage("the sync drift report")),
+      });
     }
   });
 

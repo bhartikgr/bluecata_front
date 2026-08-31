@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Plus, Search, MessageSquare } from "lucide-react";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { describeFailure } from "@/lib/failureMessage";
 
 /* WAVE 144 · ITEM 4 — the messaging directory payload is SCOPED to identity for
    addressing (server/commsStore.ts:3382). `location?: string` was declared here
@@ -105,7 +106,7 @@ export default function PartnerMessages() {
         });
         return;
       }
-      const msg = e instanceof Error ? e.message : "Could not start the message.";
+      const msg = describeFailure(e, "write", "Could not start the message.");
       toast({ title: "Failed to start message", description: msg, variant: "destructive" });
     },
   });

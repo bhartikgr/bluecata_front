@@ -55,7 +55,25 @@ export type CompanyMoneyRefusal =
   | "not_determined_on_some_rounds"
   /** The counted rounds are denominated in different currencies. There is no FX
    *  rate source in this repository, so adding them would invent one. */
-  | "mixed_currency";
+  | "mixed_currency"
+  /* ── WAVE 191 · ITEM C.3 ───────────────────────────────────────────
+   * NOT ONE currency, and not TWO — NONE.
+   *
+   * WHAT WAS WRONG. Both readers below ended with
+   *     const currency = currencies.size === 1 ? Array.from(currencies)[0] : "USD";
+   * and the `mixed_currency` guard immediately above it only catches `size > 1`.
+   * `size === 0` — no counted round names a currency at all — fell through the
+   * ternary to the literal `"USD"`. At the time this was found, 1045 of 1045
+   * rounds in the database had a NULL currency, so `size === 0` was not an edge
+   * case: it was EVERY company. The dashboard target tile printed a US-dollar
+   * figure for companies that had never recorded a denomination.
+   *
+   * WHY IT IS A SEPARATE REFUSAL AND NOT `mixed_currency`. "You used two
+   * currencies" and "you have not said which currency" are different facts about
+   * the book and have different remedies — the first needs a decision, the second
+   * needs one field filled in. R156.2 requires naming the missing fact, not
+   * reporting a nearby one. */
+  | "currency_not_recorded";
 
 export const COMPANY_MONEY_REFUSAL_STATEMENT: Readonly<Record<CompanyMoneyRefusal, string>> =
   Object.freeze({
@@ -65,6 +83,10 @@ export const COMPANY_MONEY_REFUSAL_STATEMENT: Readonly<Record<CompanyMoneyRefusa
       "Not shown — at least one of this company's rounds could not have its amounts determined, and a total that leaves a round out would understate the raise.",
     mixed_currency:
       "Not shown — this company's rounds are recorded in more than one currency, and this platform holds no exchange rate to add them with.",
+    /* WAVE 191 · ITEM C.3 — names the ONE missing field, and says the sentence the
+       platform says everywhere else so that nobody reads a refusal as a zero. */
+    currency_not_recorded:
+      "Not shown — no round on this company records which currency it is raised in, so there is no denomination to state this total in. This is not the same as zero, and Capavate will not show a zero total for a figure it does not hold. Set a currency on a round to see this figure.",
   });
 
 /** The words that must accompany the company figure, so that nobody reads it as
@@ -329,7 +351,9 @@ export function readCompanyMoneyOnRecord(rounds: readonly unknown[] | null | und
   }
 
   if (currencies.size > 1) return refuse("mixed_currency", { roundsExcluded: excluded });
-  const currency = currencies.size === 1 ? Array.from(currencies)[0] : "USD";
+  /* WAVE 191 · ITEM C.3 — the `size === 0` hole. See `currency_not_recorded`. */
+  if (currencies.size === 0) return refuse("currency_not_recorded", { roundsExcluded: excluded });
+  const currency = Array.from(currencies)[0]!;
 
   const buckets: CompanyMoneyBucketTotal[] = ROUND_MONEY_STATE_ORDER.map((key) => {
     const slot = totals.get(key) ?? { minor: BigInt(0), count: 0, roundsWithAmount: 0 };
@@ -373,7 +397,10 @@ export type CompanyTargetRefusal =
   | "no_rounds_on_record"
   | "no_target_recorded"
   | "mixed_currency"
-  | "target_not_representable";
+  | "target_not_representable"
+  /* WAVE 191 · ITEM C.3 — the `currencies.size === 0` hole, in the TARGET reader's
+     own vocabulary. See the long note on `CompanyMoneyRefusal` above. */
+  | "currency_not_recorded";
 
 export const COMPANY_TARGET_REFUSAL_STATEMENT: Readonly<Record<CompanyTargetRefusal, string>> =
   Object.freeze({
@@ -385,6 +412,10 @@ export const COMPANY_TARGET_REFUSAL_STATEMENT: Readonly<Record<CompanyTargetRefu
       "No target shown — this company's rounds record targets in more than one currency, and this platform holds no exchange rate to add them with.",
     target_not_representable:
       "No target shown — a recorded target amount could not be read exactly.",
+    /* WAVE 191 · ITEM C.3 — the tile this replaced was printing a DOLLAR target for
+       a company with no currency on record anywhere. */
+    currency_not_recorded:
+      "No target shown — no round on this company records which currency its target is in, so there is no denomination to state it in. This is not the same as zero, and Capavate will not show a zero total for a figure it does not hold. Set a currency on a round to see this figure.",
   });
 
 /** What the target denominator actually sums, stated to the reader. The old
@@ -485,7 +516,11 @@ export function readCompanyTargetOnRecord(
     if (currency) currencies.add(currency);
   }
   if (currencies.size > 1) return refuseTarget("mixed_currency", excluded);
-  const currency = currencies.size === 1 ? Array.from(currencies)[0] : "USD";
+  /* WAVE 191 · ITEM C.3 — the same hole, in the TARGET reader. This is the one the
+     live founder dashboard was actually hitting: a target tile denominated in a
+     currency nobody had recorded. */
+  if (currencies.size === 0) return refuseTarget("currency_not_recorded", excluded);
+  const currency = Array.from(currencies)[0]!;
 
   let total = BigInt(0);
   const withTarget: string[] = [];

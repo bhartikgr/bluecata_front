@@ -400,7 +400,48 @@ export default function PartnerSpvEngine() {
   const { toast } = useToast();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [step, setStep] = useState(0);
-  const [w, setW] = useState<WizardState>(EMPTY_WIZARD);
+  const [w, setWRaw] = useState<WizardState>(EMPTY_WIZARD);
+  /* ════════════════════════════════════════════════════════════════════════
+     WAVE 199 · ITEM A (R173.1) — A CONFIRMATION IS ABOUT ONE CURRENCY, SO IT
+     DIES WITH THAT CURRENCY. ENFORCED IN THE SETTER, NOT AT THE CALL SITES.
+     ════════════════════════════════════════════════════════════════════════
+     The owner's ruling is that a new vehicle must be ASKED to choose its primary
+     currency — "not a silent default, and not merely a pre-filled editable
+     field". The Review step already asks: `spv-w-currency-confirm` must be ticked
+     before the launch button (`disabled={… || !w.currencyConfirmed || …}`) will
+     fire. THE HOLE was that the tick outlived the currency it was given for.
+     Every Review row carries `onEdit={() => setStep(n)}` and the stepper allows
+     direct jumps, so a partner could tick "I confirm USD", walk back, change the
+     jurisdiction (which changes the currency FOR them) or pick another currency
+     outright, and launch a EUR vehicle carrying a confirmation of USD. A stale
+     confirmation is a silent default wearing a confirmation's clothes — and the
+     currency is immutable for the vehicle's whole life (`spvEngineStore.updateSpv`
+     never assigns it; all three PATCH doors refuse the key), so there is no way
+     back afterwards.
+
+     WHY HERE AND NOT IN THE HANDLERS. There are two ways the currency moves
+     (the step-3 <select> and `onJurisdictionCountryChange`) and nothing stops a
+     third being added later. Wrapping the setter makes the invariant hold for
+     EVERY writer, present and future, including one written by someone who has
+     never read this comment. It also leaves each existing call site byte-identical,
+     so no handler expression is rewritten (the silent-drop guard keys event
+     handlers by their expression text, and rewriting one reads as a removal).
+
+     It cannot create a vehicle, cannot change a figure, and cannot block a partner
+     who genuinely means the new currency: they tick the same box once more, now
+     against the currency they will actually get. Same-currency writes — every
+     other field edit — pass through untouched, including the tick itself. */
+  /* Spelled out rather than `React.SetStateAction` because this file imports React
+     hooks by name and does not bind the `React` namespace. */
+  const setW = (next: WizardState | ((p: WizardState) => WizardState)) => {
+    setWRaw((prev) => {
+      const resolved = typeof next === "function" ? (next as (p: WizardState) => WizardState)(prev) : next;
+      if (resolved.currencyConfirmed && resolved.currency !== prev.currency) {
+        return { ...resolved, currencyConfirmed: false };
+      }
+      return resolved;
+    });
+  };
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /* WAVE 40 — which tab the NEXT mount of <SpvDetailTabs> should open on, and
      for which vehicle. Scoped by id on purpose: a request to land on "lps" for
@@ -410,7 +451,13 @@ export default function PartnerSpvEngine() {
      this wave. */
   const [selectedTab, setSelectedTab] = useState<{ id: string; tab: string } | null>(null);
 
-  const list = useQuery<{ spvs: SpvDTO[] }>({
+  /* WAVE 182 · ITEM C · R152.4(4) — `carryConfigurations` is OPTIONAL here on
+     purpose: a payload cached from before this wave does not have it, and the card
+     must then say nothing rather than assert "no carry". `spvs` is unchanged. */
+  const list = useQuery<{
+    spvs: SpvDTO[];
+    carryConfigurations?: Array<{ spvId: string; state: string; statement: string }>;
+  }>({
     queryKey: ["/api/partner/me/spv"],
     enabled: role.ready && !!role.identity,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv")).json(),
@@ -729,6 +776,10 @@ export default function PartnerSpvEngine() {
          result on the Review step before anything is created. */
       currency: spvCurrencyForJurisdictionCountry(country) ?? prev.currency,
       feeCurrency: spvCurrencyForJurisdictionCountry(country) ?? prev.feeCurrency,
+      /* WAVE 199 · ITEM A (R173.1) — no `currencyConfirmed` reset is written here
+         ON PURPOSE: `setW` itself withdraws a confirmation whenever the currency
+         moves, so this path (and any future one) is covered without touching the
+         call site. See the long note at the `setW` definition. */
     }));
   /* ════════════════════════════════════════════════════════════════════════
      WAVE 82 · ITEM 2 — THE LAUNCH IS NOT ATOMIC, SO REFUSE BEFORE ANYTHING IS
@@ -1232,6 +1283,10 @@ export default function PartnerSpvEngine() {
                 {/* 3k/3l — currency dropdown instead of free text */}
                 <div>
                   <Label>Currency</Label>
+                  {/* WAVE 199 · ITEM A (R173.1) — changing the currency withdraws the
+                      Review-step confirmation given for the OLD one. The handler
+                      below is UNCHANGED: the withdrawal lives in `setW` so it holds
+                      for every writer of this field. See the note at `setW`. */}
                   <select data-testid="spv-w-currency" className="w-full border rounded h-9 px-2" value={w.currency} onChange={(e) => setW({ ...w, currency: e.target.value })}>
                     {CURRENCY_OPTIONS.map((c) => <option key={c.code} value={c.code}>{c.code} — {c.name}</option>)}
                   </select>
@@ -1564,6 +1619,38 @@ export default function PartnerSpvEngine() {
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>
                   <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {spvStatusLabel(s.status)} · {labelFor(DISTRIBUTION_SCOPE_LABELS, s.distributionScope)} · Carry: {labelFor(CARRY_BASIS_LABELS, s.carryBasis)}</div>
+                  {/* ═══ WAVE 182 · ITEM C · R152.4(4) — WHAT THE CARRY BASIS ABOVE
+                      DOES AND DOES NOT MEAN.
+
+                      ON LIVE this card read "Carry: Per deployment" for "Asian
+                      Biotech", whose Fees tab holds exactly one fee — a flat
+                      management fee — and no carry; and "Carry: Whole SPV" for "SPV
+                      for vintage TECH daeals.", likewise fixed-only. `carryBasis` is
+                      a real, required field and it is rendered correctly; it just
+                      answers over WHAT a carry would be computed, not WHETHER one is
+                      charged. That fact lives in `spv_fee` and is now served beside
+                      the list.
+
+                      A STATIC SIBLING. The line above is NOT edited — its text nodes,
+                      including the "Carry: " literal, stay byte-verbatim, because a
+                      replaced text node scores as removed copy. This is an additional
+                      line beneath it, in the same shape as the Jurisdiction and
+                      Vintage siblings already here.
+
+                      NO NUMBER, EVER. It states no percentage and no amount: an
+                      unconfigured carry and a 0% carry are different facts, and this
+                      surface is not allowed to render one as the other. When the fee
+                      schedule could not be read, the sentence says so instead of
+                      claiming there is no carry. Nothing is rendered at all when the
+                      server did not send the fact. */}
+                  {(() => {
+                    const cc = (list.data?.carryConfigurations ?? []).find((c) => c.spvId === s.id);
+                    return cc ? (
+                      <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-carry-configured-${s.id}`}>
+                        {cc.statement}
+                      </div>
+                    ) : null;
+                  })()}
                   {/* J-4 (WAVE 3C) — jurisdiction was rendered NOWHERE in this
                       accordion; it only appeared on the standalone detail page. */}
                   <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-jurisdiction-${s.id}`}>

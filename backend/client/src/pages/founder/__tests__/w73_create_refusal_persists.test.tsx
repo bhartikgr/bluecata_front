@@ -29,6 +29,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { RoleProvider } from "@/lib/role";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { validateValuationCap, type TermValueVerdict } from "@shared/roundMathEngineAdapter";
+import { w212SignOff } from "./_w212SignOff";
 
 function refusalOf(v: TermValueVerdict): string {
   expect(v.ok).toBe(false);
@@ -107,7 +108,10 @@ async function toFinalStep(cap: string) {
   fireEvent.click(screen.getByTestId("button-next"));
   await screen.findByTestId("step-investors");
   fireEvent.click(screen.getByTestId("button-next"));
-  return screen.findByTestId("button-create");
+  const create = await screen.findByTestId("button-create");
+  /* WAVE 212 — a founder signs before the control is live. */
+  w212SignOff();
+  return create;
 }
 
 describe("WAVE 73 · ITEM 3 — the creation refusal stays on the screen", () => {

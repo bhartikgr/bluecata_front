@@ -7,6 +7,35 @@ export type Stage = "foundation" | "pre_seed" | "seed" | "series_a" | "series_b"
 
 export type InstrumentKind = "common" | "preferred" | "safe" | "note" | "warrant" | "option";
 
+/* ── WAVE 194 · ITEM A — A CURRENCY CODE SOMEBODY RECORDED, AS OPPOSED TO ONE
+   THE ENGINE IS PREPARED TO CONVERT ───────────────────────────────────────────
+   `Currency` (`primitives/fx.ts:8`) is a CLOSED seven-member union, and it is the
+   right type for the one thing it guards: `FxSnapshot.rates` is
+   `Record<Currency, string>`, an EXHAUSTIVE map, and widening that would silently
+   drop the requirement that a snapshot quote every currency it claims to cover.
+   That map is untouched by this wave.
+
+   But two of the fields typed `Currency` are not FX inputs at all. They are the
+   denomination a HUMAN recorded against a security or a round, and the platform's
+   currency picker offers the full ISO-4217 list, not seven codes. Wave 194 needed
+   those two fields to carry a code read from `rounds.currency` so that wave 193's
+   mixed-currency refusal could reach live data, and there were exactly three ways
+   to do it:
+     · CAST the stored string to `Currency` — the type would then lie, and a
+       recorded "JPY" would be typed as if it were one of the seven. Worse, the
+       cast reads as if validation happened somewhere. It did not.
+     · VALIDATE against a compiled-in list of acceptable codes — that writes the
+       set of currencies the platform accepts into source as literals, which R156.2
+       forbids in the same breath as hardcoded fees, and it would turn an
+       unrecognised-but-truthfully-recorded code into a silent absence.
+     · NAME THE CONCEPT. A recorded code is a different thing from a convertible
+       currency, so it gets a different type.
+   The third is what this is. It is deliberately NOT a union: the engine's only
+   operation on these codes is to notice that two of them DISAGREE
+   (`primitives/currencySet.ts`), which is exactly as sound for "JPY" as for
+   "USD". Nothing in the engine converts between them and nothing may (R156.1). */
+export type RecordedCurrencyCode = string;
+
 export type Holder = {
   id: string;
   name: string;
@@ -22,7 +51,15 @@ export type Security = {
   shares?: Shares;             // common / preferred / option pool / warrant share-equivalent
   pricePerShare?: string;      // Decimal-as-string
   investmentAmount?: string;   // Decimal-as-string in `currency`
-  currency?: Currency;
+  /* WAVE 194 · ITEM A — widened from `Currency` to `RecordedCurrencyCode`. This is
+     the denomination of `investmentAmount` AS RECORDED, and since wave 193 it is
+     load-bearing: `buildPricedRound` refuses to add two differently-denominated
+     post-money SAFE amounts into the YC conversion denominator. It could not
+     refuse on live data until the production adapter could put a stored code here.
+     ABSENT MEANS ABSENT and must stay expressible: all 1045 rounds on record have
+     a NULL currency, and `statedCurrencies` treats `undefined` as nothing stated,
+     which is what keeps every existing cap table computing. */
+  currency?: RecordedCurrencyCode;
   // SAFE-specific
   safe?: {
     type: "post_money_cap" | "pre_money_cap" | "uncapped" | "discount_only";
@@ -142,7 +179,10 @@ export type CapTableHolderRow = {
      tree was checked and is listed in `build_log/wave71/W71_VISIBILITY.md`. */
   ownershipPercent: string | null;   // Decimal as string, full precision. `null` = 0 ÷ 0, undefined.
   invested?: string;
-  currency?: Currency;
+  /* WAVE 194 · ITEM A — widened with `Security.currency` because `views.ts:107`
+     copies `v.sec.currency` straight onto this row. A row reports the currency its
+     security was RECORDED in; it is not an instruction to convert anything. */
+  currency?: RecordedCurrencyCode;
 };
 
 export type TraceStep = {

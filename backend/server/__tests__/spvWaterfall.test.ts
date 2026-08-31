@@ -18,6 +18,12 @@ import { recordPendingSubscription, activateByPaymentIntent } from "../subscript
 import { updateCompanyProfile } from "../companyProfileStore";
 import { createRound } from "../roundsStore";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_DISTRIBUTION_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 // WAVE 1A / S-2 — a CARRY-bearing distribution now needs an unforgeable
 // settlement authorization. The partner route can no longer supply one (that was
@@ -96,14 +102,14 @@ describe("Blocker 4 — waterfall math", () => {
   it("missing basis data → 400 DISTRIBUTION_BASIS_REQUIRED", async () => {
     const id = await createSpv("WF Basis SPV");
     await post(`/api/partner/me/spv/${id}/subscriptions`, MANAGING, { investorId: "inv_b", commitmentMinor: 100000 });
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, { event: "exit", grossProceedsMinor: 100000 });
+    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, { ...W226_DISTRIBUTION_ATT, event: "exit", grossProceedsMinor: 100000 });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("DISTRIBUTION_BASIS_REQUIRED");
   });
 
   it("no committed LPs → 409 NO_COMMITTED_LPS", async () => {
     const id = await createSpv("WF NoLp SPV");
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, { event: "exit", grossProceedsMinor: 100000, costBasisMinor: 50000 });
+    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, { ...W226_DISTRIBUTION_ATT, event: "exit", grossProceedsMinor: 100000, costBasisMinor: 50000 });
     expect(r.status).toBe(409);
     expect(r.body.error).toBe("NO_COMMITTED_LPS");
   });
@@ -128,6 +134,7 @@ describe("Blocker 4 — waterfall math", () => {
     await mgmtCarry(id, 0.2);
     await commitLp(id, "inv_roc", 100000);
     const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "partial return", grossProceedsMinor: 400000, costBasisMinor: 500000, // underwater
     });
     expect(r.status).toBe(201);

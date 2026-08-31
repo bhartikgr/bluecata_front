@@ -50,6 +50,19 @@ export type ActiveCompanyResp = {
          carry it. */
       capTableHoldersOnRecord?: number | null;
     };
+    /* WAVE 190 · ITEM A — THE COMPANY'S CURRENCY, WHICH THE CAP TABLE NEEDS AND
+       COULD NOT SEE. The server has sent this since v24.2 Bug 6
+       (`server/multiCompanyStore.ts:369-372`, read from `company_default_currency`
+       via `readDefaultCurrency`), but it was never declared here, so
+       `client/src/pages/founder/CapTable.tsx` had no currency to read and reached
+       for `company_profile.legal.region` instead — printing `HK$` for a Hong Kong
+       company that may well be denominated in USD.
+
+       OPTIONAL ON PURPOSE, AND `undefined` IS NOT `"USD"`. The server omits the
+       key entirely when no row exists in `company_default_currency`; that is a
+       genuine "no currency on record", and the cap table must refuse and name it
+       rather than default (R6). Do not give this field a fallback. */
+    defaultCurrency?: string;
     collective: { status: string; memberSince?: string };
     billing: {
       plan: string;

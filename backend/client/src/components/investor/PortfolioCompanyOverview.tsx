@@ -59,30 +59,33 @@ import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { PromoteToCollectiveDialog } from "./PromoteToCollectiveDialog";
 import { broadBasedWeightedAverage } from "@/pages/investor/Portfolio";
+/* WAVE 183 - ITEM B FIX 1b. One shared reading of the ledger-derived portfolio
+   payload and one shared set of "not on record" sentences, so this surface and
+   the switcher cannot disagree about what the platform knows. */
+import {
+  type DerivedPosition,
+  investedDisplay,
+  currentValueDisplay,
+  ownershipDisplay,
+  sharesDisplay,
+  vintageDisplay,
+  textOrNotOnRecord,
+  unknownNotes,
+  hasUnknown,
+} from "@/lib/investor/portfolioPositions";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
-type Position = {
-  id: string;
-  companyId: string;
-  company: string;
-  sector: string;
-  stage: string;
-  role: string;
-  instrument: string;
-  series: string;
-  shares: number;
-  ownershipPct: number;
-  invested: number;
-  currentValue: number;
-  vintageYear: number;
-  lastRoundLabel: string;
-  lastRoundDate: string;
-  maFlag: { strength: "low" | "medium" | "high"; note: string } | null;
-  logoColor: string;
-};
+/* WAVE 183 - ITEM B FIX 1b. WAS a local mirror of the `server/mockData.ts` demo
+   seed row, with NON-NULLABLE `invested`, `currentValue`, `shares` and
+   `ownershipPct`. `/api/investor/portfolio2` no longer serves that seed: it
+   derives rows from the cap-table ledger, money arrives as INTEGER MINOR UNITS
+   in a string with its currency, and every field the ledger does not hold
+   arrives as `null` with a reason code. See
+   `client/src/lib/investor/portfolioPositions.ts`. */
+type Position = DerivedPosition;
 
 type FounderUpdate = {
   id: string;
@@ -185,8 +188,36 @@ export const IRR_SUPPRESSED_DISPLAY = "—";
 export const IRR_SUPPRESSED_REASON =
   "IRR needs dated cash flows, which this position payload does not carry. It is suppressed rather than approximated.";
 
-function moic(p: Position): number {
-  return p.invested > 0 ? p.currentValue / p.invested : 0;
+/**
+ * WAVE 183 - ITEM B FIX 1b. WAS:
+ *
+ *     function moic(p: Position): number {
+ *       return p.invested > 0 ? p.currentValue / p.invested : 0;
+ *     }
+ *
+ * TWO defects in two lines. First, `? ... : 0` published a MULTIPLE OF ZERO for
+ * a position whose cost was unknown - an investor reading "0.00x" cannot tell it
+ * apart from a total loss. Second, and worse after this wave, `p.currentValue`
+ * came from a demo seed; the ledger holds no mark, so the numerator does not
+ * exist. A multiple with no mark is not a small multiple, it is not a multiple.
+ *
+ * It now returns `null` when either side is absent, and every caller renders the
+ * platform's stated wording instead of a figure. When a marks service is wired
+ * to this route the numerator appears and this function starts returning numbers
+ * again with no caller change.
+ */
+function moic(p: Position): number | null {
+  if (p.investedMinor === null || p.currentValueMinor === null) return null;
+  if (p.currency === null || p.investedExceedsSafeRange === true) return null;
+  if (!/^-?\d+$/.test(p.investedMinor) || !/^-?\d+$/.test(p.currentValueMinor)) return null;
+  const invested = Number(p.investedMinor);
+  const current = Number(p.currentValueMinor);
+  if (!Number.isSafeInteger(invested) || !Number.isSafeInteger(current)) return null;
+  if (invested <= 0) return null;
+  /* Both operands are minor units of the SAME currency, so the ratio is
+     dimensionless and exponent-independent. This is the one place a division is
+     legitimate: it produces a multiple, not an amount of money. */
+  return current / invested;
 }
 
 function instrumentLabel(instrument: string): string {
@@ -269,38 +300,49 @@ function CompanyKpiStrip({ position: p }: { position: Position }) {
   return (
     <>
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      {/* WAVE 183 - ITEM B FIX 1b. Every one of these five cards used to print a
+          seed number through `fmtUSD`/`fmtPct`, which assume dollars and assume
+          a value exists. `fmtUSD(undefined)` and `fmtPct(undefined)` would have
+          rendered a confident figure off the new payload. They now render the
+          platform's stated wording for a figure it does not hold, and money is
+          formatted from integer minor units with the position's own currency,
+          so a HKD holding can no longer render a dollar sign. */}
       <KvCard
         label="Invested"
-        value={fmtUSD(p.invested, { compact: true })}
+        value={investedDisplay(p)}
         testid="kpi-co-invested"
       />
       <KvCard
         label="Current mark"
-        value={fmtUSD(p.currentValue, { compact: true })}
-        hint={`${m >= 1 ? "+" : ""}${fmtUSD(p.currentValue - p.invested, { compact: true })} unrealised`}
+        value={currentValueDisplay(p)}
+        hint={
+          m === null
+            ? "No mark on record, so no unrealised gain or loss is stated."
+            : `${m >= 1 ? "+" : ""}${(m * 100 - 100).toFixed(1)}% against cost`
+        }
         testid="kpi-co-mark"
-        accent={m >= 1 ? "positive" : "negative"}
+        accent={m === null ? undefined : m >= 1 ? "positive" : "negative"}
       />
       <KvCard
         label="Ownership"
-        value={fmtPct(p.ownershipPct, 2)}
+        value={ownershipDisplay(p)}
         testid="kpi-co-ownership"
       />
       <KvCard
         label="Position type"
-        value={instrumentLabel(p.instrument)}
-        hint={p.series}
+        value={p.instrument === null ? textOrNotOnRecord(null) : instrumentLabel(p.instrument)}
+        hint={textOrNotOnRecord(p.lastRoundLabel)}
         testid="kpi-co-instrument"
       />
       <KvCard
         label="Vintage"
-        value={String(p.vintageYear)}
+        value={vintageDisplay(p)}
         testid="kpi-co-vintage"
       />
       <KvCard
         label="IRR"
         value={IRR_SUPPRESSED_DISPLAY}
-        hint={p.lastRoundLabel}
+        hint={textOrNotOnRecord(p.lastRoundLabel)}
         testid="kpi-co-irr"
       />
     </div>
@@ -313,6 +355,21 @@ function CompanyKpiStrip({ position: p }: { position: Position }) {
     >
       {IRR_SUPPRESSED_REASON}
     </div>
+    {/* WAVE 183 - ITEM B FIX 1b. A SIBLING list, appended after the existing
+        sibling note and never spliced into it. Each line names ONE fact the
+        platform does not hold for this position, so a reader who sees
+        "Not on record" in a card above can find out why without guessing.
+        A blank would have been the alternative, and a blank is what the owner
+        ruled out alongside a fabricated zero. */}
+    {unknownNotes(p).length > 0 && (
+      <ul className="mt-1 space-y-0.5" data-testid="list-co-unknown-facts">
+        {unknownNotes(p).map((note) => (
+          <li key={note} className="text-[10px] text-muted-foreground" data-testid="text-co-unknown-fact">
+            {note}
+          </li>
+        ))}
+      </ul>
+    )}
     </>
   );
 }
@@ -544,28 +601,73 @@ function MarkHistoryChart({ companyId }: { companyId: string }) {
 /* Pro-rata calculator (scoped to single company)                      */
 /* ------------------------------------------------------------------ */
 
+/* WAVE 183 - ITEM B FIX 1b. THE MISSING DENOMINATOR.
+
+   This calculator's entire output hangs off ONE input: `p.ownershipPct`. Before
+   this wave that number came from the `server/mockData.ts` demo seed, where it
+   was always present. Off the ledger-derived payload it is `null` whenever the
+   company has no fully-diluted share count on record - which, per the wave 183
+   probe, is most companies - and `null / 100` is `0` in JavaScript. The card
+   would have quietly printed "0.00%" ownership and a "$0" pro-rata check to an
+   investor who holds a real position, with no error anywhere.
+
+   A pro-rata check is a number an investor may wire money against. So when the
+   denominator is absent the calculator REFUSES and names the missing fact rather
+   than computing against zero. The inputs and the arithmetic below are untouched
+   for the case where ownership IS known. */
+/** The in-card value wording for the three outputs that need the absent
+ *  denominator. Deliberately NOT "0.00%" and deliberately not blank. */
+const OWNERSHIP_UNKNOWN_VALUE = "Ownership not on record";
+
+const PRO_RATA_NO_OWNERSHIP_COPY =
+  "A pro-rata calculation needs your current ownership percentage, and that is not on record for this holding \u2014 the company has no fully-diluted share count recorded against the rounds you are on. Capavate will not compute a pro-rata check against an assumed ownership of zero.";
+
 function ProRataCard({ position: p }: { position: Position }) {
   const [newPreMoneyM, setNewPreMoneyM] = useState<number>(40);
   const [newRoundM, setNewRoundM] = useState<number>(8);
 
   const result = useMemo(() => {
     // Sprint 20 defect 36 fix: normalize ownershipPct (0-100) to fraction ONCE.
+    /* WAVE 183 - `ownershipPct` is now nullable. The `?? null` guard short-circuits
+       the whole computation instead of letting `null / 100` become 0. */
+    if (p.ownershipPct === null) return null;
     const ownershipFrac = p.ownershipPct / 100;
     const newPostMoney = newPreMoneyM + newRoundM;
     const newSharesIssuedFrac = newRoundM / newPostMoney;
     const ownershipAfterNoFollowOnFrac = ownershipFrac * (1 - newSharesIssuedFrac);
     const proRataCheckUsd = Math.max(0, ownershipFrac * newRoundM * 1_000_000);
+    const sharesNum =
+      p.shares !== null && /^-?\d+$/.test(p.shares) && Number.isSafeInteger(Number(p.shares))
+        ? Number(p.shares)
+        : null;
     return {
       newPostMoney,
       dilutionPct: newSharesIssuedFrac * 100,
       ownershipAfterNoFollowOnPct: ownershipAfterNoFollowOnFrac * 100,
       proRataCheckUsd,
       pricePerShareImplied:
-        p.shares > 0
-          ? (newPostMoney * 1_000_000 * ownershipFrac) / p.shares
+        sharesNum !== null && sharesNum > 0
+          ? (newPostMoney * 1_000_000 * ownershipFrac) / sharesNum
           : null,
     };
   }, [p, newPreMoneyM, newRoundM]);
+
+  /* REVIEW PASS (b) CAUGHT THIS ONE, AND IT IS WORTH RECORDING.
+
+     The first version of this refusal was an EARLY RETURN of a second, smaller
+     `<Card>`. It was correct behaviour and a structural regression:
+     `npm run guard` walks JSX shape, saw a different first `Card` under
+     `ProRataCard`, and reported three REMOVED panel bodies
+     (`at=ProRataCard:Card#1 | child=div#1`, `child=div#2`,
+     `childorder=div|div|p`) — the calculator's real body, gone from the
+     inventory. Exactly the silent drop the gate exists to catch, committed while
+     fixing a different silent lie.
+
+     So there is no second Card and no early return. The ONE card, its inputs,
+     its four KvCards and its formula note all still render unconditionally and
+     in the same positions. Only the four VALUES change: each states that
+     ownership is not on record instead of printing a figure derived from
+     `null / 100 === 0`. The explanation is APPENDED as a new last sibling. */
 
   return (
     <Card>
@@ -601,23 +703,35 @@ function ProRataCard({ position: p }: { position: Position }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KvCard
             label="Current ownership"
-            value={fmtPct(p.ownershipPct, 2)}
+            value={ownershipDisplay(p)}
             testid="kv-co-current-own"
           />
+          {/* `Post-money` is the only one of the four that does NOT depend on the
+              missing ownership figure — it is pre-money plus round size, both
+              typed in by the reader — so it keeps answering. Suppressing it would
+              have been the same overreach that blanked the Collective price. */}
           <KvCard
             label="Post-money"
-            value={`$${result.newPostMoney.toLocaleString("en-US")}M`}
+            value={`$${(newPreMoneyM + newRoundM).toLocaleString("en-US")}M`}
             testid="kv-co-post"
           />
           <KvCard
             label="Dilution if no follow-on"
-            value={fmtPct(result.dilutionPct, 2)}
+            value={result === null ? OWNERSHIP_UNKNOWN_VALUE : fmtPct(result.dilutionPct, 2)}
             testid="kv-co-dilution"
           />
           <KvCard
             label="Pro-rata check to hold"
-            value={fmtUSD(result.proRataCheckUsd, { compact: true })}
-            hint={`Approx. ${fmtUSD(result.proRataCheckUsd)}`}
+            value={
+              result === null
+                ? OWNERSHIP_UNKNOWN_VALUE
+                : fmtUSD(result.proRataCheckUsd, { compact: true })
+            }
+            hint={
+              result === null
+                ? "No figure is stated because your ownership share is not on record."
+                : `Approx. ${fmtUSD(result.proRataCheckUsd)}`
+            }
             testid="kv-co-check"
             accent
           />
@@ -628,6 +742,17 @@ function ProRataCard({ position: p }: { position: Position }) {
           <code>proRataCheck = (ownership / 100) × roundSize × 1,000,000</code>
           . Ownership normalised to fraction space; result displayed in dollars.
         </p>
+
+        {/* WAVE 183 · ITEM B FIX 1b — APPENDED as the last sibling of the card
+            body, never spliced into the formula note above it. It fires only when
+            the calculation genuinely cannot run, and it names the missing input
+            rather than asking the reader to retry: no retry produces a
+            fully-diluted share count. */}
+        {result === null && (
+          <p className="text-xs text-amber-800" data-testid="text-co-prorata-refusal">
+            {PRO_RATA_NO_OWNERSHIP_COPY}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -947,7 +1072,7 @@ export function PortfolioCompanyOverview({
         <div>
           <h2 className="text-xl font-semibold">{position.company}</h2>
           <p className="text-sm text-muted-foreground">
-            {position.sector} · {position.stage}
+            {textOrNotOnRecord(position.sector)} · {textOrNotOnRecord(position.stage)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

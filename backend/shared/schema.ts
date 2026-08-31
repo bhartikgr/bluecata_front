@@ -2905,6 +2905,24 @@ export const consortiumApplications = sqliteTable("consortium_applications", {
   agreementSignedName: text("agreement_signed_name"),
   agreementSignedAt: text("agreement_signed_at"),
   agreementSignatureHash: text("agreement_signature_hash"),
+  // WAVE 217 · R190.8 · Decision A9 — the PARTNER COMPLIANCE ATTESTATION, made
+  // once at registration against §4 of the SIGNED agreement (Eligibility,
+  // Licensing & Regulatory Compliance), whose text is SLICED from the executed
+  // document at render by wave 213's helper and never retyped.
+  // Migration: 0222_wave217_partner_compliance_attestation.sql (mirrored).
+  // All nullable with no default: every pre-217 application keeps the values it
+  // has, and NULL still reads as "predates the declaration" rather than as a
+  // regulatory answer (R176.1 — an absence is never converted into a value).
+  // `jurisdiction` above is REUSED and no second jurisdiction field is added.
+  // NOT part of chainPayload, for the same reason agreement* is not: the chain
+  // stays stable. `rowToApp` is an explicit allowlist mapper with no spread, so
+  // these columns reach ONLY the two admin-authenticated GET routes; the public
+  // `/apply/:id/status` route emits `{applicationId, status}` and nothing else.
+  complianceAttestedAt: text("compliance_attested_at"),
+  complianceAttestationVersion: text("compliance_attestation_version"),
+  complianceAttestationText: text("compliance_attestation_text"),
+  regulatoryStatus: text("regulatory_status"),
+  complianceEvidenceRef: text("compliance_evidence_ref"),
 });
 
 /** CP Phase B — partner organizations (CP-002). */

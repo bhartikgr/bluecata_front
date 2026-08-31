@@ -45,6 +45,13 @@
  *   - NO mock data, NO TODOs, NO stubs.
  */
 
+/* WAVE 190 · ITEM C — the ONE spelling of "this string is a placeholder, not a
+   person's name", shared with the client display guard. See the module header. */
+import {
+  submittedNameIsPlaceholder,
+  PLACEHOLDER_NAME_REFUSED_CODE,
+  PLACEHOLDER_NAME_REFUSED_MESSAGE,
+} from "@shared/placeholderPersonNames";
 import type { Express, Request, Response } from "express";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
@@ -68,6 +75,8 @@ import {
 import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification, type NotificationKind } from "./notificationsStore";
 import { log } from "./lib/logger";
+/* WAVE 186 · R159.1 — see the audit block in POST /api/partner/me/crm/contacts. */
+import { appendAdminAudit, reportAuditWriteOutcome } from "./adminPlatformStore";
 
 /**
  * CP Phase C — best-effort wrapper around `emitNotification` for use inside
@@ -1142,6 +1151,36 @@ export async function hydratePartnerWorkspaceV19Store(): Promise<void> {
  * Endpoints
  * ============================================================ */
 
+/**
+ * WAVE 179 · ITEM C · R151.2 — THE FIRM'S OWN CRM CONTACT ROWS, PARTNER-SCOPED.
+ *
+ * Lifted verbatim out of `GET /api/partner/me/crm/contacts` so that route and the
+ * CSV export in `server/partnerExportRoutes.ts` share ONE query. Nothing about the
+ * read changed: the same partner-scoped `where`, the same soft-delete filter, and
+ * the same in-memory fallback for an unavailable database.
+ *
+ * THE FENCE LIVES IN THE ARGUMENT. `partnerId` is supplied by the caller from the
+ * SESSION context, never from a URL or query string, and every row returned carries
+ * that partner id by construction of the `where` clause.
+ *
+ * Deliberately returns the UNFILTERED, UNSORTED rows: the route's `q`/`stage`/`tag`/
+ * `starred` filters and its sort stay in the route, because they are presentation
+ * choices for that screen and not part of what "this firm's contacts" means.
+ */
+export function listCrmContactsForPartner(partnerId: string): CrmContactRow[] {
+  try {
+    const db: any = getDb();
+    const all = db
+      .select()
+      .from(crmTable)
+      .where(eq((crmTable as any).partnerId, partnerId))
+      .all() as any[];
+    return all.map(rowToCrm).filter((r) => !r.deletedAt);
+  } catch {
+    return Array.from(crmCache.values()).filter((r) => !r.deletedAt && r.partnerId === partnerId);
+  }
+}
+
 export function registerPartnerWorkspaceV19Routes(app: Express): void {
   /* ===================== Portfolio ===================== */
 
@@ -1465,6 +1504,29 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const tenantId = `tenant_partner_${ctx.partnerId}`;
     // CP-008: compute hash chain (prev = current tip, curr = sha256 of canonical payload).
     const prevHash = findCrmChainTip(ctx.partnerId);
+    /* ═══ WAVE 190 · ITEM C — A PLACEHOLDER SUBMITTED AS A NAME IS REFUSED.
+       The `"New contact"` fallback argument below is UNREACHABLE — `crmCreateSchema`
+       refines that either `name`, or both `first_name` and `last_name`, must be
+       present — so the fallback is not the hole. The hole is a caller sending the
+       literal `"New contact"` (or `"New"` + `"Contact"`, which composes to it) as
+       the value: the schema is satisfied, the row is written, and the name is later
+       initialled as though it were a person's. The fallback string is LEFT IN PLACE
+       deliberately: it is the correct defensive answer if the schema ever loosens,
+       and removing it would be a change with no defect behind it. */
+    if (
+      submittedNameIsPlaceholder([
+        parsed.data.name,
+        parsed.data.first_name,
+        parsed.data.last_name,
+      ])
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: PLACEHOLDER_NAME_REFUSED_CODE,
+        message: PLACEHOLDER_NAME_REFUSED_MESSAGE,
+      });
+      return;
+    }
     const composedName = composeCrmContactName(parsed.data.name, parsed.data.first_name, parsed.data.last_name, "New contact");
     const seed: Pick<CrmContactRow, "partnerId" | "contactUserId" | "email" | "name" | "createdAt"> = {
       partnerId: ctx.partnerId,
@@ -1960,18 +2022,11 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   // ---- List (filter: q / stage / starred / tag) ----
   app.get("/api/partner/me/crm/contacts", requirePartnerAuth, (req, res) => {
     const ctx = req.partnerContext!;
-    let rows: CrmContactRow[] = [];
-    try {
-      const db: any = getDb();
-      const all = db
-        .select()
-        .from(crmTable)
-        .where(eq((crmTable as any).partnerId, ctx.partnerId))
-        .all() as any[];
-      rows = all.map(rowToCrm).filter((r) => !r.deletedAt);
-    } catch {
-      rows = Array.from(crmCache.values()).filter((r) => !r.deletedAt && r.partnerId === ctx.partnerId);
-    }
+    /* WAVE 179 · ITEM C · R151.2 — the read moved, VERBATIM, into
+       `listCrmContactsForPartner` below so the CSV export reads the SAME rows this
+       screen reads and cannot drift from them. The filters, the sort and the
+       response shape below are untouched. */
+    let rows: CrmContactRow[] = listCrmContactsForPartner(ctx.partnerId);
     const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
     const stage = typeof req.query.stage === "string" ? req.query.stage.trim() : "";
     const tag = typeof req.query.tag === "string" ? req.query.tag.trim().toLowerCase() : "";
@@ -2353,6 +2408,19 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
         return;
       }
     }
+    /* ═══ WAVE 190 · ITEM C — same refusal, same words, on the full-parity create.
+       `crmMeCreateSchema` requires both names at `min(1)`, so the `"New contact"`
+       fallback below is likewise unreachable and likewise left alone; what was
+       missing is a check on the VALUES submitted. `"New"` + `"Contact"` composes
+       to the exact literal that reached the owner's account and rendered "NC". */
+    if (submittedNameIsPlaceholder([parsed.data.first_name, parsed.data.last_name])) {
+      res.status(400).json({
+        ok: false,
+        error: PLACEHOLDER_NAME_REFUSED_CODE,
+        message: PLACEHOLDER_NAME_REFUSED_MESSAGE,
+      });
+      return;
+    }
     const name = composeCrmContactName(undefined, parsed.data.first_name, parsed.data.last_name, "New contact");
     const row = insertCrmContact({
       partnerId: ctx.partnerId,
@@ -2371,6 +2439,40 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       sourceKind: null,
       sourceRef: null,
     });
+    /* ══ WAVE 186 · ITEM A · R159.1 — CRM CONTACT CREATION IS RECORDED ════════
+     * PROVED GAP. R157.1 reports a CRM contact created on live that produced no
+     * ledger row. Comment-stripped, `server/partnerWorkspaceV19Store.ts` — the
+     * file serving every `/api/partner/me/crm/*` route — contained ZERO
+     * `appendAdminAudit` calls, as do `crmStore.ts`, `partnerClientCrmStore.ts`
+     * and `investorCrmStore.ts`. Nothing was failing: nothing was asking.
+     *
+     * A CRM contact is a named natural person's contact details entering the
+     * platform under a partner's tenant, which is why this is `identity`-bearing
+     * and not routine: it is the row a subject-access or deletion request has to
+     * be able to trace. Written after the row is durable and before the response,
+     * with the outcome CHECKED. Does not refuse the contact on audit failure
+     * (W186_BUILD.md §3). NOT a backfill — existing contacts get no row. */
+    reportAuditWriteOutcome(
+      appendAdminAudit(
+        ctx.userId,
+        `partner_crm_contact:${row.id}`,
+        "partner_crm_contact.created",
+        {
+          partnerId: ctx.partnerId,
+          contactId: row.id,
+          name,
+          /* The email is the identifier a deletion request arrives with, so the
+             ledger has to carry it. Nothing else from the body is copied in:
+             notes and tags are the contact's own data, not evidence of the act. */
+          email: email || null,
+          org: parsed.data.org ?? null,
+          role: parsed.data.role ?? null,
+          companyId: parsed.data.company_id ?? null,
+          auditWave: 186,
+        },
+      ),
+      { bearing: "identity", action: "partner_crm_contact.created", route: "partner.me.crm.contacts.create", subject: row.id },
+    );
     res.status(201).json({ ok: true, contact: row });
   });
 

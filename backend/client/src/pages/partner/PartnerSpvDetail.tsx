@@ -25,6 +25,7 @@ import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction, spvJurisdictionDisplay
 import { spvStatusLabel } from "@/lib/partnerDisplay";
 import { humanizeMachineKey, formatTimestamp } from "@/lib/partnerDisplay";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
+import PartnerCsvDownloadButton from "@/components/partner/PartnerCsvDownloadButton"; /* WAVE 179 · ITEM C · R151.2 */
 /* WAVE 170 · BATCH 4 ITEM B · R77 / R111 Q13 — the five onError handlers below
    rendered `e.message` raw. `partnerActionRefusalText` resolves the server's own
    sentence first (so wave 164's cap-split disclosure and wave 166's offline
@@ -72,6 +73,9 @@ import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
 import {
   PartnerMoneyEntryNotice,
   wholeUnitsToWireMinor,
+  /* WAVE 216 — the non-throwing form of the SAME converter, so the attestation
+     panel can restate the figure that goes on the wire. See its doc comment. */
+  wholeUnitsToWireMinorOrNull,
   wireMinorNumber,
 } from "@/components/partner/PartnerMoneyEntryNotice";
 import { wholeUnitsLabel, wholeUnitsPlaceholder, parseWholeUnits, formatWholeUnits } from "@/components/partner/partnerMoneyInput";
@@ -84,6 +88,10 @@ import {
   SPV_TARGET_OVERAGES_TERMS_KEY,
 } from "@shared/spvCapSplitDisclosure";
 import { SPV_COMMITTED_SUBSCRIPTION_STATUS } from "@shared/spvCommittedCapital";
+/* WAVE 182 · ITEM A · R152 — the SAME predicate and the SAME words the server
+   refusal is built from, so the sentence on this form and the sentence the route
+   returns cannot drift. */
+import { spvIsClosedToNewCapital, spvClosedToNewCapitalNotice } from "@shared/spvClosedToNewCapital";
 
 /* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
  *
@@ -136,6 +144,20 @@ type SpvDetail = {
    deleted: it is the documented kill-switch for this panel, and removing it
    would erase the record of why the panel was ever inert. `distMut` now writes
    to the canonical singular ledger (see the block comment on that mutation). */
+/* WAVE 211 · ITEM A — the partner money gate. One panel, four actions, and every
+   word of it generated from `shared/wave211MoneyEventAttestation`, which is the same
+   module the server renders and stores its copy from. The panel is NOT the control:
+   the server refuses an incomplete confirmation on its own, and no button below is
+   disabled on account of it. */
+import {
+  Wave211AttestationPanel,
+  useWave211Attestation,
+} from "@/components/partner/Wave211AttestationPanel";
+import {
+  W211_EVENT_NOUN_CAPITAL_CALL,
+  W211_EVENT_NOUN_DISTRIBUTION,
+} from "@shared/wave211MoneyEventAttestation";
+
 const DIST_PANEL_DISABLED: boolean = false;
 
 function formatMinor(minor: number, currency: string) {
@@ -244,6 +266,13 @@ export default function PartnerSpvDetail() {
   const [commitEmail, setCommitEmail] = useState("");
   const [commitAmount, setCommitAmount] = useState("");
   const [commitUnits, setCommitUnits] = useState("");
+  /* WAVE 176 · ITEM B · R147.3(1) — the target-overage warning the LAST commit
+     came back with. Held in state rather than derived from the roster on purpose:
+     the sentence is the SERVER's, built from the figures the server actually
+     recorded, so the screen and `terms._targetOverages` cannot disagree. Empty
+     string means "the last commit did not pass the target", which is also the
+     initial state, so the element that renders it is never conditional. */
+  const [commitTargetWarning, setCommitTargetWarning] = useState("");
   /* WAVE 83 · ITEM 2.4 — a validation message is an answer to something the user
      did. Until they touch the field there is nothing to answer, so it is not
      shown. Nothing about what is REQUIRED changed; both buttons stay disabled. */
@@ -254,7 +283,11 @@ export default function PartnerSpvDetail() {
   const roster = useQuery<{
     spvId: string;
     lpVisibility: string;
-    subscribers: Array<{ investorId: string; name: string | null; email: string | null; commitmentMinor: number; status: string; ownershipPct: number }>;
+    /* WAVE 182 · ITEM B · R152.3 — `fundsConfirmed` is OPTIONAL in this type on
+       purpose: a cached payload from before this wave has no such key, and the
+       renderer must treat its absence as "not confirmed" rather than as `undefined`
+       on screen. */
+    subscribers: Array<{ investorId: string; name: string | null; email: string | null; commitmentMinor: number; status: string; ownershipPct: number; fundsConfirmed?: boolean }>;
     invites: Array<{ id: string; email: string; firstName: string | null; lastName: string; note: string | null; status: string; createdAt: string }>;
   }>({
     queryKey: ["/api/partner/me/spv", spvId, "lp-roster"],
@@ -262,17 +295,30 @@ export default function PartnerSpvDetail() {
     queryFn: async () => (await apiRequest("GET", `/api/partner/me/spv/${spvId}/lp-roster`)).json(),
   });
 
+  /* WAVE 211 — one panel state per gated action. Four, not one: a partner may have a
+     capital call half-typed while they invite an LP, and sharing one confirmation
+     between two money events would let a name typed for one authorise the other. */
+  const w211Call = useWave211Attestation("money_event");
+  const w211Dist = useWave211Attestation("money_event");
+  const w211Invite = useWave211Attestation("lp_invitation");
+  const w211Commit = useWave211Attestation("lp_commitment");
+
   const inviteMut = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/partner/me/spv/${spvId}/lp-invites`, {
         email: lpEmail.trim(),
         firstName: lpFirstName.trim() || undefined,
         lastName: lpLastName.trim(),
+        /* WAVE 211 — APPENDED, never replacing what was already sent. The server
+           strips these five keys from the body before anything else reads it, so they
+           cannot reach the invite record as data. */
+        ...w211Invite.bodyFields(),
       });
       return res.json();
     },
     onSuccess: () => {
       setLpEmail(""); setLpFirstName(""); setLpLastName("");
+      w211Invite.reset();   // WAVE 211 — a fresh confirmation for the next invitation.
       /* WAVE 83 · ITEM 2.3 — BOTH roster surfaces, and a forced refetch. */
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
       qc.invalidateQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
@@ -315,11 +361,32 @@ export default function PartnerSpvDetail() {
         investorEmail: commitEmail.trim(),
         amount: commitAmount.trim(),
         shares: commitUnits.trim(),
+        /* WAVE 211 — appended. `amount` above is still the whole-unit decimal string
+           this endpoint has always taken; nothing here converts it. */
+        ...w211Commit.bodyFields(),
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (payload: unknown) => {
+      /* ══ WAVE 176 · ITEM B · R147.3(1) — R130's WARN HALF, FINALLY ON SCREEN.
+
+         `onSuccess` took NO argument before this wave, so the entire response
+         body — including `targetRaise`, which wave 164 has been sending — was
+         discarded, and a $9,000,000 commit against a $5,000,000 target produced
+         only the toast below. This reads the sentence the route now returns.
+
+         THE COMMITMENT IS ALREADY DONE at this point and nothing here can undo
+         it: this is `onSuccess`, the ledger line exists, and the recorded
+         outcome is untouched. Warn-only, exactly R130.1 with R135.3.
+
+         Defensive narrowing rather than a cast, because a response shape is an
+         assumption about a server: anything that is not a non-empty string
+         clears the line instead of rendering `undefined` at a partner. */
+      const body = (payload ?? {}) as { targetRaise?: { warning?: unknown } };
+      const warning = body.targetRaise?.warning;
+      setCommitTargetWarning(typeof warning === "string" ? warning : "");
       setCommitFirst(""); setCommitLast(""); setCommitEmail(""); setCommitAmount(""); setCommitUnits("");
+      w211Commit.reset();   // WAVE 211 — a fresh confirmation for the next commitment.
       /* WAVE 83 · ITEM 2.3 — same two keys, same forced refetch, same reason. */
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
       qc.invalidateQueries({ queryKey: ["/api/spv", spvId, "lp-roster"] });
@@ -338,11 +405,15 @@ export default function PartnerSpvDetail() {
       const res = await apiRequest("POST", `/api/partner/me/spvs/${spvId}/capital-calls`, {
         amount_minor: amountMinor,
         called_at: new Date().toISOString(),
+        /* WAVE 211 — appended. This is the PLURAL adapter route, which is the one
+           actually mounted for capital calls; the gate is on it there. */
+        ...w211Call.bodyFields(),
       });
       return res.json();
     },
     onSuccess: () => {
       setCallAmount("");
+      w211Call.reset();     // WAVE 211 — a fresh confirmation for the next call.
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spvs", spvId] });
       toast({ title: "Capital call recorded" });
     },
@@ -399,11 +470,16 @@ export default function PartnerSpvDetail() {
         costBasisMinor: args.costBasisMinor,
         currency: data?.spv?.currency ?? undefined,
         distributionType: args.type,
+        /* WAVE 211 — appended AFTER the five-field allowlist projection this route
+           takes. `pickDistributionBody` never sees these keys as data; the gate reads
+           them from the raw body and strips them. */
+        ...w211Dist.bodyFields(),
       });
       return res.json();
     },
     onSuccess: () => {
       setDistAmount("");
+      w211Dist.reset();     // WAVE 211 — a fresh confirmation for the next distribution.
       /* Both surfaces must refresh: this page's own query AND the canonical
          engine query the Distributions tab reads, or the GP sees a stale
          ledger on whichever surface they open next. */
@@ -545,6 +621,45 @@ export default function PartnerSpvDetail() {
     };
   }, [data?.spv, roster.data?.subscribers, commitAmount, commitEmail]);
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 176 · ITEM A · R147.3(3) — WHY THE COMMIT BUTTON IS DEAD, IN WORDS.
+     ══════════════════════════════════════════════════════════════════════════
+     A partner on live 26.29.0 filled every field marked required and the button
+     stayed disabled with NOTHING on screen saying why, because "Units (shares)"
+     gates submission without being marked required. This names the missing
+     fields instead.
+
+     IT MIRRORS THE `disabled` EXPRESSION TERM FOR TERM, in the same order, and
+     both consult the same `parseWholeUnits` verdict, so the reason on screen
+     cannot claim the form is ready while the button refuses (or the reverse).
+     `isPending` is deliberately NOT reported here: the button already says
+     "Committing…" for that state, so repeating it would be noise.
+
+     NO MONEY IS PARSED. `parseWholeUnits` is the shared parser this form already
+     uses; its own refusal sentence is rendered by `PartnerMoneyEntryNotice` at
+     the field, so this line only reports THAT the amount is not yet an amount
+     and lets the notice say why. No `Number()`, `parseInt` or `parseFloat`. */
+  const commitDisabledReason = useMemo((): string => {
+    const spv = data?.spv;
+    if (!spv) return "";
+    const missing: string[] = [];
+    if (!commitFirst.trim()) missing.push("first name");
+    if (!commitLast.trim()) missing.push("last name");
+    if (!commitEmail.trim()) missing.push("email");
+    if (!commitAmount.trim()) missing.push("commitment amount");
+    if (!commitUnits.trim()) missing.push("units (shares)");
+    if (missing.length > 0) {
+      return (
+        `Commit LP is unavailable until every required field is filled. Still needed: ${missing.join(", ")}. ` +
+        "Units (shares) is required: the server refuses a commitment that does not carry a unit count."
+      );
+    }
+    if (!parseWholeUnits(commitAmount, spv.currency, { label: "Commitment amount" }).ok) {
+      return "Commit LP is unavailable because the commitment amount is not yet a valid amount. The line at the amount field says what is wrong with it.";
+    }
+    return "";
+  }, [data?.spv, commitFirst, commitLast, commitEmail, commitAmount, commitUnits]);
+
   /* WAVE 151 · R105(3) — THE OVERAGE, VISIBLE AFTERWARDS.
      A warning shown once during typing satisfies R105(1) only. The recorded
      override must still be READABLE on the SPV after the fact, so the durable
@@ -622,6 +737,22 @@ export default function PartnerSpvDetail() {
     );
   }
   const s = data.spv;
+
+  /* WAVE 216 — THE WIRE FIGURES, computed once where the currency is known.
+
+     These are not new conversions. Each is the SAME call this page already makes in
+     the corresponding submit handler (capital call at :807, gross proceeds at :963),
+     through the one `bigint` converter, in its non-throwing form so it can run during
+     render. They exist so the money-event attestation panels can restate the figure
+     the ROUTE receives — which is the figure the server writes into the stored
+     recital — instead of the whole-unit figure the partner typed. That mismatch is
+     the discrepancy wave 226 pinned.
+
+     The labels are the same labels the submit handlers pass, so a refusal sentence
+     cannot describe a different field here than it does there. `null` means "not yet
+     an amount", never zero: nothing here defaults, rounds or fabricates a figure. */
+  const callAmountWire = wholeUnitsToWireMinorOrNull(callAmount, s.currency, "Capital call amount");
+  const distAmountWire = wholeUnitsToWireMinorOrNull(distAmount, s.currency, "Gross proceeds");
 
   return (
     <PartnerShell title={`${s.name} · ${jurisdictionLabel(s)} · ${spvStatusLabel(s.status)}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
@@ -714,6 +845,43 @@ export default function PartnerSpvDetail() {
               {callMut.isPending ? "Recording…" : "Record"}
             </Button>
           </div>
+          {/* WAVE 211 · ITEM A — APPENDED as a static sibling above the existing money
+              notice. The submit button's `disabled` expression is UNTOUCHED (R143.1):
+              this panel adds a control, it does not replace or gate one. The server
+              refuses a call with no confirmation regardless of what is on screen. */}
+          <Wave211AttestationPanel
+            kind="money_event"
+            testIdSuffix="capital-call"
+            state={w211Call.state}
+            patch={w211Call.patch}
+            complete={w211Call.complete}
+            facts={{
+              kind: "money_event",
+              eventNoun: W211_EVENT_NOUN_CAPITAL_CALL,
+              vehicleName: s.name,
+              eventType: W211_EVENT_NOUN_CAPITAL_CALL,
+              /* WAVE 216 — THE AMOUNT LINE WAVE 226 PINNED.
+
+                 This used to read `amountRaw: callAmount, amountUnit: "as_entered"`,
+                 with a comment saying the server states the minor figure separately.
+                 It does — `spvLegacyAdapters.ts:558` stores this recital with
+                 `amountUnit: "minor"` — so the signer read one Amount line and the
+                 record kept a different one for the SAME event. Wave 226's S-4 test
+                 pinned that as a known discrepancy.
+
+                 The fix converts NOTHING NEW. `callAmountWire` is the exact string
+                 this form already puts on the wire at :807, produced by the one
+                 `bigint` converter. When it exists the panel restates it and labels it
+                 `minor`, agreeing with the stored recital byte-for-byte; while the box
+                 does not yet hold an amount there is no wire figure at all, so the
+                 panel states what the partner typed and SAYS it is as entered. No
+                 arithmetic is authored here, no currency converted, none assumed. */
+              amountRaw: callAmountWire ?? callAmount,
+              amountUnit: callAmountWire == null ? "as_entered" : "minor",
+              currency: s.currency,
+              eventDate: null,
+            }}
+          />
           <PartnerMoneyEntryNotice
             raw={callAmount}
             currency={s.currency}
@@ -860,6 +1028,29 @@ export default function PartnerSpvDetail() {
           </div>
           {/* Two always-rendered siblings, one per amount, so a GP sees both
               figures stated before appending an irreversible ledger row. */}
+          {/* WAVE 211 · ITEM A — APPENDED sibling. Same rule as the capital call above:
+              nothing existing is replaced, no `disabled` expression is changed, and the
+              window.confirm the GP already sees stays exactly as it was. */}
+          <Wave211AttestationPanel
+            kind="money_event"
+            testIdSuffix="distribution"
+            state={w211Dist.state}
+            patch={w211Dist.patch}
+            complete={w211Dist.complete}
+            facts={{
+              kind: "money_event",
+              eventNoun: W211_EVENT_NOUN_DISTRIBUTION,
+              vehicleName: s.name,
+              eventType: distType,
+              /* WAVE 216 — same fix, same reason, for the distribution recital the
+                 server stores with `amountUnit: "minor"` at `spvEngineRoutes.ts:1736`.
+                 `distAmountWire` is the string already sent at :963. */
+              amountRaw: distAmountWire ?? distAmount,
+              amountUnit: distAmountWire == null ? "as_entered" : "minor",
+              currency: s.currency,
+              eventDate: null,
+            }}
+          />
           <PartnerMoneyEntryNotice
             raw={distAmount}
             currency={s.currency}
@@ -900,6 +1091,24 @@ export default function PartnerSpvDetail() {
             </div>
           ))}
         </div>
+        {/* WAVE 179 · ITEM C · R151.2 — export THIS roster. A STATIC SIBLING above the
+            table; no existing node, literal or handler is touched. The server builds
+            the file from `buildPartnerLpRosterPayload`, the exact function that
+            produces the rows rendered below, so the file cannot disagree with the
+            screen. Rendered whenever the roster loaded, including when it is empty —
+            a GP is entitled to a header-only file proving there are no LPs yet. */}
+        {roster.data ? (
+          <div className="flex items-center gap-2" data-testid="partner-spv-lp-roster-export">
+            <PartnerCsvDownloadButton
+              url={`/api/partner/me/spv/${spvId}/lp-roster.csv`}
+              filename={`spv-lp-roster-${spvId}.csv`}
+              testid="partner-spv-lp-roster-export-button"
+            />
+            <span className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-roster-export-note">
+              The same rows shown here, with a currency column per row. Figures that are not derivable are marked, never zeroed.
+            </span>
+          </div>
+        ) : null}
         {roster.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-roster-loading">Loading…</div>}
         {roster.isError && (
           <div className="text-sm text-rose-600" data-testid="partner-spv-lp-roster-error">
@@ -929,7 +1138,44 @@ export default function PartnerSpvDetail() {
                       <td className="p-2">{sub.name ?? "—"}</td>
                       <td className="p-2 text-[var(--cv-color-text-muted)]">{sub.email ?? "—"}</td>
                       <td className="p-2 font-mono">{formatMinor(sub.commitmentMinor, s.currency)}</td>
-                      <td className="p-2">{humanizeMachineKey(sub.status, "Status not recorded")}</td>
+                      {/* ═══ WAVE 182 · ITEM B · R152.3 / R143.1 — THE SECOND FACT, AS A
+                          STATIC SIBLING INSIDE THE EXISTING STATUS CELL.
+
+                          `humanizeMachineKey(sub.status, …)` is NOT touched and NOT made
+                          conditional. "Committed" is what this roster has always said and
+                          it stays exactly as it renders today: a REPLACED text node scores
+                          as REMOVED copy (R143.1). The funds fact is APPENDED beside it.
+
+                          WHY A SIBLING AND NOT ITS OWN COLUMN, WHICH READS BETTER. The
+                          silent-drop guard identifies a `td` by its ordinal among the `td`s
+                          on this structural path in this file. Both roster rows — the
+                          subscriber row and the invite row below — share that path, so a
+                          SIXTH cell in this row renumbers every cell in the invite row and
+                          the guard, correctly, reports the ones that used to hold the
+                          invite name and the em dash as DISAPPEARED. Measured, not assumed:
+                          inserting the column produced exactly three such removals at
+                          `tbody>tr#6` and `tbody>tr#8`, and appending it last still
+                          produced them, because the ordinal is consumed wherever the cell
+                          sits. Within a container, by contrast, membership is a SET and the
+                          order is compared as a SUBSEQUENCE, so an appended child is purely
+                          additive. Nothing here is allow-listed or suppressed.
+
+                          The status literal and the funds statement are separate elements
+                          with separate test ids, so "Committed" is still independently
+                          readable and this cannot be mistaken for a renamed status. */}
+                      <td className="p-2">
+                        {humanizeMachineKey(sub.status, "Status not recorded")}
+                        <span
+                          className="block text-xs text-[var(--cv-color-text-muted)]"
+                          data-testid={`partner-spv-lp-funds-${sub.investorId}`}
+                        >
+                          {/* Derived from `terms._fundsConfirmations`, which the platform
+                              has persisted all along; this wave writes nothing and changes
+                              no schema. Absent field reads as NOT confirmed, because an
+                              older payload is not evidence that funds arrived. */}
+                          {sub.fundsConfirmed === true ? "Funds confirmed" : "Funds not yet confirmed"}
+                        </span>
+                      </td>
                       {canWriteLp && (
                         <td className="p-2">
                           <Button
@@ -951,6 +1197,10 @@ export default function PartnerSpvDetail() {
                       <td className="p-2">{inv.email}</td>
                       <td className="p-2">—</td>
                       <td className="p-2">invited</td>
+                      {/* An invited LP has committed nothing, so there is nothing to
+                          confirm, and "Funds not yet confirmed" here would imply a
+                          commitment exists. The invite row therefore gains no funds
+                          statement at all — silence is the accurate output. */}
                       {canWriteLp && <td className="p-2">—</td>}
                     </tr>
                   ))}
@@ -990,6 +1240,26 @@ export default function PartnerSpvDetail() {
                 Last name is required to invite an LP.
               </div>
             )}
+            {/* WAVE 211 · ITEM A — draft 04 Part A, APPENDED above the existing button.
+                The button's `disabled` expression and its `onClick` handler expression
+                are both untouched (R143.1 covers handler expressions too). */}
+            <Wave211AttestationPanel
+              kind="lp_invitation"
+              testIdSuffix="lp-invite"
+              state={w211Invite.state}
+              patch={w211Invite.patch}
+              complete={w211Invite.complete}
+              facts={{
+                kind: "lp_invitation",
+                /* Null, matching the server. The partner client payload carries no
+                   registered organisation name, so the shared builder renders the
+                   second-person attribution on both sides and the text shown here is
+                   byte-identical to the text stored (R187.3). */
+                partnerName: null,
+                vehicleName: s.name,
+                inviteeEmail: lpEmail,
+              }}
+            />
             <Button
               disabled={!lpEmail.trim() || !lpLastName.trim() || inviteMut.isPending}
               onClick={() => inviteMut.mutate()}
@@ -1005,6 +1275,30 @@ export default function PartnerSpvDetail() {
         {canWriteLp && (
           <div className="pt-2 border-t space-y-2" data-testid="partner-spv-lp-commit-form">
             <div className="text-sm font-medium">Commit an LP to the cap table</div>
+            {/* ═══ WAVE 182 · ITEM A · R152 — THE CLOSED VEHICLE SAYS SO, ON THE FORM.
+
+                THE DEFECT. This form committed an LP $50,000 into an SPV that had
+                already been closed to new LPs, with no refusal and no warning, and
+                the close statement then recomputed AFTER the close. The enforcement
+                for that lives at the store and the route (a disabled button is not
+                enforcement, and this wave does NOT disable the submit control below).
+                This is the part a general partner READS.
+
+                ALWAYS RENDERED, empty while the vehicle is open — the same shape as
+                the target-raise warning further down, so the negative control is an
+                assertion about this element rather than about an absent one, and no
+                sibling moves between the two states.
+
+                A STATIC SIBLING. No existing node, literal, placeholder or handler in
+                this panel is touched; the words come from the SAME shared module the
+                server refusal is built from, so the sentence on the form and the
+                sentence returned by the route cannot drift apart. */}
+            <div
+              className={spvIsClosedToNewCapital(s.status) ? "text-xs text-rose-700" : "text-xs text-[var(--cv-color-text-muted)]"}
+              data-testid="partner-spv-lp-commit-closed-notice"
+            >
+              {spvIsClosedToNewCapital(s.status) ? spvClosedToNewCapitalNotice(s.name) : ""}
+            </div>
             <div className="grid grid-cols-3 gap-2">
               <Input
                 placeholder="First name *"
@@ -1044,15 +1338,46 @@ export default function PartnerSpvDetail() {
                 onChange={(e) => setCommitAmount(e.target.value)}
                 data-testid="partner-spv-lp-commit-amount"
               />
+              {/* ── WAVE 176 · ITEM A · R147.3(3) — A DEAD LABEL ON A MONEY FORM.
+
+                  THE TRUTH WAS ESTABLISHED ON THE SERVER FIRST, not inferred from
+                  this file. `POST /api/partner/me/spv/:spvId/lp-commit` refuses a
+                  commit with no units outright — server/spvEngineRoutes.ts:1641:
+                      if (!amount || !shares) return res.status(400).json({
+                        error: "COMMIT_FIELDS_REQUIRED",
+                        message: "amount and shares (units) are required." });
+                  and `shares` then travels into the sacred `commitFunded` ledger
+                  write. So the submit gate below is CORRECT and is NOT relaxed:
+                  removing `!commitUnits.trim()` would have swapped a silent dead
+                  button for a server refusal, which is strictly worse.
+
+                  WHAT WAS ACTUALLY WRONG is that this field alone carried no
+                  required marker while its three neighbours carry `*` inside
+                  their placeholders, so a partner filled everything marked
+                  required and the button stayed dead with no explanation.
+
+                  R143.1 — the placeholder literal "Units (shares)" is kept
+                  BYTE-VERBATIM. The guard inventories `placeholder` attributes as
+                  copy strings (see the placeholder entries in
+                  scripts/silent-drop-guard/allowlist.json), so appending `*` to it
+                  would score as a REMOVED copy string and would need an
+                  allow-list entry. Instead the requirement is stated in the
+                  STATIC SIBLING line below, and an `aria-label` is ADDED here so
+                  assistive technology gets the same marker the sighted
+                  convention uses. Nothing is replaced. */}
               <Input
                 type="number"
                 inputMode="numeric"
                 min="1"
                 placeholder="Units (shares)"
+                aria-label="Units (shares) * — required"
                 value={commitUnits}
                 onChange={(e) => setCommitUnits(e.target.value)}
                 data-testid="partner-spv-lp-commit-units"
               />
+            </div>
+            <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-commit-units-required">
+              Units (shares) * — required. Every commitment on this cap table records a unit count, and a commit sent without one is refused.
             </div>
             <PartnerMoneyEntryNotice
               raw={commitAmount}
@@ -1072,6 +1397,69 @@ export default function PartnerSpvDetail() {
                 Last name is required to commit an LP.
               </div>
             )}
+            {/* ── WAVE 176 · ITEM A — NO USER IS LEFT GUESSING WHY THE BUTTON IS DEAD.
+
+                ALWAYS RENDERED, empty when nothing is missing — the same shape as
+                the wave-151 cap warning above, so no element appears or
+                disappears between states and the guard sees a stable sibling.
+                Derived from the SAME expression that disables the button
+                (`commitDisabledReason` beside it), so the sentence and the gate
+                cannot drift apart. */}
+            <div
+              className={commitDisabledReason ? "text-xs text-amber-700" : "text-xs text-[var(--cv-color-text-muted)]"}
+              data-testid="partner-spv-lp-commit-disabled-reason"
+            >
+              {commitDisabledReason}
+            </div>
+            {/* ── WAVE 176 · ITEM B · R147.3(1) — R130's TARGET WARNING, ON THE SCREEN.
+
+                THE RECORD WAS NEVER THE DEFECT. spvEngineStore.recordTargetRaiseOverage
+                (server/spvEngineStore.ts:3155) has recorded TARGET_RAISE_EXCEEDED with
+                `blocked: false` since wave 164, and R135.3 says never block — so
+                nothing about the recorded outcome is touched here. What was missing
+                was any path from that record to a partner's eyes: the four
+                committed-writers discard the sentence the store builds, and this
+                page's `onSuccess` used to take no `data` argument at all, so the
+                only thing a $9,000,000-against-$5,000,000 commit produced on live
+                was the toast. The route now returns the sentence
+                (`targetRaise.warning`, built by the SHARED
+                `spvTargetRaiseWarningSentence`) and it is rendered here.
+
+                ALWAYS RENDERED, empty when the target was not passed — so the
+                negative control is an assertion about this same element rather
+                than about an absent one. NON-BLOCKING by construction: this is a
+                sibling of a commit that has already SUCCEEDED, and the toast
+                literal "LP committed to the cap table" is untouched beside it. */}
+            <div
+              className={commitTargetWarning ? "text-xs text-amber-700" : "text-xs text-[var(--cv-color-text-muted)]"}
+              data-testid="partner-spv-lp-commit-target-warning"
+            >
+              {commitTargetWarning}
+            </div>
+            {/* WAVE 211 · ITEM A — draft 04 Part B5/B6, APPENDED above the existing
+                button. The `disabled` expression below and its handler expression are
+                untouched: wave 135's parser check and wave 211's confirmation are two
+                independent conditions and neither replaces the other. */}
+            <Wave211AttestationPanel
+              kind="lp_commitment"
+              testIdSuffix="lp-commit"
+              state={w211Commit.state}
+              patch={w211Commit.patch}
+              complete={w211Commit.complete}
+              facts={{
+                kind: "lp_commitment",
+                /* Null on both sides — see the invitation panel above. */
+                partnerName: null,
+                vehicleName: s.name,
+                investorEmail: commitEmail,
+                /* The whole-unit decimal string as typed. Restated, never converted:
+                   this endpoint scales it server-side and showing the partner a
+                   minor-unit integer would show them a figure they never entered. */
+                amountRaw: commitAmount,
+                amountUnit: "as_entered",
+                currency: s.currency,
+              }}
+            />
             <Button
               /* WAVE 135 · FINDING 2 — `!commitAmount.trim()` only ever asked whether
                  the client had typed SOMETHING. It now also asks the shared parser

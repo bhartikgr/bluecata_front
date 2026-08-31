@@ -60,6 +60,12 @@ import {
   spvCapSplitRows,
 } from "@shared/spvCapSplitDisclosure";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_COMMIT_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const PARTNER = "ac_consortium_partner_test_partner_inc";
 
@@ -87,6 +93,7 @@ const post = (p: string, u: string, b?: unknown) => request(app).post(p).set("x-
  *  converts with `decimalStringToMinor`, never `Number()`. */
 function lpCommit(spvId: string, email: string, wholeUnits: string, extra: Record<string, unknown> = {}) {
   return post(`/api/partner/me/spv/${spvId}/lp-commit`, MANAGING, {
+    ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
     holderFirstName: "W164",
     holderLastName: email.split("@")[0],
     investorEmail: email,

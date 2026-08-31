@@ -57,7 +57,7 @@ import { isActive as isCollectiveMemberActive } from "./collectiveMembershipStor
 // surface; this just avoids a second round-trip when the wizard already collected
 // a signature. Sign fields are read from req.body directly because the zod
 // collectiveApplicationSchema strips unknown keys from parsed.data.
-import { recordAccreditationDeclaration } from "./investorComplianceRoutes";
+import { recordAccreditationDeclaration, observedIpFromRequest, observedUserAgent } from "./investorComplianceRoutes";
 // W-COLLECTIVE Wave 1 — the shared access decision contract (v5 §C + v6 §2).
 // Static import is safe: collectiveAccessDecision does not import this module.
 import {
@@ -772,6 +772,13 @@ export function registerCollectiveAppRoutes(app: Express): void {
           signatureName: sig,
           criteria: b.accreditationCriteria,
           jurisdiction: b.jurisdiction,
+          /* WAVE 215 / R187.1 — this apply-time capture writes a real declaration,
+             so it carries the same server-OBSERVED provenance as the dedicated
+             route. Taken from the request object, never from `b`. */
+          provenance: {
+            observedIp: observedIpFromRequest(req),
+            userAgent: observedUserAgent(req),
+          },
         });
         if (!r.ok) {
           log.warn("[collectiveAppStore.submit] apply-time accreditation capture skipped:", r.error);

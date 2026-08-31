@@ -1,0 +1,106 @@
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WAVE 212 · R186.2 · D3/C3 — THE FOUNDER ROUND-CREATION SIGN-OFF, ON THE ROW IT
+-- SIGNS.
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WHAT THE OWNER ASKED FOR
+--   "A founder cannot bring a live funding round into existence with one click."
+--   R186.2 calls this "the single highest-priority legal build item".
+--
+-- WHAT WAS TRUE BEFORE THIS MIGRATION, MEASURED — NOT ASSUMED
+--   `client/src/pages/founder/RoundNew.tsx:3484` fired `createRoundMut.mutate()`
+--   behind `data-testid="button-create"`, disabled only on `isPending`,
+--   `scheduleInvalid`, `!step2Valid` and `!roundCurrencyChosen`. `POST /api/rounds`
+--   (`server/routes.ts:7709`, the ONE handler for that path, mounted by the ONE
+--   registrar `registerRoutes()` called once from `server/index.ts:306`) validated
+--   dates, terms and bounds and then created the round. A stripped-source sweep of
+--   `RoundNew.tsx` and `server/roundsStore.ts` for attest / signoff / acknowledg /
+--   certif / legalName / consent returned ZERO code hits. There was no checkbox, no
+--   typed signature, no confirmation and nothing recorded.
+--   Full evidence: build_log/wave212/W212_PREFLIGHT.md §1.
+--
+-- ── WHAT THIS MIGRATION DOES NOT DO ────────────────────────────────────────────
+--   It creates NO table. It inserts NO row. It updates NO existing row. It deletes
+--   nothing and expires nothing. Every column added is NULLABLE with no default, so
+--   every round that already exists keeps exactly the values it has and a reader can
+--   still tell "this round predates the sign-off" (NULL) from "this round was signed
+--   for" — an absence is never turned into a value (R176.1).
+--   It adds no column to `shared/schema.ts`, deliberately: the route sweeps unknown
+--   body keys into `extras_json` and `rowToRound()` re-spreads that onto every
+--   hydrated round, so a signature, an IP address and a user agent placed anywhere
+--   drizzle can see would be echoed by `GET /api/rounds` to investors. These columns
+--   are written and read by ONE module,
+--   `server/wave212RoundCreationAttestationStore.ts`, and by nothing else.
+--
+-- ── WHAT IT DOES ───────────────────────────────────────────────────────────────
+--   Nine nullable TEXT columns on `rounds`. The first four are the build doc's
+--   §212.3 list; the remaining five are what ITEM B of the wave brief requires for
+--   the record to be provable later.
+--
+--     creation_attestation_version       The frozen text version identifier, e.g.
+--                                        ROUND-ATT-v1. A wording change is a NEW
+--                                        version, never an edit to a stored row
+--                                        (R44). This column is also the write-once
+--                                        latch: the store's UPDATE carries
+--                                        `WHERE creation_attestation_version IS NULL`
+--                                        so a recorded sign-off cannot be replaced.
+--     creation_attestation_text          The exact text that was on the founder's
+--                                        screen, verbatim. Draft 02: the record must
+--                                        prove what was SHOWN, not what a version
+--                                        number implies.
+--     creation_attestation_text_sha256   Hex SHA-256 of that text (R187.3 — store the
+--                                        text AND a digest of it), so a later edit to
+--                                        the text column is detectable.
+--     creation_attestation_signed_name   The typed full legal name. The signature.
+--                                        Stored whole; an over-long name is REFUSED
+--                                        upstream rather than truncated, because half
+--                                        a signature is a signature nobody gave.
+--     creation_attestation_signed_at     Server-observed UTC ISO-8601 timestamp. The
+--                                        server's clock, never the client's (R187.1).
+--     creation_attestation_signed_by     The acting user id the server resolved from
+--                                        the session — not a value from the body.
+--     creation_attestation_ip            The server's own resolution of the request
+--                                        peer, via `resolveRateLimitClientIp()`, or
+--                                        NULL. Never a client-supplied header value
+--                                        and never a placeholder (R192.3).
+--     creation_attestation_ip_capture    'captured' or 'not_captured'. Draft 02 is
+--                                        explicit that where the real address is not
+--                                        available the field must be recorded as NOT
+--                                        CAPTURED rather than filled with a fiction:
+--                                        "a field containing a fiction discredits the
+--                                        whole record and, by extension, every other
+--                                        signature the platform has produced."
+--     creation_attestation_user_agent    The request's user agent, or NULL.
+--
+-- ── §5.10 UPSERT ENUMERATION, AS MANDATED ──────────────────────────────────────
+--   TABLE `rounds`. There is NO upsert on this table. `server/roundsStore.ts:317`
+--   performs a plain `insert(roundsTable).values({…})`; the four update sites
+--   (:481, :515, :544, :911, :1058) are `update(roundsTable).set({…})` with
+--   enumerated fields. No writer uses INSERT OR REPLACE, ON CONFLICT DO UPDATE, or a
+--   whole-row rewrite, so no existing writer can blank these nine columns, and none
+--   of them needs a new entry in a `set` clause. The nine columns are written by
+--   exactly one statement in
+--   `server/wave212RoundCreationAttestationStore.ts::recordRoundCreationAttestation`,
+--   which enumerates all nine and then reads the row back and compares all nine.
+--
+-- ── SQLITE / POSTGRES ──────────────────────────────────────────────────────────
+--   One column per ALTER, which is SQLite's limit, and each statement is applied
+--   independently by the self-heal installer so an already-present column cannot
+--   abort the ones after it. `server/db/connection.ts` builds test and bootstrap
+--   SQLite databases from DDL inlined in that file rather than from these numbered
+--   migrations, and this wave may not edit it, so
+--   `ensureRoundCreationAttestationColumns()` READS THESE STATEMENTS FROM THIS FILE
+--   and applies the missing ones by PRAGMA inspection. The DDL is never re-typed in
+--   TypeScript, so installer and migration cannot drift.
+--
+-- RULING: R186.2, R187.1, R187.3, R192.3, R195.5, R176.1, R44.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE rounds ADD COLUMN creation_attestation_version TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_text TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_text_sha256 TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_signed_name TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_signed_at TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_signed_by TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_ip TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_ip_capture TEXT;
+ALTER TABLE rounds ADD COLUMN creation_attestation_user_agent TEXT;

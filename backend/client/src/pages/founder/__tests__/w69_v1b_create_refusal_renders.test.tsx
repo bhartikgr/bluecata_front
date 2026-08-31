@@ -36,6 +36,7 @@ import {
   dateShapedValueWarning,
   type TermValueVerdict,
 } from "@shared/roundMathEngineAdapter";
+import { w212SignOff } from "./_w212SignOff";
 
 /* `TermValueVerdict` is a discriminated union; `message` lives only on the
    refusal arm. Narrowing it here also asserts the arm. */
@@ -120,7 +121,10 @@ async function toFinalStep(cap: string) {
   fireEvent.click(screen.getByTestId("button-next")); // 3 → 4 (Investors)
   await screen.findByTestId("step-investors");
   fireEvent.click(screen.getByTestId("button-next")); // 4 → 5 (Review)
-  return screen.findByTestId("button-create");
+  const create = await screen.findByTestId("button-create");
+  /* WAVE 212 — a founder signs before the control is live. */
+  w212SignOff();
+  return create;
 }
 
 describe("WAVE 69 · V-1b — the CREATE surface renders the refusal and the warning", () => {

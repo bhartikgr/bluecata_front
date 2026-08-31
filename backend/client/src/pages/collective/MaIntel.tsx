@@ -50,18 +50,46 @@ interface CompRow {
   revenueMultiple: number | null;
   sector: string;
   region: string;
+  /**
+   * WAVE 225 — NOT the source of the transaction. A Capavate company in the
+   * caller's own scope sharing the comparable's sector, or an anonymised sector
+   * label. It was rendered under a column headed "Source", which manufactured
+   * provenance for figures that had none. Real provenance is the two fields
+   * below, and no row is emitted without them.
+   */
   sourceAttribution: string;
+  /** WAVE 225 — where the transaction figure came from. Non-empty on any emitted row. */
+  transactionSource: string;
+  /** WAVE 225 — ISO date on which that source reported it. Non-empty on any emitted row. */
+  transactionSourceDate: string;
 }
 interface CompsResponse {
   asOfDate: string;
   totalRecords: number;
   exits: CompRow[];
+  /**
+   * WAVE 225 · R193.2 — tells this component WHY the list is the length it is,
+   * so an empty list is never rendered as "nothing matched your scope" when the
+   * truth is that the platform holds no verified data at all.
+   */
+  compsProvenance?: {
+    status: string;
+    verified: number;
+    heldUnsourced: number;
+    statement: string;
+  };
 }
 interface BenchmarkSector {
   sector: string;
   n: number;
   status: "OK" | "INSUFFICIENT_DATA";
-  medians: Record<string, number> | null;
+  /**
+   * WAVE 225 · R143.4 — values are `number | null`. `null` means the platform
+   * does not hold that figure and the cell must show the not-held treatment.
+   * `revenueMultipleLow` / `revenueMultipleHigh` used to arrive as the literal
+   * `0` and were rendered as a measured median revenue multiple of zero.
+   */
+  medians: Record<string, number | null> | null;
 }
 interface BenchmarksResponse {
   asOfDate: string;
@@ -183,9 +211,25 @@ function CompsTab() {
 
   function exportCsv() {
     // CSV does NOT include any private fields — only public comps + attribution.
-    const header = ["Target", "Acquirer", "Date", "ValuationUSD", "RevenueMultiple", "Sector", "Region", "Source"];
+    //
+    // WAVE 225 · R193.2 — two changes here, and one deliberate NON-change.
+    //
+    // CHANGED: two provenance columns are appended. Every row that can reach
+    // this function has already passed the server-side provenance gate, so both
+    // are non-empty; an investor opening the file can see where each figure came
+    // from and when, which is the whole point of the wave.
+    //
+    // NOT CHANGED: no human-readable refusal banner is injected as a preamble
+    // row. It is tempting — it would put the honest statement in the file — but
+    // it would break every consumer that reads this CSV with a header-row
+    // parser, or silently shift their column 1. The refusal belongs on screen,
+    // and it is rendered there. When there is nothing verified to export this
+    // function is not reachable at all: the component returns the refusal state
+    // before the export control is rendered, so the honest outcome is NO FILE
+    // rather than a malformed or empty-but-authoritative-looking one.
+    const header = ["Target", "Acquirer", "Date", "ValuationUSD", "RevenueMultiple", "Sector", "Region", "Source", "TransactionSource", "TransactionSourceDate"];
     const lines = exits.map((e) =>
-      [e.target, e.acquirer, e.date, e.valuationUsd, e.revenueMultiple ?? "", e.sector, e.region, e.sourceAttribution]
+      [e.target, e.acquirer, e.date, e.valuationUsd, e.revenueMultiple ?? "", e.sector, e.region, e.sourceAttribution, e.transactionSource, e.transactionSourceDate]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`)
         .join(","),
     );
@@ -208,9 +252,34 @@ function CompsTab() {
   }
 
   if (exits.length === 0) {
+    // WAVE 225 · R193.2 — the sentence below was the ONLY thing this branch said,
+    // and on its own it is false. It blames the caller's scope for an absence
+    // that has nothing to do with scope: the platform holds no verified
+    // comparable-transaction data for any member. Removing nine unsourced rows
+    // while leaving this sentence would have replaced a false number with a
+    // false reason. R143.1 — the existing literal is kept byte-for-byte and the
+    // correction is APPENDED as static siblings, never a replacement.
     return (
       <div className="text-center py-12 text-slate-500" data-testid="ma-comps-empty">
         <p className="text-sm">No comparable exits available for your scope.</p>
+        <p className="text-sm mt-3 text-slate-600 font-medium" data-testid="ma-comps-refusal-headline">
+          Capavate holds no verified comparable-transaction data.
+        </p>
+        <p className="text-xs mt-2 max-w-xl mx-auto text-slate-500" data-testid="ma-comps-refusal-detail">
+          This is not a limit of your scope, your permissions or the date filter. No verified
+          comparable exits exist on the platform for any member, so none are shown and none can
+          be exported.
+        </p>
+        <p className="text-xs mt-2 max-w-xl mx-auto text-slate-500" data-testid="ma-comps-refusal-basis">
+          A comparable exit is only shown once Capavate records the source the figure came from
+          and the date that source reported it. Rows without both are withheld rather than
+          estimated, corrected or filled in.
+        </p>
+        {q.data?.compsProvenance ? (
+          <p className="text-xs mt-2 max-w-xl mx-auto text-slate-400" data-testid="ma-comps-provenance-statement">
+            {q.data.compsProvenance.statement}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -223,6 +292,10 @@ function CompsTab() {
     { key: "revenueMultiple", label: "Rev Multiple" },
     { key: "sector", label: "Sector" },
     { key: "sourceAttribution", label: "Source" },
+    // WAVE 225 — the columns that make the row checkable. Appended, so the
+    // existing seven column literals above are untouched (R143.1).
+    { key: "transactionSource", label: "Transaction source" },
+    { key: "transactionSourceDate", label: "Source date" },
   ];
 
   return (
@@ -259,12 +332,26 @@ function CompsTab() {
                 <td className="py-2 px-2 tabular-nums">{e.revenueMultiple != null ? `${e.revenueMultiple}×` : "—"}</td>
                 <td className="py-2 px-2">{e.sector}</td>
                 <td className="py-2 px-2 text-slate-500">{e.sourceAttribution}</td>
+                <td className="py-2 px-2 text-slate-600" data-testid={`ma-comps-txsource-${idx}`}>{e.transactionSource}</td>
+                <td className="py-2 px-2 text-slate-500 tabular-nums" data-testid={`ma-comps-txsourcedate-${idx}`}>{e.transactionSourceDate}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <Methodology text="Comparable exits are public market comps. Company attribution appears only where the company opted into Collective-wide sharing; otherwise the source is anonymized by sector. The CSV export contains no private fields." />
+      {/* WAVE 225 · R193.2 — the footer above is left byte-identical (R143.1) and
+          corrected by this appended sibling. Two things in it were wrong: it
+          asserted the rows ARE public market comps, and it framed the only
+          provenance question as privacy ("attribution", "anonymized"), which is
+          a different question from where a figure came from. `Methodology` takes
+          a single text prop, so the correction cannot be appended inside it. */}
+      <p className="text-[11px] text-slate-500 mt-2" data-testid="ma-comps-provenance-note">
+        Correction: “anonymized by sector” describes company privacy, not the origin of a figure.
+        A comparable exit is shown only where Capavate records the source the figure came from and
+        the date that source reported it — see the Transaction source and Source date columns.
+        Unsourced rows are withheld, never estimated.
+      </p>
     </div>
   );
 }
@@ -310,6 +397,23 @@ function BenchmarksTab() {
                   <td key={c.key} className="py-2 px-2 text-center tabular-nums">
                     {s.status === "INSUFFICIENT_DATA" || !s.medians ? (
                       <span className="text-slate-300" title="Insufficient data (k-anonymity floor of 5)">
+                        —
+                      </span>
+                    ) : s.medians[c.key] == null ? (
+                      /* WAVE 225 · R143.4 — a THIRD state, distinct from both a
+                         number and the k-anonymity dash above. `null` means the
+                         platform does not hold this figure at all. Before this
+                         wave, `revenueMultipleLow`/`High` arrived as the literal
+                         `0` and fell through to the numeric branch, so every
+                         sector row showed an accredited investor a measured
+                         median revenue multiple of ZERO. The distinction matters:
+                         the dash above means "too few companies to disclose",
+                         this one means "never measured". */
+                      <span
+                        className="text-slate-300"
+                        title="Not held — Capavate stores no revenue-multiple figure for this sector, so none is shown. This is not a measurement of zero."
+                        data-testid={`ma-benchmarks-not-held-${s.sector}-${c.key}`}
+                      >
                         —
                       </span>
                     ) : (

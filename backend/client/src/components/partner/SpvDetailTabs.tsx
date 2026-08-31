@@ -14,11 +14,21 @@
  * Tabs use `defaultValue` (uncontrolled) so the first click always registers
  * (avoids the controlled-derived-value first-interaction no-op, O7).
  */
-import { useState, useId, useMemo, useEffect } from "react";
+import { useState, useId, useMemo, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor as formatMinorLib } from "@/lib/currency";
+/* WAVE 216 — the ONE definition of the bytes a signer signs, and of the intent and
+   consent sentences. Imported from `shared/` so the screen and the server cannot
+   hold two copies of a legal sentence. Nothing is re-typed here. */
+import {
+  buildWave216SignedStatement,
+  WAVE216_INTENT_SENTENCE,
+  WAVE216_CONSENT_SENTENCE,
+  WAVE216_BLOCKED_HINT,
+  WAVE216_BOUND_NOTICE,
+} from "@shared/wave216SignedStatement";
 /* WAVE 120 · FINDING 2 — the shared committed-capital predicate (one spelling of
    "committed", summed in bigint) and the platform's bigint money formatter. */
 import {
@@ -66,6 +76,8 @@ import { SpvNavPanel } from "@/components/partner/SpvNavPanel";
 import { SpvK1Panel } from "@/components/partner/SpvK1Panel";
 import { SpvSideLetterPanel } from "@/components/partner/SpvSideLetterPanel";
 import SpvReachPanel from "@/components/partner/SpvReachPanel";
+import PartnerCsvDownloadButton from "@/components/partner/PartnerCsvDownloadButton"; /* WAVE 179 · ITEM C · R151.2 */
+import SpvAttestationStatusNotice from "@/components/partner/SpvAttestationStatusNotice"; /* WAVE 189 · ITEM C · R159.6 */
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
@@ -97,7 +109,18 @@ import {
   spvFilingsChecklist,
   SPV_JURISDICTION_GENERIC_NOTICE,
   spvJurisdictionDisplay, /* WAVE 40 / F-3 — single jurisdiction precedence */
+  resolveSpvJurisdiction, /* WAVE 179 · ITEM B — canonicalise before looking up legal forms */
 } from "@shared/spvEngine";
+/* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form, settable after creation. */
+import {
+  spvLegalFormOptions,
+  SPV_LEGAL_FORM_LABELS,
+  SPV_LEGAL_FORM_NOT_STATED_LABEL,
+  SPV_LEGAL_FORM_OPTIONAL_HINT,
+  SPV_LEGAL_FORM_NOT_OFFERED_NOTICE,
+  SPV_LEGAL_FORM_FIELD_LABEL,
+  SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+} from "@shared/spvLegalForm";
 /* WAVE 126 / FINDING 2 — whole-currency-unit entry at the edge, exact minor
    units on the wire. See partnerMoneyInput.ts for why this is bigint-only. */
 import {
@@ -112,6 +135,16 @@ import {
 /* WAVE 165 · R130.2 / R139.4 — the ONE canonical spelling of an absent amount.
    R111 Q13 settled it as "Not on record"; this file had invented its own. */
 import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
+import { describeFailure } from "@/lib/failureMessage";
+
+/* WAVE 211 · ITEM A — the money gate on the SECOND distribution surface. This tab
+   posts to the same canonical singular route `PartnerSpvDetail` does, so it needs the
+   same confirmation; the server refuses either one without it. */
+import {
+  Wave211AttestationPanel,
+  useWave211Attestation,
+} from "@/components/partner/Wave211AttestationPanel";
+import { W211_EVENT_NOUN_DISTRIBUTION } from "@shared/wave211MoneyEventAttestation";
 
 /* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
  * exponent notation ("1e7" → NaN), decimals, and non-numeric strings.
@@ -301,6 +334,33 @@ function wholeUnitsToWire(raw: string, currency: string, label: string): string 
   return toWireMinor(r.minor);
 }
 
+/**
+ * WAVE 216 — THE SAME CONVERTER, WITHOUT THE THROW.
+ *
+ * Wave 226 pinned an Amount-line discrepancy: the money-event attestation panel on
+ * this surface restated the WHOLE-UNIT figure the partner typed and labelled it
+ * `as_entered`, while `spvEngineRoutes.ts:1736` writes the stored recital for the
+ * same distribution with the MINOR figure and labels it `minor`. Same event, two
+ * different Amount lines — one on the screen the partner signed, one in the record.
+ *
+ * The panel renders while the partner types, so it cannot call the throwing form
+ * above. This delegates to it and returns `null` instead of throwing. It is NOT a
+ * second converter and authors no arithmetic: `parseWholeUnits` and `toWireMinor`
+ * remain the only code that scales anything, in `bigint`, and no `Number()`,
+ * `parseInt` or `parseFloat` runs on a partner's figure anywhere on this path.
+ *
+ * `null` is "there is no wire figure yet", never zero. While it is `null` the submit
+ * below throws on the same input, so no stored recital can exist for the rendered
+ * one to disagree with.
+ */
+function wholeUnitsToWireOrNull(raw: string, currency: string, label: string): string | null {
+  try {
+    return wholeUnitsToWire(raw, currency, label);
+  } catch {
+    return null;
+  }
+}
+
 function MoneyEntryNotice({
   raw,
   currency,
@@ -480,7 +540,10 @@ export interface SpvDetail {
      NOT declared here: they do not exist on SpvDTO, and declaring them is what
      made the retired PartnerSpvDetail accordion render `undefined` twice
      (DEF-087 / OQ-35). */
-  spv?: { status?: string; jurisdiction?: string; lpVisibility?: string; closeDate?: string | null; targetRaiseMinor?: number | null; targetCompanyId?: string | null; terms?: Record<string, unknown> | null; revisionHash?: string | null; updatedAt?: string | null };
+  /* WAVE 189 · ITEM C · R159.6 — `name` added (optional, additive): the
+     unattested-draft notice names the vehicle rather than printing an internal id,
+     and the detail route already returns it. No existing field is changed. */
+  spv?: { name?: string; status?: string; jurisdiction?: string; lpVisibility?: string; closeDate?: string | null; targetRaiseMinor?: number | null; targetCompanyId?: string | null; terms?: Record<string, unknown> | null; revisionHash?: string | null; updatedAt?: string | null };
   mandate?: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[] } | null;
   fees?: Fee[];
   subscriptions?: Sub[];
@@ -491,6 +554,10 @@ export interface SpvDetail {
   transfers?: Transfer[];
   capitalAccounts?: CapitalAccount[];
   closeSummary?: CloseSummary;
+  /* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form, as PERSISTED. Absent or
+     null for every vehicle that has not been told, which is every vehicle until a
+     GP states one: the migration backfilled nothing. */
+  legalForm?: string | null;
   // D3/SPV-BUG-5 — DB-driven effective fee summary. Carry %s are fractions
   // (0.2 = 20%); platformCarryPct is the admin-set platform layer (read-only).
   feeSummary?: {
@@ -754,6 +821,18 @@ export function SpvDetailTabs({
             the adoption is auditable and cannot be re-reported as an orphan. */}
         <Edu testid="spv-edu-terms">{SPV_EDU.terms}</Edu>
         <Edu testid="spv-edu-review-launch">{SPV_EDU.reviewLaunch}</Edu>
+        {/* WAVE 189 · ITEM C · R159.6 — the unattested-draft label, on the surface a
+            general partner opens to inspect one vehicle.
+
+            MOUNTED OUTSIDE THE GRID BELOW, ON PURPOSE. The grid's children are
+            positional and the silent-drop guard fingerprints them; adding a cell
+            renumbers its siblings and trips the panels inventory (the wave 182
+            lesson the brief restates). This is a sibling of the grid, not a cell in
+            it, so every existing cell keeps its position and its testid.
+
+            It is a STATEMENT, not enforcement: the refusal lives at the store sinks
+            and the lp-commit route. Renders nothing at all for an attested vehicle. */}
+        <SpvAttestationStatusNotice spvId={spvId} spvName={spv.name ?? null} />
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div data-testid="spv-detail-raise">
             <div className="font-medium">Raise progress</div>
@@ -804,6 +883,25 @@ export function SpvDetailTabs({
               the concatenated text of its inline JSX children, so inline copy
               here would make this untouched tab read as REMOVED. */}
           <VintageField value={spvVintageDisplay} />
+          {/* ══ WAVE 179 · ITEM B · R151.3 — LEGAL FORM, ON THE SETTINGS SURFACE ══
+              R151.3 requires the field at creation AND "in SPV settings so it can be
+              set later". The Overview tab is this vehicle's settings surface: it is
+              where its jurisdiction, vintage and visibility are already read and
+              administered, so a GP who created a vehicle through the five-step wizard
+              (which this wave does not own) states the form here.
+
+              A COMPONENT, NOT INLINE JSX, for exactly the reason JurisdictionField and
+              VintageField are: the silent-drop guard fingerprints a tab by the
+              concatenated text of its INLINE children, so inline copy here would make
+              this untouched tab read as changed. Purely additive; nothing above or
+              below it is altered. */}
+          <SpvLegalFormField
+            spvId={spvId}
+            jurisdiction={jurisdiction}
+            legalForm={detail.legalForm ?? null}
+            canWrite={canWrite}
+            onChanged={onChanged}
+          />
           <div data-testid="spv-detail-lpvisibility">
             <div className="font-medium">LP co-investor visibility</div>
             <div className="text-xs">
@@ -1106,7 +1204,7 @@ export function SpvDetailTabs({
           </div>
         )}
         {canWrite && <DistributionPreview spvId={spvId} currency={currency} />}
-        {canWrite && <RecordDistributionPanel spvId={spvId} currency={currency} onChanged={onChanged} />}
+        {canWrite && <RecordDistributionPanel spvId={spvId} currency={currency} onChanged={onChanged} vehicleName={(spv as { name?: string | null }).name ?? null} />}
       </TabsContent>
 
       {/* ── Documents ────────────────────────────────────────────────────── */}
@@ -1253,7 +1351,7 @@ export function SpvDetailTabs({
             fallback, ontology decides), so the tab can state which investor tax
             document this vehicle's jurisdiction actually produces instead of
             presenting a US federal form as any vehicle's output. */}
-        <SpvK1Panel spvId={spvId} canWrite={canWrite} jurisdiction={jurisdiction} />
+        <SpvK1Panel spvId={spvId} canWrite={canWrite} jurisdiction={jurisdiction} legalForm={detail.legalForm ?? null} />
       </TabsContent>
 
       {/* ── Side letters (WAVE 32 / CP-SPV-30 capability 4) ───────────────── */}
@@ -1306,6 +1404,56 @@ type EsignDetail = {
    truth for non-money copy (the scope error wave 147 §4 had to unwind). */
 const ESIGN_REFERENCE_NOT_ON_RECORD = "Not on record";
 
+/**
+ * WAVE 216 — THE STATEMENT MARKER ATTRIBUTE.
+ *
+ * Present so the signing statement is addressable in the DOM for tests and for
+ * support, alongside its `data-testid`. It is NOT how the sign handler finds the
+ * element — see `readPaintedStatementBytes` for why that would have been a defect.
+ */
+const ESIGN_STATEMENT_ATTR = "data-esign-statement-for";
+
+/**
+ * WAVE 216 — THE PAINTED BYTES, and why this reads a REF and not the document.
+ *
+ * THE CORE INVARIANT of this wave is that the bytes rendered to the signer are the
+ * bytes hashed and stored. The strongest way to honour that is not to post the
+ * string a handler happens to hold, but to post the text that was actually PAINTED,
+ * so the request cannot silently carry something the signer never saw.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A DEFECT AN ADVERSARIAL TEST FOUND HERE, AND THE CORRECTION
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The first version of this function did
+ * `document.querySelector('[data-esign-statement-for="<id>"]')`. A test that moved
+ * the served envelope's title proved that WRONG: `document.querySelector` searches
+ * the WHOLE document and returns the FIRST match, so with two panels mounted for
+ * the same envelope — or, in the test, an earlier tree still attached — the handler
+ * read a DIFFERENT card's statement and posted bytes belonging to another render.
+ *
+ * That is precisely the class of defect this wave exists to remove: a signature
+ * carrying bytes other than the ones on the signer's screen. A global DOM query is
+ * not instance-scoped, so it can never be trusted to answer "what does THIS card
+ * show". The refs below are per-envelope and per-mount, so there is nothing to
+ * resolve ambiguously.
+ */
+type EsignStatementRefs = { current: Record<string, HTMLDivElement | null> };
+
+function readPaintedStatementBytes(refs: EsignStatementRefs, envelopeId: string): string | null {
+  const node = refs.current[envelopeId] ?? null;
+  const text = node ? node.textContent : null;
+  /* NO NORMALISING CALL. Not `.trim()`, not `.toLowerCase()`, not a whitespace
+     collapse. The bytes are posted exactly as the DOM holds them, because
+     normalising here is precisely how a byte-identity proof decays into a proof
+     that two normalisations agree — and this statement is a nine-line block, so a
+     whitespace normaliser would make a one-line paraphrase compare equal.
+
+     `null` rather than `""` when nothing is painted: an empty string would be the
+     plausible-looking blank R201.2 warns about, and the server would then be asked
+     to hash "no statement" as though it were a statement. */
+  return typeof text === "string" && text.length > 0 ? text : null;
+}
+
 function EsignaturePanel({
   spvId,
   documents,
@@ -1337,6 +1485,25 @@ function EsignaturePanel({
   const [gpName, setGpName] = useState("");
   const [gpEmail, setGpEmail] = useState("");
   const [typedName, setTypedName] = useState("");
+  /* WAVE 216 — the express signing intent. A separate, deliberate act, exactly as
+     `GpOfflineConfirmationPanel` treats its two affirmations. Never defaulted true,
+     never inferred from the button being clickable. */
+  const [intentAck, setIntentAck] = useState(false);
+
+  /* WAVE 216 — one ref per envelope card, holding the element whose `textContent`
+     IS the statement. Instance-scoped by construction; see
+     `readPaintedStatementBytes` for the defect that a global DOM query caused. */
+  const statementRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  /* WAVE 216 — the statement the SEND form is about to bind. Built from the same
+     shared builder the signer's screen and the server use, so the sender sees the
+     bytes that will be hashed before they send them. */
+  const pendingStatement = buildWave216SignedStatement({
+    vehicleRef: spvId,
+    documentKind: docKind,
+    documentTitle: documents.find((d) => d.id === docRef)?.title ?? docRef,
+    documentRef: docRef,
+  });
 
   const createMut = useMutation({
     mutationFn: async () =>
@@ -1345,6 +1512,11 @@ function EsignaturePanel({
           documentKind: docKind,
           documentRef: docRef,
           documentTitle: documents.find((d) => d.id === docRef)?.title ?? docRef,
+          /* WAVE 216 — the exact bytes rendered above as the signing statement.
+             The CLIENT NEVER HASHES: the server hashes these bytes and stores the
+             digest in the `document_sha256` column migration 0168 has always had.
+             One hash implementation, one authority. */
+          documentStatementText: pendingStatement,
           recipients: [
             { role: "signer", signingOrder: 1, partyKind: "lp", fullName: signerName, email: signerEmail },
             ...(gpName.trim() && gpEmail.trim()
@@ -1361,7 +1533,7 @@ function EsignaturePanel({
     onError: (e: unknown) =>
       toast({
         title: "Could not send for signature",
-        description: e instanceof Error ? e.message : "unknown error",
+        description: describeFailure(e, "write", "unknown error"),
         variant: "destructive",
       }),
   });
@@ -1372,17 +1544,24 @@ function EsignaturePanel({
         await apiRequest("POST", `/api/partner/me/esignature/${encodeURIComponent(v.envelopeId)}/sign`, {
           recipientId: v.recipientId,
           signedName: typedName,
+          /* WAVE 216 — the express intent, as a literal boolean. The server accepts
+             STRICTLY `true` and refuses anything else rather than coercing. */
+          intentAcknowledged: intentAck,
+          /* WAVE 216 — THE PAINTED BYTES, read back off this card's own element.
+             See `readPaintedStatementBytes`. */
+          renderedStatementText: readPaintedStatementBytes(statementRefs, v.envelopeId),
         })
       ).json(),
     onSuccess: () => {
       setTypedName("");
+      setIntentAck(false);   // WAVE 216 — a fresh, deliberate intent for the next signature.
       void refetch();
       toast({ title: "Signature recorded" });
     },
     onError: (e: unknown) =>
       toast({
         title: "Signature refused",
-        description: e instanceof Error ? e.message : "unknown error",
+        description: describeFailure(e, "write", "unknown error"),
         variant: "destructive",
       }),
   });
@@ -1437,7 +1616,7 @@ function EsignaturePanel({
      kept for when it is actually true. */
   const esignReadFailure = useMemo<string | null>(() => {
     if (!isError) return null;
-    const detail = error instanceof Error ? error.message.trim() : "";
+    const detail = error instanceof Error ? describeFailure(error, "read").trim() : "";
     return detail.length > 0 ? detail : "Could not load e-signature envelopes.";
   }, [isError, error]);
   /* ══════════════════════════════════════════════════════════════════════════
@@ -1596,11 +1775,49 @@ function EsignaturePanel({
                           size="sm"
                           variant="outline"
                           data-testid="spv-esign-sign-btn"
-                          disabled={signMut.isPending || !typedName.trim()}
+                          disabled={signMut.isPending || !typedName.trim() || !intentAck}
                           onClick={() => signMut.mutate({ envelopeId: d.envelope.id, recipientId: r.id })}
                         >
                           Record signature
                         </Button>
+                        {/* WAVE 216 — THE EXPRESS SIGNING INTENT.
+
+                            APPENDED AFTER the button, never inserted before it: R143.1
+                            covers handler expressions and sibling positions, and wave
+                            213 lost three handlers by rewriting them. The `onClick`
+                            above is byte-identical to what it was; the only existing
+                            expression this wave touched is the `disabled` conjunction,
+                            which is the pattern wave 226 recommended.
+
+                            The wording is the platform's OWN shipped SES intent
+                            sentence and the SPV launch sign-off's OWN express
+                            ESIGN/UETA consent, imported from `shared/`. No new legal
+                            prose was authored for this control. */}
+                        <label
+                          className="flex w-full items-start gap-2 text-[11px] leading-snug"
+                          data-testid="spv-esign-intent-label"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={intentAck}
+                            disabled={signMut.isPending}
+                            onChange={(e) => setIntentAck(e.target.checked)}
+                            data-testid="spv-esign-intent"
+                          />
+                          <span data-testid="spv-esign-intent-text">
+                            {WAVE216_INTENT_SENTENCE} {WAVE216_CONSENT_SENTENCE}
+                          </span>
+                        </label>
+                        {/* The reason the button is disabled, ALWAYS rendered rather
+                            than shown on hover: `drop:restyle` counts a disabled
+                            control with no stated reason as a dead control, and a
+                            signer staring at a greyed button is a dead end. */}
+                        <div
+                          className="w-full text-[10px] text-[var(--cv-color-text-faint)]"
+                          data-testid="spv-esign-intent-hint"
+                        >
+                          {intentAck ? "Intent confirmed." : WAVE216_BLOCKED_HINT}
+                        </div>
                       </>
                     ) : null}
                   </li>
@@ -1631,6 +1848,46 @@ function EsignaturePanel({
                   </li>
                 ))}
               </ul>
+              {/* ═════════════════════════════════════════════════════════════
+                  WAVE 216 — THE BYTES. Appended as the LAST SIBLING of this
+                  envelope card and rendered UNCONDITIONALLY.
+                  ═════════════════════════════════════════════════════════════
+                  LAST SIBLING, because inserting a card mid-panel is what tripped
+                  the positional panel guard in wave 221 — R143.1's sibling
+                  renumbering trap, third instance this week.
+
+                  UNCONDITIONAL, because wave 221's first default-off DOM assertion
+                  was INERT: it passed with the default flipped to ON. An element
+                  that always paints cannot be proved by an assertion that would
+                  have passed anyway.
+
+                  ONE TEXT NODE. `{statement}` is a single interpolation, so this
+                  element's `textContent` is byte-identical to the canonical
+                  statement string — which is exactly what `signMut` posts and what
+                  the server hashes. `whitespace-pre-line` is CSS only and does not
+                  touch `textContent`. */}
+              <div className="mt-3 rounded-md border border-[var(--cv-color-border)] p-2" data-testid="spv-esign-statement">
+                <div
+                  className="whitespace-pre-line text-[11px] leading-snug text-[var(--cv-color-text-muted)]"
+                  data-testid="spv-esign-statement-bytes"
+                  {...{ [ESIGN_STATEMENT_ATTR]: d.envelope.id }}
+                  ref={(el) => {
+                    statementRefs.current[d.envelope.id] = el;
+                  }}
+                >
+                  {buildWave216SignedStatement({
+                    vehicleRef: spvId,
+                    documentKind: d.envelope.documentKind,
+                    documentTitle: d.envelope.documentTitle,
+                    documentRef: d.envelope.documentRef,
+                  })}
+                </div>
+                {d.documentHashBound ? (
+                  <div className="mt-1 text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-esign-statement-bound">
+                    {WAVE216_BOUND_NOTICE}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
@@ -1695,6 +1952,18 @@ function EsignaturePanel({
           >
             Send for signature
           </Button>
+          {/* WAVE 216 — the bytes this send will BIND, shown to the sender before
+              they send them, appended as the LAST SIBLING of this form. Same
+              builder, same bytes, one text node. Nothing is hashed on this side:
+              these exact bytes go on the wire and the SERVER hashes them. */}
+          <div className="mt-3 rounded-md border border-[var(--cv-color-border)] p-2" data-testid="spv-esign-pending-statement">
+            <div
+              className="whitespace-pre-line text-[11px] leading-snug text-[var(--cv-color-text-muted)]"
+              data-testid="spv-esign-pending-statement-bytes"
+            >
+              {pendingStatement}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1747,7 +2016,7 @@ function LpRow({
       toast({ title: c.status === "matched" ? "Funds confirmed" : "Funds confirmed with a note" });
       onChanged();
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not confirm funds", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not confirm funds", description: describeFailure(e, "write") }),
   });
 
   return (
@@ -1865,8 +2134,8 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
     onError: (e: Error) => {
       setSplit(null);
       setHurdleUsed(null);
-      setPreviewFailure(e.message || "Preview failed");
-      toast({ variant: "destructive", title: "Preview failed", description: e.message });
+      setPreviewFailure(describeFailure(e, "write", "Preview failed"));
+      toast({ variant: "destructive", title: "Preview failed", description: describeFailure(e, "write") });
     },
   });
 
@@ -1998,7 +2267,7 @@ function CloseWindowPolicyLine({
       >
         <div>Rolling-close window unavailable — no active close-window policy resolved for this vehicle.</div>
         <div>Reopening is disabled until an administrator sets a policy at platform, partner or SPV scope.</div>
-        {error?.message ? <div data-testid="spv-close-window-error-detail">{error.message}</div> : null}
+        {error?.message ? <div data-testid="spv-close-window-error-detail">{describeFailure(error, "read")}</div> : null}
       </div>
     );
   }
@@ -2056,7 +2325,7 @@ function ClosePanel({
       toast({ title: "Closed to new LPs" });
       onChanged();
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not close", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not close", description: describeFailure(e, "write") }),
   });
 
   const reopen = useMutation({
@@ -2066,7 +2335,7 @@ function ClosePanel({
       toast({ title: "Reopened for a rolling close" });
       onChanged();
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not reopen", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not reopen", description: describeFailure(e, "write") }),
   });
 
   const isClosed = spvStatus === "closed";
@@ -2244,6 +2513,108 @@ function AuditReceiptField({ revisionHash, updatedAt }: { revisionHash: string |
         is recorded for this vehicle. Quote the fingerprint to Capavate support if you need this
         receipt checked.
       </div>
+    </div>
+  );
+}
+
+/**
+ * WAVE 179 · ITEM B · R151.3 — THE OPTIONAL LEGAL FORM, READ AND SET.
+ *
+ * WHAT IT DOES NOT DO, WHICH IS THE POINT OF THE RULING. It does not preselect a
+ * form, does not fall back to a "most common" form for the jurisdiction, and does
+ * not derive anything from the vehicle's name or type. The control opens on
+ * "Not stated" whenever nothing is recorded, and a vehicle nobody touches keeps a
+ * NULL column and renders wave 175's conditional wording unchanged.
+ *
+ * WHERE THE OPTIONS COME FROM. `shared/spvLegalForm.ts`, which was populated from
+ * the jurisdiction research already recorded in `shared/spvEngine.ts` by wave 175.
+ * No legal form is authored here. For the nine jurisdictions whose tax document does
+ * not depend on legal form, the option list is EMPTY and this renders the reason
+ * instead of a picker — offering choices there would invite a GP to state something
+ * the platform would then do nothing with.
+ *
+ * The route is `assertSubRole` write-gated, so a read-only member sees the recorded
+ * value and a stated reason rather than a control that could only ever be refused.
+ */
+function SpvLegalFormField({
+  spvId,
+  jurisdiction,
+  legalForm,
+  canWrite,
+  onChanged,
+}: {
+  spvId: string;
+  jurisdiction: string | null;
+  legalForm: string | null;
+  canWrite: boolean;
+  onChanged: () => void;
+}) {
+  const { toast } = useToast();
+  const canonicalJurisdiction = useMemo(() => resolveSpvJurisdiction(jurisdiction), [jurisdiction]);
+  const options = useMemo(() => spvLegalFormOptions(canonicalJurisdiction), [canonicalJurisdiction]);
+  /* Seeded from the PERSISTED value, or the not-stated sentinel. Never from a guess. */
+  const [draft, setDraft] = useState<string>(legalForm ?? SPV_LEGAL_FORM_UNSTATED_SENTINEL);
+  useEffect(() => {
+    setDraft(legalForm ?? SPV_LEGAL_FORM_UNSTATED_SENTINEL);
+  }, [legalForm]);
+
+  const save = useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest("PATCH", `/api/partner/me/spv/${spvId}/legal-form`, {
+          /* The sentinel becomes `null`, which the server records as NOT STATED —
+             so a GP who stated the wrong form can take it back. */
+          legalForm: draft === SPV_LEGAL_FORM_UNSTATED_SENTINEL ? null : draft,
+        })
+      ).json(),
+    onSuccess: () => onChanged(),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not record the legal form", description: describeFailure(e, "write") }),
+  });
+
+  return (
+    <div data-testid="spv-detail-legal-form">
+      <div className="font-medium">{SPV_LEGAL_FORM_FIELD_LABEL}</div>
+      <div className="text-xs" data-testid="spv-detail-legal-form-value">
+        {legalForm && options.includes(legalForm as never)
+          ? SPV_LEGAL_FORM_LABELS[legalForm as keyof typeof SPV_LEGAL_FORM_LABELS]
+          : SPV_LEGAL_FORM_NOT_STATED_LABEL}
+      </div>
+      {options.length === 0 ? (
+        <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="spv-detail-legal-form-not-offered">
+          {SPV_LEGAL_FORM_NOT_OFFERED_NOTICE}
+        </div>
+      ) : canWrite ? (
+        <div className="mt-1 space-y-1" data-testid="spv-detail-legal-form-editor">
+          <select
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="w-full rounded-md border border-[var(--cv-color-border)] px-2 py-1 text-xs"
+            data-testid="spv-detail-legal-form-select"
+          >
+            <option value={SPV_LEGAL_FORM_UNSTATED_SENTINEL}>{SPV_LEGAL_FORM_NOT_STATED_LABEL}</option>
+            {options.map((lf) => (
+              <option key={lf} value={lf}>{SPV_LEGAL_FORM_LABELS[lf]}</option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={save.isPending || draft === (legalForm ?? SPV_LEGAL_FORM_UNSTATED_SENTINEL)}
+            onClick={() => save.mutate()}
+            data-testid="spv-detail-legal-form-save"
+          >
+            Save legal form
+          </Button>
+          <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="spv-detail-legal-form-hint">
+            {SPV_LEGAL_FORM_OPTIONAL_HINT}
+          </div>
+        </div>
+      ) : (
+        <div className="text-[10px] text-[var(--cv-color-text-muted)]" data-testid="spv-detail-legal-form-readonly">
+          Recording the legal form requires a managing partner or an associate at your firm.
+        </div>
+      )}
     </div>
   );
 }
@@ -2945,6 +3316,32 @@ function InvestorCompliancePanel({
   return (
     <div className="mt-2 border-t pt-2 space-y-2" data-testid="spv-investor-compliance">
       <div className="text-xs font-medium">Investor KYC &amp; accreditation</div>
+      {/* ═══════════════════════════════════════════════════════════════════
+          WAVE 220 · CLASS A · A6 — THE UNATTRIBUTED HEADER.
+
+          The header above named two checks without naming who performs them, on
+          a screen a GP reads. Capavate performs neither. But the checks are not
+          fictional: Consortium Partner Agreement §4.3
+          (shared/consortiumAgreement.ts:47) places KYC/AML/CTF and sanctions
+          obligations on the PARTNER, for the Partner's own LPs, and this panel
+          is the Partner's data-entry form for recording its own work — it writes
+          through PUT /api/partner/me/compliance/:investorId.
+
+          The defect is therefore an UNATTRIBUTED SUBJECT, and the fix for an
+          unattributed subject is to name the subject. So:
+
+          R143.1 — THE HEADER LITERAL IS NOT REPLACED. Not touched at all. This
+          is a STATIC SIBLING appended beneath it. That is also why this fix
+          cannot damage the honest sentences the brief warned about: an append
+          has no reach into a neighbouring sentence, whereas a rewrite does.
+
+          R211.5 — the honest copy on this same screen family
+          (spvEngine.ts:451 GENERIC_COUNT_NOTE, spvEducation.ts:22) is UNTOUCHED
+          and asserted byte-verbatim in __tests__/w220_class_a_copy.test.tsx.
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div className="text-[10px] text-[var(--cv-color-text-faint)] leading-relaxed" data-testid="spv-investor-compliance-attribution">
+        Recorded by the Partner, for the Partner's own LPs, under the Consortium Partner Agreement. Capavate performs no KYC and no accreditation check on any investor. This panel records what the Partner states; Capavate does not check it, and it does not perform any verification on the Partner's behalf.
+      </div>
       {register.length === 0 ? (
         <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-investor-compliance-empty">
           No investors on the register yet — compliance profiles appear here once an investor subscribes.
@@ -3094,7 +3491,7 @@ function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency
 }
 
 /* C6 v2 — Record a real distribution. Cost basis is REQUIRED (server rule). */
-function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+function RecordDistributionPanel({ spvId, currency, onChanged, vehicleName }: { spvId: string; currency: string; onChanged: () => void; /* WAVE 211 — the vehicle this distribution is against, so the confirmation names it. Nullable, and an absent name is DECLARED absent rather than blanked. */ vehicleName?: string | null }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [event, setEvent] = useState("exit");
@@ -3108,6 +3505,15 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
   // (SETTLEMENT_NOT_CLIENT_SUPPLIED) and derives settlement from the gateway or a
   // Capavate platform admin. See server/lib/feeSettlementAuthority.ts.
   const id = useId();
+  /* WAVE 211 — this surface's own confirmation state, independent of the one on
+     PartnerSpvDetail: two screens, two forms, two signatures. */
+  const w211 = useWave211Attestation("money_event");
+
+  /* WAVE 216 — the wire figure, so the attestation panel below can restate the
+     figure the ROUTE receives rather than the whole-unit figure typed above. Same
+     call, same label, same converter as the mutation; non-throwing so it can run
+     during render. See `wholeUnitsToWireOrNull`. */
+  const grossWire = wholeUnitsToWireOrNull(grossEntered, currency, "Gross proceeds");
 
   const submit = useMutation({
     mutationFn: async () => {
@@ -3120,6 +3526,10 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
         grossProceedsMinor: g,
         costBasisMinor: cb,
         currency,
+        /* WAVE 211 — APPENDED to the existing body. The server strips these keys
+           before `pickDistributionBody` runs, so they never reach the ledger row as
+           data; they are read only by the gate. */
+        ...w211.bodyFields(),
       };
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions`, body)).json();
     },
@@ -3127,6 +3537,7 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
       toast({ title: "Distribution recorded" });
       setOpen(false);
       setGrossEntered(""); setCostBasisEntered("");
+      w211.reset();   // WAVE 211 — a fresh confirmation for the next distribution.
       onChanged();
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Could not record distribution", description: spvErrorMessage(e) }),
@@ -3165,6 +3576,35 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
             Carry settlement is not self-declared. If this SPV charges carry, the collection
             is settled by the payment gateway or recorded by a Capavate platform admin.
           </div>
+          {/* WAVE 211 · ITEM A — APPENDED as a static sibling above the existing
+              button row. `onClick={() => submit.mutate()}` and `disabled={submit.isPending}`
+              are both left exactly as they were: R143.1 covers handler expressions,
+              and wave 213 lost three handlers by rewriting them. */}
+          <Wave211AttestationPanel
+            kind="money_event"
+            testIdSuffix="tabs-distribution"
+            state={w211.state}
+            patch={w211.patch}
+            complete={w211.complete}
+            facts={{
+              kind: "money_event",
+              eventNoun: W211_EVENT_NOUN_DISTRIBUTION,
+              vehicleName: vehicleName ?? null,
+              eventType: event,
+              /* WAVE 216 — THE AMOUNT LINE WAVE 226 PINNED (its S-4 test).
+                 `grossWire` is the exact string the mutation above already puts on
+                 the wire as `grossProceedsMinor`, produced by the one `bigint`
+                 converter — which is the figure `spvEngineRoutes.ts:1736` writes into
+                 the stored recital. Restating it here makes the two Amount lines
+                 agree byte-for-byte. Nothing new is converted. While the box holds
+                 something that is not yet an amount there is no wire figure, so the
+                 panel restates what was typed and SAYS it is as entered. */
+              amountRaw: grossWire ?? grossEntered,
+              amountUnit: grossWire == null ? "as_entered" : "minor",
+              currency,
+              eventDate: null,
+            }}
+          />
           <div className="flex gap-2">
             <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-distribution-submit">
               {submit.isPending ? "Recording…" : "Record"}

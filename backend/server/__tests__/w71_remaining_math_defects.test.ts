@@ -45,6 +45,7 @@ import {
 import {
   roundStoredTerms, OPTION_POOL_POST_PERCENT_MAX, optionPoolPostPercentWithinCeiling,
 } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const src = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), "utf8");
@@ -694,34 +695,34 @@ describe("W71-HTTP — the fixes reach the API", () => {
 
   it("W71-HTTP-1 — D15: the pool ceiling refuses on POST /api/rounds, BY NAME", async () => {
     /* POLE 2. */
-    const bad = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const bad = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: CO, name: `W71 Pool99 ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       optionPoolPostPercent: "99",
-    });
+    }));
     expect(bad.status).toBe(400);
     expect(bad.body.error).toBe("invalid_optionPoolPostPercent");
     expect(String(bad.body.message)).toContain("is not an");
     expect(bad.body.maxPercentAsWritten).toBe(OPTION_POOL_POST_PERCENT_MAX);
     /* POLE 1 — a real pool is still accepted, so the fence is not a blanket. */
-    const good = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const good = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: CO, name: `W71 Pool15 ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
       optionPoolPostPercent: "15",
-    });
+    }));
     expect(good.status).toBe(200);
   }, 60_000);
 
   it("W71-HTTP-2 — D15: the ceiling also refuses on PATCH /api/rounds/:id/terms", async () => {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: CO, name: `W71 Patch ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
-    });
+    }));
     expect(created.status).toBe(200);
     const id = String((created.body as { id: string }).id);
     const bad = await request(app).patch(`/api/rounds/${id}/terms`).set("x-user-id", ADMIN)
@@ -734,12 +735,12 @@ describe("W71-HTTP — the fixes reach the API", () => {
   }, 60_000);
 
   it("W71-HTTP-3 — D21: the dual-engine reconciliation is on the close-confirmation payload", async () => {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: CO, name: `W71 Gate ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
-    });
+    }));
     expect(created.status).toBe(200);
     const id = String((created.body as { id: string }).id);
     const res = await request(app).get(`/api/rounds/${id}/close`).set("x-user-id", ADMIN);

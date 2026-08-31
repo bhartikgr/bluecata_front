@@ -40,6 +40,20 @@ import {
   investorHoldsCompany,
   markHistoryForCompany,
 } from "./lib/investorMarkHistory";
+/* WAVE 197 / R169 Item A — the two KYC handlers below returned raw exception
+   text at HTTP 500 to ANY authenticated member (the only gate is `ctx?.isAuthed`),
+   which put driver text and the `collective_kyc_blobs` table name on an ordinary
+   member's screen. The owner's standing instruction is verbatim: "I don't want
+   any exposure of our internal process." `sanitizeErrorMessage` is the existing,
+   correct sanitiser and is wired here; no second sanitiser was written. The raw
+   message is NOT discarded — it is logged with the full detail immediately
+   before the sanitised response, so the engineer keeps everything they had. */
+import { sanitizeErrorMessage } from "./lib/sanitize";
+import { log } from "./lib/logger";
+import {
+  KYC_DOCUMENT_READ_FAILURE,
+  KYC_UPLOAD_WRITE_FAILURE,
+} from "./lib/wave197FailureCopy";
 
 // ---------------------------------------------------------------------------
 // Multer — in-memory storage for KYC uploads (files are not persisted in dev)
@@ -241,7 +255,22 @@ export function registerSprint20Wave2Routes(app: Express): void {
           new Date().toISOString(),
         );
       } catch (err) {
-        return res.status(500).json({ ok: false, error: "persist_failed", message: (err as Error).message });
+        /* WAVE 197 — WRITE. Diagnostics preserved server-side, in full, first.
+           This handler previously logged nothing at all, so the raw detail an
+           engineer needs now exists where it did not before. */
+        log.error(
+          "[sprint20Wave2Routes.kycUpload] persist failed:",
+          (err as Error).message,
+          (err as Error).stack,
+        );
+        /* The INSERT may have landed before something later threw, so the copy
+           must not claim nothing was saved. It says the outcome is unconfirmed
+           and to check before re-uploading — true either way. */
+        return res.status(500).json({
+          ok: false,
+          error: "persist_failed",
+          message: sanitizeErrorMessage(err, KYC_UPLOAD_WRITE_FAILURE),
+        });
       }
       return res.json({ ok: true, id, url });
     },
@@ -278,7 +307,19 @@ export function registerSprint20Wave2Routes(app: Express): void {
         );
         return res.send(buf);
       } catch (err) {
-        return res.status(500).json({ ok: false, error: "read_failed", message: (err as Error).message });
+        /* WAVE 197 — READ. Full detail to the log, none to the member. */
+        log.error(
+          "[sprint20Wave2Routes.kycDocument] read failed:",
+          (err as Error).message,
+          (err as Error).stack,
+        );
+        /* A read changes nothing, so the copy may say so. It does NOT say the
+           document is still stored: the read may have failed because it is not. */
+        return res.status(500).json({
+          ok: false,
+          error: "read_failed",
+          message: sanitizeErrorMessage(err, KYC_DOCUMENT_READ_FAILURE),
+        });
       }
     },
   );

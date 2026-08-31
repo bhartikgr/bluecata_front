@@ -100,7 +100,36 @@ import {
   engineRecordCapitalCall,
   engineRecordDistribution,
   engineRecordLegacyPosition,
+  /* WAVE 182 · ITEM A · R152 — so a declined write is reported as a refusal with
+     words rather than as a 500 carrying a code. */
+  isSpvClosedToNewCapitalError,
+  /* WAVE 190 · ITEM B — the unresolved-vehicle refusal. `engineAddCommitment` no
+     longer fails OPEN when the canonical row cannot be found, so this route must
+     answer that refusal as a declined request rather than let it fall into the
+     catch-all 500 carrying an internal code. */
+  isSpvCanonicalRowUnresolvedError,
+  /* WAVE 211 — the LEGACY `SpvRow` this file loads carries no `currency` column, and
+     the money-event text must not invent one. The canonical engine record does carry
+     it, so the currency is READ from there and stated as absent when it cannot be. */
+  spvEngineStore as w211EngineStore,
 } from "./spvEngineStore";
+/* WAVE 192 · ITEM B · R164.3 — imported from the same module the store sinks,
+   `spvEngineRoutes.ts` and `partnerRoutes.ts` use, so all four agree on what each
+   refusal is. `isSpvUnattestedDraftError` is wave 189's; the branch for it was
+   missing HERE, which is why an unattested vehicle answered 500 on this path.
+   `isSpvAttestationUnreadableError` is new: the gate no longer fails open. */
+import {
+  isSpvUnattestedDraftError,
+  isSpvAttestationUnreadableError,
+} from "./lib/spvAttestationGate";
+/* WAVE 211 — the capital-call route is here, in the PLURAL adapter family, not in
+   the engine routes and not in the dormant fund-routes twin. */
+import {
+  wave211Preflight,
+  wave211RecordAfter,
+  wave211AuditAttestation,
+} from "./lib/wave211MoneyEventGate";
+import { W211_EVENT_NOUN_CAPITAL_CALL } from "../shared/wave211MoneyEventAttestation";
 
 /* ============================================================
  * Feature-flag gate — mirrors legacy `gate()` from spvFundStore.
@@ -338,6 +367,86 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
         ssePublish(ctx.partnerId, "spv", { type: "spv.commitment.created", spvId: spv.id, commitmentId: row.id });
         res.status(201).json({ ok: true, commitment: row });
       } catch (e) {
+        /* ═══ WAVE 182 · ITEM A · R152 — A REFUSAL IS NOT A SERVER FAILURE.
+
+           `engineAddCommitment` now refuses a commitment into a vehicle that is
+           closed to new limited partners. Without this branch that refusal fell
+           into the catch below and was reported as `500 COMMITMENT_FAILED` — a
+           server error, carrying an all-capitals code and no explanation, for a
+           request the platform deliberately declined. 409, with the sentence,
+           matching what `spvEngineRoutes.err()` answers for the same error on the
+           canonical routes so the two surfaces cannot tell a GP different things.
+
+           NOT LOGGED AS AN ERROR: a declined write is an expected outcome, and
+           logging it at error level would put a normal refusal into the failure
+           stream. Every OTHER throw keeps its existing log line and its 500. */
+        if (isSpvClosedToNewCapitalError(e)) {
+          res.status(409).json({
+            error: e.message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            closedToNewLps: { reason: e.closedReason },
+          });
+          return;
+        }
+        /* ═══ WAVE 190 · ITEM B · R152 — AND THE SAME FOR A VEHICLE THE PLATFORM
+           CANNOT FIND IN ITS CANONICAL REGISTER. `engineAddCommitment` used to
+           fall through both gates and WRITE the commitment in this case, then
+           report `201 { ok: true }` — a gate that fails open and reports success.
+           It now refuses, and a refusal is a 409 with the sentence, never a 500
+           and never a bare ALL-CAPS code on a screen. Not logged as an error: a
+           declined write is an expected outcome. */
+        if (isSpvCanonicalRowUnresolvedError(e)) {
+          res.status(409).json({
+            error: e.message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            canonicalRowUnresolved: { reason: e.unresolvedReason },
+          });
+          return;
+        }
+        /* ═══ WAVE 192 · ITEM B2 · R164.3 — THE MISSING BRANCH FOR AN UNATTESTED
+           DRAFT. Wave 189 built the draft gate and added its 409 responder to
+           `spvEngineRoutes.err()` and `partnerRoutes`; THIS route — a third door
+           onto the same `engineAddCommitment` sink — never got one, so an
+           unattested vehicle answered `500 COMMITMENT_FAILED` here while the same
+           attempt on the canonical routes answered a readable 409. Wave 190's
+           finisher found this and correctly reported rather than editing wave
+           189's route. The store gate always held — no capital ever attached — so
+           this is the difference between enforcing and EXPLAINING, and R159.6
+           item 4 requires both.
+
+           Byte-identical body shape to wave 189's two responders: 409, machine
+           code in `error`, short sentence in `message`, unabridged in `guidance`,
+           structured `attestation`. One refusal cannot be reported three ways.
+           Not logged as an error: a declined write is an expected outcome. */
+        if (isSpvUnattestedDraftError(e)) {
+          res.status(409).json({
+            error: e.message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            attestation: { required: true, attaching: e.attachKind },
+          });
+          return;
+        }
+        /* ═══ WAVE 192 · ITEM B1 · R164.3 — AND THE CASE WHERE THE PLATFORM CANNOT
+           TELL. `spvIsAttested` used to return `true` — ATTESTED — when
+           `spv_launch_signoffs` could not be read, so an unreadable table reported
+           every vehicle attested and let capital attach to an unattested draft.
+           It now refuses, and the refusal NAMES what could not be read. Reported
+           separately from the unattested case above because the remedies differ:
+           that one is fixed by a general partner signing, this one by an operator
+           restoring a table, and telling a GP to sign an attestation they may
+           already have signed would be a false statement. */
+        if (isSpvAttestationUnreadableError(e)) {
+          res.status(409).json({
+            error: e.message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            attestation: { required: true, attaching: e.attachKind, unreadable: true },
+          });
+          return;
+        }
         log.error(errorMeta("spv.commitment.create", e, { partnerId: ctx.partnerId, spvId: spv.id }));
         res.status(500).json({ error: "COMMITMENT_FAILED" });
       }
@@ -413,6 +522,48 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
         res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
         return;
       }
+      /* ══ WAVE 211 · ITEM A · D1/D2 — A CAPITAL CALL IS A DEMAND FOR MONEY.
+       * It was recorded with role gates and a zod schema and nothing else — no
+       * statement that it cannot be withdrawn once issued, no confirmation that the
+       * called amount is the partner's own determination, no statement that the
+       * platform performs no check of it. Draft 03's language is now shown and
+       * confirmed, with a typed full legal name.
+       *
+       * TRAP, NAMED. This route is the PLURAL family (`/spvs/`) served by
+       * `registerSpvLegacyAdapterRoutes`, while the distribution route one letter away
+       * is the SINGULAR family served by `registerSpvEngineRoutes`. The capital-call
+       * handler in `spvFundStore.registerSpvFundRoutes` is a DORMANT TWIN with no
+       * production caller — `waveB_retirement_guard` asserts it stays dormant, and
+       * gating it would have proved a gate against a screen no partner can reach.
+       * THIS is the mounted one: `registerSpvLegacyAdapterRoutes` is called from
+       * `routes.ts`, and the client's capital-call mutation posts here.
+       *
+       * Placed after the schema parse (a pure read) and before
+       * `engineRecordCapitalCall` (the hash-chained append), so a refusal leaves no
+       * call row and no sequence number burned. */
+      const w211CurrencyRaw = w211EngineStore.getSpv(ctx.partnerId, spv.id)?.currency ?? null;
+      const w211Gate = wave211Preflight(req, {
+        slot: "capital_call",
+        vehicleName: spv.name,
+        currency: w211CurrencyRaw,
+        facts: {
+          kind: "money_event",
+          eventNoun: W211_EVENT_NOUN_CAPITAL_CALL,
+          vehicleName: spv.name,
+          eventType: W211_EVENT_NOUN_CAPITAL_CALL,
+          /* The validated amount in the currency's smallest units, restated and
+             LABELLED as such. Never divided by an exponent to look prettier, and
+             never shown as 0 when it is absent (R-ASSERT §14). */
+          amountRaw: parsed.data.amount_minor,
+          amountUnit: "minor",
+          currency: w211CurrencyRaw,
+          eventDate: parsed.data.called_at ?? null,
+        },
+      });
+      if (!w211Gate.ok) {
+        res.status(w211Gate.refusal.status).json(w211Gate.refusal.payload);
+        return;
+      }
       try {
         const row = engineRecordCapitalCall({
           partnerId: ctx.partnerId,
@@ -421,6 +572,29 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
           calledAt: parsed.data.called_at,
           dueAt: parsed.data.due_at ?? null,
         });
+        /* WAVE 211 · ITEM B — store the confirmation against the call row, and refuse
+           to report the call as issued if it cannot be stored and read back. Before
+           the SSE publish on purpose: a capital call must not be announced to the
+           partner's own screens as recorded until its confirmation exists. */
+        const w211Rec = wave211RecordAfter({
+          rowId: String(row.id ?? ""),
+          accepted: w211Gate.accepted,
+          signedBy: String(ctx.userId ?? ""),
+          vehicleName: spv.name,
+        });
+        wave211AuditAttestation({
+          actor: String(ctx.userId ?? ""),
+          partnerId: ctx.partnerId,
+          spvId: spv.id,
+          slot: "capital_call",
+          rowId: String(row.id ?? ""),
+          outcome: w211Rec,
+          accepted: w211Gate.accepted,
+        });
+        if (!w211Rec.ok) {
+          res.status(w211Rec.refusal.status).json(w211Rec.refusal.payload);
+          return;
+        }
         ssePublish(ctx.partnerId, "spv", {
           type: "spv.capital_call.recorded",
           spvId: spv.id,

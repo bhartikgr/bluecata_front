@@ -27,6 +27,7 @@ import RoundNew from "../RoundNew";
 import { Toaster } from "@/components/ui/toaster";
 import { RoleProvider } from "@/lib/role";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { w212SignOff } from "./_w212SignOff";
 
 vi.mock("@/lib/useActiveCompany", () => ({
   useActiveCompanyId: () => "co_w107",
@@ -190,7 +191,10 @@ describe("W107 · FINDING 1-A — a pool that cannot be sized is refused, not si
     fireEvent.click(screen.getByTestId("button-next"));
     await screen.findByTestId("step-investors");
     fireEvent.click(screen.getByTestId("button-next"));
-    fireEvent.click(await screen.findByTestId("button-create"));
+    const w212Create = await screen.findByTestId("button-create");
+    /* WAVE 212 — a founder signs before the control is live. */
+    w212SignOff();
+    fireEvent.click(w212Create);
     await waitFor(() => expect(createBodies.length).toBeGreaterThan(0));
 
     const body = createBodies[0];

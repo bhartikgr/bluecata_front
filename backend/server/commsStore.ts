@@ -71,6 +71,7 @@ import { resolveDisplayName, readUserPrivacyRaw } from "./lib/userPrivacyResolve
    that the viewer-aware resolver may pass through (never leak u_…/company:…). */
 import { resolveDisplayName as resolveDbDisplayName } from "./lib/displayNameResolver";
 import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
+import { areCoMembersOnAnyCapTableAliasAware } from "./lib/capTableCoMembershipAliasAware";
 /* W-AVI65 FIX 2 — widened DM-only co-membership predicate (founder↔investor).
    It calls the SACRED areCoMembersOnAnyCapTable internally, unchanged. */
 import { areDmCoMembers } from "./lib/dmCoMembership";
@@ -151,6 +152,8 @@ import {
   delegatedCompanyPeopleIds,
   partnerTeamPeerIds,
   partnerOwnAudienceIds,
+  /* WAVE 177 · ITEM B — read-only reason reporter; resolves nothing new. */
+  diagnosePartnerAudienceEmptiness,
   /* WAVE 168 · R140.1 — the own-LP half of the wave-167 audience, imported
      separately because the NAMING fence is narrower than the AUDIENCE fence:
      names unmask only for LPs on SPVs this partner sponsors, never for the
@@ -3430,14 +3433,63 @@ export function registerCommsRoutes(app: Express): void {
         for (const p of ch.participantUserIds) peers.add(p);
       }
     }
+    /* WAVE 185 · ITEM A · R156.5 — `candidateIds.add` AS WELL AS `peers.add`.
+
+       THE THIRD DROP POINT. Wave 185 made `durableCapTablePeerIds` alias-aware so
+       an investor whose commits are seated under an `ext_*` ledger id resolves
+       the co-investors they are entitled to reach. That repair alone changed
+       NOTHING the investor could see, because `candidateIds` is
+       `COMMS_USERS` ∪ the first 500 durable ids, and a cap-table peer who
+       registered through an SPV or an import invite can be in neither. The loop
+       below iterates `candidateIds`, so a peer who is not a candidate is a peer
+       nobody ever considers — silently, with nothing logged.
+
+       This is exactly what wave 167 already does for `partner_own_lp_peers`
+       immediately below, for exactly the same reason. It is the same two-line
+       shape, not a new mechanism.
+
+       IT WIDENS NOTHING. Membership of `candidateIds` is not permission: the
+       loop still refuses any id failing `peers.has(id)` for a non-admin, and
+       every id added here came from the alias-aware peer resolver, whose SPV and
+       committed-state fences are untouched. For an ADMIN, who already bypasses
+       the `peers` check and already receives a platform-wide list, this adds
+       only cap-table peers they were already authorised to see. */
     if (isAudienceRuleEnabled("cap_table_peer", viewerRole)) {
-      for (const p of durableCapTablePeerIds(viewerId)) peers.add(p);
+      for (const p of durableCapTablePeerIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
     }
+    /* WAVE 185 · ITEM D · R156.5 — THE TWO SIBLING BRANCHES CARRIED THE IDENTICAL
+       LATENT SILENT DROP, AND IT IS NOW PROVED RATHER THAN ASSERTED.
+
+       These two called only `peers.add(p)` while `cap_table_peer`,
+       `partner_engaged_company_people`, `partner_team_peers` and
+       `partner_own_lp_peers` all call BOTH. `candidateIds` is `COMMS_USERS` ∪
+       `listDurableCommsUserIds(500)` — a 500-ROW WINDOW ordered by id — and the
+       loop below iterates `candidateIds`, so a chapter co-member or a followed
+       founder who is not inside that window was in `peers` and never considered.
+       On a database with more than 500 users that is a silent drop of a
+       legitimately entitled peer, with nothing logged.
+
+       IT WIDENS NOTHING. `candidateIds` membership is a WORK LIST, not
+       permission: the loop still refuses any id failing `peers.has(id)` for a
+       non-admin, and every id added here came from the same resolver that already
+       populated `peers`. Asserted, not argued:
+       `wave185_itemD_candidate_pool_beyond_500.test.ts` N-1 puts 620 users in the
+       candidate set and proves none of the 500 unrelated ones is reachable, and
+       D-2/D-3 fail when either line below is removed. */
     if (isAudienceRuleEnabled("chapter_peer", viewerRole)) {
-      for (const p of durableChapterPeerIds(viewerId)) peers.add(p);
+      for (const p of durableChapterPeerIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
     }
     if (isAudienceRuleEnabled("follow_peer", viewerRole)) {
-      for (const p of durableFollowPeerIds(viewerId)) peers.add(p);
+      for (const p of durableFollowPeerIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
     }
     /* The two partner sources ship DISABLED pending an owner ruling on who a
        delegated partner may message. They are wired, tested and one UPDATE away
@@ -3525,9 +3577,21 @@ export function registerCommsRoutes(app: Express): void {
          which requires an EXPLICIT opt-in and otherwise yields the screen name or
          "Private Investor". An explicit `visibleToCoMembers:false` therefore still
          wins in every one of those cases. */
+      /* WAVE 185 · ITEM A · R156.5 — THE NAMING GATE IS ASKED IN THE SAME ID
+         VOCABULARY THE AUDIENCE IS BUILT IN.
+
+         `areCoMembersOnAnyCapTableAliasAware` CALLS the SACRED
+         `areCoMembersOnAnyCapTable` once per pair of identifiers that could
+         denote these two humans and ORs the answers; it writes no SQL of its own
+         and cannot answer `true` where the sacred gate answers `false`. Without
+         it, every peer newly resolved through an alias would render the identical
+         string "Private Investor" — the wave-168 masking defect reappearing in a
+         second place, where the audience is correct and the name is useless. The
+         explicit `visibleToCoMembers:false` opt-out still wins, because the
+         SACRED `resolveDisplayName` is what decides that and it is unchanged. */
       const displayName = isSelf
         ? u.legalName
-        : areCoMembersOnAnyCapTable(viewerId, id) || ownLpNameIds.has(id)
+        : areCoMembersOnAnyCapTableAliasAware(viewerId, id) || ownLpNameIds.has(id)
           ? resolveDisplayName(id, viewerId, "message", { legalName: u.legalName, isCoMember: true })
           : resolveDisplayName(id, viewerId, "collectiveDirectory", { legalName: u.legalName });
       /* `readUserPrivacyRaw` returns null when the subject has never set a
@@ -3725,6 +3789,31 @@ export function registerCommsRoutes(app: Express): void {
         audience.length === 0
           ? `This rule would make NOBODY reachable for ${viewerId} right now. Either this viewer has no relationships of this kind, or the source that feeds this rule is empty.`
           : `This rule would make ${audience.length} ${audience.length === 1 ? "person" : "people"} reachable for ${viewerId}: ${sourceLabel}.`,
+      /* ══ WAVE 177 · ITEM B · R148.3 item 5 — THE SPECIFIC REASON ═══════════
+         `statement` above is honest but ambiguous by construction: it offers TWO
+         possible reasons and cannot say which one is true. On live that ambiguity
+         cost a human a cross-reference of two admin pages to discover that the
+         partner user had no membership row at all (R148.1).
+
+         `emptyReason` is a SEPARATE field, so the existing sentence is returned
+         byte-for-byte unchanged and the client appends this one beside it rather
+         than replacing it (R143.1).
+
+         It is populated ONLY for the two partner-scoped rules and ONLY when the
+         audience is actually empty — a non-empty rule has no emptiness to
+         explain, and inventing a reason for the other rule keys would be a guess.
+         It is null in every other case, and the client renders nothing for null. */
+      emptyReason:
+        audience.length === 0 && (key === "partner_own_lp_peers" || key === "partner_team_peers")
+          ? diagnosePartnerAudienceEmptiness(
+              viewerId,
+              /* `partner_own_lp_peers` resolves the UNION of own-LPs and own-team
+                 (`partnerOwnAudienceIds`, :3670), so its emptiness must be
+                 explained against BOTH halves or the reason would be wrong for a
+                 partner who has colleagues but no investors. */
+              key === "partner_own_lp_peers" ? "both" : "team",
+            ).sentence || null
+          : null,
     });
   });
 

@@ -27,6 +27,13 @@
  *       `appendAdminAudit("crm.contact.created", ...)` emission, and
  *       `_testAccessFounderCrm = { contacts }`.
  */
+/* WAVE 190 · ITEM C — the ONE spelling of "this string is a placeholder, not a
+   person's name", shared with the client display guard. See the module header. */
+import {
+  submittedNameIsPlaceholder,
+  PLACEHOLDER_NAME_REFUSED_CODE,
+  PLACEHOLDER_NAME_REFUSED_MESSAGE,
+} from "@shared/placeholderPersonNames";
 import type { Express, Request, Response } from "express";
 import crypto, { randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
@@ -408,6 +415,29 @@ export function registerFounderCrmRoutes(app: Express): void {
         ok: false,
         error: "crm_contact_no_identity",
         message: "A contact needs at least a name, an email address, or a firm name. Nothing was saved.",
+      });
+    }
+    /* ═══ WAVE 190 · ITEM C — AND REFUSE A PLACEHOLDER SUBMITTED AS A NAME.
+       Wave 93 (directly above) stopped this route INVENTING `"New contact"` when a
+       body carried no identity. It did not stop a caller SENDING `"New contact"`
+       as the name, which passes `crmBodyHasIdentity` — a non-empty string is
+       identity as far as that check is concerned — and is then stored, read back,
+       and initialled. That is how "NC" reached a real account. The words come from
+       `@shared/placeholderPersonNames` so the display guard in
+       `client/src/lib/investorLabels.ts` and this refusal can never disagree about
+       which literals are placeholders. Nothing is written. */
+    if (
+      submittedNameIsPlaceholder([
+        typeof req.body?.name === "string" ? req.body.name : null,
+        typeof req.body?.firstName === "string" ? req.body.firstName : null,
+        typeof req.body?.lastName === "string" ? req.body.lastName : null,
+        typeof req.body?.primaryContact === "string" ? req.body.primaryContact : null,
+      ])
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: PLACEHOLDER_NAME_REFUSED_CODE,
+        message: PLACEHOLDER_NAME_REFUSED_MESSAGE,
       });
     }
     const incomingEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";

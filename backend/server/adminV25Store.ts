@@ -31,6 +31,15 @@ import {
 } from "./captableCommitStore";
 import { updateSubscription } from "./subscriptionsStore";
 import { log } from "./lib/logger";
+/* WAVE 197 / R169 Item A.2 — this file returned raw exception text in a
+   response body. Admin-only is not a licence to leak: the body still crosses
+   the wire and still lands in a browser, and the owner's instruction is
+   verbatim "I don't want any exposure of our internal process." The EXISTING
+   sanitiser is wired; no second sanitiser was written. Every site keeps or
+   gains a log.error carrying the full raw message, so nothing an engineer had
+   is lost — the detail moves from the response to the log. */
+import { sanitizeErrorMessage } from "./lib/sanitize";
+import { readFailureMessage, writeFailureMessage } from "./lib/wave197FailureCopy";
 /* W-AVI64 FIX 4 — search must read the SAME sources the admin Companies /
    Investors pages read, or it finds nothing even for a live company (e.g.
    "Neou"). getAllCompaniesFromDb() is the DB-authoritative company reader used
@@ -450,7 +459,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.search] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "SEARCH_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "SEARCH_FAILED",
+        message: sanitizeErrorMessage(err, readFailureMessage("the search results")),
+      });
     }
   });
 
@@ -497,7 +510,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.compliance_holds POST] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "HOLD_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "HOLD_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("adding this compliance hold")),
+      });
     }
   });
 
@@ -549,7 +566,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.compliance_holds DELETE] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "REMOVE_HOLD_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "REMOVE_HOLD_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("removing this compliance hold")),
+      });
     }
   });
 
@@ -599,7 +620,11 @@ export function registerAdminV25Routes(app: Express): void {
       return res.status(201).json({ ok: true, dispute });
     } catch (err) {
       log.error("[adminV25Store.billing_disputes POST] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "DISPUTE_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "DISPUTE_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("opening this billing dispute")),
+      });
     }
   });
 
@@ -660,7 +685,11 @@ export function registerAdminV25Routes(app: Express): void {
       return res.json({ ok: true, dispute: updated });
     } catch (err) {
       log.error("[adminV25Store.billing_disputes PATCH] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "DISPUTE_UPDATE_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "DISPUTE_UPDATE_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("updating this billing dispute")),
+      });
     }
   });
 
@@ -902,7 +931,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.tenant delete] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "DELETE_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "DELETE_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("deleting this tenant")),
+      });
     }
   });
 
@@ -999,7 +1032,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.email_campaigns send] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "CAMPAIGN_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "CAMPAIGN_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("sending this email campaign")),
+      });
     }
   });
 
@@ -1051,7 +1088,11 @@ export function registerAdminV25Routes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminV25Store.region toggle] error:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "TOGGLE_FAILED", message: (err as Error).message });
+      return res.status(500).json({
+        ok: false,
+        error: "TOGGLE_FAILED",
+        message: sanitizeErrorMessage(err, writeFailureMessage("changing this region's availability")),
+      });
     }
   });
 
@@ -1065,7 +1106,14 @@ export function registerAdminV25Routes(app: Express): void {
       ).all() as Array<Record<string, unknown>>;
       return res.json({ ok: true, holds: rows });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: "LIST_FAILED", message: (err as Error).message });
+      /* WAVE 197 — this handler logged NOTHING before, so the raw detail an
+         engineer needs now exists where it previously did not. */
+      log.error("[adminV25Store.compliance_holds GET] error:", (err as Error).message);
+      return res.status(500).json({
+        ok: false,
+        error: "LIST_FAILED",
+        message: sanitizeErrorMessage(err, readFailureMessage("the compliance holds")),
+      });
     }
   });
 
@@ -1079,7 +1127,14 @@ export function registerAdminV25Routes(app: Express): void {
       ).all() as Array<Record<string, unknown>>;
       return res.json({ ok: true, disputes: rows });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: "LIST_FAILED", message: (err as Error).message });
+      /* WAVE 197 — this handler logged NOTHING before, so the raw detail an
+         engineer needs now exists where it previously did not. */
+      log.error("[adminV25Store.billing_disputes GET] error:", (err as Error).message);
+      return res.status(500).json({
+        ok: false,
+        error: "LIST_FAILED",
+        message: sanitizeErrorMessage(err, readFailureMessage("the billing disputes")),
+      });
     }
   });
 
@@ -1093,7 +1148,14 @@ export function registerAdminV25Routes(app: Express): void {
       ).all() as Array<Record<string, unknown>>;
       return res.json({ ok: true, entries: rows });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: "LIST_FAILED", message: (err as Error).message });
+      /* WAVE 197 — this handler logged NOTHING before, so the raw detail an
+         engineer needs now exists where it previously did not. */
+      log.error("[adminV25Store.tenant deletion-audit GET] error:", (err as Error).message);
+      return res.status(500).json({
+        ok: false,
+        error: "LIST_FAILED",
+        message: sanitizeErrorMessage(err, readFailureMessage("the tenant deletion audit")),
+      });
     }
   });
 
@@ -1107,7 +1169,14 @@ export function registerAdminV25Routes(app: Express): void {
       ).all() as Array<Record<string, unknown>>;
       return res.json({ ok: true, campaigns: rows });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: "LIST_FAILED", message: (err as Error).message });
+      /* WAVE 197 — this handler logged NOTHING before, so the raw detail an
+         engineer needs now exists where it previously did not. */
+      log.error("[adminV25Store.email_campaigns GET] error:", (err as Error).message);
+      return res.status(500).json({
+        ok: false,
+        error: "LIST_FAILED",
+        message: sanitizeErrorMessage(err, readFailureMessage("the email campaigns")),
+      });
     }
   });
 }

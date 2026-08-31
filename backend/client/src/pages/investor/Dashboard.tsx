@@ -65,13 +65,22 @@ import { LiveCapitalPulse } from "@/components/pulse/LiveCapitalPulse";
    before this wave. */
 import { InvestorSiloPanel } from "@/components/investor/InvestorSiloPanel";
 
-type Position = {
-  id: string; companyId: string; company: string; sector: string; stage: string;
-  role: string; instrument: string; series: string; shares: number; ownershipPct: number;
-  invested: number; currentValue: number; vintageYear: number; lastRoundLabel: string;
-  lastRoundDate: string; logoColor: string;
-  maFlag: { strength: "high" | "medium" | "low"; note: string } | null;
-};
+/* WAVE 183 - ITEM B FIX 1b. WAS a hand-written local mirror of the
+   `server/mockData.ts` demo seed row - non-nullable `invested`, `currentValue`,
+   `shares`, `ownershipPct`, a `logoColor` HSL string and a `maFlag`. The seed is
+   gone: `/api/investor/portfolio2` now derives rows from the cap-table ledger,
+   money arrives as integer minor units with a currency, and every field the
+   ledger does not hold arrives as `null` with a reason. Keeping the old local
+   type would have compiled cleanly and rendered `undefined` into money cells,
+   which is precisely the class of "passes tsc, lies to the LP" defect R137 was
+   written about. */
+import {
+  type DerivedPosition,
+  positionLogoColor,
+  textOrNotOnRecord,
+} from "@/lib/investor/portfolioPositions";
+
+type Position = DerivedPosition;
 
 type RoundActivity = {
   id: string; ts: string; kind: "new_round" | "soft_circle" | "term_sheet" | "close_gate";
@@ -106,6 +115,16 @@ export default function InvestorDashboard() {
   const [analyticsView, setAnalyticsView] = useState<"stage" | "region" | "vintage">("stage");
 
   const a = analytics.data;
+  /* WAVE 180 · ITEM A SITE 3 (rendered surface, R137) — every money figure on this
+     page went through `fmtUSD(n, { compact: true })`, which stamps a dollar sign on
+     whatever it is handed. A CAD or HKD portfolio therefore rendered as dollars,
+     and a portfolio holding CA$1,200.00 alongside USD rendered a total that was
+     the sum of unlike units. The producer now reports the currency and refuses a
+     combined figure when the ledger spans codes; these two consts carry that
+     decision to the DOM. NO EXCHANGE RATE IS APPLIED — none exists on this
+     platform. */
+  const portfolioCurrency = a?.currency ?? "USD";
+  const portfolioMoneyMixed = !!a && a.moneyAvailable === false;
 
   // FIX #3 (SPINE-0) — pending-invitation count comes from the ONE spine
   // selector, identical to what Invitations.tsx reads. Ozan-locked semantics:
@@ -188,9 +207,33 @@ export default function InvestorDashboard() {
             <CardContent className="p-6 flex items-start justify-between gap-4 flex-wrap">
               <div>
                 <div className="text-xs uppercase tracking-wide text-[hsl(0_100%_40%)] font-medium">Portfolio overview</div>
-                <div className="text-xl font-semibold mt-1" title={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "No current value — holdings are unmarked.").title : ""}>
-                  {a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "No current value — holdings are unmarked.").text : "—"} current value
+                {/* WAVE 180 · ITEM A SITE 3 — the unmarked-holdings copy below is
+                    UNCHANGED and still renders for the single-currency unmarked
+                    case, which is what it actually describes. "Unmarked" was
+                    simply the wrong reason to print at a cross-currency portfolio,
+                    so that case gets its OWN statement rather than borrowing this
+                    one. Both branches keep their literals byte-verbatim. */}
+                {portfolioMoneyMixed ? (
+                  <div className="text-xl font-semibold mt-1" data-testid="text-hero-value-mixed-currency">
+                    No single current value — holdings are recorded in {(a?.currencies ?? []).join(" and ")}
+                  </div>
+                ) : (
+                <div className="text-xl font-semibold mt-1" title={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true, currency: portfolioCurrency }), "No current value — holdings are unmarked.").title : ""}>
+                  {a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true, currency: portfolioCurrency }), "No current value — holdings are unmarked.").text : "—"} current value
                 </div>
+                )}
+                {portfolioMoneyMixed && a?.moneyUnavailable && (
+                  <div className="text-xs text-amber-700 mt-1" data-testid="text-portfolio-currency-refusal">{a.moneyUnavailable.message}</div>
+                )}
+                {portfolioMoneyMixed && (
+                  <ul className="mt-1 space-y-0.5" data-testid="list-portfolio-by-currency">
+                    {(a?.byCurrency ?? []).map((r) => (
+                      <li key={r.currency} className="text-xs font-mono text-amber-800" data-testid={`text-portfolio-ccy-${r.currency}`}>
+                        {r.currency}: {fmtUSD(r.invested, { compact: true, currency: r.currency })} invested across {r.positions} · {r.currentValue === null ? "current value not derivable, holdings unmarked" : `${fmtUSD(r.currentValue, { compact: true, currency: r.currency })} current value`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="text-sm text-muted-foreground mt-0.5" data-testid="text-hero-metrics">
                   {a ? `MOIC ${displayMultiple(a.moic).text} · IRR ${displayRate(a.irr, a.irrBasis).text}` : "Loading analytics…"}
                 </div>
@@ -220,8 +263,15 @@ export default function InvestorDashboard() {
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Total committed</div>
                 <Target className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
-              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{a ? fmtUSD(a.totalInvested, { compact: true }) : "—"}</div>
+              {/* WAVE 180 · ITEM A SITE 3 — `totalInvested` is now null on a mixed
+                  ledger, so this tile names the currencies instead of printing a
+                  dollar-signed sum of unlike units. "across portfolio" below is
+                  UNCHANGED. */}
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums" data-testid="text-kpi-committed-value">{a ? (a.totalInvested === null ? (a.currencies.join(" + ") || "Not derivable") : fmtUSD(a.totalInvested, { compact: true, currency: portfolioCurrency })) : "—"}</div>
               <div className="text-xs text-muted-foreground mt-1">across portfolio</div>
+              {portfolioMoneyMixed && (
+                <div className="text-xs text-amber-700 mt-1" data-testid="text-kpi-committed-scope">Recorded in more than one currency and not added together — this platform holds no exchange rate.</div>
+              )}
             </CardContent>
           </Card>
 
@@ -341,17 +391,20 @@ export default function InvestorDashboard() {
             positive
             icon={Briefcase} testid="kpi-dpi" />
           <KpiSpark label="Paper value"
-            value={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "Unmarked holdings — no paper value to report.").text : "—"}
-            title={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "Unmarked holdings — no paper value to report.").title : ""}
+            value={portfolioMoneyMixed ? (a?.currencies ?? []).join(" + ") : (a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true, currency: portfolioCurrency }), "Unmarked holdings — no paper value to report.").text : "—")}
+            title={portfolioMoneyMixed ? (a?.moneyUnavailable?.message ?? "") : (a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true, currency: portfolioCurrency }), "Unmarked holdings — no paper value to report.").title : "")}
             sub={a ? displayDelta(a.yoyDelta.paperValue, "multiple").text : ""}
             subTitle={a ? displayDelta(a.yoyDelta.paperValue, "multiple").title : ""}
             data={a ? chartablePoints(a.series.paperValue) : null}
             emptyCopy={a ? seriesEmptyCopy(a.series.paperValue) : ""}
             positive
             icon={Layers} testid="kpi-paper" />
-          <KpiSpark label="Realised" value={a ? fmtUSD(a.totalRealized, { compact: true }) : "—"}
+          {/* WAVE 180 · ITEM A SITE 3 — both `totalRealized` and `totalInvested` are
+              null on a mixed ledger, so the ratio is not computed rather than
+              computed on unlike units. The title copy is UNCHANGED. */}
+          <KpiSpark label="Realised" value={a ? (a.totalRealized === null ? (a.currencies.join(" + ") || "Not derivable") : fmtUSD(a.totalRealized, { compact: true, currency: portfolioCurrency })) : "—"}
             title="Distributions actually recorded on the cash-flow ledger."
-            sub={a && a.totalInvested ? `${fmtPct((a.totalRealized / a.totalInvested) * 100, 1)} of cost` : ""}
+            sub={a && a.totalRealized !== null && a.totalInvested ? `${fmtPct((a.totalRealized / a.totalInvested) * 100, 1)} of cost` : ""}
             data={a ? chartablePoints(a.series.realized) : null}
             emptyCopy={a ? seriesEmptyCopy(a.series.realized) : ""}
             positive
@@ -527,12 +580,12 @@ function MaRow({ pos, navigate, toast }: { pos: Position; navigate: (to: string)
       <tr className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-ma-${pos.companyId}`}>
         <td className="px-2 py-3">
           <button className="flex items-center gap-2.5 text-left" onClick={() => navigate(`/investor/companies/${pos.companyId}`)} data-testid={`button-ma-company-${pos.companyId}`}>
-            <div className="h-7 w-7 rounded-md flex items-center justify-center text-white text-[11px] font-semibold shrink-0" style={{ backgroundColor: pos.logoColor }}>
+            <div className="h-7 w-7 rounded-md flex items-center justify-center text-white text-[11px] font-semibold shrink-0" style={{ backgroundColor: positionLogoColor(pos.companyId) }}>
               {pos.company.slice(0, 1)}
             </div>
             <div>
               <div className="font-medium">{pos.company}</div>
-              <div className="text-[11px] text-muted-foreground">{pos.sector}</div>
+              <div className="text-[11px] text-muted-foreground">{textOrNotOnRecord(pos.sector)}</div>
             </div>
           </button>
         </td>

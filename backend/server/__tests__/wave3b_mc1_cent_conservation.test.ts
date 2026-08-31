@@ -60,6 +60,12 @@ import {
   exactFractionToCarryScaled,
 } from "../lib/money";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_DISTRIBUTION_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const ADMIN = "u_admin";
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
@@ -909,6 +915,7 @@ describe("WAVE 3B PERSISTED — recordDistribution writes exactly-conserved mone
     // No carry => no settlement authorization needed (WAVE 1A leaves the
     // zero-carry path open to the partner). This is the partner route.
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "wind_down", grossProceedsMinor: 0, costBasisMinor: 0,
     });
     expect(r.status).toBe(201);
@@ -1051,6 +1058,7 @@ describe("WAVE 3B PERSISTED — recordDistribution writes exactly-conserved mone
     seedOverCapPlatformCarry(spvId, 0.7);
     await commitLp(spvId, "inv_w3b_adv3", 100_000);
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "exit", grossProceedsMinor: 1_000_000, costBasisMinor: 0,
     });
     expect(r.status).not.toBe(201);

@@ -21,6 +21,14 @@
  * mounts — the recurring failure mode this wave was told to avoid.
  */
 import { Link } from "wouter";
+/* WAVE 210 — this component is already mounted inside AppShell and
+ * CollectiveShell, i.e. on every authenticated page in every silo. That makes it
+ * the honest "next login" surface for the legal-consolidation notice, and it
+ * means the notice needed no edit to either shell — both of which other waves are
+ * concurrently working in. Nothing existing below is changed: the notice and the
+ * party-name line are APPENDED as the last children of the same <footer>. */
+import { LegalUpdateNotice } from "@/components/LegalUpdateNotice";
+import { REGISTERED_PARTY_NAME } from "@shared/wave210LegalCorpusVersion";
 
 export function LegalFooterLinks({ className = "" }: { className?: string }) {
   return (
@@ -35,6 +43,14 @@ export function LegalFooterLinks({ className = "" }: { className?: string }) {
       <Link href="/privacy-policy" className="underline hover:text-foreground" data-testid="link-privacy-policy">
         Privacy Policy
       </Link>
+      {/* WAVE 210 — the operating entity, named where the copyright line is. The
+          footer previously named no legal person at all. */}
+      <span data-testid="legal-footer-entity">Operated by {REGISTERED_PARTY_NAME}, incorporated in Hong Kong</span>
+      {/* WAVE 210 — non-blocking consolidation notice. Renders nothing unless the
+          signed-in user's consent trail predates the published version. */}
+      <div className="w-full" data-testid="legal-footer-update-slot">
+        <LegalUpdateNotice />
+      </div>
     </footer>
   );
 }

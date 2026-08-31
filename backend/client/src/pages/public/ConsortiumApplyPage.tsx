@@ -23,6 +23,29 @@ import {
   CONSORTIUM_AGREEMENT_VERSION,
   CONSORTIUM_AGREEMENT_ACK,
 } from "@shared/consortiumAgreement"; /* W2-I — viewable agreement + typed sign-off at application */
+/* WAVE 217 · R190.8 · Decision A9 — the partner compliance declaration.
+   EVERY string below comes from this ONE shared module, which the SERVER also
+   imports and uses to rebuild and byte-compare the declaration. That is the
+   whole design: if this page rendered its own copy of the sentence, the day the
+   two drifted the applicant would declare one thing and the platform would file
+   another. `complianceClauseQuote()` SLICES §4 out of the signed agreement using
+   WAVE 213's helper — the clause is never retyped here, because a paraphrase of
+   a signed clause is a second version of the term (R187.2 / R187.5). */
+import {
+  COMPLIANCE_CLAUSE_HEADING,
+  COMPLIANCE_CLAUSE_UNAVAILABLE_COPY,
+  COMPLIANCE_EVIDENCE_HELP,
+  COMPLIANCE_EVIDENCE_LABEL,
+  COMPLIANCE_HEADING,
+  COMPLIANCE_TICK_LABEL,
+  PARTNER_COMPLIANCE_ATTESTATION_VERSION,
+  REGULATORY_STATUS_HELP,
+  REGULATORY_STATUS_LABELS,
+  REGULATORY_STATUS_VALUES,
+  complianceAttestationText,
+  complianceClauseQuote,
+  type RegulatoryStatus,
+} from "@shared/wave217PartnerComplianceAttestation";
 
 /* v25.46 Track 6 — LookFeel-Parity. Per the 2026-06-28 parity audit, this
  * public Consortium application page diverged from canonical Capavate chrome:
@@ -152,6 +175,14 @@ export default function ConsortiumApplyPage() {
      application row and carries them to the partner contact at approval. */
   const [agreementSignedName, setAgreementSignedName] = useState("");
   const [agreementAccepted, setAgreementAccepted] = useState(false);
+  /* WAVE 217 — the compliance declaration. `regulatoryStatus` starts as `""`,
+     NOT as `"not_required"` and NOT as `"licensed"`: a pre-selected regulatory
+     answer would be the platform answering a legal question on the applicant's
+     behalf, and "they never chose" must stay distinguishable from "they chose"
+     (R176.1). The server refuses `""`. */
+  const [complianceAttested, setComplianceAttested] = useState(false);
+  const [regulatoryStatus, setRegulatoryStatus] = useState<RegulatoryStatus | "">("");
+  const [complianceEvidenceRef, setComplianceEvidenceRef] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SubmitResponse | null>(null);
@@ -185,6 +216,19 @@ export default function ConsortiumApplyPage() {
           referredBy: referredBy || null,
           agreementSignedName: agreementSignedName.trim(),
           agreementVersion: CONSORTIUM_AGREEMENT_VERSION,
+          /* WAVE 217 — the declaration. The TEXT sent is produced by the SAME
+             shared function the server calls to rebuild it, with the SAME two
+             arguments, so the comparison is byte-for-byte identical by
+             construction rather than by coincidence. Nothing here is normalised
+             on the way out and nothing is normalised on the way in. */
+          complianceAttested,
+          complianceAttestationText: complianceAttestationText(
+            organizationName,
+            agreementSignedName.trim(),
+          ),
+          complianceAttestationVersion: PARTNER_COMPLIANCE_ATTESTATION_VERSION,
+          regulatoryStatus,
+          complianceEvidenceRef: complianceEvidenceRef.trim() || null,
         }),
       });
       const body = (await r.json()) as SubmitResponse;
@@ -439,6 +483,129 @@ export default function ConsortiumApplyPage() {
           />
         </Field>
 
+        {/* ═════════════════════════════════════════════════════════════════════
+            WAVE 217 · R190.8 · Decision A9 — THE PARTNER COMPLIANCE DECLARATION.
+
+            APPENDED as new siblings AFTER the existing agreement block. Nothing
+            above is replaced, re-parented or re-worded, and the submit button's
+            existing `disabled=` terms are kept verbatim with new terms appended
+            — R143.1 applies to handler and guard EXPRESSIONS too, and wave 213
+            scored three REMOVED handlers by rewriting one.
+
+            §4 is QUOTED, sliced from the signed agreement at render. The three
+            structured answers below it — the tick, the status and the optional
+            reference — are the platform's own new fields and paraphrase nothing.
+           ════════════════════════════════════════════════════════════════════ */}
+        <div
+          className="cv-field"
+          style={{ display: "block" }}
+          data-testid="consortium-compliance-block"
+        >
+          <div className="cv-field__label" style={{ marginBottom: 4 }}>
+            {COMPLIANCE_HEADING}
+            <span style={{ color: "var(--cv-color-primary)" }}> *</span>
+          </div>
+          <div style={{ fontSize: 12, color: "#6b6b6b", marginBottom: 6 }}>
+            {COMPLIANCE_CLAUSE_HEADING}
+          </div>
+          {/* The quote. `complianceClauseQuote()` returns `null` — never `""` —
+              when the section cannot be sliced, so a failure renders an honest
+              named absence instead of a heading over an empty grey box. */}
+          <div
+            data-testid="consortium-compliance-clause-quote"
+            style={{
+              maxHeight: 200,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+              fontSize: 13,
+              lineHeight: 1.5,
+              background: "#f6f7f9",
+              border: "1px solid #ddd9d3",
+              borderRadius: 8,
+              padding: 12,
+            }}
+          >
+            {complianceClauseQuote() ?? COMPLIANCE_CLAUSE_UNAVAILABLE_COPY}
+          </div>
+        </div>
+
+        {/* The structured regulatory status. No option is pre-selected: the
+            placeholder has `value=""` and is `disabled`, so the applicant must
+            answer and the platform never answers for them. */}
+        <Field label="Your regulatory status" required>
+          <select
+            value={regulatoryStatus}
+            onChange={(e) =>
+              setRegulatoryStatus(e.target.value as RegulatoryStatus | "")
+            }
+            data-testid="select-consortium-regulatory-status"
+            required
+          >
+            <option value="" disabled>
+              Choose one
+            </option>
+            {REGULATORY_STATUS_VALUES.map((v) => (
+              <option key={v} value={v} data-testid={`option-regulatory-${v}`}>
+                {REGULATORY_STATUS_LABELS[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div
+          style={{ fontSize: 12, color: "#6b6b6b", marginTop: -6 }}
+          data-testid="text-consortium-regulatory-help"
+        >
+          {REGULATORY_STATUS_HELP}
+        </div>
+
+        {/* OPTIONAL evidence reference. The label says "optional", the help text
+            says why leaving it blank is normal, and the server never checks it. */}
+        <Field label={COMPLIANCE_EVIDENCE_LABEL}>
+          <input
+            value={complianceEvidenceRef}
+            onChange={(e) => setComplianceEvidenceRef(e.target.value)}
+            placeholder="Licence or registration number, if you have one"
+            data-testid="input-consortium-compliance-evidence"
+            maxLength={200}
+          />
+        </Field>
+        <div
+          style={{ fontSize: 12, color: "#6b6b6b", marginTop: -6 }}
+          data-testid="text-consortium-compliance-evidence-help"
+        >
+          {COMPLIANCE_EVIDENCE_HELP}
+        </div>
+
+        {/* The declaration itself, shown in full above its tick. The applicant
+            reads the words they are signing, and these are the exact bytes the
+            server rebuilds and compares. */}
+        <div
+          data-testid="text-consortium-compliance-attestation"
+          style={{
+            fontSize: 13,
+            lineHeight: 1.5,
+            background: "#fbfaf8",
+            border: "1px solid #ddd9d3",
+            borderRadius: 8,
+            padding: 12,
+          }}
+        >
+          {complianceAttestationText(organizationName, agreementSignedName.trim())}
+        </div>
+        <label
+          className="flex flex-row gap-2"
+          style={{ alignItems: "flex-start", fontSize: 13 }}
+        >
+          <input
+            type="checkbox"
+            checked={complianceAttested}
+            onChange={(e) => setComplianceAttested(e.target.checked)}
+            data-testid="checkbox-consortium-compliance-attest"
+            style={{ marginTop: 3 }}
+          />
+          <span>{COMPLIANCE_TICK_LABEL}</span>
+        </label>
+
         {result?.error && (
           <div
             style={{
@@ -450,6 +617,19 @@ export default function ConsortiumApplyPage() {
             }}
           >
             <strong>Error:</strong> {result.error}
+            {/* WAVE 217 — APPENDED sibling. The 422 refusals carry a `message`
+                that says what to do; without this line the applicant would see
+                only the machine code `COMPLIANCE_ATTESTATION_REQUIRED`. The
+                pre-existing `{result.error}` above and the `bucket` / `issues`
+                branches below are untouched (R143.1). */}
+            {result.message && (
+              <div
+                style={{ marginTop: 4, fontSize: 13 }}
+                data-testid="text-consortium-apply-error-message"
+              >
+                {result.message}
+              </div>
+            )}
             {result.bucket && (
               <div style={{ marginTop: 4, fontSize: 13 }}>
                 Rate-limit bucket: <code>{result.bucket}</code>
@@ -480,7 +660,13 @@ export default function ConsortiumApplyPage() {
             #cc0001 pill. Behavior (disabled while submitting) is unchanged. */}
         <Button
           type="submit"
-          disabled={submitting || !agreementAccepted || !agreementSignedName.trim()}
+          /* WAVE 217 — the three pre-existing terms are kept VERBATIM and two
+             are APPENDED (R143.1: append static siblings, never replace a
+             literal — and it applies to guard expressions, not just handlers).
+             This button is a COURTESY, not the gate: the gate is
+             `verifyComplianceAttestation` inside `publicApplyHandler`, which a
+             `curl` cannot skip. */
+          disabled={submitting || !agreementAccepted || !agreementSignedName.trim() || !complianceAttested || regulatoryStatus === ""}
           title={submitting ? "Submitting your application—please wait" : undefined}
           aria-label={submitting ? "Submitting application" : "Submit application"}
           className="mt-2"

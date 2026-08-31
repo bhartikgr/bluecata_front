@@ -29,6 +29,7 @@ import {
   censusMaturityNames,
   MATURITY_DATE_NOT_WRITABLE,
 } from "@shared/roundMathEngineAdapter";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -66,12 +67,12 @@ async function buildPreferredCompany(
     });
   expect(seeded.status, `seed ${key}`).toBe(201);
 
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Under Test ${key}`, type: "seed", instrument: "preferred",
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
     ...(liquidationPreference ? { liquidationPreference } : {}),
-  });
+  }));
   expect(created.status, `round create ${key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
 
@@ -260,19 +261,19 @@ describe("W77 · R71 — both poles at every writer", () => {
     /* POLE 1a — the PAST-date refusal creation already made is UNTOUCHED. Its own
        sentence still comes back: no working refusal was removed or softened. */
     const past = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send(body({ maturityDate: "1999-01-01" }));
+      .send(w212Attest(body({ maturityDate: "1999-01-01" })));
     expect(past.status).toBe(400);
     expect(past.body.error).toBe("validation_failed");
     expect(String(past.body.fieldErrors.maturityDate)).toBe("Maturity date must be in the future.");
     /* POLE 1b — a FUTURE date is now refused too, because the field is derived. */
     const future = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send(body({ maturityDate: "2030-01-01" }));
+      .send(w212Attest(body({ maturityDate: "2030-01-01" })));
     expect(future.status).toBe(400);
     expect(future.body.error).toBe("validation_failed");
     expect(String(future.body.fieldErrors.maturityDate)).toContain("Maturity (months)");
     /* POLE 2 — the canonical field creates a round exactly as before. */
     const good = await request(app).post("/api/rounds").set("x-user-id", ADMIN)
-      .send(body({ maturityMonths: 24 }));
+      .send(w212Attest(body({ maturityMonths: 24 })));
     expect(good.status, JSON.stringify(good.body).slice(0, 300)).toBe(200);
   }, 60_000);
 

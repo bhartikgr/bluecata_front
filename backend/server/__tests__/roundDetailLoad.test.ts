@@ -23,6 +23,7 @@ import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 
 import { withRoundDates } from "./_fixtures/roundDatesFixture";
+import { w212Attest } from "./_w212RoundAttestation";
 /* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
    mandatory Open date / Target close date backstop on POST /api/rounds
    (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
@@ -69,7 +70,7 @@ describe("23-May Fix 3 \u2014 Round detail endpoint reads from DB+legacy union",
     const create = await request(app)
       .post("/api/rounds")
       .set("x-user-id", "u_maya_chen")
-      .send(withRoundDates({
+      .send(w212Attest(withRoundDates({
         companyId: "co_novapay",
         name: "23-May Fix 3 Verification Round",
         targetAmount: 1_000_000,
@@ -77,7 +78,7 @@ describe("23-May Fix 3 \u2014 Round detail endpoint reads from DB+legacy union",
         postMoney: 10_000_000,
         pricePerShare: 1.5,
         minTicket: 25_000,
-      }));
+      })));
     // Some test deployments will 200 + { id }, others 201. Both signal a
     // committed row; what matters is that the new id is then resolvable.
     expect([200, 201]).toContain(create.status);

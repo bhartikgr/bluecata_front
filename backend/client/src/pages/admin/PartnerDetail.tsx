@@ -115,12 +115,32 @@ interface WorkspaceAuditResp {
   partnerId: string;
   partnerStatus: string;
   auditedAt: string;
+  /* WAVE 177 · ITEM A.3 — THE BLANK Role/Joined COLUMNS WERE A DEAD-VARIABLE
+     DEFECT, NOT MISSING DATA.
+     `GET /api/admin/partners/:partnerId/workspace/audit` builds this array as
+     `[...partnerTeamStore.listByPartner(partnerId), ...dbRows]`
+     (server/partnerRoutes.ts:559) — the RAM rows FIRST. Those rows are
+     `PartnerTeamMember` (server/partnerWorkspaceStore.ts:150-158), which is
+     **camelCase**: `userId`, `subRole`, `joinedAt`. This interface declared only
+     the snake_case DB shape, so for every hydrated partner the three reads below
+     resolved to `undefined` and the screen showed a bare `ptm_…` id with Role and
+     Joined empty. That is exactly the live symptom R148.1 recorded as its
+     corroboration — and it is NOT evidence that the columns are unpopulated.
+     Both shapes are now declared and both are read. */
+  /* WAVE 192 · ITEM C2 · R160.4 — the seat count, from the one function that
+     defines a seat. OPTIONAL in the type so an older server response still
+     type-checks; the render falls back to the previous expression. */
+  activeSeatCount?: number;
   teamMembers: Array<{
     id: string;
     sub_role?: string;
     user_id?: string;
     status?: string;
     joined_at?: string;
+    /* The RAM shape the endpoint actually returns first. */
+    subRole?: string;
+    userId?: string;
+    joinedAt?: string;
   }>;
   notes: Array<{
     id: string;
@@ -182,6 +202,78 @@ interface AdminPartnerSpvsResp {
 }
 
 const SPV_STATUSES = ["planned", "open", "closed", "wound_down"] as const;
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   WAVE 177 · ITEM A · R148.1 — PARTNER IDENTITY BINDING, on the page the admin
+   already opens. `GET/POST /api/admin/partners/:partnerId/team/identity|bind|…`
+   ══════════════════════════════════════════════════════════════════════════════
+   `resolvedName` and `email` are `null` when the platform genuinely cannot
+   derive them. The server DISCARDS `resolveDisplayName`'s placeholder
+   ("Pending member") rather than shipping it, so a null here means "not on
+   record" and never "we made one up". Every cell that could be blank prints a
+   STATED fallback below. */
+interface PartnerIdentityMember {
+  memberId: string;
+  userId: string | null;
+  subRole: string | null;
+  status: string | null;
+  joinedAt: string | null;
+  removedAt: string | null;
+  isSeed: boolean;
+  resolvedName: string | null;
+  email: string | null;
+}
+
+interface PartnerIdentityResp {
+  ok: boolean;
+  partnerId: string;
+  organizationName: string | null;
+  seats: {
+    activeSeats: number;
+    seatLimit: number | null;
+    seatLimitResolution: string;
+    seatLimitDisplay: string;
+  } | null;
+  members: PartnerIdentityMember[];
+  bindableSubRoles: string[];
+}
+
+/* WAVE 185 · ITEM B.2 · R156.5 — the answer to "will messaging work for this
+   person, and if not, which fact is missing?". Every field here is either a
+   boolean, a count of the partner's OWN people, or a sentence the server chose;
+   NO peer identity crosses this boundary. */
+interface W185MessagingCheckResp {
+  ok: boolean;
+  partnerId: string;
+  email: string | null;
+  userId: string | null;
+  messagingWillWork: boolean;
+  cause: string;
+  missingFact: string | null;
+  boundPartnerId: string | null;
+  boundPartnerIsARealPartner: boolean | null;
+  boundToThisPartner: boolean;
+  ownLpCount: number;
+  otherTeamMemberCount: number;
+}
+
+/** R111 Q13 — ONE phrase per unreadable value, declared once, so no branch can
+ *  quietly substitute a blank cell or invent a name. */
+const W177_NAME_NOT_ON_RECORD = "name not on record";
+const W177_EMAIL_NOT_ON_RECORD = "email not on record";
+const W177_ROLE_NOT_ON_RECORD = "permission tier not on record";
+
+/* WAVE 192 · ITEM C2 · R160.4 — the stated difference between the seat count and
+   the row count, so an auditor is never left to infer why the heading and the table
+   disagree. Split into three literals around the two numbers because the numbers
+   are derived; the words are not. */
+const W192_SEAT_BASIS_PREFIX = "— ";
+const W192_SEAT_BASIS_MIDDLE = " active seat";
+const W192_SEAT_BASIS_SUFFIX_UNITS = " occupied of ";
+const W192_SEAT_BASIS_SUFFIX_TAIL =
+  " membership row(s) listed below; rows that are removed or not active are shown for audit but do not occupy a seat.";
+const W177_JOINED_NOT_ON_RECORD = "join date not on record";
+const W177_NO_USER_BOUND = "no platform user bound to this membership";
 
 // ── Page ──────────────────────────────────────────────────────────────────
 
@@ -414,6 +506,187 @@ export default function AdminPartnerDetail() {
     queryKey: [`/api/admin/partners/${partnerId}/workspace/audit`],
     enabled: !!partnerId,
     queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}/workspace/audit`)).json(),
+  });
+
+  /* ── WAVE 177 · ITEM A — identity binding state + calls ───────────────── */
+  const [bindForm, setBindForm] = useState({ email: "", subRole: "managing_partner" });
+  const [orgNameDraft, setOrgNameDraft] = useState("");
+  /* WAVE 185 · ITEM B — the email the admin last asked about, and the reply.
+     Held in state rather than fetched on render because it is a QUESTION the
+     admin asks about one person, not a property of the page. */
+  const [w185CheckEmail, setW185CheckEmail] = useState("");
+  const [w185Check, setW185Check] = useState<W185MessagingCheckResp | null>(null);
+  /* The unresolvable-binding refusal, kept so the confirm control can exist. It
+     is set ONLY by that one error code, so no other refusal can ever surface a
+     replace button. */
+  const [w185Supersedable, setW185Supersedable] = useState<{ email: string; boundPartnerId: string } | null>(null);
+
+  const identityQ = useQuery<PartnerIdentityResp>({
+    queryKey: [`/api/admin/partners/${partnerId}/team/identity`],
+    enabled: !!partnerId,
+    queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}/team/identity`)).json(),
+  });
+
+  /* Both the membership list and the workspace audit card read
+     `partner_team_members`, so BOTH are invalidated after any write — otherwise
+     the two cards on this one page would disagree about the same table. */
+  const w177Refresh = () => {
+    queryClient.invalidateQueries({ queryKey: [`/api/admin/partners/${partnerId}/team/identity`] });
+    queryClient.invalidateQueries({ queryKey: [`/api/admin/partners/${partnerId}/workspace/audit`] });
+  };
+
+  const bindMut = useMutation({
+    mutationFn: async () => {
+      const email = bindForm.email.trim();
+      if (!email) throw new Error("Enter the email address of the person's platform account");
+      const r = await apiRequest("POST", `/api/admin/partners/${partnerId}/team/bind`, {
+        email,
+        subRole: bindForm.subRole,
+      });
+      const j = await r.json();
+      /* Every refusal is reported with the fact behind it. A bare
+         "bind failed" would send the admin back to guessing, which is the state
+         this whole wave exists to end. */
+      if (!j.ok) {
+        if (j.error === "PLATFORM_USER_NOT_FOUND") {
+          throw new Error(
+            `No platform account exists with the email ${email}. The person must have an account before they can be linked.`,
+          );
+        }
+        if (j.error === "USER_ALREADY_BOUND_TO_ANOTHER_PARTNER") {
+          throw new Error(
+            `That person is already linked to partner ${j.boundPartnerId}. Remove that link first, then link them here.`,
+          );
+        }
+        /* WAVE 185 · ITEM B · R150.2 — the live case. The account is linked to a
+           record that is not a partner organisation at all, so there is no
+           partner page anywhere carrying a control to remove it. Offering the
+           replacement here is the only way an admin can finish the repair
+           without someone editing rows by hand. */
+        if (j.error === "USER_BOUND_TO_UNRESOLVABLE_PARTNER_ID") {
+          setW185Supersedable({ email, boundPartnerId: String(j.boundPartnerId ?? "") });
+          throw new Error(
+            "That person's account is linked to a record that is not a partner organisation, so no partner page carries a control to remove it. Use the replace option shown below to deactivate that link and link them here instead.",
+          );
+        }
+        if (j.error === "SEAT_LIMIT_REACHED") {
+          throw new Error(
+            `This partner already uses ${j.activeSeats} of ${j.seatLimit} seats. Raise the seat limit below, then link this person.`,
+          );
+        }
+        throw new Error(j.error || "bind_failed");
+      }
+      return j as PartnerIdentityResp & { boundUserId: string };
+    },
+    onSuccess: (j) => {
+      setBindForm((f) => ({ ...f, email: "" }));
+      setW185Supersedable(null);
+      w177Refresh();
+      toast({ title: "Person linked to this partner", description: j.boundUserId });
+    },
+    onError: (e: any) =>
+      toast({ title: "Link person failed", description: e?.message, variant: "destructive" }),
+  });
+
+  /* WAVE 185 · ITEM B — THE EXPLICIT REPLACEMENT. Separate from `bindMut` so the
+     supersede flag can never travel on an ordinary link click: the flag is set in
+     exactly one place, by a control that only exists after the server itself said
+     the existing link is not a partner. */
+  const w185SupersedeMut = useMutation({
+    mutationFn: async () => {
+      const email = (w185Supersedable?.email ?? "").trim();
+      if (!email) throw new Error("No unresolvable link is pending replacement");
+      const r = await apiRequest("POST", `/api/admin/partners/${partnerId}/team/bind`, {
+        email,
+        subRole: bindForm.subRole,
+        supersedeUnresolvableBinding: true,
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        if (j.error === "USER_ALREADY_BOUND_TO_ANOTHER_PARTNER") {
+          throw new Error(
+            `That person is linked to partner ${j.boundPartnerId}, which is a real partner organisation. Replacing that link is not something this page can do — it has to be removed on that partner's own page first.`,
+          );
+        }
+        if (j.error === "SUPERSEDE_FOUND_NOTHING_TO_REPLACE") {
+          throw new Error(
+            "Nothing was replaced, so the link is unchanged. Re-run the messaging check below before trying again.",
+          );
+        }
+        throw new Error(j.error || "supersede_failed");
+      }
+      return j as { boundUserId?: string };
+    },
+    onSuccess: (j) => {
+      setW185Supersedable(null);
+      setBindForm((f) => ({ ...f, email: "" }));
+      w177Refresh();
+      toast({
+        title: "Link replaced and person linked to this partner",
+        description: j.boundUserId ?? "",
+      });
+    },
+    onError: (e: any) =>
+      toast({ title: "Replace link failed", description: e?.message, variant: "destructive" }),
+  });
+
+  /* WAVE 185 · ITEM B.2 — THE CONFIRMATION. An admin who has just clicked "Link
+     this person" has no way to know whether messaging now works; this asks the
+     server the same question the messaging read path answers. */
+  const w185CheckMut = useMutation({
+    mutationFn: async () => {
+      const email = w185CheckEmail.trim();
+      if (!email) throw new Error("Enter the email address of the person to check");
+      const r = await apiRequest(
+        "GET",
+        `/api/admin/partners/${partnerId}/team/messaging-check?email=${encodeURIComponent(email)}`,
+      );
+      const j = (await r.json()) as W185MessagingCheckResp;
+      if (!j.ok) throw new Error((j as any).error || "messaging_check_failed");
+      return j;
+    },
+    onSuccess: (j) => setW185Check(j),
+    onError: (e: any) => {
+      setW185Check(null);
+      toast({ title: "Messaging check failed", description: e?.message, variant: "destructive" });
+    },
+  });
+
+  const deactivateMut = useMutation({
+    mutationFn: async (memberId: string) => {
+      const r = await apiRequest("POST", `/api/admin/partners/${partnerId}/team/${memberId}/deactivate`, {});
+      const j = await r.json();
+      if (!j.ok) {
+        if (j.error === "LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED") {
+          throw new Error(
+            "This is the partner's last managing partner. Link someone else as managing partner first.",
+          );
+        }
+        throw new Error(j.error || "deactivate_failed");
+      }
+    },
+    onSuccess: () => {
+      w177Refresh();
+      toast({ title: "Membership deactivated" });
+    },
+    onError: (e: any) =>
+      toast({ title: "Deactivate membership failed", description: e?.message, variant: "destructive" }),
+  });
+
+  const orgNameMut = useMutation({
+    mutationFn: async () => {
+      const name = orgNameDraft.trim();
+      if (!name) throw new Error("Type the partner's registered name");
+      const r = await apiRequest("POST", `/api/admin/partners/${partnerId}/organization-name`, { name });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "organization_name_failed");
+    },
+    onSuccess: () => {
+      w177Refresh();
+      toast({ title: "Registered name saved" });
+    },
+    onError: (e: any) =>
+      toast({ title: "Save registered name failed", description: e?.message, variant: "destructive" }),
   });
 
   const partner = partnerQ.data?.partner;
@@ -917,9 +1190,46 @@ export default function AdminPartnerDetail() {
           <div className="grid gap-6">
             {/* Team Members */}
             <Card className="p-5">
+              {/* ══ WAVE 192 · ITEM C2 · R160.4 — THIS COUNT WAS THE WRONG ONE ═════
+                  This heading rendered `audit.teamMembers.length` as the number of
+                  team members and showed "Team Members (2)" while the
+                  partner-facing team page showed "1 of 2 seats filled, 0 pending".
+                  `teamMembers` is a deliberate UNION of an active-only RAM read
+                  and an UNFILTERED database read (no status, no `removed_at`) so
+                  archived partners stay auditable — correct as a LIST, wrong as a
+                  COUNT, because it counts removed rows as occupied seats.
+
+                  It now renders `audit.activeSeatCount`, which the endpoint takes
+                  from `partnerTeamStore.countActiveSeats()` — the same function
+                  `requirePartnerAuth` ENFORCES seat limits against and the same
+                  number `GET /api/partner/me/team` returns as `activeSeats` for
+                  the partner-facing page. One definition, two screens.
+
+                  The TABLE BELOW IS UNCHANGED and still lists every row the audit
+                  returns, including removed ones — an auditor needs to see them;
+                  they are what made the old count look inflated. The line appended
+                  below says how many listed rows are seats, so the difference
+                  between the heading and the row count is stated rather than left
+                  as a discrepancy for someone to theorise about (R150.2/R160.2).
+
+                  `?? audit.teamMembers.length` is a rendering fallback for an
+                  older server response that has no `activeSeatCount`, NOT a
+                  correctness fallback — it reproduces exactly the old number, so a
+                  stale server can never make this heading blank. */}
               <div className="flex items-center gap-2 mb-4">
                 <Users className="h-4 w-4 text-muted-foreground" />
-                <h3 className="font-semibold text-sm">Team Members ({audit.teamMembers.length})</h3>
+                <h3 className="font-semibold text-sm">Team Members ({audit.activeSeatCount ?? audit.teamMembers.length})</h3>
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="admin-partner-team-seat-basis"
+                >
+                  {W192_SEAT_BASIS_PREFIX}
+                  {audit.activeSeatCount ?? audit.teamMembers.length}
+                  {W192_SEAT_BASIS_MIDDLE}
+                  {W192_SEAT_BASIS_SUFFIX_UNITS}
+                  {audit.teamMembers.length}
+                  {W192_SEAT_BASIS_SUFFIX_TAIL}
+                </p>
               </div>
               {audit.teamMembers.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No team members.</p>
@@ -937,15 +1247,22 @@ export default function AdminPartnerDetail() {
                     <tbody>
                       {audit.teamMembers.map((m) => (
                         <tr key={m.id} className="border-b last:border-0">
-                          <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{m.user_id ?? m.id}</td>
-                          <td className="py-2 pr-4">{m.sub_role ?? "—"}</td>
+                          {/* WAVE 177 · ITEM A.3 — read BOTH shapes (the endpoint
+                              returns camelCase RAM rows first, snake_case DB rows
+                              second) and print a STATED fallback rather than a bare
+                              em dash, so "we have no record of this" can never be
+                              mistaken for a rendering failure. */}
+                          <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{m.user_id ?? m.userId ?? m.id}</td>
+                          <td className="py-2 pr-4">{m.sub_role ?? m.subRole ?? W177_ROLE_NOT_ON_RECORD}</td>
                           <td className="py-2 pr-4">
                             <Badge variant={m.status === "active" ? "positive" : "secondary"} className="text-xs">
                               {m.status ?? "unknown"}
                             </Badge>
                           </td>
                           <td className="py-2 text-muted-foreground text-xs">
-                            {m.joined_at ? new Date(m.joined_at).toLocaleDateString() : "—"}
+                            {(m.joined_at ?? m.joinedAt)
+                              ? new Date(String(m.joined_at ?? m.joinedAt)).toLocaleDateString()
+                              : W177_JOINED_NOT_ON_RECORD}
                           </td>
                         </tr>
                       ))}
@@ -953,6 +1270,337 @@ export default function AdminPartnerDetail() {
                   </table>
                 </div>
               )}
+
+              {/* ══ WAVE 177 · ITEM A · R148.1 — PARTNER IDENTITY BINDING ══════════
+                  ADDITIVE SIBLING of the table above, which stays exactly as it
+                  was. That table is a read-only audit view; everything below is
+                  the management surface the owner uses to repair the binding
+                  without a developer. It lives inside THIS card, on the page an
+                  admin already opens for a partner — R137 recorded a fix that
+                  passed every test and never reached the human who needed it. */}
+              <div className="mt-6 border-t pt-5 space-y-5">
+                <div>
+                  <h4 className="font-semibold text-sm">Platform account links</h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    A person can only send messages as this partner while their platform account is
+                    linked here. Without a link, every recipient search they run finds nobody.
+                  </p>
+                </div>
+
+                {identityQ.isPending && (
+                  <p className="text-sm text-muted-foreground">Loading platform account links…</p>
+                )}
+                {identityQ.isError && (
+                  <p className="text-sm text-destructive">
+                    Could not load platform account links.{" "}
+                    {(identityQ.error as Error | undefined)?.message ?? ""}
+                  </p>
+                )}
+
+                {identityQ.data?.ok && (
+                  <>
+                    {/* ── Registered name (R148.3 item 4) ───────────────────────
+                        `partner_organizations` is empty on every database
+                        inspected, so `resolvePartnerName` returns null and no
+                        surface can name this partner. The owner TYPES the name;
+                        nothing is derived from the contact record and nothing is
+                        backfilled, because a guess in this field would be
+                        indistinguishable from a fact. */}
+                    <div className="rounded-md border p-4 space-y-3">
+                      <div>
+                        <h5 className="text-sm font-medium">Registered name</h5>
+                        {identityQ.data.organizationName ? (
+                          <p className="text-sm mt-1" data-testid="w177-org-name-current">
+                            {identityQ.data.organizationName}
+                          </p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground mt-1" data-testid="w177-org-name-missing">
+                            No registered name has been entered for this partner yet, so screens that
+                            would name the partner show its identifier instead.
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <div className="flex-1 min-w-[16rem]">
+                          <Label htmlFor="w177-org-name" className="text-xs">
+                            Partner's registered name
+                          </Label>
+                          <Input
+                            id="w177-org-name"
+                            data-testid="w177-org-name-input"
+                            value={orgNameDraft}
+                            onChange={(e) => setOrgNameDraft(e.target.value)}
+                            placeholder="Type the name exactly as it is registered"
+                          />
+                        </div>
+                        <Button
+                          size="sm"
+                          data-testid="w177-org-name-save"
+                          disabled={orgNameMut.isPending || orgNameDraft.trim().length === 0}
+                          onClick={() => orgNameMut.mutate()}
+                        >
+                          Save registered name
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* ── Link a person ─────────────────────────────────────────
+                        By EMAIL, resolved server-side to an existing platform
+                        user. No identifier is typed and none is hardcoded, so
+                        this works for every partner on the platform — not only
+                        the one whose broken binding prompted the wave. */}
+                    <div className="rounded-md border p-4 space-y-3">
+                      <div>
+                        <h5 className="text-sm font-medium">Link a person to this partner</h5>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          The person must already have a platform account. Linking does not create an
+                          account and does not send an invitation.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <div className="flex-1 min-w-[16rem]">
+                          <Label htmlFor="w177-bind-email" className="text-xs">
+                            Their account email
+                          </Label>
+                          <Input
+                            id="w177-bind-email"
+                            data-testid="w177-bind-email"
+                            value={bindForm.email}
+                            onChange={(e) => setBindForm((f) => ({ ...f, email: e.target.value }))}
+                            placeholder="person@example.com"
+                          />
+                        </div>
+                        <div className="min-w-[12rem]">
+                          <Label htmlFor="w177-bind-role" className="text-xs">
+                            Permission tier
+                          </Label>
+                          <Select
+                            value={bindForm.subRole}
+                            onValueChange={(v) => setBindForm((f) => ({ ...f, subRole: v }))}
+                          >
+                            <SelectTrigger id="w177-bind-role" data-testid="w177-bind-role">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {identityQ.data.bindableSubRoles.map((r) => (
+                                <SelectItem key={r} value={r}>{r}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Button
+                          size="sm"
+                          data-testid="w177-bind-submit"
+                          disabled={bindMut.isPending || bindForm.email.trim().length === 0}
+                          onClick={() => bindMut.mutate()}
+                        >
+                          Link this person
+                        </Button>
+                      </div>
+                      {identityQ.data.seats && (
+                        <p className="text-xs text-muted-foreground" data-testid="w177-seats">
+                          Seats in use: {identityQ.data.seats.activeSeats}. Seat limit:{" "}
+                          {identityQ.data.seats.seatLimitDisplay}.
+                        </p>
+                      )}
+
+                      {/* ── WAVE 185 · ITEM B · R150.2 — REPLACE A LINK THAT IS NOT A PARTNER
+                          A STATIC SIBLING inside this existing panel, deliberately
+                          not a new table column: wave 182 established that adding a
+                          cell renumbers its siblings and trips the panels
+                          inventory. It appears only after the server itself
+                          reported the existing link resolves to no partner
+                          organisation, so it cannot be used to move anyone between
+                          real partners — the server refuses that regardless of what
+                          this page sends. */}
+                      {w185Supersedable && (
+                        <div
+                          className="rounded-md border border-amber-300/70 bg-amber-50/50 p-3 space-y-2"
+                          data-testid="w185-supersede-block"
+                        >
+                          <p className="text-xs text-amber-900">
+                            This person's account is linked to a record that is not a partner
+                            organisation, so that link appears on no partner page and cannot be
+                            removed there. Replacing it deactivates the old link and keeps it on
+                            record, then links the person to this partner.
+                          </p>
+                          <p className="text-xs font-mono text-amber-800" data-testid="w185-supersede-target">
+                            {w185Supersedable.email}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              data-testid="w185-supersede-confirm"
+                              disabled={w185SupersedeMut.isPending}
+                              onClick={() => w185SupersedeMut.mutate()}
+                            >
+                              Replace the link and link this person
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              data-testid="w185-supersede-cancel"
+                              onClick={() => setW185Supersedable(null)}
+                            >
+                              Leave the link as it is
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── WAVE 185 · ITEM B.2 · R156.5 — CONFIRM MESSAGING WORKS
+                          The owner's "completely" means an admin can finish this on
+                          live without reading a database. Before this, the only
+                          feedback was a success toast, which says a row was written
+                          — not that the person can address anybody. This asks the
+                          server the same question the messaging path answers and
+                          prints the missing fact when the answer is no. */}
+                      <div
+                        className="rounded-md border p-3 space-y-2"
+                        data-testid="w185-messaging-check-block"
+                      >
+                        <div>
+                          <h6 className="text-xs font-medium">Confirm messaging works for a person</h6>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Checks the same records the recipient search reads, and names the one
+                            fact that is missing if messaging will not work yet.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="flex-1 min-w-[16rem]">
+                            <Label htmlFor="w185-check-email" className="text-xs">
+                              Their account email
+                            </Label>
+                            <Input
+                              id="w185-check-email"
+                              data-testid="w185-check-email"
+                              value={w185CheckEmail}
+                              onChange={(e) => setW185CheckEmail(e.target.value)}
+                              placeholder="person@example.com"
+                            />
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            data-testid="w185-check-submit"
+                            disabled={w185CheckMut.isPending || w185CheckEmail.trim().length === 0}
+                            onClick={() => w185CheckMut.mutate()}
+                          >
+                            Check messaging
+                          </Button>
+                        </div>
+                        {w185Check && (
+                          <div className="space-y-1">
+                            {w185Check.messagingWillWork ? (
+                              <p className="text-xs" data-testid="w185-check-ready">
+                                Messaging works for this person. Their recipient search will find the
+                                people this partner is entitled to reach.
+                              </p>
+                            ) : (
+                              <p className="text-xs text-destructive" data-testid="w185-check-blocked">
+                                Messaging will not work for this person yet.
+                              </p>
+                            )}
+                            {w185Check.missingFact && (
+                              <p className="text-xs text-muted-foreground" data-testid="w185-check-missing-fact">
+                                {w185Check.missingFact}
+                              </p>
+                            )}
+                            {/* Counts of this partner's OWN people only. No peer
+                                name and no peer identifier is ever printed here. */}
+                            <p className="text-xs text-muted-foreground" data-testid="w185-check-counts">
+                              Investors on this partner's own vehicles: {w185Check.ownLpCount}.
+                              Colleagues linked to this partner: {w185Check.otherTeamMemberCount}.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ── Existing links, rendered honestly (Item A.3) ──────────
+                        Every column that can be unknown prints a STATED phrase
+                        instead of a blank. A name appears ONLY when the platform
+                        actually resolved one: the server discards the display-name
+                        resolver's placeholders, so nothing here is invented. */}
+                    <div className="rounded-md border p-4">
+                      <h5 className="text-sm font-medium mb-3">
+                        Linked accounts on record ({identityQ.data.members.length})
+                      </h5>
+                      {identityQ.data.members.length === 0 ? (
+                        <p className="text-sm text-muted-foreground" data-testid="w177-no-links">
+                          No platform account is linked to this partner. Until one is linked, nobody
+                          can act for this partner and their recipient searches will find nobody.
+                        </p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm" data-testid="w177-identity-table">
+                            <thead>
+                              <tr className="border-b text-muted-foreground">
+                                <th className="text-left pb-2 pr-4 font-medium">Person</th>
+                                <th className="text-left pb-2 pr-4 font-medium">Permission tier</th>
+                                <th className="text-left pb-2 pr-4 font-medium">Link status</th>
+                                <th className="text-left pb-2 pr-4 font-medium">Linked on</th>
+                                <th className="text-left pb-2 font-medium">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {identityQ.data.members.map((m) => {
+                                const isActive = m.status === "active" && !m.removedAt;
+                                return (
+                                  <tr key={m.memberId} className="border-b last:border-0" data-testid={`w177-row-${m.memberId}`}>
+                                    <td className="py-2 pr-4">
+                                      {m.resolvedName ? (
+                                        <span className="font-medium">{m.resolvedName}</span>
+                                      ) : (
+                                        <span className="text-muted-foreground">{W177_NAME_NOT_ON_RECORD}</span>
+                                      )}
+                                      <span className="block font-mono text-xs text-muted-foreground">
+                                        {m.email ?? W177_EMAIL_NOT_ON_RECORD}
+                                      </span>
+                                      <span className="block font-mono text-xs text-muted-foreground">
+                                        {m.userId ?? W177_NO_USER_BOUND}
+                                      </span>
+                                    </td>
+                                    <td className="py-2 pr-4">{m.subRole ?? W177_ROLE_NOT_ON_RECORD}</td>
+                                    <td className="py-2 pr-4">
+                                      <Badge variant={isActive ? "positive" : "secondary"} className="text-xs">
+                                        {m.status ?? "status not on record"}
+                                      </Badge>
+                                    </td>
+                                    <td className="py-2 pr-4 text-muted-foreground text-xs">
+                                      {m.joinedAt
+                                        ? new Date(m.joinedAt).toLocaleDateString()
+                                        : W177_JOINED_NOT_ON_RECORD}
+                                    </td>
+                                    <td className="py-2">
+                                      {isActive ? (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          data-testid={`w177-deactivate-${m.memberId}`}
+                                          disabled={deactivateMut.isPending}
+                                          onClick={() => deactivateMut.mutate(m.memberId)}
+                                        >
+                                          Deactivate link
+                                        </Button>
+                                      ) : (
+                                        <span className="text-xs text-muted-foreground">
+                                          Already inactive
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
             </Card>
 
             {/* Notes */}

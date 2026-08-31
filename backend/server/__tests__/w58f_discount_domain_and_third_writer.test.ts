@@ -75,6 +75,7 @@ import {
   DISCOUNT_MARKET_NORM_MAX,
   toWireDiscount,
 } from "@shared/roundMathEngineAdapter";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const STAMP = String(Date.now());
@@ -309,7 +310,7 @@ describe("W58F-F0c — a committed SAFE carrying discount 20 succeeds through HT
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         companyId: `co_w58f_${STAMP}_${tag}`,
         name: `W58F SAFE ${tag}`,
         type: "seed",
@@ -319,7 +320,7 @@ describe("W58F-F0c — a committed SAFE carrying discount 20 succeeds through HT
         discount: 20,
         openDate: "2026-01-01",
         closeDate: "2026-12-31",
-      });
+      }));
     expect(res.status, JSON.stringify(res.body)).toBe(200); /* this route answers 200, not 201 — verified by execution */
     const round = (res.body.round ?? res.body) as Record<string, any>;
     return { roundId: String(round.id), companyId: String(round.companyId) };
@@ -432,7 +433,7 @@ describe("W58F-F1 — PATCH /api/founder/rounds/:id is guarded by the SHARED val
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         companyId: `co_w58f_third_${STAMP}`,
         name: `W58F third writer ${STAMP}`,
         type: "seed",
@@ -440,7 +441,7 @@ describe("W58F-F1 — PATCH /api/founder/rounds/:id is guarded by the SHARED val
         targetAmount: 1_000_000,
         openDate: "2026-01-01",
         closeDate: "2026-12-31",
-      });
+      }));
     expect(res.status, JSON.stringify(res.body)).toBe(200); /* this route answers 200, not 201 — verified by execution */
     roundId = String((res.body.round ?? res.body).id);
   }, 60_000);
@@ -949,7 +950,7 @@ describe("W58F-T3 — three-state discount on PATCH /api/rounds/:id/terms", () =
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         companyId: `co_w58f_t3_${STAMP}_${tag}`,
         name: `W58F T3 ${tag}`,
         type: "seed",
@@ -959,7 +960,7 @@ describe("W58F-T3 — three-state discount on PATCH /api/rounds/:id/terms", () =
         ...(discount === undefined ? {} : { discount }),
         openDate: "2026-01-01",
         closeDate: "2026-12-31",
-      });
+      }));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const round = (res.body.round ?? res.body) as Record<string, any>;
     return String(round.id);

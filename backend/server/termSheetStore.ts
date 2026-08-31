@@ -38,6 +38,13 @@ import { termSheetRevisions as termSheetRevisionsTable } from "../shared/schema"
 import { log } from "./lib/logger";
 import { getRoundById } from "./roundsStore"; /* v25.19 Lane 1 NH2 */
 import { getCompaniesForFounder } from "./multiCompanyStore"; /* v25.19 Lane 1 NH2 */
+/* WAVE 209 · ITEM A (decision B1; R187.1) — the ONE hardened client-address
+ * resolver. §209.2(a) is explicit: "Reuse that resolver. Do not write a new
+ * one." It is trusted-hop aware, fail-closed to the socket peer, and never
+ * trusts a raw x-forwarded-for header. `normaliseServerObservedAddress` only
+ * decides whether its answer is reportable; it resolves nothing itself. */
+import { resolveRateLimitClientIp } from "./lib/rateLimit";
+import { normaliseServerObservedAddress } from "../shared/wave209SignerAddress";
 import { getUserContext } from "./lib/userContext"; /* v25.19 Lane 1 NH2 */
 
 /* v25.19 Lane 1 NH2 — prior code only `requireAuth`-gated; any logged-in
@@ -94,6 +101,31 @@ export interface SaveTermSheetPayload {
   status: "draft" | "signed";
   documentHash?: string;
   signature?: unknown;
+  /* WAVE 209 · ITEM A — THE ONLY PARTY THAT CAN STATE THE SIGNER'S NETWORK
+   * ADDRESS TRUTHFULLY IS THIS SERVER, SO THIS SERVER STATES IT.
+   *
+   * The browser used to invent an RFC 5737 documentation address and seal it
+   * inside the signature hash (client/src/lib/esign/ses.ts:70, now removed).
+   * The signature itself is computed client-side BEFORE the request exists, so
+   * the address cannot go inside it. It is therefore stamped here as a SIBLING
+   * of `signature`, from `resolveRateLimitClientIp(req)`, at the moment the
+   * signature is submitted — the same shape the envelope engine
+   * (server/lib/esignatureRoutes.ts:434) and wave 22's audit append
+   * (server/adminPlatformStore.ts:3431 `serverObservedIp`) already use.
+   *
+   * WHY A SIBLING AND NOT A KEY INSIDE `signature`. `verifySES()` destructures
+   * `{ hash, ...payload }` and re-hashes every remaining key. Writing into the
+   * signature object — or adding one key to it — would make every stamped
+   * signature fail its own verification. As a sibling it is still covered by the
+   * revision chain, because `canonicalise()` hashes the whole payload.
+   *
+   * `null` means the server had no reportable peer. It is never `"0.0.0.0"`,
+   * never `"unknown"`, never an empty string: §209.5 forbids substituting a
+   * plausible value, and §5.7 forbids a missing value taking part in a
+   * comparison as though it were a value. ANY client-supplied value in this
+   * field is OVERWRITTEN, never merged — a caller must not be able to write an
+   * address into signature evidence. */
+  serverObservedSignerIp?: string | null;
   signedAt?: string;
   uploadFilename?: string;
   uploadMimeType?: string;
@@ -338,7 +370,15 @@ export function registerTermSheetRoutes(app: Express): void {
   app.post("/api/founder/term-sheets", async (req: Request, res: Response) => {
     const auth = requireAuth(req, res);
     if (!auth) return;
-    const payload = (req.body ?? {}) as SaveTermSheetPayload;
+    const rawPayload = (req.body ?? {}) as SaveTermSheetPayload;
+    /* WAVE 209 · ITEM A — stamp the peer THIS SERVER OBSERVED, overwriting
+     * whatever the client sent in that field. Placed before the ownership check
+     * has no effect on authorisation and before `saveTermSheet` so the value is
+     * inside the canonicalised body and therefore inside the revision hash. */
+    const payload: SaveTermSheetPayload = {
+      ...rawPayload,
+      serverObservedSignerIp: normaliseServerObservedAddress(resolveRateLimitClientIp(req)),
+    };
     /* v25.19 Lane 1 NH2 — require round ownership on writes. */
     if (payload?.roundId && !(await assertRoundOwnership(req, res, String(payload.roundId)))) return;
     const r = saveTermSheet({ payload, savedBy: auth.userId });
@@ -346,7 +386,10 @@ export function registerTermSheetRoutes(app: Express): void {
       const code = r.error === "termsheet_locked" ? 409 : 400;
       return res.status(code).json(r);
     }
-    return res.json({ ok: true, revision: r.revision });
+    /* WAVE 209 — the response carries the stamped address back, which is how
+     * `resolveSignerAddressFromServerResponse()` on the client obtains it
+     * (§209.2(a)) instead of guessing at one. */
+    return res.json({ ok: true, revision: r.revision, serverObservedSignerIp: r.revision.payload.serverObservedSignerIp ?? null });
   });
 
   app.get("/api/founder/term-sheets/:roundId", async (req: Request, res: Response) => {

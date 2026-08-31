@@ -48,6 +48,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
 import { SENIORITY_RANK_MAX } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -97,7 +98,7 @@ async function buildCompany(
   expect(seeded.status, `seed ${tag}`).toBeLessThan(400);
   let i = 0;
   for (const c of classes) {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId, name: `${STAMP} ${tag} class${i}`, type: "seed",
       instrument: c.instrument ?? "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
@@ -105,7 +106,7 @@ async function buildCompany(
       fdPreMoneyShares: 13_000_000,
       liquidationPreference: c.lp,
       ...(c.seniority !== undefined ? { seniority: c.seniority } : {}),
-    });
+    }));
     expect(created.status, `round create ${tag}${i}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
     const back = await request(app).post("/api/founder/captable/backfill-investor")
       .set("x-user-id", ADMIN)
@@ -534,12 +535,12 @@ describe("WAVE 91 · ITEM 3 — a holder paid nothing is NAMED, not omitted", ()
 
 describe("WAVE 91 · ITEM 4 — `POST /api/rounds` no longer stores an unusable rank", () => {
   const create = (body: Record<string, unknown>) =>
-    request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: `co_${STAMP}_sen`, name: `${STAMP} sen ${Math.random().toString(36).slice(2, 7)}`,
       type: "seed", instrument: "preferred", openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, pricePerShare: 2.5, sharesAuthorized: 40_000_000,
       preMoney: 30_000_000, fdPreMoneyShares: 13_000_000, ...body,
-    });
+    }));
 
   beforeAll(async () => {
     await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)

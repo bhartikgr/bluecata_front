@@ -91,6 +91,15 @@
  * enabled for tests), endpoints serve.
  */
 
+/* WAVE 190 · ITEM B.4 — createRequire shim, for ONE lazy require in the route
+   registrar below. `spvEngineStore` imports THIS module statically (Wave B
+   Stage 2 delegation), so a static import back would be a genuine cycle; a lazy
+   require inside the handler resolves at call time and cannot be one. Matching
+   the shim already used by collectiveAppStore.ts / chapterResourcesStore.ts so
+   it works in BOTH the tsx ESM runtime and the bundled CJS dist. */
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
 import type { Express, Request, Response } from "express";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
@@ -1612,8 +1621,47 @@ export function registerSpvFundRoutes(app: Express): void {
       res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
       return;
     }
+    /* ═══ WAVE 190 · ITEM B.4 — AN UNGUARDED WRITE TO A CAPITAL REGISTER, NOW
+       ROUTED THROUGH THE GUARDED PATH.
+
+       WHAT THIS WAS. This handler registers the SAME path as the live one in
+       `server/spvLegacyAdapters.ts` — `POST /api/partner/me/spvs/:id/commitments`
+       — and called `spvFundStore.addCommitment` RAW, bypassing wave 182's
+       closed-vehicle gate and wave 189's attestation gate entirely. It is a
+       DUPLICATE ROUTE REGISTRATION, not ordinary dead code, which is a more
+       fragile kind of dormant: whichever registrar runs first wins the path, so
+       one added `registerSpvFundRoutes(app)` line silently swaps the guarded
+       handler for this one.
+
+       WHY IT IS UNREACHABLE TODAY, PROVED RATHER THAN ASSUMED. Its enclosing
+       `registerSpvFundRoutes` has NO production caller: with comments stripped,
+       `server/routes.ts` contains zero references to it, imports only
+       `registerSpvLegacyAdapterRoutes`, and calls that at routes.ts:1831. Two
+       shipped fences hold that retirement in place —
+       `server/__tests__/waveB_retirement_guard.test.ts` (G-1/G-2) and
+       `waveW11_en9_esignature.test.ts:749`.
+
+       WHY IT IS NOT DELETED. Three suites mount this registrar deliberately, one
+       of them a live concurrent wave's adversarial probe
+       (`wave189_itemC_unattested_draft_capital_refusal.test.ts:99`, plus
+       `w2_consortium.test.ts:80` and
+       `wave2b_blocker1_legacy_distribution_closed.test.ts:113`). Removing it
+       would break another wave's proof, and "delete it" is also the weaker fix:
+       an unguarded write left in the tree is a hole whether or not today's
+       wiring reaches it. Routing it through `engineAddCommitment` means BOTH
+       registrations now enforce the same gates, so the fragile-ordering failure
+       above stops being a failure at all.
+
+       CONTRACT PRESERVED. `engineAddCommitment` delegates to
+       `spvFundStore.addCommitment` after gating, so the row written, its hash
+       chain, its `committedMinor` denorm and the 201 body are unchanged. Only
+       refusals are added, and each is answered with words rather than a code. */
     try {
-      const row = spvFundStore.addCommitment({
+      /* Lazy, via the shim at the top of this file: `spvEngineStore` imports this
+         module statically, so a static import back would be a cycle. */
+      const { engineAddCommitment } = require("./spvEngineStore") as typeof import("./spvEngineStore");
+      const row = engineAddCommitment({
+        partnerId: ctx.partnerId,
         spvId: spv.id,
         lpUserId: parsed.data.lp_user_id,
         amountMinor: parsed.data.amount_minor,
@@ -1622,6 +1670,30 @@ export function registerSpvFundRoutes(app: Express): void {
       ssePublish(ctx.partnerId, "spv", { type: "spv.commitment.created", spvId: spv.id, commitmentId: row.id });
       res.status(201).json({ ok: true, commitment: row });
     } catch (e) {
+      /* A DECLINED WRITE IS NOT A SERVER FAILURE, and is not logged as one — a
+         refusal in the error stream is how a normal outcome starts looking like
+         an incident. 409 with the sentence, matching `spvLegacyAdapters.ts`
+         exactly so the two registrations of this path cannot tell a general
+         partner different things. Every OTHER throw keeps its 500 and its log. */
+      const engine = require("./spvEngineStore") as typeof import("./spvEngineStore");
+      if (engine.isSpvClosedToNewCapitalError(e)) {
+        res.status(409).json({
+          error: e.message,
+          message: e.refusalHeadline,
+          guidance: e.refusalGuidance,
+          closedToNewLps: { reason: e.closedReason },
+        });
+        return;
+      }
+      if (engine.isSpvCanonicalRowUnresolvedError(e)) {
+        res.status(409).json({
+          error: e.message,
+          message: e.refusalHeadline,
+          guidance: e.refusalGuidance,
+          canonicalRowUnresolved: { reason: e.unresolvedReason },
+        });
+        return;
+      }
       log.error(errorMeta("spv.commitment.create", e, { partnerId: ctx.partnerId, spvId: spv.id }));
       res.status(500).json({ error: "COMMITMENT_FAILED" });
     }

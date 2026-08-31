@@ -52,6 +52,7 @@ import RoundNew from "../RoundNew";
 import { Toaster } from "@/components/ui/toaster";
 import { RoleProvider } from "@/lib/role";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { w212SignOff } from "./_w212SignOff";
 
 vi.mock("@/lib/useActiveCompany", () => ({
   useActiveCompanyId: () => "co_w118",
@@ -173,7 +174,10 @@ describe("WAVE 118 · FINDING 3 (per R92) — the past target-close-date NOTICE 
     fireEvent.click(screen.getByTestId("button-next"));
     await screen.findByTestId("step-investors");
     fireEvent.click(screen.getByTestId("button-next"));
-    fireEvent.click(await screen.findByTestId("button-create"));
+    const w212Create = await screen.findByTestId("button-create");
+    /* WAVE 212 — a founder signs before the control is live. */
+    w212SignOff();
+    fireEvent.click(w212Create);
     await waitFor(() => expect(createBodies.length).toBe(1));
     expect(createBodies[0].closeDate).toBe(past);
   });
@@ -191,7 +195,10 @@ describe("WAVE 118 · FINDING 3 (per R92) — the past target-close-date NOTICE 
     fireEvent.click(screen.getByTestId("button-next"));
     await screen.findByTestId("step-investors");
     fireEvent.click(screen.getByTestId("button-next"));
-    fireEvent.click(await screen.findByTestId("button-create"));
+    const w212Create = await screen.findByTestId("button-create");
+    /* WAVE 212 — a founder signs before the control is live. */
+    w212SignOff();
+    fireEvent.click(w212Create);
     await waitFor(() => expect(createBodies.length).toBe(1));
     expect(createBodies[0].closeDate).toBe(isoDayOffset(120));
   });

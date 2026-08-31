@@ -279,6 +279,32 @@ export function scopeContactToClient(args: {
        — swallowing them all here would be exactly the "constraint matched
        something else" false green this build has been burned by. */
     const message = String((err as Error)?.message ?? "");
+    /* WAVE 178 · ITEM B — A FOREIGN KEY FAILURE IS NOT AN "UNEXPECTED ERROR".
+       This is the branch the live 100%-failure ran down. 0134 declared
+       `scoped_by_user_id TEXT NOT NULL REFERENCES users(id)`; with
+       `PRAGMA foreign_keys = ON` an acting partner whose session userId has no
+       `users` row made this INSERT raise `FOREIGN KEY constraint failed`, which
+       is not a UNIQUE violation, so it was rethrown, became a bare 500
+       `{ok:false,error:"INTERNAL_ERROR"}` at the route, and surfaced as the
+       generic "Something went wrong on our side" toast — telling the partner
+       nothing and the operator nothing.
+       Migration 0213 and the boot-time self-heal remove that FK, so the cause is
+       gone. This branch is the belt-and-braces for a database on which neither
+       has yet run: the partner gets a STATED reason instead of a bare 500, and
+       the SQLite text is logged for the operator. The generic literal itself is
+       untouched and still serves genuinely unexpected errors (R143.1).
+       ScopeValidationError becomes a 400 carrying `message`, which
+       client/src/lib/queryClient.ts:44-67 surfaces in place of the generic. */
+    if (/FOREIGN KEY constraint failed/i.test(message)) {
+      log.error(
+        "[partnerCrmContactClientScopeStore] FOREIGN KEY constraint failed on scope INSERT; " +
+          "migration 0213 / the wave-c2 client-scope self-heal has not converged this database: " +
+          message,
+      );
+      throw new ScopeValidationError(
+        "This contact could not be linked because your user record is not fully provisioned on this server. Nothing was changed. Please report this to Capavate support — it is a server configuration issue, not a problem with the contact or the client.",
+      );
+    }
     if (!/UNIQUE constraint failed/i.test(message)) throw err;
     log.warn("[partnerCrmContactClientScopeStore] lost insert race, reading winner back");
     const winner = rawDb()

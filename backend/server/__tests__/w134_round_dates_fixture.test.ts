@@ -36,6 +36,7 @@ import {
   closingTodayDates,
   fixtureDay,
 } from "./_fixtures/roundDatesFixture";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const ADMIN = "u_admin";
@@ -50,7 +51,7 @@ beforeAll(async () => {
 }, 30_000);
 
 function post(body: Record<string, unknown>) {
-  return request(app).post("/api/rounds").set("x-user-id", ADMIN).send(body);
+  return request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest(body));
 }
 
 function baseBody(name: string, extra: Record<string, unknown> = {}) {

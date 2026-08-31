@@ -23,6 +23,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 
 import { withRoundDates } from "./_fixtures/roundDatesFixture";
+import { w212Attest } from "./_w212RoundAttestation";
 /* WAVE 134 cause 3-of-3 (R98) — round-creation bodies in this file predate the
    mandatory Open date / Target close date backstop on POST /api/rounds
    (server/routes.ts:7399-7412, "W3 Shadie 1a"). Without dates the request was
@@ -42,7 +43,7 @@ async function createDraftRound(name: string, extra: Record<string, unknown> = {
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send(withRoundDates({ companyId: CO, name, type: "seed", state: "draft", targetAmount: 1_000_000, ...extra }));
+    .send(w212Attest(withRoundDates({ companyId: CO, name, type: "seed", state: "draft", targetAmount: 1_000_000, ...extra })));
   expect(res.status).toBe(200);
   expect(res.body.ok).toBe(true);
   return res.body.id as string;
@@ -110,7 +111,7 @@ describe("v25.48.2 Q4c — one-open-round hard block", () => {
       const r = await request(app)
         .post("/api/rounds")
         .set("x-user-id", ADMIN)
-        .send(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 }));
+        .send(w212Attest(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 })));
       expect(r.status).toBe(200);
       return r.body.id as string;
     }
@@ -135,7 +136,7 @@ describe("v25.48.2 Q4c — one-open-round hard block", () => {
       const r = await request(app)
         .post("/api/rounds")
         .set("x-user-id", ADMIN)
-        .send(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 }));
+        .send(w212Attest(withRoundDates({ companyId: company, name, type: "seed", state: "draft", targetAmount: 500_000 })));
       expect(r.status).toBe(200);
       return r.body.id as string;
     }

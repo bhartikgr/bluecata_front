@@ -8,8 +8,37 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 /* v25.12 NH7 — toast errors on note save failures. */
 import { useToast } from "@/hooks/use-toast";
+import { describeFailure } from "@/lib/failureMessage";
 
-interface Note { id: string; title: string; body: string; scope: string; scopeId: string | null; updatedAt: string; authorUserId: string }
+interface Note { id: string; title: string; body: string; scope: string; scopeId: string | null; updatedAt: string; authorUserId: string; entries?: NoteEntry[] }
+
+/* ── WAVE 203 · ITEM A — NEWEST FIRST, WITHOUT LETTING A MISSING DATE ACT AS ONE.
+ *
+ * R176.1: a missing value must never take part in a comparison as if it were a
+ * value. `updatedAt` is DECLARED `string` above but the render at :163 already
+ * guards it against null (v25.16 NM6), so in practice it can be absent. Sorting
+ * with `localeCompare` on a coerced "" would rank an undated note as older than
+ * every dated one — a claim about its age that the data does not support.
+ *
+ * So dated notes are ordered newest-first among THEMSELVES, undated notes are
+ * kept together after them in their original relative order, and no dated note is
+ * ever compared against an undated one. Nothing is dropped and nothing is dated
+ * by inference. */
+function W203_notesNewestFirst(list: Note[]): Note[] {
+  const dated: Note[] = [];
+  const undated: Note[] = [];
+  for (const n of list) {
+    if (typeof n.updatedAt === "string" && n.updatedAt.trim() !== "") dated.push(n);
+    else undated.push(n);
+  }
+  dated.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return [...dated, ...undated];
+}
+/* WAVE 200 ITEM B — R173.9. A note's entry series. `body` above is the ORIGINAL
+   text and never changes; each later addition arrives as an entry with its own
+   author and date, so the owner can see the history rather than a replacement.
+   The server derives a single entry for notes written before this wave. */
+interface NoteEntry { seq: number; body: string; authorUserId: string; createdAt: string }
 /* w-partner F10 — F1 added companyName to this response; without it the company
    picker would have shown opaque company ids. */
 interface ClientRow { companyId: string; companyName: string | null }
@@ -51,6 +80,18 @@ export default function PartnerNotes() {
   /* v25.12 NH7 — toast helper. */
   const { toast } = useToast();
 
+  /* WAVE 200 ITEM B — R173.9.3. The delete route existed but no surface called
+     it, so "the user should also have the option to delete/erase the note" was
+     unreachable. The server soft-deletes and audits; this only asks. */
+  const deleteMut = useMutation({
+    mutationFn: async (noteId: string) => {
+      const res = await apiRequest("DELETE", `/api/partner/me/notes/${noteId}`);
+      return res.json();
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/partner/me/notes"] }); },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Note delete failed", description: describeFailure(e, "write") }),
+  });
+
   const createMut = useMutation({
     /* v25.33 — apiRequest() throws ApiError on non-2xx, so the former `if (!res.ok)`
        guard was unreachable dead code. The thrown ApiError reaches onError
@@ -64,7 +105,8 @@ export default function PartnerNotes() {
       return res.json();
     },
     onSuccess: () => { setTitle(""); setBody(""); queryClient.invalidateQueries({ queryKey: ["/api/partner/me/notes"] }); },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Note save failed", description: e.message }),
+    /* WAVE 197 #46 — WRITE. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Note save failed", description: describeFailure(e, "write") }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -137,12 +179,52 @@ export default function PartnerNotes() {
           {q.isLoading && <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="notes-loading">Loading…</div>}
           {!q.isLoading && !q.isError && (q.data?.notes ?? []).length === 0 && <div className="text-xs text-[var(--cv-color-text-muted)]">No notes yet.</div>}
           <ul className="space-y-2">
-            {(q.data?.notes ?? []).map((n) => (
+            {/* WAVE 203 · ITEM A — R178.5 ("Newest first.") applied to the second
+                listing that had the same defect. `partnerNotesStore.listByPartner`
+                (server/partnerWorkspaceStore.ts) filters and maps the stored notes
+                and never orders them, so this list rendered in INSERTION order —
+                oldest first. A partner's newest note was last on the page.
+                Ordered here, in the component that renders it, so the ordering is
+                provable by mounting this component. */}
+            {W203_notesNewestFirst(q.data?.notes ?? []).map((n) => (
               <li key={n.id} className="border-b pb-2" data-testid={`note-${n.id}`}>
                 <div className="text-sm font-medium">{n.title}</div>
                 {/* v25.16 NM6 — guard against null updatedAt to avoid "Invalid Date". */}
                 <div className="text-xs text-[var(--cv-color-text-muted)] mt-0.5">{n.scope} · {n.updatedAt ? new Date(n.updatedAt).toLocaleDateString() : "—"}</div>
                 <div className="text-xs text-[var(--cv-color-text-secondary)] mt-1 whitespace-pre-wrap">{n.body}</div>
+                {/* WAVE 200 ITEM B — R173.9.1/2. Appended, never substituted: the
+                    original text stays above, later additions are listed below
+                    with who added each and when. Entry 1 IS the original text
+                    already shown, so only later entries are listed here. */}
+                {(n.entries ?? []).filter((e) => e.seq > 1).length > 0 && (
+                  <div className="mt-2 border-l-2 border-[var(--cv-color-border)] pl-2" data-testid={`note-history-${n.id}`}>
+                    <div className="text-[10px] uppercase text-[var(--cv-color-text-muted)]">Added since</div>
+                    {(n.entries ?? []).filter((e) => e.seq > 1).map((e) => (
+                      <div key={e.seq} className="mt-1" data-testid={`note-entry-${n.id}-${e.seq}`}>
+                        <div className="text-[10px] text-[var(--cv-color-text-muted)]">
+                          {e.authorUserId} · {e.createdAt ? new Date(e.createdAt).toLocaleDateString() : "—"}
+                        </div>
+                        <div className="text-xs text-[var(--cv-color-text-secondary)] whitespace-pre-wrap">{e.body}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* WAVE 200 ITEM B — R173.9.3. Deletion is permitted; the server
+                    records it. Offered only to the sub-roles the route accepts. */}
+                {role.identity && ["managing_partner", "associate"].includes(role.identity.subRole) && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      data-testid={`note-delete-${n.id}`}
+                      className="text-[10px] uppercase text-[var(--cv-color-text-muted)] underline"
+                      disabled={deleteMut.isPending}
+                      onClick={() => deleteMut.mutate(n.id)}
+                    >
+                      Delete note
+                    </button>
+                    <div className="text-[10px] text-[var(--cv-color-text-muted)]">Deleting a note is recorded in the audit log.</div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

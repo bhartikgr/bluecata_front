@@ -28,6 +28,10 @@ import {
   FileText, RefreshCw, CheckCircle2,
 } from "lucide-react";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
+/* WAVE 202 · ITEM B · R178.2 — the plain-language reading view of every price the
+   platform actually holds. ADDED as a sibling above the model list below; no
+   existing control, column, label or literal on this page is touched. */
+import { PricingClarityPanel } from "@/components/admin/PricingClarityPanel";
 import { HelpTip } from "@/components/HelpTip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -202,6 +206,15 @@ export default function AdminPricingModels() {
             { label: "Deprecated", value: aggregates.deprecated, tone: aggregates.deprecated > 0 ? "warning" : "neutral" },
           ]}
         />
+
+        {/* WAVE 202 · ITEM B · R178.2 — "so that I know exactly what I'm setting a
+            price for." Mounted as a STATIC SIBLING immediately after the existing
+            intro and immediately before the existing bootstrap card. Both of those,
+            and every control below them, are untouched: this is an addition, not a
+            redesign, because the guard fingerprints source text and a table redesign
+            on this screen is what retired a tab identity in wave 188 and renumbered
+            sibling cells in wave 182. */}
+        <PricingClarityPanel />
 
         {/* v25.27 — admin bootstrap + legacy migration card */}
         <Card className="mb-5 border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/5">

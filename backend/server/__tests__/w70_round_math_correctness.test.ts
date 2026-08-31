@@ -79,6 +79,7 @@ import {
   type Holder,
   type Transaction,
 } from "@capavate/cap-table-engine";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const src = (rel: string) => fs.readFileSync(path.join(ROOT, rel), "utf8");
@@ -718,12 +719,12 @@ describe("W70-HTTP — the refusals reach the API by name", () => {
   let downRoundId = "";
 
   const mkRound = async (name: string, pre: number, target: number, pps: number) => {
-    const res = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const res = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: CO, name, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: target, preMoney: pre, pricePerShare: pps,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
-    });
+    }));
     expect(res.status).toBe(200);
     return String((res.body as { id: string }).id);
   };

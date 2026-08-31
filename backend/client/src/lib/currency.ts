@@ -340,3 +340,74 @@ export function fmtCurrency(n: number | null | undefined, region: Region | strin
   const digits = opts.digits ?? 0;
   return `${symbol}${n.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits })}`;
 }
+
+/* ============================================================================
+ * WAVE 190 · ITEM A — A SYMBOL MAY ONLY EVER COME FROM A CURRENCY.
+ *
+ * `currencySymbol()` above takes a REGION and ends `default: return "$"`. That
+ * is how one company came to show three different currency truths on three
+ * screens: the cap table read `company_profile.legal.region` ("HK") and printed
+ * `HK$`; the round screens read `rounds.region`, which is NULL on 1045 of 1045
+ * rows, fell back to `?? "US"` and printed a bare `$`; and only the investor
+ * invitation surface — which reads `rounds.currency` through
+ * `shared/roundCurrencyOnRecordView.ts` — refused honestly.
+ *
+ * A REGION IS NOT A CURRENCY. A Hong Kong company can be denominated in USD; a
+ * BVI vehicle was observed displaying `CA$`. So this resolver accepts ONLY an
+ * ISO-4217 currency code and returns `null` for everything else — including
+ * every region token this file knows about, all of which are two letters and
+ * therefore cannot pass the three-letter test. That is not incidental: it is the
+ * negative control, enforced by the shape of the input rather than by a list of
+ * things to reject.
+ *
+ * IT RETURNS `null`, NEVER `"$"` AND NEVER `""`. A caller that cannot get a
+ * symbol must print a stated refusal naming the missing fact (R6). A silent `$`
+ * on a non-USD figure is the most dangerous display defect this platform has;
+ * a blank is the second most dangerous, because it reads as a rendering bug and
+ * invites the reader to supply their own assumption.
+ *
+ * NOTHING HERE CONVERTS ANYTHING (R156.1, owner verbatim: "If an SPV or a round
+ * is in one currency, it is up to the investor to deliver exactly in that
+ * currency"). This maps a currency to the glyph that denotes it. No rate, no
+ * arithmetic, no `Number()`/`parseInt`/`parseFloat`, no amount enters this
+ * function.
+ *
+ * The mapping is TYPOGRAPHIC, not commercial, so it is not a hardcoded price or
+ * currency choice under R156.2: it answers "which glyph denotes CAD", never
+ * "which currency is this vehicle in" — that always comes from the stored row.
+ * A currency with no distinct glyph in this table falls back to its own ISO code
+ * plus a space, which is honest and unambiguous ("BRL 1,200.00"), rather than to
+ * a dollar sign.
+ * ========================================================================== */
+
+/** ISO-4217 code → the glyph that denotes it. Codes only; never a region. */
+const CURRENCY_CODE_SYMBOLS: Readonly<Record<string, string>> = Object.freeze({
+  USD: "$",
+  CAD: "C$",
+  GBP: "£",
+  EUR: "€",
+  SGD: "S$",
+  HKD: "HK$",
+  CNY: "¥",
+  CNH: "¥",
+  AUD: "A$",
+  JPY: "¥",
+  INR: "₹",
+});
+
+/**
+ * Resolve a display symbol from a CURRENCY CODE, or `null` when there is no
+ * currency on record.
+ *
+ * @param code an ISO-4217 alphabetic code, or any unknown wire value.
+ * @returns the symbol, or `null`. **Never `"$"` by default and never `""`.**
+ *
+ * Every region token used anywhere in this file ("US", "HK", "CA", "AU", "UK",
+ * "JP", "IN", "CN", "SG") is two letters and therefore returns `null` here.
+ */
+export function currencySymbolForCurrency(code: unknown): string | null {
+  if (typeof code !== "string") return null;
+  const iso = code.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(iso)) return null;
+  return CURRENCY_CODE_SYMBOLS[iso] ?? `${iso} `;
+}

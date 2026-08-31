@@ -13,6 +13,15 @@ import { registerPartnerRoutes } from "../partnerRoutes";
 import { registerPartnerPortfolioCompanyRoutes } from "../partnerPortfolioCompanyRoutes";
 import { registerCompanyAttributionRoutes } from "../companyAttributionRoutes";
 import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
+/* WAVE 214 — this route now requires the third-party authority confirmation
+   (typed name + the verbatim statement, hashed server-side). These fixtures are
+   updated to supply it because the ROUTE CONTRACT changed, not because the gate
+   was weakened for tests: the gate itself is proved over HTTP in
+   `server/__tests__/w214_third_party_authority_http.test.ts`. */
+import {
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT as W214_STMT,
+} from "../../shared/wave214ThirdPartyAuthorityCopy";
+const W214_AUTH = { authorityTypedName: "Test Managing Partner", authorityStatementShown: W214_STMT };
 
 const MANAGING = "u_avi_managing";
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
@@ -59,7 +68,7 @@ describe("Wave B1 (3a) — GET /api/companies/:id/attribution", () => {
     const create = await request(app)
       .post("/api/partner/me/portfolio-companies")
       .set("x-user-id", MANAGING)
-      .send({ companyName: "Attribution Co", founderEmail: "attr-founder@example.com" });
+      .send({ companyName: "Attribution Co", founderEmail: "attr-founder@example.com", ...W214_AUTH });
     expect(create.status).toBe(201);
     const companyId = create.body.companyId as string;
     expect(create.body.attributedPartnerId).toBe(PARTNER_A);
@@ -79,7 +88,7 @@ describe("Wave B1 (3a) — GET /api/companies/:id/attribution", () => {
     const create = await request(app)
       .post("/api/partner/me/portfolio-companies")
       .set("x-user-id", MANAGING)
-      .send({ companyName: "Private Probe Co", founderEmail: "private-founder@example.com" });
+      .send({ companyName: "Private Probe Co", founderEmail: "private-founder@example.com", ...W214_AUTH });
     expect(create.status).toBe(201);
     const companyId = create.body.companyId as string;
 

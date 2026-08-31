@@ -32,6 +32,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
 import { computeFounderOwnership } from "../lib/founderOwnershipEngine";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADAPTER_SRC = path.join(ROOT, "server/paymentGatewayAdapter.ts");
@@ -85,11 +86,11 @@ async function seedFounderShares(userId: string, companyId: string, key: string,
 
 /** Add a PRICED investor block, so the founder no longer owns everything. */
 async function addInvestor(userId: string, companyId: string, key: string): Promise<void> {
-  const created = await request(app).post("/api/rounds").set("x-user-id", userId).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", userId).send(w212Attest({
     companyId, name: `${STAMP} Priced ${key}`, type: "seed", instrument: "preferred",
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
-  });
+  }));
   expect(created.status, `priced round ${key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
   const backfill = await request(app).post("/api/founder/captable/backfill-investor")

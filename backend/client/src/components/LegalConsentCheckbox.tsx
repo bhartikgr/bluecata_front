@@ -22,6 +22,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { apiRequest } from "@/lib/queryClient";
 import { useLegalDrawer } from "@/lib/legalDrawer";
+import { useActiveLegalCorpusVersion } from "@/lib/useActiveLegalCorpusVersion";
 import type { LegalDocId } from "@/lib/legalDrawer";
 
 const DOC_LABELS: Record<LegalDocId, string> = {
@@ -54,6 +55,14 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
     const [checked, setChecked] = useState(false);
     const [recording, setRecording] = useState(false);
     const { openDrawer } = useLegalDrawer();
+    /* WAVE 210 — the version of the legal text THIS COMPONENT DISPLAYED, declared
+     * to the server rather than left to be inferred. The drawer opened from here
+     * renders the same corpus, so this is a statement about what the user was
+     * shown. The server independently resolves the served version when this is
+     * absent, so an older client can never write a versionless row. NOT COPY:
+     * no wording on this component changes (G1 — the signup consent's text is
+     * adequate and is not rewritten by this wave). */
+    const { activeVersion } = useActiveLegalCorpusVersion();
 
     useImperativeHandle(ref, () => ({
       checked,
@@ -64,6 +73,7 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
           await apiRequest("POST", "/api/legal/consent", {
             documentIds: docs,
             context,
+            documentVersion: activeVersion,
           });
           onConsentRecorded?.();
           return true;

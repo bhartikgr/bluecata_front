@@ -42,6 +42,7 @@ import {
   ZeroPricingDenominatorRefusal, PricingSolveNotConvergedRefusal,
   type ApiSecurity,
 } from "@shared/roundMathEngineAdapter";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const sec = (o: Record<string, unknown>): ApiSecurity => o as unknown as ApiSecurity;
 
@@ -335,12 +336,12 @@ describe("W72-D — GET /api/founder/rounds/:id/round-math", () => {
        the cap-table page reads, and `LIVE_AUDIT_2026_08_15.md` recorded
        "TOTAL SHARES 0 · 0 rows" for every company on live. Before this wave this
        request answered 200 with `pricePerShare: "Infinity"`. */
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: EMPTY_CO, name: `W72 Empty ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
-    });
+    }));
     expect(created.status).toBe(200);
     const id = String((created.body as { id: string }).id);
 
@@ -356,12 +357,12 @@ describe("W72-D — GET /api/founder/rounds/:id/round-math", () => {
   }, 60_000);
 
   it("W72-D2 — CONTROL POLE: the seeded company's round still answers 200 with a finite price", async () => {
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: "co_novapay", name: `W72 Real ${STAMP}`, type: "seed", instrument: "preferred",
       openDate: "2026-01-01", closeDate: "2026-12-31",
       targetAmount: 10_000_000, preMoney: 30_000_000, pricePerShare: 2,
       sharesAuthorized: 40_000_000, fdPreMoneyShares: 13_000_000,
-    });
+    }));
     expect(created.status).toBe(200);
     const id = String((created.body as { id: string }).id);
     const res = await request(app).get(`/api/founder/rounds/${id}/round-math`).set("x-user-id", ADMIN);

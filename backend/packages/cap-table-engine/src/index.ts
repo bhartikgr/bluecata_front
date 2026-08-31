@@ -24,6 +24,9 @@ export { applyBroadBasedWeightedAverage } from "./antiDilution/broadBasedWeighte
 export { applyNarrowBasedWeightedAverage } from "./antiDilution/narrowBasedWeightedAverage.js";
 
 export { computeWaterfall } from "./waterfall/liquidationWaterfall.js";
+/* WAVE 193 · R165.1 — the exit-waterfall's mixed-currency refusal, exported so a
+   caller can branch on the CONDITION rather than on a message substring. */
+export { MixedCurrencyWaterfallError } from "./waterfall/liquidationWaterfall.js";
 export { computeEsopTopUp } from "./instruments/esopTopUp.js";
 
 export { computeCapTable, applyTransaction } from "./captable/compute.js";
@@ -31,6 +34,24 @@ export { computeCapTable, applyTransaction } from "./captable/compute.js";
    shares to price a round against, so no price per share exists. Exported so a
    caller can branch on the CONDITION rather than on a message substring. */
 export { ZeroPricingDenominatorError } from "./captable/compute.js";
+/* WAVE 193 · R165.1 — the conversion-denominator refusal raised when the
+   post-money SAFEs whose amounts are summed into that denominator are recorded in
+   more than one currency. Capavate converts no currency (R156.1), so there is no
+   share count to return. Exported for the same reason as the line above. */
+export { MixedCurrencyConversionError } from "./captable/compute.js";
+/* WAVE 198 · ITEM B — the sibling refusal for the SAFE CONVERSION itself, which
+   is the surface a pre-money SAFE reaches (wave 194's ADV-3). Exported so the
+   round-math route's generic `.code` + `.refusalHeadline` envelope can carry it
+   and so tests can assert the class rather than a string. */
+export { MixedCurrencyConversionInputError } from "./captable/compute.js";
+/* WAVE 193 · R165.1 — the ONE absent-vs-mixed decision, exported so server and
+   client layers apply the SAME rule instead of each inventing one. */
+export { statedCurrencies, isMixedCurrency, describeStatedCurrencies } from "./primitives/currencySet.js";
+/* WAVE 198 · ITEM A — the one definition of currency-code sameness (case +
+   whitespace only, R156.1), exported so the sibling comparison surfaces the
+   wave-198 sweep found can fold codes identically instead of each inventing its
+   own comparison. */
+export { normaliseCurrencyForComparison } from "./primitives/currencySet.js";
 export { computeView } from "./captable/views.js";
 
 export {

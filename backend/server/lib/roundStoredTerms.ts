@@ -200,6 +200,30 @@ export type RoundStoredTerms = {
   participationCapUnreadable: boolean;
   /** Both sources carry a cap and they are different numbers. REFUSE. */
   participationCapConflict: boolean;
+  /* ── WAVE 194 · ITEM A — THE ROUND'S RECORDED CURRENCY, READ FOR THE ENGINE ──
+     Wave 193 taught the engine to REFUSE to add two differently-denominated
+     post-money SAFE amounts together, because that sum is the DENOMINATOR of the
+     YC post-money conversion (R165.1) and a wrong denominator is a wrong share
+     count and a wrong ownership percentage for every holder — silently. Wave 193
+     then reported honestly that the refusal could not fire on live data, because
+     nothing on the production path ever passed a currency INTO the engine. This
+     field is that missing link, and it is the whole of it.
+
+     IT IS A READ OF AN EXISTING COLUMN. Wave 191 wired `rounds.currency` end to
+     end on create AND edit; `server/roundsStore.ts` declares it (`:70`, `:248`),
+     hydrates it (`:140`, `:292`) and whitelists it for update (`:608`, `:882`).
+     So there is NO migration here, and none was added — `getRoundById` already
+     returns the value; nobody on the cap-table path had ever asked for it.
+
+     ABSENT IS ABSENT. `str` returns `null` for null, undefined and blank, and no
+     `??` follows it. Never infer a currency, never default one silently, never
+     convert (R156.1: "If an SPV or a round is in one currency, it is up to the
+     investor to deliver exactly in that currency"). The census that makes this
+     non-negotiable: `rounds` holds 1045 rows and ALL 1045 have a NULL currency,
+     so a default here — of any kind — would either stamp a currency nobody stated
+     onto every cap table on the platform, or make every SAFE set look uniform and
+     put wave 193's protection right back out of reach. */
+  currency: string | null;
 };
 
 /** The domain of a seniority rank. `0` is the most senior. */
@@ -357,6 +381,7 @@ const EMPTY: RoundStoredTerms = {
   participationCapMultiple: null, participationCapRaw: null,
   participationCapSource: null, participationCapUnreadable: false,
   participationCapConflict: false,
+  currency: null,
 };
 
 export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
@@ -452,6 +477,12 @@ export function roundStoredTerms(roundId: unknown): RoundStoredTerms {
     participationCapSource,
     participationCapUnreadable,
     participationCapConflict,
+    /* WAVE 194 · ITEM A — the recorded code, verbatim and trimmed, or null. No
+       `??`, no upper-casing, no validation against a compiled-in list of codes:
+       this is a READ, and the engine's job is to notice a CONTRADICTION between
+       two of them, not to police which codes exist (R156.2 forbids writing the
+       set of acceptable currencies into code as literals). */
+    currency: str("currency"),
   };
 }
 

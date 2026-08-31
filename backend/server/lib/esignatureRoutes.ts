@@ -15,7 +15,18 @@
 // THIS IS NOT A CLASSIFICATION SURFACE. Nothing here reads sector/sub-sector or
 // touches permissions or navigation; the PT-5 fence is untouched.
 import type { Express, Request, Response } from "express";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
+/* WAVE 216 — the ONE definition of the bytes a signer signs, and the ONE place
+   the intent and consent sentences live. Imported, never re-typed. */
+import {
+  WAVE216_INTENT_VERSION,
+  WAVE216_STATEMENT_VERSION,
+  WAVE216_INTENT_SENTENCE,
+  WAVE216_CONSENT_SENTENCE,
+  WAVE216_REFUSAL_INTENT_REQUIRED,
+  WAVE216_REFUSAL_HASH_MISMATCH,
+  WAVE216_STATEMENT_BOUND_EVENT,
+} from "../../shared/wave216SignedStatement";
 import { mintRefusalIncidentCode } from "./refusalIncidentCode";
 import { rawDb } from "../db/connection";
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
@@ -31,6 +42,7 @@ import {
   declineSignature,
   voidEnvelope,
   envelopeDetail,
+  appendEsignEvent,
   listEnvelopesForSubject,
   listEsignProviders,
   readEsignProviderConfig,
@@ -39,6 +51,23 @@ import {
   ESIGN_PROVIDER_CONFIG_KEY,
   type EnvelopeRow,
 } from "./esignatureStore";
+
+/**
+ * WAVE 216 — THE ONLY HASH IMPLEMENTATION IN THIS FLOW.
+ *
+ * Deliberately not exported and deliberately not mirrored on the client. The
+ * client renders bytes and posts bytes; this function is the single thing that
+ * turns bytes into a digest, both when the digest is stored and when it is
+ * checked. "The rendered bytes are the hashed bytes" therefore cannot quietly
+ * become "two implementations of SHA-256 happen to agree", which is one of the
+ * five known ways an inert proof looks correct in review.
+ *
+ * `utf8` is stated rather than left to the default so the encoding is part of the
+ * record, not part of the environment.
+ */
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
@@ -311,7 +340,17 @@ export function registerEsignatureRoutes(app: Express): void {
    * POST /api/partner/me/spvs/:spvId/esignature — create a DRAFT envelope for an
    * LPA / subscription document and (unless draftOnly) send it.
    * Body: { documentKind, documentRef, documentTitle, documentSha256?,
-   *         expiresAt?, draftOnly?, recipients: [...] }
+   *         documentStatementText?, expiresAt?, draftOnly?, recipients: [...] }
+   *
+   * WAVE 216 — `documentStatementText` is the ADDED, OPTIONAL field. When present
+   * it is the exact bytes the client rendered to the operator as the signing
+   * statement; the SERVER hashes those bytes and stores the digest in the column
+   * migration 0168 has always carried. There is deliberately no second hash
+   * implementation anywhere: the client never hashes, so "the rendered bytes equal
+   * the hashed bytes" cannot degrade into "two implementations agree".
+   *
+   * `documentSha256` is still accepted and still wins when supplied, so every
+   * caller that worked before this wave works identically after it.
    * ========================================================== */
   app.post(
     "/api/partner/me/spvs/:spvId/esignature",
@@ -353,12 +392,39 @@ export function registerEsignatureRoutes(app: Express): void {
           documentTitle: isNonEmptyString(body.documentTitle)
             ? String(body.documentTitle)
             : String(body.documentRef),
-          documentSha256: isNonEmptyString(body.documentSha256) ? String(body.documentSha256) : null,
+          documentSha256: isNonEmptyString(body.documentSha256)
+            ? String(body.documentSha256)
+            : isNonEmptyString(body.documentStatementText)
+              ? sha256Hex(String(body.documentStatementText))
+              : null,
           createdBy: `partner:${pid}`,
           expiresAt: isNonEmptyString(body.expiresAt) ? String(body.expiresAt) : null,
           recipients,
         });
 
+        /* WAVE 216 — the STATEMENT BINDING MARKER.
+
+           Written to the EXISTING append-only `esign_event` table (no new table,
+           no new column, no migration) BEFORE the send, so it is present for any
+           later read. Its presence is what tells the sign route that this
+           envelope's `document_sha256` is a digest of a statement whose bytes the
+           signer must be able to reproduce — as opposed to a raw document hash
+           supplied by an older caller, which carries no such obligation.
+
+           This is why the fence below can be fail-closed for envelopes this wave
+           creates while changing nothing at all for envelopes it does not. */
+        if (!isNonEmptyString(body.documentSha256) && isNonEmptyString(body.documentStatementText)) {
+          appendEsignEvent({
+            envelopeId: envelope.id,
+            eventKind: WAVE216_STATEMENT_BOUND_EVENT,
+            actor: `partner:${pid}`,
+            detail: {
+              statementVersion: WAVE216_STATEMENT_VERSION,
+              statementSha256: sha256Hex(String(body.documentStatementText)),
+              statementLength: String(body.documentStatementText).length,
+            },
+          });
+        }
         if (body.draftOnly !== true) {
           envelope = sendEnvelope(envelope.id, `partner:${pid}`);
         }
@@ -427,10 +493,74 @@ export function registerEsignatureRoutes(app: Express): void {
         if (!isNonEmptyString(body.signedName)) {
           return res.status(400).json({ error: "SIGNATURE_NAME_REQUIRED" });
         }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           WAVE 216 — THE FENCE. Two refusals, both fail-closed, both scoped to
+           envelopes this wave's client created.
+           ═══════════════════════════════════════════════════════════════════════
+           SCOPING, and why it is not a loophole. `statementBound` is read from the
+           append-only event log, which cannot be updated or deleted (0168's
+           `trg_w11_ese_no_update` / `trg_w11_esign_no_delete` family). A caller
+           cannot make a bound envelope look unbound, because the marker is not in
+           the request — it is in the envelope's own immutable history.
+
+           An envelope with a raw `documentSha256` from an older caller, or with no
+           hash at all, reaches `recordSignature()` on exactly the path it reached
+           before this wave. Nothing that could be signed before this wave cannot
+           be signed after it. */
+        const statementBound = before.events.some(
+          (e) => e.eventKind === WAVE216_STATEMENT_BOUND_EVENT,
+        );
+        let intent: {
+          version: string;
+          intentText: string;
+          consentText: string;
+          statementSha256: string;
+        } | null = null;
+
+        if (statementBound) {
+          /* (1) EXPRESS INTENT. ESIGN/UETA wants the signer's intent on the
+                 record, not inferred from the fact that a button was clickable.
+                 Accepted STRICTLY as boolean `true` — never coerced, so a UI bug
+                 or a stray string cannot become an assertion of intent. */
+          if (body.intentAcknowledged !== true) {
+            return res.status(422).json({
+              error: "ESIGN_INTENT_REQUIRED",
+              message: WAVE216_REFUSAL_INTENT_REQUIRED,
+            });
+          }
+          /* (2) THE CORE INVARIANT, ENFORCED. The signer's screen posts back the
+                 exact bytes it rendered. The server hashes THOSE BYTES with the
+                 same one hash implementation that produced the stored digest and
+                 compares. A signature over content whose hash does not match what
+                 was stored is refused, and nothing is written. */
+          const rendered = isNonEmptyString(body.renderedStatementText)
+            ? String(body.renderedStatementText)
+            : null;
+          const renderedSha = rendered === null ? null : sha256Hex(rendered);
+          if (
+            rendered === null ||
+            !isNonEmptyString(before.envelope.documentSha256) ||
+            renderedSha !== before.envelope.documentSha256
+          ) {
+            return res.status(422).json({
+              error: "ESIGN_STATEMENT_HASH_MISMATCH",
+              message: WAVE216_REFUSAL_HASH_MISMATCH,
+            });
+          }
+          intent = {
+            version: WAVE216_INTENT_VERSION,
+            intentText: WAVE216_INTENT_SENTENCE,
+            consentText: WAVE216_CONSENT_SENTENCE,
+            statementSha256: renderedSha,
+          };
+        }
+
         const out = recordSignature({
           envelopeId: id,
           recipientId: String(body.recipientId),
           signedName: String(body.signedName),
+          intent,
           ipAddress: req.ip ?? null,
           userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
           actor: `partner:${pid}`,
@@ -441,6 +571,12 @@ export function registerEsignatureRoutes(app: Express): void {
           signingOrder: out.recipient.signingOrder,
           signatureHash: out.recipient.signatureHash,
           completed: out.completed,
+          /* WAVE 216 — APPENDED keys on wave 186's EXISTING audit writer. No
+             second audit path. `null` when the envelope is not statement-bound,
+             which is an honest "this envelope carries no statement intent" and
+             never a fabricated affirmation. */
+          esignIntentVersion: intent ? intent.version : null,
+          esignStatementSha256: intent ? intent.statementSha256 : null,
         });
         /* The reserved notification slot finally gets a producer. Best-effort:
            a notification failure must not unwind a recorded signature. */

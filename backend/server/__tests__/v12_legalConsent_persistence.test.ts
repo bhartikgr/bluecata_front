@@ -15,6 +15,9 @@ import {
   _testLegalConsent,
 } from "../legalConsentStore";
 import { LEGAL_VERSION } from "../../client/src/lib/legalDocs";
+/* WAVE 210 — the served version now comes from `platform_config`, not a constant. */
+import { readActiveLegalCorpusVersion } from "../lib/wave210LegalCorpusVersionStore";
+import { ADOPTED_LEGAL_CORPUS_VERSION } from "@shared/wave210LegalCorpusVersion";
 
 describe("v12 legalConsentStore — DB persistence + chain integrity", () => {
   beforeEach(() => {
@@ -67,6 +70,28 @@ describe("v12 legalConsentStore — DB persistence + chain integrity", () => {
     // Chain length stays at 1
     expect(getAllConsents().length).toBe(1);
     expect(getConsentsForUser("u_a").length).toBe(1);
-    expect(getConsentsForUser("u_a")[0].documentVersion).toBe(LEGAL_VERSION);
+    /* WAVE 210 — THIS LINE WAS CHANGED, AND THE OLD EXPECTATION IS KEPT BESIDE IT.
+     *
+     * It used to read `.toBe(LEGAL_VERSION)`, i.e. "2026-03-17", the compile-time
+     * constant exported by `client/src/lib/legalDocs.ts`. That was correct for the
+     * behaviour that existed: `recordConsent` stamped that constant on every row
+     * regardless of which document the user was actually shown. Wave 210 exists
+     * because that was the defect — the served page was a different document,
+     * with a different date, naming a different entity, and the consent record
+     * attested to none of it.
+     *
+     * A consent row now names the version the platform SERVES, read from
+     * `platform_config`. So the assertion is re-pointed at the served version
+     * rather than at a constant, and the ORIGINAL constant is asserted to be what
+     * it always was — unchanged, still exported, still the version thousands of
+     * historical rows legitimately name. Nothing was loosened: this is a stricter
+     * statement than the old one, because it would also fail if the served version
+     * and the recorded version ever diverged again. */
+    const served = readActiveLegalCorpusVersion();
+    expect(getConsentsForUser("u_a")[0].documentVersion).toBe(served);
+    expect(served).toBe(ADOPTED_LEGAL_CORPUS_VERSION);
+    /* The superseded constant is untouched and still means what it meant. */
+    expect(LEGAL_VERSION).toBe("2026-03-17");
+    expect(served).not.toBe(LEGAL_VERSION);
   });
 });

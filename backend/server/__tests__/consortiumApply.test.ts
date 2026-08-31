@@ -22,6 +22,7 @@ import {
   type ConsortiumApplicationRow,
 } from "../consortiumApplyStore";
 import { installV14TestIdentity } from "./_v14TestIdentity";
+import { w217Declare } from "./_w217ComplianceFixture";
 
 let app: express.Express;
 
@@ -37,7 +38,24 @@ beforeEach(() => {
   _resetPublicApplyBucketsForTests();
 });
 
-const validBody = {
+/**
+ * WAVE 217 (2026-08-30) — the four compliance-declaration fields were ADDED to
+ * this fixture; NOTHING in it was removed or changed.
+ *
+ * `POST /api/public/consortium/apply` and `POST /api/consortium-applications` now
+ * refuse an application that carries no compliance declaration (422
+ * COMPLIANCE_ATTESTATION_REQUIRED). Six of the seven tests in this file were
+ * submitting a bare body and started returning 422 — which is the gate working,
+ * not a regression. `w217Declare` supplies exactly what the real screen supplies;
+ * see `_w217ComplianceFixture.ts` for why the sentence is built rather than
+ * retyped. Every original field and every original assertion in this file is
+ * unchanged.
+ *
+ * The only body field that varies between these tests is `contactEmail`, so
+ * wrapping the shared fixture once is sufficient: the declaration's sentence is
+ * per-organisation and per-signer, and neither varies here.
+ */
+const validBody = w217Declare({
   organizationName: "Alpha Capital Ltd",
   contactName: "Alice Test",
   contactEmail: "alice@alpha-capital.test",
@@ -48,7 +66,7 @@ const validBody = {
   expectedChapter: "chap_keiretsu_canada",
   introMessage:
     "We have a track record of investing in seed-stage SaaS in Ontario.",
-};
+});
 
 describe("CP Phase B — public apply submit", () => {
   it("accepts a valid submission and returns 201 with applicationId", async () => {

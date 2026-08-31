@@ -55,6 +55,11 @@ import {
   type DerivedMark,
   type MarkBadge,
 } from "../wave9ReportingStore";
+/* WAVE 198 · ITEM A · R170 — the ONE definition of currency-code sameness
+   (case + whitespace only; nothing mapped or converted, R156.1). Imported
+   rather than re-implemented so this surface cannot drift from the engine's
+   mixture rule and reintroduce a false refusal. */
+import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 
 /* ==========================================================================
  * 1. EXACT SHARES × PRICE ARITHMETIC
@@ -274,9 +279,19 @@ export function computeSpvNav(args: {
 
   // NEVER SUM ACROSS CURRENCIES. Detected before any addition happens, so the
   // wrong number is not computed and then discarded — it is never computed.
-  const currencies = new Set(held.map((h) => h.currency));
+  /* WAVE 198 · ITEM A · R170 — SAMENESS IS TESTED ON NORMALISED CODES.
+     Two holdings recording the same code in different case, or with a stray
+     leading space typed into a form, are ONE currency. Before this, they were
+     read as two and this vehicle's NAV refused to compute although it was
+     genuinely single-currency — the false-refusal direction, which blocks real
+     work. Case and surrounding whitespace ONLY: nothing is mapped, aliased or
+     converted (R156.1), and no code is named here (R156.2). */
+  const currencies = new Set(held.map((h) => normaliseCurrencyForComparison(h.currency)));
   const mixedCurrency = currencies.size > 1;
-  const currency = mixedCurrency ? args.vehicleCurrency : (Array.from(currencies.values())[0] ?? args.vehicleCurrency);
+  /* The code REPORTED below is the one that was RECORDED, byte-for-byte. Folding
+     case is a way of comparing, not a licence to rewrite a stored value. */
+  const recordedCurrencies = new Set(held.map((h) => h.currency));
+  const currency = mixedCurrency ? args.vehicleCurrency : (Array.from(recordedCurrencies.values())[0] ?? args.vehicleCurrency);
 
   const lines: NavHoldingLine[] = [];
   let marked = 0;

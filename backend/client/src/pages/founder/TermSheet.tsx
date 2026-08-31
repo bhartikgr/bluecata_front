@@ -38,6 +38,15 @@ import { emit } from "@/lib/sprint3";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
 import { sha256 } from "@capavate/cap-table-engine";
+/* WAVE 209 · ITEM A (decision B1; R187.1) — the "not captured" vocabulary. The
+ * signature's own address field is the explicit sentinel because a browser
+ * cannot observe its own public address; the durable address is stamped by
+ * POST /api/founder/term-sheets from the one hardened resolver. */
+import {
+  signerAddressDisplay,
+  SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE,
+  SIGNER_ADDRESS_SERVER_OBSERVED_SENTENCE,
+} from "@/lib/esign/wave209SignerMetadata";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
 import {
  getTemplate, reconcileTerms,
@@ -898,7 +907,13 @@ export default function TermSheet() {
  <div><div className="text-xs text-muted-foreground">Signed at</div><div className="font-medium">{fmtDate(stored.signedAt ?? "")}</div></div>
  <div className="md:col-span-2"><div className="text-xs text-muted-foreground">Document hash</div><div className="font-mono text-[11px] break-all">{stored.documentHash}</div></div>
  <div className="md:col-span-2"><div className="text-xs text-muted-foreground">Signature hash</div><div className="font-mono text-[11px] break-all">{stored.signature?.hash}</div></div>
+ {/* WAVE 209 · ITEM A §209.2(d) — APPENDED SIBLING, never a replacement (R143.1).
+     This surface previously showed no address while the record silently carried an
+     invented one. It now says, in words, exactly what the record holds. */}
+ <div className="md:col-span-2" data-testid="text-termsheet-signer-address"><div className="text-xs text-muted-foreground">Signer network address</div><div className="font-mono text-[11px] break-all">{signerAddressDisplay(stored.signature?.ipAddress)}</div></div>
  </div>
+ <div className="text-xs text-muted-foreground" data-testid="text-termsheet-address-not-captured">{SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE}</div>
+ <div className="text-xs text-muted-foreground" data-testid="text-termsheet-address-server-observed">{SIGNER_ADDRESS_SERVER_OBSERVED_SENTENCE}</div>
  <div className="flex flex-wrap gap-2 pt-3 border-t border-border">
  <Button onClick={handleSendToInvestors} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-send-termsheet">
  <Send className="h-4 w-4 mr-2" /> Send to investors ({invs.data?.length ?? 0})

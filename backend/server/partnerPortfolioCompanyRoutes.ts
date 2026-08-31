@@ -34,6 +34,21 @@ import { partnerPipelineStore, partnerAttributionStore } from "./partnerWorkspac
 import { upsertPortfolioProfile } from "./partnerPortfolioStore";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+/* WAVE 186 · R159.1 — see the audit block at the end of the create handler. */
+import { appendAdminAudit, reportAuditWriteOutcome } from "./adminPlatformStore";
+/* WAVE 214 · surface 1 — the third-party authority confirmation. The statement
+   literal lives in `shared/` and is imported by BOTH this route and the screen
+   that shows it, so the sha256 recorded here attests to the bytes the user read
+   (R187.3: the previous e-signature envelope could prove nothing because no hash
+   of the presented text was captured). */
+import {
+  evaluateTypedNameAuthority,
+  recordAuthorityConfirmation,
+} from "./lib/wave214ThirdPartyAuthorityStore";
+import {
+  WAVE214_AUTHORITY_SURFACES,
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT,
+} from "../shared/wave214ThirdPartyAuthorityCopy";
 
 /** Only these partner sub-roles may create a portfolio company (mirrors the
  *  pipeline write gate: managing_partner | associate | bd). */
@@ -110,8 +125,51 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
       // email is required (rule #12/#13 \u2014 we always capture who will own it).
       if (!isEmail(founderEmail)) return res.status(400).json({ error: "FOUNDER_EMAIL_REQUIRED" });
 
+      /* ---------------------------------------------------------------------
+         WAVE 214 · SURFACE 1 — THE AUTHORITY CONFIRMATION.
+
+         This is the most exposed third-party-data surface on the platform: the
+         partner supplies a company name and another person's email address, and
+         the platform creates a real company account plus a claim invitation for
+         a person who never asked to be here.
+
+         The check sits HERE deliberately — after the two existing validity
+         checks and BEFORE the first durable write (`addCompanyForFounder`
+         below). Placing it after any write would leave a company created without
+         a confirmation on the record, which is the exact defect.
+
+         It is fail-closed: an absent or non-matching confirmation refuses with
+         400. It adds no eligibility condition to WHO may create a company
+         (R190.10) — every partner sub-role that could do this before still can;
+         it adds a step, not a permission.
+      --------------------------------------------------------------------- */
+      const authority = evaluateTypedNameAuthority({
+        req,
+        body,
+        surface: WAVE214_AUTHORITY_SURFACES.partnerPortfolioCompany,
+        expectedStatement: WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT,
+      });
+      if (!authority.ok) {
+        return res.status(authority.httpStatus).json({ error: authority.error, message: authority.message });
+      }
+
       const companyId = `co_${randomBytes(6).toString("hex")}`;
       const ownerUserId = pendingFounderUserId(founderEmail);
+
+      /* WAVE 214 — record the envelope (text + sha256 + server timestamp +
+         server-observed IP + user agent) against the company and the invitee's
+         email. Written BEFORE the company, so the confirmation exists on the
+         ledger even if a later step rolls the company back: a confirmation that
+         only survives on success would be missing for exactly the attempts
+         somebody would later want to investigate. */
+      recordAuthorityConfirmation({
+        actor: `partner:${ctx.partnerId}:${ctx.userId}`,
+        surface: WAVE214_AUTHORITY_SURFACES.partnerPortfolioCompany,
+        subject: `company:${companyId}`,
+        envelope: authority.envelope,
+        route: "POST /api/partner/me/portfolio-companies",
+        extra: { founderEmail, companyName, partnerId: ctx.partnerId },
+      });
 
       // 1) Create the independent company via the canonical engine, owned by the
       //    pending-founder id (never the partner). Fail-closed: a persist failure
@@ -243,6 +301,54 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
       } catch (err) {
         log.warn("[partnerPortfolioCompanyRoutes] portfolio profile seed failed (continuing):", (err as Error).message);
       }
+
+      /* ══ WAVE 186 · ITEM A · R159.1 — THE COMPANY'S OWN CREATION IS RECORDED ══
+       * PROVED GAP, not a suspicion. R157.1 reports that a portfolio company was
+       * created on live (`co_e60238e18fd2` — the `co_<12 hex>` shape minted at the
+       * top of THIS handler) and produced no ledger row. Driving this route
+       * locally over real HTTP produced three rows —
+       * `subscription.auto_created_on_company_create`, `partner.attribution.created`
+       * and `partner.pipeline.created` — every one of them a SIDE EFFECT. There was
+       * no `company.created` event type anywhere in the codebase, so the ledger
+       * could not answer the first question an auditor asks about a portfolio
+       * company: who created it, and when.
+       *
+       * Recorded here, after all four fail-closed steps have committed (company,
+       * subscription, attribution link, attribution row, founder claim token) and
+       * before the response, so the row describes a company that certainly exists.
+       * Every earlier failure path returns 500 and rolls back, and therefore
+       * correctly writes nothing.
+       *
+       * NOT A BACKFILL: this records creations from now on. Companies created
+       * before this ships have no row and will never be given one.
+       *
+       * The write outcome is CHECKED, not discarded — that discarding is the habit
+       * that let a three-month ledger outage pass unnoticed. It does not refuse the
+       * creation: the company, its attribution and its claim token are already
+       * durable, and rolling all three back over a failed log line would destroy
+       * more provenance than it preserves (W186_BUILD.md §3). */
+      reportAuditWriteOutcome(
+        appendAdminAudit(
+          ctx.userId,
+          `company:${companyId}`,
+          "company.created",
+          {
+            companyId,
+            companyName,
+            legalName: company.legalName,
+            founderEmail,
+            founderName: founderName || null,
+            ownerUserId,
+            sector: sector || null,
+            stage: stage || null,
+            hq: hq || null,
+            createdByPartnerId: ctx.partnerId,
+            origin: "partner_portfolio",
+            auditWave: 186,
+          },
+        ),
+        { bearing: "identity", action: "company.created", route: "partner.portfolio-companies.create", subject: companyId },
+      );
 
       res.status(201).json({
         ok: true,

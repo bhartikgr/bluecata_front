@@ -30,6 +30,12 @@ import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { spvEngineStore } from "../spvEngineStore";
 import { committedRegisterRows } from "../spvNavStore";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_COMMIT_ATT, W226_LP_INVITE_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const PARTNER_ID = "ac_consortium_partner_test_partner_inc";
 let app: express.Express;
@@ -69,6 +75,7 @@ describe("W106 F1 — a commitment carries the identity that was entered", () =>
   it("seats the committed LP under the name typed into the commit form", async () => {
     const spvId = await newSpv("W106 Identity SPV");
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Dana",
       holderLastName: "Whitfield",
       investorEmail: "dana@example.com",
@@ -92,6 +99,7 @@ describe("W106 F1 — a commitment carries the identity that was entered", () =>
   it("matches an existing invited LP on the same SPV by email instead of creating a second record — case-insensitively and trimmed", async () => {
     const spvId = await newSpv("W106 Match SPV");
     const inv = await post(`/api/partner/me/spv/${spvId}/lp-invites`, {
+      ...W226_LP_INVITE_ATT, /* WAVE 226 · R202 — see the fixture note */
       email: "ozan@capavate.com",
       firstName: "Ozan",
       lastName: "Isinak",
@@ -100,6 +108,7 @@ describe("W106 F1 — a commitment carries the identity that was entered", () =>
 
     /* Deliberately different case AND surrounding whitespace. */
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Ozan",
       holderLastName: "Isinak",
       investorEmail: "   Ozan@Capavate.COM  ",
@@ -123,7 +132,7 @@ describe("W106 F1 — a commitment carries the identity that was entered", () =>
 
   it("refuses a commit that carries no identity, in plain English, rather than recording an anonymous holder", async () => {
     const spvId = await newSpv("W106 Refusal SPV");
-    const bad = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { amount: "5000", shares: "5000" });
+    const bad = await post(`/api/partner/me/spv/${spvId}/lp-commit`, { ...W226_LP_COMMIT_ATT, amount: "5000", shares: "5000" });
 
     expect(bad.status).toBeGreaterThanOrEqual(400);
     expect(bad.status).toBeLessThan(500);
@@ -143,11 +152,13 @@ describe("W106 F1 — a commitment carries the identity that was entered", () =>
   it("every downstream reader reports the SAME committed total, compared against each other", async () => {
     const spvId = await newSpv("W106 Readers SPV");
     await post(`/api/partner/me/spv/${spvId}/lp-invites`, {
+      ...W226_LP_INVITE_ATT, /* WAVE 226 · R202 — see the fixture note */
       email: "lee@example.com",
       firstName: "Lee",
       lastName: "Sang-min",
     });
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Lee",
       holderLastName: "Sang-min",
       investorEmail: "LEE@example.com",

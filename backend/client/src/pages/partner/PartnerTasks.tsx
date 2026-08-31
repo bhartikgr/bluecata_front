@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 /* v25.12 NH9 — toast task-creation failures. */
 import { useToast } from "@/hooks/use-toast";
 import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
+import { describeFailure } from "@/lib/failureMessage";
 
 type PartnerTask = {
   id: string;
@@ -52,7 +53,8 @@ export default function PartnerTasks() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/tasks"] });
       setNewTitle("");
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not create task", description: e.message }),
+    /* WAVE 197 #51 — WRITE. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not create task", description: describeFailure(e, "write") }),
   });
 
   if (!role.ready || !role.identity) return null;

@@ -77,6 +77,12 @@ import {
 } from "@shared/spvCommittedCapital";
 import { SPV_SUBSCRIPTION_REFUSAL_COPY } from "@shared/spvSubscriptionRefusalCopy";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_INVITE_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const PARTNER = "ac_consortium_partner_test_partner_inc";
 
@@ -537,12 +543,14 @@ describe("W166 §4 — Path 2: direct-add carries an origin", () => {
   it("T4.4: the origin route accepts the field and refuses a bad one with a sentence", async () => {
     const spvId = await createSpv(`W166 P2 route ${uniq()}`);
     const ok = await post(`/api/partner/me/spv/${spvId}/lp-invites`, MANAGING, {
+      ...W226_LP_INVITE_ATT, /* WAVE 226 · R202 — see the fixture note */
       email: `w166.rt.${uniq()}@example.com`, firstName: "R", lastName: "Oute",
       origin: "existing_captable",
     });
     expect([200, 201]).toContain(ok.status);
 
     const bad = await post(`/api/partner/me/spv/${spvId}/lp-invites`, MANAGING, {
+      ...W226_LP_INVITE_ATT, /* WAVE 226 · R202 — see the fixture note */
       email: `w166.rtbad.${uniq()}@example.com`, firstName: "R", lastName: "Bad",
       origin: "whatever",
     });

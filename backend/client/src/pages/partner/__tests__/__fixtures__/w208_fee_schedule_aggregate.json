@@ -1,0 +1,207 @@
+{
+  "catalyst": {
+    "tier": "catalyst",
+    "lines": [
+      {
+        "feeKind": "subscription_monthly",
+        "ok": false,
+        "amountMinor": null,
+        "currency": null,
+        "computedVia": null,
+        "feeScheduleId": null,
+        "error": "MONTHLY_NOT_OFFERED: monthly billing is not currently offered, so no monthly rate is on file for tier \"catalyst\" and none is shown",
+        "billingPeriod": null,
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "subscription_annual",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "partner_tier_price_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "annual",
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "spv_deployment",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "platform_fee_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "one_off",
+        "authoritativeSource": "platform_fees",
+        "pendingRepoint": true
+      }
+    ]
+  },
+  "builder": {
+    "tier": "builder",
+    "lines": [
+      {
+        "feeKind": "subscription_monthly",
+        "ok": false,
+        "amountMinor": null,
+        "currency": null,
+        "computedVia": null,
+        "feeScheduleId": null,
+        "error": "MONTHLY_NOT_OFFERED: monthly billing is not currently offered, so no monthly rate is on file for tier \"builder\" and none is shown",
+        "billingPeriod": null,
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "subscription_annual",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "partner_tier_price_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "annual",
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "spv_deployment",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "platform_fee_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "one_off",
+        "authoritativeSource": "platform_fees",
+        "pendingRepoint": true
+      }
+    ]
+  },
+  "amplifier": {
+    "tier": "amplifier",
+    "lines": [
+      {
+        "feeKind": "subscription_monthly",
+        "ok": false,
+        "amountMinor": null,
+        "currency": null,
+        "computedVia": null,
+        "feeScheduleId": null,
+        "error": "MONTHLY_NOT_OFFERED: monthly billing is not currently offered, so no monthly rate is on file for tier \"amplifier\" and none is shown",
+        "billingPeriod": null,
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "subscription_annual",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "partner_tier_price_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "annual",
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "spv_deployment",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "platform_fee_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "one_off",
+        "authoritativeSource": "platform_fees",
+        "pendingRepoint": true
+      }
+    ]
+  },
+  "nexus": {
+    "tier": "nexus",
+    "lines": [
+      {
+        "feeKind": "subscription_monthly",
+        "ok": false,
+        "amountMinor": null,
+        "currency": null,
+        "computedVia": null,
+        "feeScheduleId": null,
+        "error": "MONTHLY_NOT_OFFERED: monthly billing is not currently offered, so no monthly rate is on file for tier \"nexus\" and none is shown",
+        "billingPeriod": null,
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "subscription_annual",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "partner_tier_price_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "annual",
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "spv_deployment",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "platform_fee_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "one_off",
+        "authoritativeSource": "platform_fees",
+        "pendingRepoint": true
+      }
+    ]
+  },
+  "founding_member": {
+    "tier": "founding_member",
+    "lines": [
+      {
+        "feeKind": "subscription_monthly",
+        "ok": false,
+        "amountMinor": null,
+        "currency": null,
+        "computedVia": null,
+        "feeScheduleId": null,
+        "error": "MONTHLY_NOT_OFFERED: monthly billing is not currently offered, so no monthly rate is on file for tier \"founding_member\" and none is shown",
+        "billingPeriod": null,
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "subscription_annual",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "partner_tier_price_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "annual",
+        "authoritativeSource": "partner_tier_price",
+        "pendingRepoint": true
+      },
+      {
+        "feeKind": "spv_deployment",
+        "ok": true,
+        "amountMinor": 24000,
+        "currency": "USD",
+        "computedVia": "platform_fee_authoritative",
+        "feeScheduleId": null,
+        "error": null,
+        "billingPeriod": "one_off",
+        "authoritativeSource": "platform_fees",
+        "pendingRepoint": true
+      }
+    ]
+  }
+}

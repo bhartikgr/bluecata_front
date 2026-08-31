@@ -25,6 +25,28 @@
  * Wave 18's own falsification run MISSED that mutation the first time; the
  * harness for this wave covers it explicitly.
  */
+/* ===========================================================================
+   WAVE 183 - ITEM C: THE GOOD COPY IS PRESERVED, AND A DIAGNOSIS IS ADDED
+   BESIDE IT RATHER THAN OVER IT.
+
+   Wave 183 found four surfaces telling users to retry a condition that retrying
+   cannot change: a policy refusal (HTTP 403) classified as a transient load
+   failure. The correct fix is to NAME THE MISSING FACT. The wrong fix - and the
+   one this comment exists to forbid - is to reword the two sentences below.
+
+   Owner ruling R143.1 is explicit, and this component is where it bites hardest:
+   the two literals below are genuinely good copy, they must still appear for
+   genuine transient failures, and a REPLACED text node scores in `npm run guard`
+   as a REMOVED copy string. So `detail` renders as an ADDITIONAL SIBLING element
+   AFTER both existing divs. Neither existing literal is touched, re-indented or
+   re-wrapped by this wave, and `detail` is OPTIONAL, so every pre-existing call
+   site renders byte-identical output to before.
+
+   `detail` is for a STATED FACT ("no active Collective membership is on file for
+   this account"), never for a restatement of the failure. If a surface does not
+   know which fact is missing, it must pass nothing and let the honest transient
+   copy stand alone. Nothing here is allow-listed in any guard.
+   =========================================================================== */
 import { Button } from "@/components/ui/button";
 
 export function LoadFailedRefusal({
@@ -32,6 +54,7 @@ export function LoadFailedRefusal({
   onRetry,
   testId,
   isRetrying = false,
+  detail,
 }: {
   /** Plural noun for the thing that failed to load, e.g. "your contacts". */
   what: string;
@@ -41,6 +64,10 @@ export function LoadFailedRefusal({
   testId: string;
   /** Disables the retry while a refetch is already in flight. */
   isRetrying?: boolean;
+  /** WAVE 183 - ITEM C. An optional STATED FACT, rendered as a NEW SIBLING
+   *  below the two preserved literals. Omit it and this component behaves
+   *  exactly as it did before wave 183. */
+  detail?: string | null;
 }) {
   return (
     <div
@@ -53,6 +80,14 @@ export function LoadFailedRefusal({
         Nothing has been changed. This is a loading failure, not an empty list — what you had
         is still there.
       </div>
+      {/* WAVE 183 - ITEM C. A SIBLING, not a splice. It sits between the
+          preserved reassurance and the retry button so the reader gets: what
+          failed, that nothing was lost, WHY, and then the action. */}
+      {detail ? (
+        <div className="mt-1.5 text-xs font-medium" data-testid={`${testId}-detail`}>
+          {detail}
+        </div>
+      ) : null}
       <Button
         variant="outline"
         size="sm"

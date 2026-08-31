@@ -43,6 +43,7 @@ import {
 } from "../roundsStore";
 import { addCompanyForFounder } from "../multiCompanyStore";
 import { registerFounderUser } from "../lib/userContext";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let FOUNDER_USER_ID = "";
 const COMPANY_ID = "co_22may_persistence_test";
@@ -112,7 +113,7 @@ describe("Avi 22-May Issue 3 — round persistence end-to-end proof", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_USER_ID)
-      .send({
+      .send(w212Attest({
         companyId: COMPANY_ID,
         name: "Persistence Proof \u2014 Series A",
         type: "series_a",
@@ -130,7 +131,7 @@ describe("Avi 22-May Issue 3 — round persistence end-to-end proof", () => {
         currency: "USD",
         region: "US",
         useOfProceeds: "Sales hiring + market entry",
-      });
+      }));
 
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
@@ -201,11 +202,11 @@ describe("Avi 22-May Issue 3 — round persistence end-to-end proof", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_USER_ID)
-      .send({
+      .send(w212Attest({
         companyId: "co_someone_else_company",
         name: "Should fail",
         type: "seed",
-      });
+      }));
     expect(r.status).toBe(403);
     expect(r.body.error).toBe("FOUNDER_WRONG_COMPANY");
   });

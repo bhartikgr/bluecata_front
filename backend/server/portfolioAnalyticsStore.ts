@@ -111,12 +111,23 @@ export type PortfolioSeries = {
 };
 
 export type PortfolioAnalytics = {
-  /** MAJOR units, real, from the cap-table commit ledger. */
-  totalInvested: number;
+  /* WAVE 180 · ITEM A SITE 3 (surface) — THE CURRENCY OF EVERY MAJOR-UNIT FIGURE
+   * BELOW, and null when the ledger spans currencies. Until now this type carried
+   * no currency at all, and client/src/pages/investor/Dashboard.tsx printed the
+   * figures through `fmtUSD` — so a CAD or HKD portfolio was rendered with a
+   * dollar sign regardless. Read `moneyAvailable` before printing any of them. */
+  currency: string | null;
+  currencies: string[];
+  moneyAvailable: boolean;
+  moneyUnavailable: { reason: "needs_fx_conversion"; currencies: string[]; message: string } | null;
+  /** WAVE 180 · per-currency truth, MAJOR units, shown in place of a refused total. */
+  byCurrency: Array<{ currency: string; invested: number; currentValue: number | null; positions: number }>;
+  /** MAJOR units, real, from the cap-table commit ledger. `null` when mixed. */
+  totalInvested: number | null;
   /** MAJOR units. `null` when ANY holding is unmarked — never cost-as-value. */
   totalCurrentValue: number | null;
-  /** MAJOR units, from recorded distribution rows only. */
-  totalRealized: number;
+  /** MAJOR units, from recorded distribution rows only. `null` when mixed. */
+  totalRealized: number | null;
   /** Multiples: PLAIN multiples (1.42 == 1.42x). Not percents. */
   moic: ReportedMetric;
   tvpi: ReportedMetric;
@@ -252,6 +263,14 @@ function emptyAnalytics(asOf: string): PortfolioAnalytics {
   };
   const s = emptySeries("No snapshot history yet.", 3);
   return {
+    /* WAVE 180 · ITEM A SITE 3 (surface) — the genuinely-empty portfolio keeps its
+       honest zeros: there are no holdings, so there is no currency conflict and 0
+       is the true amount invested, not a stand-in for an unknown. */
+    currency: null,
+    currencies: [],
+    moneyAvailable: true,
+    moneyUnavailable: null,
+    byCurrency: [],
     totalInvested: 0,
     totalCurrentValue: null,
     totalRealized: 0,
@@ -295,18 +314,46 @@ export function computePortfolioAnalyticsFor(
   const bundle = buildInvestorMetrics(commits, { asOf, lpId: opts?.userId });
   const m = bundle.metrics;
 
-  const totalInvested = positions.reduce((s, p) => s + p.invested, 0);
+  /* WAVE 180 · ITEM A SITE 3 (surface) — `totalInvested` was
+   *   positions.reduce((s, p) => s + p.invested, 0)
+   * a MAJOR-unit float sum with no currency key: it added CA$1,200.00 to
+   * HK$2,000,000.00 to USD and handed the result to a USD formatter. It also fed
+   * `paperGain`, so one mixed portfolio poisoned two figures.
+   *
+   * The per-currency invested totals now come from `bundle.byCurrency`, which the
+   * store accumulates in MINOR units with each holding's own ISO exponent, so JPY
+   * is not silently treated as two-decimal. The single scalar survives only when
+   * exactly one currency is present. NO FX RATE IS APPLIED — none exists here. */
+  const moneyAvailable = bundle.metricsAvailable && bundle.currency !== null;
+  const byCurrency = bundle.byCurrency.map((r) => ({
+    currency: r.currency,
+    invested: fromMinor(r.contributedMinor, r.currency),
+    currentValue: r.residualValueMinor === null ? null : fromMinor(r.residualValueMinor, r.currency),
+    positions: r.positions,
+  }));
+  const totalInvested = moneyAvailable
+    ? (byCurrency[0] ? byCurrency[0].invested : 0)
+    : null;
   /* WAVE 33 OQ-33-2 sink 6 — both lines below were `x / 100`, a hardcoded ISO
    * 4217 exponent of 2, applied to figures produced by
    * `buildInvestorMetrics` (sink 1). This is sink 1's SECOND PATH: correcting
    * the producer alone would have left the investor-facing analytics surface
    * dividing a correct JPY minor figure by 100 anyway. `bundle.currency` is
    * the currency those very figures are denominated in. */
+  /* WAVE 180 · ITEM A SITE 3 (surface) — `bundle.currency` is now null on a mixed
+     ledger instead of being the first holding's code, so the two conversions below
+     are gated on it rather than trusting it. */
   const bundleCurrency = bundle.currency;
   const totalCurrentValue =
-    bundle.residualValueMinor === null ? null : fromMinor(bundle.residualValueMinor, bundleCurrency);
-  const totalRealized = fromMinor(m.inputs.distributedMinor, bundleCurrency);
-  const paperGain = totalCurrentValue === null ? null : totalCurrentValue - totalInvested;
+    bundleCurrency === null || bundle.residualValueMinor === null
+      ? null
+      : fromMinor(bundle.residualValueMinor, bundleCurrency);
+  const totalRealized =
+    bundleCurrency === null || bundle.distributedMinor === null
+      ? null
+      : fromMinor(bundle.distributedMinor, bundleCurrency);
+  const paperGain =
+    totalCurrentValue === null || totalInvested === null ? null : totalCurrentValue - totalInvested;
 
   // MOIC on this platform means total value over cost. With no marks there is
   // no total value, so MOIC inherits TVPI's status rather than printing 1.0x.
@@ -410,6 +457,11 @@ export function computePortfolioAnalyticsFor(
   });
 
   return {
+    currency: bundleCurrency,
+    currencies: bundle.currencies,
+    moneyAvailable,
+    moneyUnavailable: bundle.metricsUnavailable,
+    byCurrency,
     totalInvested,
     totalCurrentValue,
     totalRealized,

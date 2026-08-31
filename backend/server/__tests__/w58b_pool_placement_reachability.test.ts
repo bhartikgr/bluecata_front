@@ -58,6 +58,7 @@ import {
   resolveFdPreMoneyBase,
   type ApiSecurity,
 } from "@shared/roundMathEngineAdapter";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const STAMP = String(Date.now());
@@ -69,7 +70,7 @@ async function createRound(payload: Record<string, unknown>): Promise<string> {
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload });
+    .send(w212Attest({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload }));
   if (res.status !== 200) {
     throw new Error(`createRound failed ${res.status} ${JSON.stringify(res.body)}`);
   }
@@ -720,12 +721,12 @@ describe("W58B-7 — the standalone vehicle and the priced add-on store ONE plac
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         companyId: CO, name: `W58b Standalone BAD ${STAMP}`, type: "seed", state: "active",
         instrument: "option_pool", currency: "USD", poolSize: 15,
         openDate: "2026-01-01", closeDate: "2026-12-31",
         optionPoolMode: "whenever",
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("invalid_optionPoolMode");
   });

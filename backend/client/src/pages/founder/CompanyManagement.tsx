@@ -20,6 +20,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 import { HelpTipWithGlossary } from "@/components/HelpTip"; /* v25.45.4 C-1 — inline tooltip + Learn more link */
+/* WAVE 214 · surface 2 — one literal, shared with the server that hashes it. */
+import {
+  WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
+  WAVE214_FOUNDER_TEAM_INVITE_CONSEQUENCE,
+} from "@shared/wave214ThirdPartyAuthorityCopy";
 
 type TeamMember = { id: string; name?: string; email?: string; role: string };
 type Invitation = { id: string; invitedEmail: string; role: string; status: string; sentAt?: string | null };
@@ -29,6 +34,11 @@ function TeamPanel() {
   const companyId = useActiveCompanyId();
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteName, setInviteName] = useState("");
+  /* WAVE 214 · surface 2 — the authority tick. This route DOES send a real email
+     to the address typed here (`emailTransport.sendMail`, which stamps `sent_at`),
+     so the statement says so; that is the fact that makes the confirmation
+     consequential rather than decorative. */
+  const [authorityConfirmed, setAuthorityConfirmed] = useState(false);
 
   // v25.45.2 Bug G — GET /api/founder/team/members returns the documented
   // `{ members: [...] }` OBJECT shape (see routes.ts Bug L / Settings.tsx),
@@ -57,6 +67,9 @@ function TeamPanel() {
     mutationFn: async () => {
       const r = await apiRequest("POST", "/api/founder/team/invitations", {
         companyId, email: inviteEmail.trim(), name: inviteName.trim() || undefined,
+        /* Sent verbatim so the server hashes the bytes actually rendered. */
+        authorityConfirmed,
+        authorityStatementShown: WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
       });
       return r.json();
     },
@@ -67,6 +80,8 @@ function TeamPanel() {
       }
       toast({ title: "Invitation sent", description: `Invited ${inviteEmail.trim()}.` });
       setInviteEmail(""); setInviteName("");
+      /* WAVE 214 — per-invitee; must not carry forward to the next person. */
+      setAuthorityConfirmed(false);
       queryClient.invalidateQueries({ queryKey: ["/api/founder/team/invitations", companyId] });
     },
     onError: (e: any) => toast({ title: "Could not send invite", description: e?.message ?? "Please try again.", variant: "destructive" }),
@@ -115,7 +130,24 @@ function TeamPanel() {
         <CardContent className="space-y-3">
           <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="teammate@company.com" data-testid="input-invite-email" /></div>
           <div><Label>Name (optional)</Label><Input className="mt-1" value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="Full name" data-testid="input-invite-name" /></div>
-          <Button onClick={() => inviteMut.mutate()} disabled={inviteMut.isPending || !inviteEmail.trim()} data-testid="button-send-invite">
+          {/* WAVE 214 · surface 2 — appended as a new static sibling; no existing
+              label, helptip or button literal on this screen is edited (R143.1). */}
+          <div data-testid="founder-invite-authority-block">
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid="founder-invite-authority-tick"
+                checked={authorityConfirmed}
+                onChange={(e) => setAuthorityConfirmed(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span data-testid="founder-invite-authority-statement">{WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT}</span>
+            </label>
+            <div className="text-[11px] text-muted-foreground pl-6 mt-1" data-testid="founder-invite-authority-consequence">
+              {WAVE214_FOUNDER_TEAM_INVITE_CONSEQUENCE}
+            </div>
+          </div>
+          <Button onClick={() => inviteMut.mutate()} disabled={inviteMut.isPending || !inviteEmail.trim() || !authorityConfirmed} data-testid="button-send-invite">
             {inviteMut.isPending ? "Sending…" : "Send invitation"}
           </Button>
           {/* v25.45.4 L-1 (LIVE-9) — Pending invitations list. Previously this

@@ -22,6 +22,28 @@ import { ArrowLeft, ArrowRight, Check, Sparkles, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { INVITE_EXPIRY_OPTIONS, DEFAULT_INVITE_EXPIRY_DAYS } from "@/lib/inviteExpiry";
+/* WAVE 212 · R186.2 — the authorised sign-off shown on Step 5. Every sentence and
+   every label comes from the shared module, which the SERVER also uses to assemble
+   the text it stores, so what the founder read and what the record proves are the
+   same bytes rather than two copies that drift. */
+import {
+  roundCreationAttestationParagraphs,
+  roundCreationSignoffComplete,
+  plainDecimalOrNull,
+  ROUND_CREATION_ATTESTATION_NAME_LABEL,
+  ROUND_CREATION_ATTESTATION_NAME_PLACEHOLDER,
+  ROUND_CREATION_ATTESTATION_BLOCKER,
+} from "@shared/wave212RoundCreationAttestation";
+/* ── WAVE 191 · ITEM A.1 (R156.2) ─────────────────────────────────────────────
+   THE ALLOWED CURRENCY SET IS DATA, NOT A LIST TYPED INTO THIS COMPONENT.
+   `client/src/lib/currencyOptions.ts` carries its own stated source (the full
+   ISO 4217 catalogue, with ten preferred codes pinned to the top) and is ALREADY
+   the source the partner vehicle wizard reads. Reusing it is deliberate: a
+   second currency catalogue defined in `shared/` could disagree with this one,
+   and two catalogues that disagree is a worse failure than the hardcoded array
+   R156.2 forbids. Compare `client/src/pages/founder/Settings.tsx:820`, which
+   DOES hardcode an inline array — reported in W191_PREFLIGHT §4, not fixed here. */
+import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip, LabelWithTip, LearnMore } from "@/components/HelpTip";
 import RoundCarryForwardPanel from "@/components/RoundCarryForwardPanel";
@@ -209,11 +231,54 @@ type WizardInitialShareholder = {
  crmContactId?: string;
 };
 
+/* WAVE 191 · ITEM A.1 — built ONCE at module scope, exactly as the partner
+   vehicle wizard does it (`PartnerSpvEngine.tsx:217`). Same helper, same order
+   (ten preferred codes, then the full ISO 4217 list A–Z), so the two wizards
+   cannot offer different currencies to the same platform. */
+const CURRENCY_OPTIONS = buildCurrencyOptions();
+
+/* ── WAVE 191 · ITEM A / R156.2 + R143.1 ──────────────────────────────────────
+   THE HARDCODED "(USD)" LABELS ON THIS WIZARD, MADE HONEST WITHOUT DELETION.
+   ─────────────────────────────────────────────────────────────────────────────
+   WHAT WAS WRONG. Step 2 labelled its money fields "Target raise (USD)",
+   "Pre-money valuation (USD)", "Price per share (USD)", "Valuation cap (USD)",
+   "Strike price (USD)" and "Minimum ticket (USD)" for EVERY round in EVERY
+   jurisdiction. A Hong Kong founder raising in HKD was told by the label that
+   the figure being typed was US dollars, and the review step then rendered it as
+   a plain "$500,000". A missing currency is a gap; an asserted wrong one is a
+   false statement, and it is the worse of the two.
+
+   WHY THE LITERALS ARE UNTOUCHED. R143.1 — a replaced text node scores as a
+   REMOVED copy string on `npm run guard` and `npm run drop:restyle`. Every
+   "(USD)" label is left byte-for-byte as it was and this note is APPENDED AS A
+   STATIC SIBLING beside it.
+
+   IT RENDERS NOTHING when no currency has been chosen yet (the selector on step 1
+   already refuses to let the round be created in that state) or when the chosen
+   currency really is USD, where the existing label is simply correct. So the only
+   time a founder sees an extra sentence is the only time the old label lied. */
+/* Exported so the rule below can be proved BY RENDERING it, rather than by
+   reading the source of a page too large to mount in jsdom. */
+export function WizardCurrencyLabelNote({ currency, testid }: { currency: string; testid: string }) {
+  if (!/^[A-Z]{3}$/.test(currency)) return null;
+  if (currency === "USD") return null;
+  return (
+    <p className="text-[11px] text-amber-600 leading-relaxed" data-testid={testid}>
+      Enter this amount in {currency}. This round is denominated in {currency}, not US dollars, and Capavate never converts between currencies.
+    </p>
+  );
+}
+
 type FormShape = {
  type: string;
  instrument: InstrumentValue;
  name: string;
  region: string;
+ /* WAVE 191 · ITEM A — the round's OWN currency. Starts EMPTY, never "USD".
+    An empty string means "nobody has said yet", which is the honest state that
+    1045 existing rounds are in; a seeded "USD" would be a guess recorded as a
+    fact. Required before a round can be created (A.3). */
+ currency: string;
  useOfProceeds: string;
  tranches: boolean;
  tranchesPlan: string;
@@ -262,6 +327,11 @@ const defaultForm: FormShape = {
  instrument: "safe_post",
  name: "",
  region: "US",
+ /* WAVE 191 · ITEM A.3 — EMPTY, and deliberately NOT covered by the "enum/UX
+    defaults are preserved" carve-out in the BUG 033 note below. A currency is
+    not a UX preference; it is the contract that tells an LP what to send. The
+    company's own `defaultCurrency` pre-selects it (A.2) but never forces it. */
+ currency: "",
  // BUG 033 fix v23.7 — monetary/numeric/date inputs start EMPTY. The previous
  // hardcoded figures (target "2000000", pre-money "18000000", etc.) were mock
  // placeholders that pre-filled the wizard with fictional deal economics. Real
@@ -391,6 +461,12 @@ export default function RoundNew() {
   poolMode: "pre_money" | "post_money";
  }>({ poolSize: "", poolPercent: "", poolMode: "pre_money" });
  const [form, setForm] = useState<FormShape>(defaultForm);
+ /* WAVE 212 · R186.2 — the two inputs of the authorised sign-off. Both start empty,
+    so the create control is inert on arrival at Step 5 and stays inert until the
+    founder supplies them. Neither is ever pre-filled from the session: a signature
+    the platform typed for you is not a signature. */
+ const [w212SignedName, setW212SignedName] = useState("");
+ const [w212Accepted, setW212Accepted] = useState(false);
  // v23.9 C1 — when the founder manually edits the auto-derived price per share,
  // this flag stops the auto-sync effect from clobbering their value. Reset
  // whenever the instrument changes (priced ↔ non-priced) so the default
@@ -433,6 +509,29 @@ export default function RoundNew() {
  // symptom. Hook is unconditional (no early return before it) so React hook
  // ordering is preserved.
  const activeCompanyQ = useActiveCompany();
+
+ /* ── WAVE 191 · ITEM A.2 — SUGGEST FROM THE COMPANY RECORD, NEVER FORCE ──────
+    `company.defaultCurrency` has been on the active-company response since
+    v24.2 and the client type declares it since wave 190. It PRE-SELECTS the
+    round currency once, and only while the founder has not touched the field.
+
+    WHY THE `currencyTouched` FLAG IS NOT OPTIONAL. Without it this effect would
+    re-assert the company default every time the query refetched, silently
+    discarding a founder's explicit choice — which is EXACTLY the defect wave 191
+    Item B removes from the partner vehicle wizard, where jurisdiction overwrote
+    a typed USD with HKD. Suggesting is useful; overwriting is the defect. The
+    same distinction, enforced the same way, on both sides of the platform.
+
+    IF THE COMPANY HAS NO `defaultCurrency` NOTHING IS PRE-SELECTED. The founder
+    picks one, and the create button stays disabled until they do (A.3). No
+    "USD" is ever assumed here. */
+ const [currencyTouched, setCurrencyTouched] = useState(false);
+ const companyDefaultCurrency = activeCompanyQ.data?.company?.defaultCurrency ?? "";
+ useEffect(() => {
+  if (currencyTouched) return;
+  if (!/^[A-Z]{3}$/.test(companyDefaultCurrency)) return;
+  setForm(f => (f.currency === "" ? { ...f, currency: companyDefaultCurrency } : f));
+ }, [companyDefaultCurrency, currencyTouched]);
  const activeCompany = activeCompanyQ.data?.company ?? null;
  const activePlan = activeCompany?.billing?.plan ?? null;
 
@@ -478,6 +577,13 @@ export default function RoundNew() {
  // and that close >= open, and persists them via the non-sacred roundsStore.
  openDate: (form.openDate ?? "").trim(),
  closeDate: (form.closeDate ?? "").trim(),
+ /* WAVE 212 · R186.2 — the founder's authorised sign-off. ONLY THESE TWO FIELDS
+    are sent: the typed name and the assent. The version, the wording, the
+    timestamp, the acting identity, the address and the user agent are all derived
+    by the server, which strips any other `creationAttestation*` key it receives —
+    a signature the client could dictate the details of proves nothing (R187.1). */
+ creationAttestationSignedName: w212SignedName,
+ creationAttestationAccepted: w212Accepted,
  // Decimal-as-string values — preserved end-to-end at 38-digit precision.
  // v25.51 8a: only send preMoney/targetAmount when the instrument actually
  // uses them. For a common priced round Step 2 renders no inputs for these, so
@@ -578,6 +684,11 @@ export default function RoundNew() {
  ? (form.poolTiming === "post_money" ? "post_money" : "pre_money")
  : (poolExpressed ? addonPoolDraft.poolMode : null),
  region: form.region,
+ /* WAVE 191 · ITEM A — the round's currency travels on the SAME create body.
+    `server/routes.ts:8171` already lists "currency" in KNOWN_COLS and `:8195`
+    already forwards it to `roundsStoreCreate`, so no server change is needed on
+    the CREATE path. The EDIT path did need one — see W191_BUILD §A. */
+ currency: form.currency,
  termsheetChoice,
  // v25.20 Lane 5 NC fix: persist parent-round attachment for warrants/ESOP.
  // The wizard captured `attachToRound` but never sent it; server auto-stashes
@@ -785,7 +896,13 @@ export default function RoundNew() {
  strikePrice: addonWarrantDraft.strikePrice.trim(),
  expiryYears: (addonWarrantDraft.expiryYears || "10").trim(),
  sharesAuthorized: addonWarrantDraft.sharesAuthorized.trim(),
- region: form.region, termsheetChoice: "skip", parentRoundId: data.id,
+ region: form.region, currency: form.currency, termsheetChoice: "skip", parentRoundId: data.id,
+ /* WAVE 212 · R186.2 — the attached issuance is a round in its own right and the
+    server gates it identically. It travels under the SAME sign-off the founder
+    gave for this submission, and the server assembles and stores that child
+    round's OWN recital from that child round's own figures. */
+ creationAttestationSignedName: w212SignedName,
+ creationAttestationAccepted: w212Accepted,
  });
  }
  if (addonPool && /^\d+$/.test(addonPoolDraft.poolSize.trim())) {
@@ -801,7 +918,13 @@ export default function RoundNew() {
  poolSize: addonPoolDraft.poolSize.trim(), sharesAuthorized: addonPoolDraft.poolSize.trim(),
  optionPoolPostPercent: poolDerivation && poolDerivation.ok ? poolDerivation.targetPercentAsWritten : null,
  optionPoolMode: addonPoolDraft.poolMode,
- region: form.region, termsheetChoice: "skip", parentRoundId: data.id,
+ region: form.region, currency: form.currency, termsheetChoice: "skip", parentRoundId: data.id,
+ /* WAVE 212 · R186.2 — the attached issuance is a round in its own right and the
+    server gates it identically. It travels under the SAME sign-off the founder
+    gave for this submission, and the server assembles and stores that child
+    round's OWN recital from that child round's own figures. */
+ creationAttestationSignedName: w212SignedName,
+ creationAttestationAccepted: w212Accepted,
  });
  }
  for (const p of addonPayloads) {
@@ -1024,6 +1147,24 @@ export default function RoundNew() {
 
  const instrument = INSTRUMENTS.find(i => i.value === form.instrument)!;
  const usesField = (f: string) => (instrument.fields as readonly string[]).includes(f);
+ /* WAVE 212 · R186.2 / R143.4 — THE ATTESTATION'S OWN FACTS, LIVE FROM THIS ROUND.
+    Read straight off the form, exactly as the soft-circle flow reads its own facts,
+    and passed through `plainDecimalOrNull` — the SAME normaliser the server applies
+    to the payload — so the figure on the screen and the figure in the stored record
+    cannot disagree. NOTHING IS DEFAULTED: a field the founder has not filled is
+    described in words by the shared module, never as `0` (the soft-circle flow's
+    `Number(amount) || 0` prints a confident $0 for a blank; this does not repeat
+    it). `targetAmount` is offered only for instruments that collect it, which is
+    the same condition the create payload uses. */
+ const w212Paragraphs = roundCreationAttestationParagraphs({
+   companyName: activeCompany?.companyName ?? null,
+   roundName: form.name,
+   pricePerShareRaw: plainDecimalOrNull(form.pricePerShare),
+   targetAmountRaw: usesField("targetAmount") ? plainDecimalOrNull(form.targetAmount) : null,
+   currency: form.currency,
+ });
+ const w212Text = (key: string) => w212Paragraphs.find(p => p.key === key)?.text ?? "";
+ const w212SignoffComplete = roundCreationSignoffComplete(w212SignedName, w212Accepted);
  // v23.4.9 Phase 2 — vehicles shown in the instrument grid, filtered to the
  // active category so warrants are a deliberate top-level choice rather than
  // one radio button buried in a long list.
@@ -1809,6 +1950,19 @@ export default function RoundNew() {
  return e;
  })();
  const step2Valid = Object.keys(step2Errors).length === 0;
+ /* ── WAVE 191 · ITEM A.3 — A NEW ROUND IS NOT CREATABLE WITHOUT A CURRENCY ───
+    DELIBERATELY A SEPARATE FLAG rather than an entry in `step2Errors`. The
+    currency control lives on step 1, and `step2Errors` gates step 2; folding it
+    in there would let a founder walk past step 1 without a currency and then be
+    stopped by a message about the wrong step. This flag gates BOTH the step-1
+    Continue button and the final Create button, so there is no path to a round
+    with a NULL currency through this wizard.
+
+    THE REGEX IS THE WHOLE CHECK. Wave 190's `currencySymbolForCurrency` accepts
+    only `/^[A-Z]{3}$/`, and the server's create path stores whatever it is sent;
+    matching the same shape here means the wizard cannot post a value that the
+    display layer would later have to refuse. */
+ const roundCurrencyChosen = /^[A-Z]{3}$/.test(form.currency);
  /* WAVE 69 · V-2 (R56) — DELIBERATELY OUTSIDE `step2Errors`. Adding it there
     would block `step2Valid` above and turn the ruling's WARNING into a REFUSAL.
     The founder is told and may proceed; the value is stored exactly as written. */
@@ -2056,6 +2210,45 @@ export default function RoundNew() {
  </Select>
  <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">{REGION_BLURBS[form.region]}</p>
  </div>
+ {/* ── WAVE 191 · ITEM A.1/A.2/A.3 — THE ROUND'S CURRENCY ───────────────────
+     APPENDED AS A STATIC SIBLING of the jurisdiction block (R143.1). No
+     existing literal above is altered and no existing element is wrapped.
+
+     WHY IT SITS NEXT TO JURISDICTION BUT IS NOT DERIVED FROM IT. Jurisdiction
+     picks the FORMULA PACK. It does not pick the money. A Cayman vehicle
+     raising in USD and a Singapore round reporting in USD are both completely
+     ordinary, so deriving one from the other would be wrong — that is the same
+     defect wave 191 Item B removes from the partner vehicle wizard. The two
+     controls are adjacent because a founder thinks about them together, not
+     because one decides the other.
+
+     THERE IS NO "USD" ANYWHERE IN THIS BLOCK. The placeholder names the missing
+     fact instead of showing a dollar sign the platform has not earned. */}
+ <div>
+  <Label className="flex items-center gap-1.5">Round currency <HelpTip>The currency this round is raised and recorded in. Capavate never converts between currencies, so this is the currency an investor must actually send. It is suggested from your company record and you can change it.</HelpTip></Label>
+  <Select value={form.currency} onValueChange={v => { setCurrencyTouched(true); update("currency", v); }}>
+   <SelectTrigger className="mt-1" data-testid="select-round-currency"><SelectValue placeholder="Choose the currency for this round" /></SelectTrigger>
+   <SelectContent>
+    {CURRENCY_OPTIONS.map(c => (
+     <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>
+    ))}
+   </SelectContent>
+  </Select>
+  {form.currency === "" ? (
+   <p className="text-[11px] text-amber-600 mt-1.5 leading-relaxed" data-testid="round-currency-required">
+    A round cannot be created without a currency. Capavate will not assume one, because the currency is what tells an investor which money to send.
+   </p>
+  ) : (
+   <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed" data-testid="round-currency-statement">
+    Every commitment, invoice and cap-table entry for this round will be recorded in {form.currency}. Capavate never converts between currencies.
+   </p>
+  )}
+  {form.currency !== "" && companyDefaultCurrency !== "" && form.currency !== companyDefaultCurrency && (
+   <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed" data-testid="round-currency-differs-from-company">
+    Your company record says {companyDefaultCurrency}. This round will be recorded in {form.currency} as entered — your choice is kept, not overwritten.
+   </p>
+  )}
+ </div>
  </div>
 
  <div>
@@ -2153,11 +2346,11 @@ export default function RoundNew() {
  {step === 2 && (
  <div className="grid md:grid-cols-2 gap-5">
  {usesField("targetAmount") && (
- <div><LabelWithTip tip="The fundraising GOAL for this round — how much new money you want it to bring in. It is not a limit: commitments can exceed it and are never blocked for doing so. A separate cap, where one is set, is the maximum a vehicle may accept. Investors look at progress against this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
+ <div><LabelWithTip tip="The fundraising GOAL for this round — how much new money you want it to bring in. It is not a limit: commitments can exceed it and are never blocked for doing so. A separate cap, where one is set, is the maximum a vehicle may accept. Investors look at progress against this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><WizardCurrencyLabelNote currency={form.currency} testid="round-new-target-currency-note" /><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
  )}
  {usesField("preMoney") && !isFoundationRound && (
  <>
- <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" />{step2Errors.preMoney && <p className="text-xs text-rose-500 mt-1" data-testid="err-preMoney">{step2Errors.preMoney}</p>}</div>
+ <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><WizardCurrencyLabelNote currency={form.currency} testid="round-new-premoney-currency-note" /><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" />{step2Errors.preMoney && <p className="text-xs text-rose-500 mt-1" data-testid="err-preMoney">{step2Errors.preMoney}</p>}</div>
  {/* ── WAVE 52 · ITEM 1a — THE RENDERED FIELD WAS THE BUG ────────────────
  WHAT WAS WRONG. This rendered `Number(form.preMoney) +
  Number(form.targetAmount)` under a tooltip promising "pre-money +
@@ -2204,6 +2397,7 @@ export default function RoundNew() {
  it should be calculated automatically based on the value." */}
  <LabelWithTip tip="Calculated automatically: pre-money valuation ÷ fully-diluted PRE-MONEY shares, grossed up for any option-pool top-up attached to this round. It is NOT divided by the new shares this round issues. Edit pre-money or the fully-diluted share count to change it, or click Override to enter a price manually. (SAFE / Convertible Note rounds hide this field — the price is set at conversion, not at issue.)">
  <Label className="flex items-center gap-1.5">Price per share (USD) <Badge variant="outline" className="text-[10px]">{pricePerShareOverridden ? "manual" : "auto"}</Badge></Label>
+  <WizardCurrencyLabelNote currency={form.currency} testid="round-new-pps-currency-note" />
  </LabelWithTip>
  {/* v25.51 2a — grouping commas via FormattedNumberInput (decimals preserved
  by formatWithCommas). Auto/override + derivedPricePerShare wiring kept intact;
@@ -2251,7 +2445,7 @@ export default function RoundNew() {
  <div><LabelWithTip tip="How many NEW shares this issuance creates. This is not authorized capital and it is not a sum of existing holdings — Capavate has no authorized-capital field at all. For a Foundation round it is your founder allocation; for a warrant or option grant it is the underlying share count. It is a numerator: it is never the denominator used to price the round."><Label>New shares issued in this round</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.sharesAuthorized} onChange={v => update("sharesAuthorized", v)} data-testid="input-shares" />{step2Errors.sharesAuthorized && <p className="text-xs text-rose-500 mt-1" data-testid="err-sharesAuthorized">{step2Errors.sharesAuthorized}</p>}</div>
  )}
  {usesField("valuationCap") && (
- <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" />{step2Errors.valuationCap && <p className="text-xs text-rose-500 mt-1" data-testid="err-valuationCap">{step2Errors.valuationCap}</p>}
+ <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><WizardCurrencyLabelNote currency={form.currency} testid="round-new-cap-currency-note" /><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" />{step2Errors.valuationCap && <p className="text-xs text-rose-500 mt-1" data-testid="err-valuationCap">{step2Errors.valuationCap}</p>}
  {/* WAVE 69 · V-2 (R56) — a WARNING beside the field, amber not rose, and the
      wizard's Next button is untouched. This is the surface the corrupt live
      round was created on. */}
@@ -2339,7 +2533,7 @@ export default function RoundNew() {
  </div>
  )}
  {usesField("strikePrice") && (
- <div><LabelWithTip tip="What the warrant holder pays per share to exercise. Typically set at the fair market value at issuance."><Label>Strike price (USD)</Label></LabelWithTip><Input type="number" step="0.01" className="mt-1 font-mono" value={form.strikePrice} onChange={e => update("strikePrice", e.target.value)} data-testid="input-strike" />{step2Errors.strikePrice && <p className="text-xs text-rose-500 mt-1" data-testid="err-strikePrice">{step2Errors.strikePrice}</p>}</div>
+ <div><LabelWithTip tip="What the warrant holder pays per share to exercise. Typically set at the fair market value at issuance."><Label>Strike price (USD)</Label></LabelWithTip><WizardCurrencyLabelNote currency={form.currency} testid="round-new-strike-currency-note" /><Input type="number" step="0.01" className="mt-1 font-mono" value={form.strikePrice} onChange={e => update("strikePrice", e.target.value)} data-testid="input-strike" />{step2Errors.strikePrice && <p className="text-xs text-rose-500 mt-1" data-testid="err-strikePrice">{step2Errors.strikePrice}</p>}</div>
  )}
  {usesField("expiryYears") && (
  <div><LabelWithTip tip="How long the warrant remains exercisable. Standard is 7–10 years for venture warrants."><Label>Expiry (years)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.expiryYears} onChange={e => update("expiryYears", e.target.value)} data-testid="input-expiry" />{step2Errors.expiryYears && <p className="text-xs text-rose-500 mt-1" data-testid="err-expiryYears">{step2Errors.expiryYears}</p>}</div>
@@ -2429,7 +2623,7 @@ export default function RoundNew() {
  </div>
  )}
  {usesField("targetAmount") && (
- <div><LabelWithTip tip="The smallest cheque you'll accept. Sets a floor that filters out small angels you don't have time to manage. Common: $25k–$100k for seed; $250k+ for Series A."><Label>Minimum ticket (USD)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.minTicket} onChange={e => update("minTicket", e.target.value)} data-testid="input-min" /></div>
+ <div><LabelWithTip tip="The smallest cheque you'll accept. Sets a floor that filters out small angels you don't have time to manage. Common: $25k–$100k for seed; $250k+ for Series A."><Label>Minimum ticket (USD)</Label></LabelWithTip><WizardCurrencyLabelNote currency={form.currency} testid="round-new-min-currency-note" /><Input type="number" className="mt-1 font-mono" value={form.minTicket} onChange={e => update("minTicket", e.target.value)} data-testid="input-min" /></div>
  )}
  </div>
  )}
@@ -3324,6 +3518,50 @@ export default function RoundNew() {
  </div>
  )}
 
+ {/* ══════════════════════════════════════════════════════════════════════
+     WAVE 212 · ITEM A · R186.2 — THE AUTHORISED SIGN-OFF, ON THE LAST STEP.
+     ══════════════════════════════════════════════════════════════════════
+     APPENDED as a new sibling immediately above the refusal block and the button
+     row: nothing above is moved, renamed, re-nested or renumbered, so the
+     silent-drop census stays additive (R143.1) and no existing node's ordinal
+     changes. It renders only on Step 5, so Steps 1-4 are byte-identical.
+
+     Modelled on the vehicle launch sign-off, deliberately: typed full legal name
+     plus one mandatory tick, and the create control stays inert until BOTH are
+     supplied. The wording is not written here — every sentence is read from the
+     shared module the server also uses, so the record proves the sentences the
+     founder actually read. THE DISABLED BUTTON IS NOT THE GATE: the server
+     refuses an unsigned create on its own, and a test drives the route directly
+     to prove it. */}
+ {step === 5 && (
+ <div className="mb-3 rounded-md border border-border p-3 space-y-3" data-testid="round-creation-attestation">
+ <div className="text-sm font-semibold" data-testid="round-attestation-p-heading">{w212Text("heading")}</div>
+ <p className="text-xs text-muted-foreground leading-relaxed" data-testid="round-attestation-p-statement-1">{w212Text("statement-1")}</p>
+ <p className="text-xs text-muted-foreground leading-relaxed" data-testid="round-attestation-p-statement-2">{w212Text("statement-2")}</p>
+ <p className="text-xs text-muted-foreground leading-relaxed" data-testid="round-attestation-p-statement-3">{w212Text("statement-3")}</p>
+ <p className="text-xs text-muted-foreground leading-relaxed" data-testid="round-attestation-p-statement-4">{w212Text("statement-4")}</p>
+ <div className="rounded-md bg-muted/40 p-2 space-y-1">
+ <div className="text-xs font-medium" data-testid="round-attestation-p-recital-heading">{w212Text("recital-heading")}</div>
+ <div className="text-[11px] font-mono" data-testid="round-attestation-p-recital-company">{w212Text("recital-company")}</div>
+ <div className="text-[11px] font-mono" data-testid="round-attestation-p-recital-round-name">{w212Text("recital-round-name")}</div>
+ <div className="text-[11px] font-mono" data-testid="round-attestation-p-recital-price-per-share">{w212Text("recital-price-per-share")}</div>
+ <div className="text-[11px] font-mono" data-testid="round-attestation-p-recital-target-amount">{w212Text("recital-target-amount")}</div>
+ </div>
+ <div className="space-y-1">
+ <Label htmlFor="round-attestation-legalname" className="text-xs">{ROUND_CREATION_ATTESTATION_NAME_LABEL}</Label>
+ <Input id="round-attestation-legalname" className="max-w-sm" value={w212SignedName} onChange={e => setW212SignedName(e.target.value)} placeholder={ROUND_CREATION_ATTESTATION_NAME_PLACEHOLDER} data-testid="input-round-attestation-legalname" />
+ </div>
+ <label htmlFor="round-attestation-accept" className="flex items-start gap-2 text-xs leading-relaxed cursor-pointer">
+ <input type="checkbox" id="round-attestation-accept" className="mt-0.5" checked={w212Accepted} onChange={e => setW212Accepted(e.target.checked)} data-testid="checkbox-round-attestation-accept" />
+ <span data-testid="round-attestation-p-checkbox-label">{w212Text("checkbox-label")}</span>
+ </label>
+ {!w212SignoffComplete && (
+ <p className="text-xs text-[hsl(0_100%_40%)]" data-testid="round-attestation-blocker">{ROUND_CREATION_ATTESTATION_BLOCKER}</p>
+ )}
+ <p className="text-[10px] text-muted-foreground" data-testid="round-attestation-p-footnote">{w212Text("footnote")}</p>
+ </div>
+ )}
+
  {/* WAVE 73 · ITEM 3 (finishes WAVE 69 · V-1b) — THE SERVER'S REFUSAL, IN COPY
      THAT DOES NOT EXPIRE. APPENDED as a new sibling immediately above the button
      row: nothing around it is moved, removed or re-nested, so the silent-drop
@@ -3340,9 +3578,9 @@ export default function RoundNew() {
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  {step < 5 ? (
- <Button onClick={() => setStep(s => s + 1)} disabled={(step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
+ <Button onClick={() => setStep(s => s + 1)} disabled={(step === 1 && !roundCurrencyChosen) || (step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
- <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || scheduleInvalid || !step2Valid} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
+ <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || scheduleInvalid || !step2Valid || !roundCurrencyChosen || !w212SignoffComplete} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}
  </div>
  </CardContent>

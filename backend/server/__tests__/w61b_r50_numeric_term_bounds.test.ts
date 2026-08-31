@@ -34,6 +34,7 @@ import { getDb } from "../db/connection";
 import { getRoundById } from "../roundsStore";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const USER = "u_admin";
@@ -46,7 +47,7 @@ async function createRound(name: string, extra: Record<string, unknown> = {}, co
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", USER)
-    .send({
+    .send(w212Attest({
       companyId,
       name,
       type: "seed",
@@ -55,7 +56,7 @@ async function createRound(name: string, extra: Record<string, unknown> = {}, co
       openDate: "2026-01-01",
       closeDate: "2026-12-01",
       ...extra,
-    });
+    }));
   if (res.status !== 200) throw new Error(`createRound failed ${res.status}: ${JSON.stringify(res.body)}`);
   expect(res.body.ok).toBe(true);
   return res.body.id as string;
@@ -334,7 +335,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", USER)
-      .send({
+      .send(w212Attest({
         companyId: CO,
         name: `W61b create bad ${field} ${Date.now()}`,
         type: "seed",
@@ -343,7 +344,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
         openDate: "2026-01-01",
         closeDate: "2026-12-01",
         [field]: DATE_SHAPED,
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe(`invalid_${field}`);
     expect(res.body?.message).toContain(label);
@@ -356,7 +357,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", USER)
-      .send({
+      .send(w212Attest({
         companyId: CO,
         name: `W61b create oob ${field} ${Date.now()}`,
         type: "seed",
@@ -365,7 +366,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
         openDate: "2026-01-01",
         closeDate: "2026-12-01",
         [field]: value,
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe(`invalid_${field}`);
     expect(res.body?.message).toContain(label as string);
@@ -375,7 +376,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", USER)
-      .send({
+      .send(w212Attest({
         companyId: CO,
         name: `W61b create sep ${Date.now()}`,
         type: "seed",
@@ -384,7 +385,7 @@ describe("WAVE 61b · R50 · WRITER 2 — POST /api/rounds", () => {
         openDate: "2026-01-01",
         closeDate: "2026-12-01",
         maturityMonths: "20,260,707",
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body?.error).toBe("invalid_maturityMonths");
   });

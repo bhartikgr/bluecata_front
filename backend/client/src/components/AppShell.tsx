@@ -56,7 +56,23 @@ function AvatarInitials() {
   // BUG-02: never derive initials from an email local-part or a placeholder
   // name. When no safe initials exist, fall back to a neutral avatar glyph.
   const initials = safeInitials(name);
-  if (!initials) return <UserCircle className="h-4 w-4" />;
+  /* WAVE 190 · ITEM C — THE FALLBACK IS NOW STATED, NOT ONLY DRAWN. The neutral
+     glyph was already the right answer (never invent initials from a placeholder
+     or an email local-part), but on its own it is silent: a screen reader read
+     nothing, and a sighted user could not tell "we have no name for you" apart
+     from "your avatar has not loaded". The glyph is UNCHANGED and the statement
+     is appended alongside it as a static sibling (R143.1), so the visual surface
+     is identical and the missing fact is now named. */
+  if (!initials) {
+    return (
+      <>
+        <UserCircle className="h-4 w-4" />
+        <span className="sr-only" data-testid="text-avatar-no-name-on-record">
+          No display name on record for this account
+        </span>
+      </>
+    );
+  }
   return <>{initials}</>;
 }
 

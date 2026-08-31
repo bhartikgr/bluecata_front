@@ -186,6 +186,9 @@ export function SpvK1Panel({
   spvId,
   canWrite,
   jurisdiction,
+  /* WAVE 179 · ITEM B · R151.3 — destructured additively; every existing call site
+     that does not pass it gets `undefined`, i.e. NOT STATED, i.e. today's render. */
+  legalForm,
 }: {
   spvId: string;
   canWrite: boolean;
@@ -197,6 +200,12 @@ export function SpvK1Panel({
      record" warning, never an assumption. Nothing about generation depends on
      it — see `GpTaxDocumentNotice` for why this labels rather than gates. */
   jurisdiction?: string | null;
+  /* WAVE 179 · ITEM B · R151.3 — the vehicle's OPTIONAL, GP-STATED legal form,
+     threaded straight through to the notice below. `undefined`/`null` means NOT
+     STATED, which is the default for every vehicle, and the notice then renders
+     wave 175's conditional wording byte-for-byte as it does today. Nothing here
+     infers it and no figure on this panel depends on it. */
+  legalForm?: string | null;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -292,7 +301,7 @@ export function SpvK1Panel({
           was that this surface offered a US federal form as any vehicle's output
           in silence. That is corrected by ADDING the jurisdictional truth here,
           not by editing or allow-listing the existing copy. */}
-      <GpTaxDocumentNotice jurisdiction={jurisdiction} />
+      <GpTaxDocumentNotice jurisdiction={jurisdiction} legalForm={legalForm ?? null} />
       <div className="text-xs mb-3 leading-relaxed text-[var(--cv-color-text-muted)]" data-testid="spv-k1-policy">
         Schedule K-1 figures are derived only from recorded facts: confirmed capital receipts, recorded distributions and
         the committed register. A commitment is not a contribution, so a partner with no confirmed receipt shows a blank

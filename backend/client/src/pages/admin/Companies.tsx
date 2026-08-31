@@ -36,6 +36,17 @@ import { HelpTip } from "@/components/HelpTip";
 import { apiRequest } from "@/lib/queryClient";
 import { minorToMajorString } from "@/lib/moneyDisplay";
 import { humanizeMachineKey } from "@/lib/partnerDisplay"; /* WAVE 124 · FINDING 1 — the platform's existing key-humanising helper. */
+/* WAVE 180 · ITEM A SITE 5 — the client mirror of the platform's cross-currency
+ * contract (client/src/lib/money/currencyBuckets.ts). Minor units are added
+ * only within one ISO code; a mixed set yields a stated refusal, never a
+ * converted figure, because this platform holds no exchange rate. */
+import {
+  newBuckets,
+  addMinor,
+  singleScalar,
+  bucketRows,
+  type CurrencyBucketRow,
+} from "@/lib/money/currencyBuckets";
 
 /* ---------- types matching server payload ---------- */
 type SubscriptionStatus = "active" | "trialing" | "past_due" | "unpaid" | "cancelled";
@@ -64,12 +75,23 @@ interface CompanyRow {
   stage: string;
   hq: string;
   maScore: number;
-  totalRaisedMinor: number;
-  currency: string;
+  /* WAVE 180 · ITEM A SITE 6→5 — the producer (server/routes.ts admin company
+   * aggregate) no longer stamps the FIRST round's currency onto a sum taken
+   * across every round. When a company's closed rounds span more than one ISO
+   * code the scalar is null and the breakdown carries the truth. */
+  totalRaisedMinor: number | null;
+  currency: string | null;
+  raisedCurrencies?: string[];
+  totalRaisedUnavailableReason?: "needs_fx_conversion" | "no_data" | null;
+  totalRaisedByCurrency?: CurrencyBucketRow[];
   activeRoundsCount: number;
   totalRoundsCount: number;
   softCircles30d: number;
-  softCircle30dAmountMinor: number;
+  softCircle30dAmountMinor: number | null;
+  softCircle30dCurrency?: string | null;
+  softCircle30dCurrencies?: string[];
+  softCircle30dUnavailableReason?: "needs_fx_conversion" | "no_data" | null;
+  softCircle30dByCurrency?: CurrencyBucketRow[];
   dataroomFiles: number;
   reportsPublished: number;
   events30d: number;
@@ -129,6 +151,54 @@ function fmtMoney(minor: number, currency = "USD"): string {
   }
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE 180 · ITEM A SITE 5 — THE ONE SENTENCE THE ACTIVE-SUBS TILE MAY SAY.
+   ════════════════════════════════════════════════════════════════════════════
+   THE DEFECT. `annualArrMinor` reduced `annualAmountMinor` across every active
+   subscription while `Subscription.currency` — declared on the very interface
+   being reduced — went unread, and the tile then printed the result through
+   `fmtMoney(minor)` whose currency argument DEFAULTS to USD. A tenant billed in
+   CAD contributed its minor units to a figure labelled in dollars. The per-row
+   render three hundred lines below was already correct
+   (`fmtMoney(sub.pastDueMinor, sub.currency)`), which is the proof the code had
+   the currency in hand and dropped it on the way into the aggregate.
+
+   Exported and pure for the same reason wave 124 exported its neighbour: the
+   rule is EXECUTED by a test rather than inferred from JSX. It states the scope
+   the brief requires — what is included, what is excluded, in which currency —
+   and where no single figure exists it names why instead of printing a zero or
+   a bare dash. NO EXCHANGE RATE IS APPLIED; this platform has none. */
+export function annualArrHint(
+  subjectCount: number,
+  rows: CurrencyBucketRow[],
+  excludedNoCurrency: number,
+  noun = "annual ARR",
+): string {
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
+  const excl = excludedNoCurrency > 0
+    ? ` ${excludedNoCurrency} row${excludedNoCurrency === 1 ? "" : "s"} excluded: no ISO currency on record.`
+    : "";
+  if (subjectCount === 0) return `No rows in scope.${excl}`;
+  if (rows.length === 0) return `${Noun} not on record.${excl}`;
+  if (rows.length === 1) {
+    const r = rows[0]!;
+    if (r.minor === null) return `${Noun} in ${r.currency} is too large to report exactly.${excl}`;
+    return `${fmtMoney(r.minor, r.currency)} ${noun}${excl}`;
+  }
+  const parts = rows.map((r) => (r.minor === null ? `${r.currency} not reportable` : fmtMoney(r.minor, r.currency)));
+  return `${Noun} by currency: ${parts.join(" + ")}. Not added together — this platform holds no exchange rate.${excl}`;
+}
+
+/* WAVE 180 · ITEM A SITE 6→5 — the stated fallback for a figure that genuinely
+   cannot be derived. It names the currencies involved and the reason, per the
+   owner's rule that an unexplained total is itself the defect and that a
+   fabricated zero or a bare blank is never acceptable. */
+export function raisedMixedText(currencies: string[] | undefined): string {
+  const list = (currencies ?? []).filter(Boolean);
+  if (list.length === 0) return "—";
+  return `Recorded in ${list.join(" and ")} — no single total (no exchange rate on this platform)`;
+}
+
 function daysSince(iso: string | null): number | null {
   if (!iso) return null;
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
@@ -176,7 +246,23 @@ export default function AdminCompanies() {
     const pastDue = subs.filter(s => s.status === "past_due").length;
     const unpaid = subs.filter(s => s.status === "unpaid").length;
     const cancelled = subs.filter(s => s.status === "cancelled").length;
-    const annualArrMinor = subs.filter(s => s.status === "active").reduce((sum, s) => sum + s.annualAmountMinor, 0);
+    /* WAVE 180 · ITEM A SITE 5 — was
+       `subs.filter(...).reduce((sum, s) => sum + s.annualAmountMinor, 0)`, which
+       added minor units across currencies and handed the result to a formatter
+       defaulting to USD. Each currency now accumulates in its own bucket; a row
+       whose code is not ISO 4217 is COUNTED AND EXCLUDED rather than defaulted
+       into an arbitrary bucket, and the count is stated on screen. */
+    const activeSubs = subs.filter(s => s.status === "active");
+    const arrBuckets = newBuckets();
+    let arrExcludedNoCurrency = 0;
+    for (const s of activeSubs) {
+      if (!addMinor(arrBuckets, s.currency, s.annualAmountMinor)) arrExcludedNoCurrency += 1;
+    }
+    const arrScalar = singleScalar(arrBuckets);
+    const annualArrMinor = arrScalar.available ? arrScalar.minor : null;
+    const annualArrCurrency = arrScalar.available ? arrScalar.currency : null;
+    const annualArrByCurrency = bucketRows(arrBuckets);
+    const annualArrHintText = annualArrHint(activeSubs.length, annualArrByCurrency, arrExcludedNoCurrency);
     /* WAVE 124 · FINDING 2 — A CONFIDENT $0 THAT MEANS "UNKNOWN".
        `subscriptions.past_due_minor` is the SEVENTH unfed money register on this
        platform: the only writer in the tree is the `co_quanta` seed constant
@@ -195,7 +281,19 @@ export default function AdminCompanies() {
        wave's ownership and is reported, not faked. */
     const pastDueSubs = subs.filter(s => s.status === "past_due");
     const pastDueWithFigure = pastDueSubs.filter(s => typeof s.pastDueMinor === "number" && s.pastDueMinor > 0);
-    const pastDueMinor = pastDueWithFigure.reduce((sum, s) => sum + (s.pastDueMinor ?? 0), 0);
+    /* WAVE 180 · ITEM A SITE 5 — the same cross-currency defect sat on the
+       past-due sum. Wave 124's sentence is UNCHANGED and still governs the
+       single-currency case (its test executes it directly); the mixed case can
+       no longer reach it with a bogus number, because `pastDueMinor` becomes
+       null and the clarifier below states the breakdown instead. */
+    const pastDueBuckets = newBuckets();
+    let pastDueExcludedNoCurrency = 0;
+    for (const s of pastDueWithFigure) {
+      if (!addMinor(pastDueBuckets, s.currency, s.pastDueMinor ?? 0)) pastDueExcludedNoCurrency += 1;
+    }
+    const pastDueScalar = singleScalar(pastDueBuckets);
+    const pastDueMinor = pastDueScalar.available ? pastDueScalar.minor : null;
+    const pastDueByCurrency = bucketRows(pastDueBuckets);
     const pastDueFiguresOnRecord = pastDueWithFigure.length;
     const stale = allRows.filter(r => {
       const d = daysSince(r.lastActivityAt);
@@ -206,8 +304,14 @@ export default function AdminCompanies() {
        tile below reads ONE value. The stats array keeps its five static entries
        and its static shape, so the silent-drop guard's positional child identity
        for this panel is untouched (build_log/wave116/W116_TESTS.md §3.1). */
-    const pastDueHint = pastDueOutstandingHint(pastDue, pastDueFiguresOnRecord, pastDueMinor);
-    return { total, active, trialing, pastDue, unpaid, cancelled, annualArrMinor, pastDueMinor, pastDueFiguresOnRecord, pastDueHint, stale, avgMaScore };
+    /* WAVE 180 · ITEM A SITE 5 — when the outstanding figures span currencies
+       there is no single `outstandingMinor` to hand wave 124's sentence, so the
+       tile states the per-currency scope instead. Wave 124's function is called
+       with exactly its old argument in exactly its old case. */
+    const pastDueHint = pastDueScalar.available
+      ? pastDueOutstandingHint(pastDue, pastDueFiguresOnRecord, pastDueScalar.minor)
+      : annualArrHint(pastDue, pastDueByCurrency, pastDueExcludedNoCurrency, "outstanding");
+    return { total, active, trialing, pastDue, unpaid, cancelled, annualArrMinor, annualArrCurrency, annualArrByCurrency, annualArrHintText, arrExcludedNoCurrency, pastDueMinor, pastDueByCurrency, pastDueFiguresOnRecord, pastDueHint, stale, avgMaScore };
   }, [allRows]);
 
   return (
@@ -237,7 +341,11 @@ export default function AdminCompanies() {
           }}
           stats={[
             { label: "Total tenants", value: aggregates.total, hint: "Across all stages" },
-            { label: "Active subs", value: aggregates.active, hint: `${fmtMoney(aggregates.annualArrMinor)} annual ARR`, tone: "positive" },
+            /* WAVE 180 · ITEM A SITE 5 — the tile keeps its five static entries
+               and its static shape (wave 124's positional-identity note above
+               still applies). Only the hint EXPRESSION changed: it is now
+               resolved in the memo and states the currency scope. */
+            { label: "Active subs", value: aggregates.active, hint: aggregates.annualArrHintText, tone: "positive" },
             { label: "Trialing", value: aggregates.trialing, hint: "Convert within trial" },
             { label: "Past-due", value: aggregates.pastDue, hint: aggregates.pastDueHint, tone: aggregates.pastDue > 0 ? "warning" : "neutral" },
             { label: "Stale (>14d)", value: aggregates.stale, hint: "No activity", tone: aggregates.stale > 1 ? "warning" : "neutral" },
@@ -400,8 +508,17 @@ function CompanyRowComponent({
             {c.maScore || "—"}
           </span>
         </td>
+        {/* WAVE 180 · ITEM A SITE 6→5 — `totalRaisedMinor` is now null when this
+            company's closed rounds span currencies. A bare "—" would read as
+            "nothing raised", so the mixed case says WHICH currencies were found
+            and why they are not added. The single-currency branch is
+            byte-identical to what shipped. */}
         <td className="px-3 py-3 text-right font-mono tabular-nums">
-          {c.totalRaisedMinor > 0 ? fmtMoney(c.totalRaisedMinor, c.currency) : "—"}
+          {c.totalRaisedMinor !== null && c.totalRaisedMinor > 0 && c.currency
+            ? fmtMoney(c.totalRaisedMinor, c.currency)
+            : c.totalRaisedUnavailableReason === "needs_fx_conversion"
+              ? <span className="text-[11px] font-sans text-amber-700" data-testid={`text-raised-mixed-${c.id}`}>{raisedMixedText(c.raisedCurrencies)}</span>
+              : "—"}
         </td>
         <td className="px-3 py-3 text-right font-mono tabular-nums text-muted-foreground" data-testid={`text-rounds-${c.id}`}>
           {c.activeRoundsCount} / {c.totalRoundsCount}
@@ -468,12 +585,16 @@ function CompanyRowComponent({
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                   <Stat icon={<Clock className="h-3 w-3" />} label="Last activity" value={c.lastActivityAt ? new Date(c.lastActivityAt).toLocaleDateString() : "—"} tone={activityDays !== null && activityDays > 14 ? "warn" : undefined} />
-                  <Stat icon={<DollarSign className="h-3 w-3" />} label="Soft circles" value={`${c.softCircles30d} (${fmtMoney(c.softCircle30dAmountMinor, c.currency)})`} />
+                  {/* WAVE 180 · ITEM A SITE 6→5 — soft circles carry their own
+                      `soft_circles.currency`; the aggregate used to borrow the
+                      first ROUND's code for all of them. Mixed ⇒ the scope is
+                      stated in place of a number. */}
+                  <Stat icon={<DollarSign className="h-3 w-3" />} label="Soft circles" value={`${c.softCircles30d} (${c.softCircle30dAmountMinor !== null && c.softCircle30dCurrency ? fmtMoney(c.softCircle30dAmountMinor, c.softCircle30dCurrency) : raisedMixedText(c.softCircle30dCurrencies)})`} />
                   <Stat icon={<Building className="h-3 w-3" />} label="Rounds" value={`${c.activeRoundsCount} active / ${c.totalRoundsCount} total`} />
                   <Stat icon={<FileText className="h-3 w-3" />} label="Dataroom files" value={String(c.dataroomFiles)} />
                   <Stat icon={<MessageSquare className="h-3 w-3" />} label="Reports published" value={String(c.reportsPublished)} />
                   <Stat icon={<Sparkles className="h-3 w-3" />} label="Events 30d" value={String(c.events30d)} />
-                  <Stat icon={<CheckCircle2 className="h-3 w-3" />} label="Total raised" value={c.totalRaisedMinor > 0 ? fmtMoney(c.totalRaisedMinor, c.currency) : "—"} />
+                  <Stat icon={<CheckCircle2 className="h-3 w-3" />} label="Total raised" value={c.totalRaisedMinor !== null && c.totalRaisedMinor > 0 && c.currency ? fmtMoney(c.totalRaisedMinor, c.currency) : c.totalRaisedUnavailableReason === "needs_fx_conversion" ? raisedMixedText(c.raisedCurrencies) : "—"} />
                   <Stat icon={<AlertCircle className="h-3 w-3" />} label="M&A score" value={c.maScore ? String(c.maScore) : "—"} />
                 </div>
               </div>

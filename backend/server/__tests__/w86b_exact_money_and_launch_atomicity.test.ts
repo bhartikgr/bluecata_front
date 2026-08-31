@@ -39,6 +39,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
 import { spvEngineStore } from "../spvEngineStore";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -94,13 +95,13 @@ async function makePreferredCompany(key: string, currency: string, invShares: st
     .send({ companyId, roundId: foundationId, shares: "8000000", amount: "8000",
       currency, holderFirstName: "Founder", holderLastName: key });
   expect(seeded.status, `seed ${key}`).toBe(201);
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Under Test ${key}`, type: "seed", instrument: "preferred",
     currency,
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
     liquidationPreference: "1x non-participating",
-  });
+  }));
   expect(created.status, `round create ${key}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
   const backfill = await request(app).post("/api/founder/captable/backfill-investor")

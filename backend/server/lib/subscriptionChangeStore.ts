@@ -71,6 +71,11 @@ import {
   type PartnerSubscriptionRow,
   type SubscriptionCycle,
 } from "./partnerSubscriptionStore";
+/* WAVE 198 · ITEM A · R170 — the ONE definition of currency-code sameness
+   (case + whitespace only; nothing mapped or converted, R156.1). Imported
+   rather than re-implemented so this surface cannot drift from the engine's
+   mixture rule and reintroduce a false refusal. */
+import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -194,7 +199,13 @@ export function previewPlanChange(input: {
     cycle: toCycle,
     promotionCode: input.promotionCode ?? null,
   });
-  if (q.currency !== row.currency) {
+  /* WAVE 198 · ITEM A · R170 — NORMALISED sameness (case + whitespace only;
+     nothing mapped or converted, R156.1). A partner whose subscription row and
+     whose fresh quote record the same code in different case is not changing
+     currency, and their plan change must not be blocked for it. The message below
+     still prints the codes exactly as they were RECORDED, so an operator reading
+     it sees the real values rather than a normalised echo. */
+  if (normaliseCurrencyForComparison(q.currency) !== normaliseCurrencyForComparison(row.currency)) {
     throw new PlanChangeError(
       "PLAN_CHANGE_CURRENCY_MISMATCH",
       `Cannot prorate across currencies (${row.currency} -> ${q.currency}).`,

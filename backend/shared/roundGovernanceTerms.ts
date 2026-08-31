@@ -52,6 +52,9 @@
  * recorded. Carried as OQ-W114-3.
  * ========================================================================== */
 
+/* WAVE 198 · ITEM C · R166.2 — the ONE length discipline for refusal headlines. */
+import { fitToGate, boundedFragment, NAME_FRAGMENT_BUDGETS } from "./refusalHeadlineGate";
+
 export const GOVERNANCE_TERM_KEYS = [
   "boardComposition",
   "informationRights",
@@ -126,7 +129,53 @@ export function readGovernanceTerms(round: unknown): GovernanceTermReading[] {
 
 export type GovernanceTermVerdict =
   | { readonly ok: true; readonly value: string | null }
-  | { readonly ok: false; readonly error: string; readonly field: string; readonly message: string };
+  /* WAVE 198 · ITEM C · R166.2 — `message` is UNCHANGED, byte-for-byte, because it
+     is the platform's full explanation of the length limit, the true/false form and
+     how to remove a term, and nothing about it should be shortened or rewritten
+     (R143.1). What changes is that it is no longer the ONLY channel: it is 484-495
+     characters for every key, and `client/src/lib/queryClient.ts` discards any
+     `message` of 240 or more, so as the only channel it has never once reached a
+     screen. `refusalHeadline` is the arriving sentence and `message` is now the
+     unabridged text behind it, carried to the client as `guidance`. */
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly field: string;
+      readonly message: string;
+      readonly refusalHeadline: string;
+    };
+
+/* ── WAVE 198 · ITEM C · R166.2 — A REFUSAL THAT HAS NEVER REACHED A SCREEN ──────
+   The worst site the wave-198 sweep found, and the one no reviewer would have
+   guessed, because it has no long interpolation to be suspicious of: the FIXED
+   prose is 484-495 characters for EVERY one of the four keys. It is over the
+   client's 240-char gate unconditionally, which means every founder who has ever
+   sent a malformed governance term has been shown a generic "something went wrong"
+   and told nothing about the length limit, the true/false form, or how to remove
+   the term. Not a size edge case — permanently silent since it was written.
+
+   HANDLED DIFFERENTLY FROM C-1..C-4, DELIBERATELY. Those four have sound prose and
+   an unbounded interpolation, so bounding the interpolation is the whole fix. Here
+   there is nothing to bound: the sentence itself is too long, and `fitToGate`'s
+   hard-truncate floor would clip it mid-word at 239 characters. Truncating the
+   platform's clearest explanation of the true/false form is a worse outcome than
+   the split below.
+
+   So this SPLITS rather than trims: a headline written short enough to arrive, and
+   the ORIGINAL full text preserved BYTE-FOR-BYTE (R143.1) as the guidance, which
+   the client renders separately and does not length-gate. Nothing is deleted and no
+   literal is rewritten — the long sentence stops being the only channel. The
+   headline is asserted under the gate by test, and `fitToGate` still wraps it so
+   that a future edit lengthening the prose fails loudly instead of going silent
+   again. */
+export function governanceTermRefusalHeadline(key: GovernanceTermKey): string {
+  const label = GOVERNANCE_TERM_LABEL[key];
+  return fitToGate(
+    (b) =>
+      `${boundedFragment(label, b)} was not saved: it must be text of at most ${GOVERNANCE_TERM_MAX_LENGTH} characters describing what was actually negotiated on this round. It is never defaulted.`,
+    NAME_FRAGMENT_BUDGETS,
+  );
+}
 
 function refusalMessage(key: GovernanceTermKey): string {
   const label = GOVERNANCE_TERM_LABEL[key];
@@ -155,16 +204,16 @@ export function validateGovernanceTermStored(key: GovernanceTermKey, raw: unknow
   }
   if (typeof raw === "boolean") {
     if (!YES_NO_TERMS.has(key)) {
-      return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key) };
+      return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key), refusalHeadline: governanceTermRefusalHeadline(key) };
     }
     return { ok: true, value: raw ? "Yes" : "No" };
   }
   if (typeof raw !== "string") {
-    return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key) };
+    return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key), refusalHeadline: governanceTermRefusalHeadline(key) };
   }
   const s = raw.trim();
   if (s.length > GOVERNANCE_TERM_MAX_LENGTH) {
-    return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key) };
+    return { ok: false, error: `invalid_${key}`, field: key, message: refusalMessage(key), refusalHeadline: governanceTermRefusalHeadline(key) };
   }
   return { ok: true, value: s };
 }

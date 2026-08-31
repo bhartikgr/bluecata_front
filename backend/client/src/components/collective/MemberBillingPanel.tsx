@@ -39,7 +39,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { formatMinor } from "@/lib/currency";
 import { fmtDate } from "@/lib/format";
 
@@ -122,7 +122,46 @@ const QUOTE_ERROR_COPY: Record<string, string> = {
   no_schedule_configured: "No fee schedule is configured for this charge yet.",
   resolve_failed: "This charge could not be priced right now.",
   tier_unavailable: "Your membership tier could not be determined right now. Please retry shortly.",
+  /* WAVE 183 · ITEM B FIX 2 — the two facts that were being reported as
+     `tier_unavailable`. Added as NEW KEYS beside it; the `tier_unavailable`
+     string above is untouched, byte-verbatim, and still renders for the genuine
+     409 it was written for (R143.1 / ITEM C). */
+  not_collective_member:
+    "The missing fact is a Collective membership: Capavate holds no membership record for this account, so there is no tier to price against. Retrying will not change this \u2014 joining the Collective will.",
+  missing_identity:
+    "The missing fact is a signed-in session: this request was not authenticated, so no tier could be resolved for your account. Sign in again.",
+  quote_unreachable:
+    "Your membership tier could not be determined because Capavate could not be reached for this request.",
 };
+
+/**
+ * WAVE 183 · ITEM B FIX 2 — WHICH FACT IS MISSING, RATHER THAN "PLEASE RETRY".
+ *
+ * `GET /api/collective/me/payment-quote` fails in three materially different
+ * ways and the panel reported all of them with the single 409 sentence:
+ *
+ *   · 403 `not_collective_member` — this account has no membership record.
+ *     PERMANENT for this account. Retrying is futile, and telling a
+ *     non-member to "retry shortly" is the defect R154.2 reported: the page
+ *     appears broken when in fact it is correctly refusing.
+ *   · 409 `tier_unavailable`      — a member whose tier genuinely could not be
+ *     resolved this instant. Actually transient. Keeps its original sentence.
+ *   · 401 / transport             — no session, or no server.
+ *
+ * The owner's distinction, applied literally: name the missing fact when one is
+ * missing, and keep the retry wording only where a retry can change the answer.
+ */
+function quoteErrorCopy(error: unknown): string {
+  if (!(error instanceof ApiError)) return QUOTE_ERROR_COPY.quote_unreachable;
+  const payload = error.payload as { error?: string } | null | undefined;
+  const code =
+    (payload && typeof payload === "object" ? payload.error : null) ?? error.code ?? null;
+  if (code && QUOTE_ERROR_COPY[String(code)]) return QUOTE_ERROR_COPY[String(code)];
+  if (error.status === 401) return QUOTE_ERROR_COPY.missing_identity;
+  if (error.status === 403) return QUOTE_ERROR_COPY.not_collective_member;
+  /* 409 and anything else genuinely transient keeps the original wording. */
+  return QUOTE_ERROR_COPY.tier_unavailable;
+}
 
 function statusVariant(status: string): "positive" | "secondary" | "destructive" | "outline" {
   /* WAVE 101 - `paid` returned "default", which is the brand red: a settled
@@ -172,7 +211,7 @@ export function MemberBillingPanel() {
           {quoteQ.isLoading && <Skeleton className="h-16 w-full mt-2" />}
           {quoteQ.isError && (
             <div className="mt-2 text-sm text-amber-900" data-testid="member-billing-quote-error">
-              {QUOTE_ERROR_COPY.tier_unavailable}
+              {quoteErrorCopy(quoteQ.error)}
             </div>
           )}
           {quote?.ok === false && (

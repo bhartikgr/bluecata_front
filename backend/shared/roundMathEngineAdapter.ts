@@ -117,6 +117,29 @@ export type ApiSecurity = {
      SAFE untouched, and no existing number moves. Only an explicit `true` turns
      the provision on. */
   mfn?: boolean | null;
+  /* ── WAVE 194 · ITEM A — THE CURRENCY THE RECORD STATES, AND NOTHING ELSE ───
+     THE ONE MISSING LINK. Wave 193 gave the engine a refusal for the case where
+     two differently-denominated post-money SAFE amounts are added into the YC
+     conversion DENOMINATOR (R165.1 — a wrong denominator is a wrong share count
+     and a wrong ownership percentage for EVERY holder, with no error on screen),
+     and then reported that it "cannot fire on live data" because THIS TYPE HAD NO
+     CURRENCY ON IT. Everything downstream of here was already correct; the wire
+     was simply silent. A protection that cannot fire is not a protection.
+
+     Read from the issuing round's `rounds.currency` COLUMN (wave 191 wired it end
+     to end on create and edit) by `server/lib/roundStoredTerms.ts` and projected
+     onto every security row by `buildCompanySecurities`
+     (`server/routes.ts:2853`), which is the reader the production round-math
+     route is handed at `server/routes.ts:1324`. NO MIGRATION.
+
+     `string`, NOT the engine's closed 7-member `Currency` union, and that is
+     deliberate: this is a code SOMEONE RECORDED, and narrowing it here would
+     either need a cast (which would let "JPY" through while the type lied about
+     it) or a compiled-in list of acceptable codes (which R156.2 forbids). The
+     engine compares these codes for CONTRADICTION; it does not price them, and
+     it never converts them (R156.1).
+     ABSENT IS ABSENT: null/undefined omits the key on the engine wire. */
+  currency?: string | null;
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════ *
@@ -2016,6 +2039,33 @@ export function adaptSecuritiesToEngine(secs: ApiSecurity[], events?: ApiCapTabl
                best-of that no instrument offered — see `mfnOrdering.ts`. */
             ...(s.mfn === true ? { mfn: true } : {}),
           },
+          /* ── WAVE 194 · ITEM A — THE CURRENCY CROSSES THE WIRE, AT LAST ──────
+             This single spread is what makes wave 193's refusal reachable. The
+             engine's `buildPricedRound` sums the post-money SAFE amounts to form
+             the YC conversion DENOMINATOR and, since wave 193, refuses when those
+             amounts carry TWO DISTINCT STATED currencies
+             (`compute.ts:899-900`, `:922-928`). Before this line the engine saw
+             `undefined` on every SAFE that ever reached it, so
+             `isMixedCurrency` was always false and the guard could not fire on
+             live data — the third time this week a protection was proven only
+             against a path production does not run (R166.1).
+
+             SAFES ONLY, ON PURPOSE. `postMoneySafesInSum` filters to post-money
+             SAFEs, so those are the securities whose denomination can corrupt the
+             denominator. The note, preferred, common, option and warrant branches
+             are deliberately left alone: widening them would change what the
+             engine sees on instruments no guard reads, for no gain.
+
+             THE CONDITIONAL SPREAD IS THE ENTIRE SAFETY ARGUMENT. Where the
+             record states nothing the KEY IS OMITTED — not `""`, not `null`, and
+             above all not `"USD"`. `statedCurrencies` then counts zero stated
+             codes, `isMixedCurrency` stays false, and the 1045 rounds on record
+             that all have a NULL currency compute byte-for-byte as they did
+             before this wave. One stated plus any number of absent is likewise
+             ONE distinct code and still computes. Only two DIFFERENT stated codes
+             refuse — wave 193's rule, unchanged, now merely reachable.
+             NEVER INFERRED, NEVER DEFAULTED, NEVER CONVERTED (R156.1). */
+          ...(s.currency ? { currency: s.currency } : {}),
         },
       };
     }

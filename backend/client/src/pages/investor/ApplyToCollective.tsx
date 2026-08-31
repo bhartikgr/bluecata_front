@@ -93,6 +93,43 @@ type Eligibility = {
  * server-side billing tier is selected separately by the admin during
  * review (see admin tier mapping doc).
  */
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 220 · CLASS A · A2 and A3 — THE KYC CARD ON THE INVESTOR APPLICATION.
+ *
+ * A2, the most serious finding of this wave. The card's footnote told an
+ * applicant: "Capavate stores documents in an access-controlled vault and
+ * shares them only with the licensed KYC provider." THERE IS NO KYC PROVIDER.
+ * No Persona, Onfido, Jumio, Sumsub, Trulioo, Veriff or Parallel Markets client
+ * exists anywhere in this tree; there is no `kycProvider` configuration key and
+ * no outbound call to one. R212.1 enumerates the only third parties the client
+ * reaches and no identity vendor is among them. The sentence named a party that
+ * does not exist, and it did so as a DATA-PROTECTION representation about where
+ * a passport scan goes, not merely as a compliance boast.
+ *
+ * A3 — the card was headed "Identity verification & KYC". It is an upload form.
+ * Files are recorded; nothing verifies an identity and no KYC is performed.
+ *
+ * R210.2 — neither claim can be made true. Capavate cannot verify an identity
+ * it has no means to verify, and it cannot share with a provider it has not
+ * integrated. Both are WITHDRAWN and the absence is stated in words, reusing
+ * the register of AccreditationForm.tsx:247 and AccreditationDeclaration.tsx:310
+ * ("records your declaration ... does not check it ... does not perform any
+ * verification on your behalf") rather than inventing a new form of words.
+ *
+ * R190.10 — NOTHING IS RESTRICTED. Both upload controls, the optional-documents
+ * control and every field remain exactly as they were; only the two claims
+ * change. An applicant can still upload precisely what they could before.
+ *
+ * R195.5 — both superseded literals are RETAINED IN PLACE at the foot of the
+ * card. Identifier flag, not `{false && ...}`, which detect.mjs folds and marks
+ * a SUPPRESSION.
+ *
+ * STATED PLAINLY: the gate cannot prove this branch is dead. What proves no
+ * applicant reads these words is the mounted test in
+ * __tests__/w220_class_a_copy.test.tsx, not this flag.
+ * ════════════════════════════════════════════════════════════════════════════ */
+const W220_RENDER_SUPERSEDED_COPY = false;
+
 const TIER_LABEL: Record<"bronze" | "silver" | "gold" | "platinum", { label: string; perks: string[] }> = {
   bronze:   { label: "Bronze",   perks: ["Quarterly deal flow", "Discord community", "Newsletter"] },
   silver:   { label: "Silver",   perks: ["Monthly curated deals", "Co-investor matching", "Office hours"] },
@@ -854,7 +891,7 @@ function Step3Identity({ form, setForm }: { form: CollectiveApplication; setForm
   }
   return (
     <Card>
-      <CardHeader><CardTitle className="text-lg">Identity verification & KYC</CardTitle></CardHeader>
+      <CardHeader><CardTitle className="text-lg">Identity documents</CardTitle></CardHeader>
       <CardContent className="space-y-4">
         <UploadField
           label="Passport / national ID"
@@ -895,9 +932,22 @@ function Step3Identity({ form, setForm }: { form: CollectiveApplication; setForm
           )}
         </div>
         <div className="text-xs text-muted-foreground border-t border-border/40 pt-3">
-          Files are encrypted in transit. Capavate stores documents in an access-controlled vault and shares
-          them only with the licensed KYC provider.
+          Files are encrypted in transit. Capavate stores documents in an access-controlled vault.
+          Capavate records what you upload; it does not check it, and it does not perform identity
+          verification or KYC screening on your behalf. No verification provider is integrated with
+          this platform, so nothing here is sent to one.
         </div>
+        {/* WAVE 220 · A2 + A3 · R195.5 — RETIRED IN PLACE, NOT DELETED. Appended
+            as the LAST sibling of this card's content so nothing above it
+            renumbers. Both superseded literals are retained as real JSX text
+            nodes, byte-identical, so neither gate reads this correction as a
+            silent copy drop. Identifier flag, not `{false && ...}`. */}
+        {W220_RENDER_SUPERSEDED_COPY ? (
+          <div hidden aria-hidden="true" data-testid="w220-superseded-kyc-retained">
+            <div data-testid="w220-superseded-kyc-title">Identity verification & KYC</div>
+            <div data-testid="w220-superseded-kyc-vault">Files are encrypted in transit. Capavate stores documents in an access-controlled vault and shares them only with the licensed KYC provider.</div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

@@ -38,6 +38,16 @@ import { log } from "./logger";
  * has never exported; the call threw and a bare catch that dismissed the bridge
  * as "optional" swallowed it, so this event was emitted zero times. */
 import { emitBridgeEvent } from "../bridgeStore";
+/* WAVE 214 · surface 2 — authority confirmation for putting a named third
+   party's email address into the platform. */
+import {
+  evaluateTickAuthority,
+  recordAuthorityConfirmation,
+} from "./wave214ThirdPartyAuthorityStore";
+import {
+  WAVE214_AUTHORITY_SURFACES,
+  WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
+} from "../../shared/wave214ThirdPartyAuthorityCopy";
 
 
 const VALID_ROLES = ["owner", "admin", "member", "viewer"] as const;
@@ -133,6 +143,39 @@ export function registerFounderTeamRoutes(app: Express): void {
     if (!ownsCompany(req, companyId)) {
       return res.status(403).json({ ok: false, error: "not_owner" });
     }
+
+    /* -----------------------------------------------------------------------
+       WAVE 214 · SURFACE 2 — THE AUTHORITY TICK.
+
+       This route stores a named person's email address AND SENDS THEM A REAL
+       EMAIL (see the `sendMail` call below, which stamps `sent_at`). A user was
+       able to put a third party's address into the platform, and cause the
+       platform to contact them, with no statement that they were authorised to.
+
+       Fail-closed, and placed AFTER the existing ownership check so it cannot
+       change who is allowed to invite — only what they must confirm first
+       (R190.10: this adds a step, not an eligibility condition). Placed BEFORE
+       the idempotency read on purpose: a resend of an existing invitation should
+       still require the confirmation, because the point of the confirmation is
+       the assertion, not the row.
+    ----------------------------------------------------------------------- */
+    const authority = evaluateTickAuthority({
+      req,
+      body: body as Record<string, unknown>,
+      surface: WAVE214_AUTHORITY_SURFACES.founderTeamInvitation,
+      expectedStatement: WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
+    });
+    if (!authority.ok) {
+      return res.status(authority.httpStatus).json({ ok: false, error: authority.error, message: authority.message });
+    }
+    recordAuthorityConfirmation({
+      actor: ctx.userId,
+      surface: WAVE214_AUTHORITY_SURFACES.founderTeamInvitation,
+      subject: `company:${companyId}`,
+      envelope: authority.envelope,
+      route: "POST /api/founder/team/invitations",
+      extra: { invitedEmail: email, role: roleRaw },
+    });
 
     const id = `fti_${Date.now()}_${randomBytes(4).toString("hex")}`;
     const token = randomBytes(32).toString("hex");

@@ -32,6 +32,7 @@ import request from "supertest";
 
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const STAMP = String(Date.now());
@@ -43,7 +44,7 @@ async function createRound(payload: Record<string, unknown>): Promise<string> {
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload });
+    .send(w212Attest({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload }));
   if (res.status !== 200) {
     throw new Error(`createRound failed ${res.status} ${JSON.stringify(res.body)}`);
   }
@@ -310,10 +311,10 @@ describe("W58-4 — precedence, units and refusals", () => {
       const res = await request(app)
         .post("/api/rounds")
         .set("x-user-id", ADMIN)
-        .send({
+        .send(w212Attest({
           ...PRICED_BASE, openDate: "2026-01-01", closeDate: "2026-12-31",
           name: `W58 bad ${bad} ${STAMP}`, optionPoolPostPercent: bad,
-        });
+        }));
       expect(res.status).toBe(400);
       expect(res.body.error).toBe("invalid_optionPoolPostPercent");
       expect(String(res.body.message).length).toBeGreaterThan(20);
@@ -324,10 +325,10 @@ describe("W58-4 — precedence, units and refusals", () => {
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         ...PRICED_BASE, openDate: "2026-01-01", closeDate: "2026-12-31",
         name: `W58 bad abc ${STAMP}`, optionPoolPostPercent: "twenty-five",
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("invalid_optionPoolPostPercent");
   });
@@ -355,10 +356,10 @@ describe("W58-4 — precedence, units and refusals", () => {
     const res = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         ...PRICED_BASE, openDate: "2026-01-01", closeDate: "2026-12-31",
         name: `W58 bad mode ${STAMP}`, optionPoolPostPercent: "15", optionPoolMode: "whenever",
-      });
+      }));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("invalid_optionPoolMode");
   });

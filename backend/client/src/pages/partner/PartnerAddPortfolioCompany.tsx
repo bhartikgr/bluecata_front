@@ -21,6 +21,17 @@ import { AppCard } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { describeFailure } from "@/lib/failureMessage";
+/* WAVE 214 · surface 1 — the statement below is the SAME literal the server
+   hashes (`shared/wave214ThirdPartyAuthorityCopy.ts`). One literal, two
+   importers: if the screen owned its own copy, the recorded sha256 would attest
+   to the server's text while the user read the screen's, and the two would drift
+   silently on the first copy edit (R187.3). */
+import {
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT,
+  WAVE214_PORTFOLIO_COMPANY_CONSEQUENCE,
+  WAVE214_TYPED_NAME_LABEL,
+} from "@shared/wave214ThirdPartyAuthorityCopy";
 
 interface CreateResult {
   ok: boolean;
@@ -49,6 +60,13 @@ export default function PartnerAddPortfolioCompany() {
 
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(founderEmail.trim());
 
+  /* WAVE 214 · surface 1 — the typed-name authority confirmation. A typed name
+     rather than a tick because this surface creates an ACCOUNT for someone else:
+     a tick records that a control was in a state, a typed name records that a
+     specific human put their own name to a specific assertion. */
+  const [authorityTypedName, setAuthorityTypedName] = useState("");
+  const authorityNameProvided = authorityTypedName.trim().length > 0;
+
   const create = useMutation({
     mutationFn: async (): Promise<CreateResult> => {
       const res = await apiRequest("POST", "/api/partner/me/portfolio-companies", {
@@ -59,6 +77,11 @@ export default function PartnerAddPortfolioCompany() {
         sector: sector.trim() || undefined,
         stage: stage.trim() || undefined,
         hq: hq.trim() || undefined,
+        /* The statement is sent back verbatim so the server's hash attests to
+           what was ACTUALLY RENDERED, not to what the server believes it renders.
+           The server compares it byte-for-byte. */
+        authorityStatementShown: WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT,
+        authorityTypedName,
       });
       return res.json();
     },
@@ -69,7 +92,8 @@ export default function PartnerAddPortfolioCompany() {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] });
       toast({ title: "Portfolio company created", description: "The founder has been invited to claim it." });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not create company", description: e.message }),
+    /* WAVE 197 #43 — WRITE. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not create company", description: describeFailure(e, "write") }),
   });
 
   const copyClaim = async () => {
@@ -85,6 +109,10 @@ export default function PartnerAddPortfolioCompany() {
   const resetForm = () => {
     setCompanyName(""); setFounderEmail(""); setFounderName(""); setLegalName("");
     setSector(""); setStage(""); setHq(""); setResult(null); setCopied(false);
+    /* WAVE 214 — the confirmation is per-company. "Add another company" must not
+       carry the previous company's confirmation forward, or one typed name would
+       stand for an unbounded number of third parties. */
+    setAuthorityTypedName("");
   };
 
   if (!role.ready || !role.identity) return null;
@@ -151,10 +179,29 @@ export default function PartnerAddPortfolioCompany() {
               <Input data-testid="apc-hq" value={hq} onChange={(e) => setHq(e.target.value)} placeholder="Toronto, CA" />
             </div>
           </div>
+          {/* WAVE 214 · surface 1 — appended as a NEW static block. No existing
+              literal on this screen is edited (R143.1: a replaced text node scores
+              as REMOVED copy; the fix is always to append a static sibling). */}
+          <div className="mt-4 rounded-md border p-3" style={{ borderColor: "var(--cv-color-border)" }} data-testid="apc-authority-block">
+            <div className="text-sm" data-testid="apc-authority-statement">
+              {WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT}
+            </div>
+            <div className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="apc-authority-consequence">
+              {WAVE214_PORTFOLIO_COMPANY_CONSEQUENCE}
+            </div>
+            <div className="mt-3">
+              <Label>{WAVE214_TYPED_NAME_LABEL}</Label>
+              <Input
+                data-testid="apc-authority-name"
+                value={authorityTypedName}
+                onChange={(e) => setAuthorityTypedName(e.target.value)}
+              />
+            </div>
+          </div>
           <div className="mt-4 flex items-center gap-3">
             <Button
               data-testid="apc-create-btn"
-              disabled={!companyName.trim() || !emailValid || create.isPending}
+              disabled={!companyName.trim() || !emailValid || !authorityNameProvided || create.isPending}
               onClick={() => create.mutate()}
             >
               {create.isPending ? "Creating…" : "Create company & invite founder"}

@@ -44,6 +44,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
 import { Decimal } from "decimal.js";
+import { w212Attest } from "./_w212RoundAttestation";
 
 /* THIS TEST'S OWN INSTANCE. `Decimal.clone`, never `Decimal.set`. */
 const D120 = Decimal.clone({ precision: 120 });
@@ -86,11 +87,11 @@ async function addRound(
   terms: Record<string, unknown>,
   commit: { shares: string; amount: string },
 ): Promise<string> {
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} Under Test ${key}`, type: "seed", instrument,
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     ...terms,
-  });
+  }));
   expect(created.status, `round create ${key}: ${JSON.stringify(created.body).slice(0, 300)}`).toBe(200);
   const roundId = String((created.body as { id: string }).id);
   const backfill = await request(app).post("/api/founder/captable/backfill-investor")
@@ -682,11 +683,11 @@ describe("W88 · R67 — exit proceeds, per instrument", () => {
         holderFirstName: "Founder", holderLastName: "f20jpy",
       });
     expect(seeded.status, JSON.stringify(seeded.body).slice(0, 300)).toBeLessThan(400);
-    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+    const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
       companyId: co, name: `${STAMP} Under Test f20jpy`, type: "seed", instrument: "safe_pre",
       openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
       currency: "JPY", valuationCap: 20_000_000, discount: 20,
-    });
+    }));
     expect(created.status, JSON.stringify(created.body).slice(0, 300)).toBe(200);
     const backfill = await request(app).post("/api/founder/captable/backfill-investor")
       .set("x-user-id", ADMIN)

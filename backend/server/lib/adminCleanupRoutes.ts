@@ -19,6 +19,15 @@ import type { Express, Request, Response } from "express";
 import { getDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { log } from "./logger";
+/* WAVE 197 / R169 Item A.2 — this file returned raw exception text in a
+   response body. Admin-only is not a licence to leak: the body still crosses
+   the wire and still lands in a browser, and the owner's instruction is
+   verbatim "I don't want any exposure of our internal process." The EXISTING
+   sanitiser is wired; no second sanitiser was written. Every site keeps or
+   gains a log.error carrying the full raw message, so nothing an engineer had
+   is lost — the detail moves from the response to the log. */
+import { sanitizeErrorMessage } from "./sanitize";
+import { writeFailureMessage } from "./wave197FailureCopy";
 
 type CompanyRow = {
   id: string;
@@ -118,7 +127,15 @@ export function registerAdminCleanupRoutes(app: Express): void {
       });
     } catch (err) {
       log.error("[adminCleanup] dedupe-companies failed", (err as Error).message);
-      return res.status(500).json({ ok: false, error: (err as Error).message });
+      /* WAVE 197 — the raw message was the `error` CODE field. A code that is
+         sometimes an exception string is not a code, so it becomes a stable one
+         and the human sentence moves to `message`. The log line above is
+         untouched, so the full detail is still recorded. */
+      return res.status(500).json({
+        ok: false,
+        error: "dedupe_failed",
+        message: sanitizeErrorMessage(err, writeFailureMessage("this company de-duplication run")),
+      });
     }
   });
 }

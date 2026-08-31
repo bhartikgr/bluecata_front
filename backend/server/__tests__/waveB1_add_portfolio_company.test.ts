@@ -14,6 +14,15 @@ import { registerPartnerPortfolioCompanyRoutes } from "../partnerPortfolioCompan
 import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { getConsortiumPartnerId } from "../consortiumLinkStore";
 import { rawDb } from "../db/connection";
+/* WAVE 214 — this route now requires the third-party authority confirmation
+   (typed name + the verbatim statement, hashed server-side). These fixtures are
+   updated to supply it because the ROUTE CONTRACT changed, not because the gate
+   was weakened for tests: the gate itself is proved over HTTP in
+   `server/__tests__/w214_third_party_authority_http.test.ts`. */
+import {
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT as W214_STMT,
+} from "../../shared/wave214ThirdPartyAuthorityCopy";
+const W214_AUTH = { authorityTypedName: "Test Managing Partner", authorityStatementShown: W214_STMT };
 
 const MANAGING = "u_avi_managing";
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
@@ -35,6 +44,7 @@ describe("Wave B1 (3a) — POST /api/partner/me/portfolio-companies", () => {
   it("requires a company name", async () => {
     const r = await post("/api/partner/me/portfolio-companies", MANAGING, {
       founderEmail: "founder@acme.com",
+      ...W214_AUTH,
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("COMPANY_NAME_REQUIRED");
@@ -44,6 +54,7 @@ describe("Wave B1 (3a) — POST /api/partner/me/portfolio-companies", () => {
     const r = await post("/api/partner/me/portfolio-companies", MANAGING, {
       companyName: "Acme Robotics",
       founderEmail: "not-an-email",
+      ...W214_AUTH,
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("FOUNDER_EMAIL_REQUIRED");
@@ -56,6 +67,7 @@ describe("Wave B1 (3a) — POST /api/partner/me/portfolio-companies", () => {
       founderName: "Jane Founder",
       sector: "Robotics",
       stage: "Seed",
+      ...W214_AUTH,
     });
     expect(r.status).toBe(201);
     expect(r.body.ok).toBe(true);

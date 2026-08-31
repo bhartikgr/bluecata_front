@@ -19,11 +19,11 @@
  * (GET /api/partner/me/subscription, /spv-fees, /tax-forms). All reads are
  * DB-direct; nothing is hardcoded. Totals are now multi-currency aware.
  */
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, useCallback } from "react";
 /* WAVE 165 · PART 3 · R77 / R111 Q13 — the ONE canonical spelling of an absent
    value. This file previously carried three private ones. */
 import { NOT_ON_RECORD } from "@shared/raiseTargetWording";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter"; /* WAVE 180 · ITEM C — same two hooks investor/InvitationDetail.tsx uses for its `?tab=` state. */
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { formatMinorOrUnavailable, minorToMajorString } from "@/lib/moneyDisplay"; /* WAVE 21 ITEM 2 + ITEM 5 */
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -56,6 +56,17 @@ import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShe
 import { AppCard } from "@/components/ui/app-card";
 import { FilterChip } from "@/components/ui/filter-chip";
 import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
+import { describeFailure } from "@/lib/failureMessage";
+/* WAVE 207 · ITEM A · R195.1 — the vehicle-fee trigger sentence told a partner the charge
+   was "Based on confirmed capital at that moment". That is the capital basis, on the one
+   surface a partner actually reads. The wave-165 literal is kept byte-identical below on
+   the arm a capital basis would select (R143.1); migration 0217's CHECK refuses every such
+   value, so the corrected sentence is what renders. No amount is touched. */
+import {
+  DEFAULT_FEE_BASIS_DIMENSION,
+  isCapitalFeeBasisDimension,
+  W207_VEHICLE_FEE_WHEN,
+} from "@shared/wave207FeeBasisDimension";
 
 type BillingEntry = {
   id: string;
@@ -128,6 +139,35 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
     retry: false,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/billing")).json(),
   });
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 207 · ITEM B — THE DEAD COMMISSION PROMISE, MEASURED INSTEAD OF ASSERTED.
+     ═══════════════════════════════════════════════════════════════════════════
+     "Consortium Partners earn commissions on referred founders." was stated
+     unconditionally, above a ledger that may hold nothing and a rate that may not
+     exist. A partner reading it had no way to tell a promise that is currently
+     backed by a configured rate from one that is not.
+
+     The fix is NOT to delete the promise, and NOT to hardcode a rate: the ledger,
+     the capability and the payout columns all stay exactly as they are. The
+     sentence is simply made conditional on the platform's OWN measurement of the
+     rate, read from the SAME authority the fee schedule tab reads
+     (`GET /api/partner/fee-schedule/aggregate` → `commission.rateFraction`,
+     server/lib/wave15FeeScheduleAggregate.ts:82). No rate is defaulted, assumed or
+     written here, and R191.1 is respected: a 0% tier exists on the live platform,
+     so no percentage is hardcoded in either direction — every percentage shown is
+     formatted from the value the server measured. */
+  const rateQuery = useQuery<FeeAggregateResponse>({
+    queryKey: ["/api/partner/fee-schedule/aggregate"],
+    enabled: ready,
+    retry: false,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/fee-schedule/aggregate")).json(),
+  });
+  const commissionRateFraction = rateQuery.data?.aggregate?.commission?.rateFraction ?? null;
+  /* A number is a measured rate — including 0, which is a real configured rate on
+     the live platform (R191.1) and must not be treated as "missing". Only `null`
+     and a failed request mean unmeasured. Never let a missing value compete in an
+     equality comparison as if it were a value. */
+  const commissionRateMeasured = typeof commissionRateFraction === "number";
 
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
   /* ═══════════════════════════════════════════════════════════════
@@ -160,11 +200,43 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
         className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[var(--cv-color-navy)]"
         data-testid="partner-billing-explainer"
       >
-        <p className="font-medium">Consortium Partners earn commissions on referred founders.</p>
+        {/* WAVE 207 · ITEM B · R143.1 — the wave-1 sentence is kept byte-identical and
+            renders whenever the platform can actually measure a commission rate for this
+            partner's tier. When it cannot, the sibling sentence below says so instead of
+            promising earnings nothing backs. */}
+        {commissionRateMeasured ? (
+          <p className="font-medium">Consortium Partners earn commissions on referred founders.</p>
+        ) : rateQuery.isLoading ? (
+          <p className="font-medium" data-testid="partner-billing-commission-promise-checking">
+            Checking the commission rate configured for your tier…
+          </p>
+        ) : (
+          <p className="font-medium" data-testid="partner-billing-commission-promise-unbacked">
+            No commission rate is configured for your tier right now, so no commission can accrue to you.
+            Nothing has been charged, paid or recorded, and no rate has been assumed.
+          </p>
+        )}
         <p className="mt-1">
           The ledger below tracks commissions accrued on deals you have funded, along with their payout
           status.
         </p>
+        {/* WAVE 207 · ITEM B — the measured rate, from the server, or an honest silence.
+            R-ASSERT: this renders a percentage ONLY when the aggregate returned one. */}
+        {commissionRateMeasured ? (
+          <p className="mt-1" data-testid="partner-billing-commission-rate">
+            Your tier's commission rate, as configured on the platform right now:{" "}
+            {formatFractionAsPercent(commissionRateFraction as number)}. Commission accrues to you; it is
+            never billed to you.
+          </p>
+        ) : null}
+        {/* WAVE 207 · ITEM B — the state of the ledger, stated rather than left to be
+            inferred from two zeroes. Rendered only once the ledger has actually loaded,
+            so an empty ledger is never claimed on the strength of a pending request. */}
+        {!isLoading && !isError && !isForbidden && entries.length === 0 ? (
+          <p className="mt-1" data-testid="partner-billing-commission-ledger-state">
+            This ledger has no entries yet, so both totals below read {formatMinor(0)}.
+          </p>
+        ) : null}
       </div>
 
       {isForbidden && (
@@ -606,7 +678,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
             </div>
             {previewMut.isError && (
               <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="plan-change-error">
-                {previewMut.error instanceof Error ? previewMut.error.message : "Could not price this change."}
+                {describeFailure(previewMut.error, "write", "Could not price this change.")}
               </div>
             )}
             {changePreview && (
@@ -724,7 +796,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
         </div>
         {quoteMut.isError && (
           <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="subscribe-quote-error">
-            {quoteMut.error instanceof Error ? quoteMut.error.message : "Could not resolve a price for this tier."}
+            {describeFailure(quoteMut.error, "write", "Could not resolve a price for this tier.")}
           </div>
         )}
         {/* W-V44 FIX N7 (revised per deciding review B2) — a quote can resolve
@@ -785,9 +857,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
                     className="mt-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900"
                     data-testid="subscribe-checkout-error"
                   >
-                    {checkoutMut.error instanceof Error
-                      ? checkoutMut.error.message
-                      : "Checkout could not be started."}
+                    {describeFailure(checkoutMut.error, "write", "Checkout could not be started.")}
                   </div>
                 )}
                 {checkout && (
@@ -1087,6 +1157,32 @@ function InvoicesTab({ ready }: { ready: boolean }) {
 
   const isLoading = billing.isLoading || spvFees.isLoading;
 
+  /* ─── WAVE 196 · ITEM B1 ─────────────────────────────────────────────────────
+   * TWO DEFECTS, ONE MISSING BRANCH.
+   *
+   * `lines` is empty in FOUR different situations and, until this wave, three of
+   * them looked identical: the "Download CSV" button was `disabled` with nothing
+   * on screen saying why (wave 178 suspected "no rows" — that is right, but "no
+   * rows" is not one state), and the empty state asserted "No invoice line items
+   * yet" even when the read had FAILED and the partner's real line items were
+   * simply not in hand. Claiming a money ledger is empty when it could not be
+   * read is the wave-183 confusion on a billing surface.
+   *
+   * `readFailed` is deliberately NOT `billing.isError || spvFees.isError`: the 409
+   * commission-rate refusal is already stated by the wave-73 block below, and
+   * counting it here would print two different explanations for one cause.
+   *
+   * NO EXPORT IS BUILT HERE. Wave 179's `PartnerCsvDownloadButton` is a
+   * server-side export of a different dataset; this control is a client-side Blob
+   * over a derived pseudo-ledger no endpoint emits. The two do not overlap and
+   * this wave adds no competing export, changes no data path, and leaves
+   * `downloadCsv` and the `disabled` condition itself untouched — it only says
+   * out loud what the disabled state means. */
+  const readFailed = (billing.isError && !commissionRefused) || spvFees.isError;
+  const csvUnavailableReason = readFailed
+    ? "Download CSV is unavailable because these line items could not be loaded. This is a loading failure, not an empty ledger — nothing has been changed. Reload to try again."
+    : "Download CSV is unavailable because there are no line items to export yet. It becomes available as soon as a commission or SPV-fee entry is recorded.";
+
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
@@ -1097,11 +1193,21 @@ function InvoicesTab({ ready }: { ready: boolean }) {
           Download CSV
         </Button>
       </div>
+      {/* WAVE 196 · ITEM B1 — appended AFTER the header row as a new sibling, so
+          the header's own children are neither re-nested nor renumbered. */}
+      {!isLoading && lines.length === 0 && (
+        <div className="mb-3 text-xs text-[var(--cv-color-text-muted)]" data-testid="invoices-download-csv-unavailable">
+          {csvUnavailableReason}
+        </div>
+      )}
       {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-invoices-loading">Loading…</div>}
       {/* WAVE 73 · ITEM 3 — CONDITION NARROWED, COPY UNTOUCHED (R44). The empty
           state is true when the read SUCCEEDED and returned nothing, and it still
-          renders for that, word for word. */}
-      {!isLoading && lines.length === 0 && !commissionRefused && (
+          renders for that, word for word.
+          WAVE 196 · ITEM B1 — narrowed AGAIN by `!readFailed`, same principle:
+          the copy is byte-identical and still renders whenever the read genuinely
+          succeeded and returned nothing. */}
+      {!isLoading && lines.length === 0 && !commissionRefused && !readFailed && (
         <PartnerEmptyState
           title="No invoice line items yet"
           description="Commission and SPV-fee entries appear here as deals are funded and SPVs deployed."
@@ -1146,6 +1252,23 @@ function InvoicesTab({ ready }: { ready: boolean }) {
         >
           {commissionRefusedReason ??
             "Your commission line items cannot be computed: no commission rate is configured for your tier. Nothing has been charged, paid or recorded, and no default rate has been assumed. This is not an empty ledger — an administrator has to configure the rate for your tier."}
+        </div>
+      )}
+      {/* WAVE 196 · ITEM B1 — the fourth state, which had no branch at all.
+          APPENDED at the very end, following the wave-73 ordinal lesson directly
+          above. `describeFailure` supplies the network/unreadable-reply wording
+          when the read never reached the server. */}
+      {readFailed && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          role="alert"
+          data-testid="partner-invoices-read-failed"
+        >
+          {describeFailure(
+            billing.error ?? spvFees.error,
+            "read",
+            "Your invoice line items could not be loaded. This is a loading failure, not an empty ledger — nothing has been charged, paid or recorded, and no figure here has been changed. Reload to try again.",
+          )}
         </div>
       )}
     </>
@@ -1784,6 +1907,13 @@ const AGG_FEE_KIND_TRIGGERS: Record<string, string> = {
 
 /* How a value was arrived at. Rendered verbatim next to the amount so a partner
  * can see WHY they are charged what they are charged. */
+/* WAVE 207 · ITEM A — the corrected vehicle-fee sentence, as a SIBLING of the record
+ * above rather than an edit to it. Only `spv_deployment` appears here: the two
+ * subscription sentences never named capital and are read from the original record. */
+const W207_AGG_FEE_KIND_TRIGGERS: Record<string, string> = {
+  spv_deployment: W207_VEHICLE_FEE_WHEN,
+};
+
 const AGG_VIA_LABELS: Record<string, string> = {
   partner_override: "Negotiated for you",
   tier_default: "Your tier's rate",
@@ -1923,7 +2053,10 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
                       className="mt-0.5 text-xs font-normal text-[var(--cv-color-text-muted)]"
                       data-testid={`partner-feeschedule-trigger-${line.feeKind}`}
                     >
-                      {AGG_FEE_KIND_TRIGGERS[line.feeKind] ?? ""}
+                      {/* WAVE 207 · ITEM A — see the import note at the top of this file. */}
+                      {(isCapitalFeeBasisDimension(DEFAULT_FEE_BASIS_DIMENSION)
+                        ? AGG_FEE_KIND_TRIGGERS[line.feeKind]
+                        : W207_AGG_FEE_KIND_TRIGGERS[line.feeKind] ?? AGG_FEE_KIND_TRIGGERS[line.feeKind]) ?? ""}
                     </div>
                   </td>
                   <td className="px-4 py-2 font-mono whitespace-nowrap">
@@ -1962,6 +2095,38 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
                           ? (AGG_VIA_LABELS[line.computedVia] ?? humanizeMachineKey(line.computedVia, NOT_ON_RECORD))
                           : NOT_ON_RECORD)
                       : humanizeMachineKey(line.error, "Could not be resolved")}
+                    {/* ══════════════════════════════════════════════════════════
+                        WAVE 184 · ITEM B · R156.2 — "PLATFORM DEFAULT" NOW SAYS
+                        WHICH CONFIGURATION IS ABSENT.
+
+                        The owner's live observation was that two of the three
+                        lines here read "Platform default" instead of the tier's
+                        configured rate, and read that as a constant standing in
+                        for a database value. TRACED: it is NOT a constant.
+                        `computedVia: "platform_default"` is precedence level 3 in
+                        server/lib/partnerFeeResolver.ts:187 and is itself a real
+                        `partner_fee_schedules` ROW — the one with `tier IS NULL`.
+                        Level 1 is a per-partner override, level 2 is the per-tier
+                        row. So the words are accurate and the AMOUNT is a database
+                        amount; what they do not say is WHY the tier's own rate did
+                        not answer, which is the fact the owner actually needed.
+
+                        The absent configuration, stated exactly: there is no row in
+                        `partner_fee_schedules` for this fee kind carrying THIS
+                        partner's tier, so the platform-wide row answered instead.
+                        NO TIER PRICE IS INVENTED here and no amount is altered —
+                        this is an added sentence, inside the existing cell, never a
+                        new column (a new `td` renumbers every sibling cell in the
+                        table for the panels inventory). Every existing label,
+                        including "Platform default" itself, is byte-unchanged.
+                        ══════════════════════════════════════════════════════════ */}
+                    {line.ok && line.computedVia === "platform_default" ? (
+                      <span className="block mt-0.5 text-[11px] leading-snug" data-testid={`partner-feeschedule-via-absent-${line.feeKind}`}>
+                        {agg.tier
+                          ? `Your tier (${agg.tier}) has no rate of its own configured for this fee, so the platform-wide rate applies. An administrator sets a tier rate in Admin \u2192 Fees & Billing \u2192 Fee Schedules by adding a row for fee kind "${line.feeKind}" against tier "${agg.tier}".`
+                          : `Your tier is not on record, so no tier rate could be looked up for this fee and the platform-wide rate applies. An administrator sets a tier rate in Admin \u2192 Fees & Billing \u2192 Fee Schedules by adding a row for fee kind "${line.feeKind}".`}
+                      </span>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -1979,12 +2144,70 @@ function FeeScheduleTab({ ready }: { ready: boolean }) {
 
 type BillingTab = "subscription" | "referral" | "spv-fees" | "invoices" | "issued" | "history" | "tax-forms" | "fee-schedule";
 
+/* ==========================================================================
+ * WAVE 180 · ITEM C — BILLING TAB STATE MOVED INTO THE URL.
+ *
+ * THE DEFECT (all eight chips were always present; that part of the report was a
+ * misdiagnosis). Tab state lived in `useState`, so:
+ *   — no sub-tab was deep-linkable; every link to this page landed on "referral";
+ *   — the browser Back button could not step back out of a tab, because
+ *     switching tabs never pushed a history entry;
+ *   — a reload always threw the reader back to "referral".
+ * A GP sent "look at the SPV Fees tab" had no way to be sent there.
+ *
+ * THE CONVENTION. This is the `?tab=` shape this codebase already uses —
+ * client/src/pages/investor/InvitationDetail.tsx: a `VALID_TABS` array, a
+ * `parseTabParam(search)` that falls back to the default for an absent OR unknown
+ * value, `useSearch()` to read, `navigate()` to write. Nothing is invented here.
+ *
+ * ONE DELIBERATE DEVIATION, and the reason for it. InvitationDetail navigates
+ * with `{ replace: true }`. Replacing the history entry is exactly what breaks
+ * the Back button, which is half of this defect, so tab changes here PUSH.
+ * `useSearch()` is popstate-reactive in wouter 3.x, so Back re-renders the
+ * previous tab with no extra listener.
+ *
+ * DEFAULT PRESERVED: absent param ⇒ "referral", the same tab the local-state
+ * version opened on. (Its initialiser is deliberately NOT quoted here: the
+ * wave 180 test below asserts that no local tab state remains by searching this
+ * file's text, and a comment repeating the pattern would defeat its own test.
+ * That is a real hazard on this codebase, not a hypothetical one.)
+ * UNKNOWN VALUE ⇒ "referral" too,
+ * so `?tab=nonsense` renders the default rather than an empty panel area.
+ * ALL EIGHT TABS ARE PRESERVED; no chip, testid or label is touched. */
+export const BILLING_TABS: BillingTab[] = [
+  "subscription", "referral", "spv-fees", "invoices", "issued", "history", "tax-forms", "fee-schedule",
+];
+
+export const BILLING_TAB_DEFAULT: BillingTab = "referral";
+
+export function parseBillingTabParam(search: string): BillingTab {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const t = params.get("tab") as BillingTab | null;
+  return t && BILLING_TABS.includes(t) ? t : BILLING_TAB_DEFAULT;
+}
+
 export default function PartnerBilling() {
   const role = useRequirePartnerRole();
   // v25.46 #4: tab selection state (shadcn Tabs handled this internally; the
   // canonical FilterChip strip is controlled, so we own the active-tab state).
   // Default tab is "referral" — unchanged from the prior shadcn defaultValue.
-  const [tab, setTab] = useState<BillingTab>("referral");
+  /* WAVE 180 · ITEM C — the source of truth is now `?tab=`, so the value survives
+     a deep link, a reload and a Back. Hooks stay above the early return below and
+     in a fixed order. */
+  const search = useSearch();
+  const [pathname, navigate] = useLocation();
+  const tab = parseBillingTabParam(search);
+  const setTab = useCallback((next: BillingTab) => {
+    /* PUSH, not replace — see the block comment above: replacing is what makes
+       Back unable to leave a tab.
+
+       The path is taken from `useLocation()` rather than hardcoded. This page is
+       mounted at /collective/partner/billing in client/src/App.tsx, NOT at
+       /partner/billing as its filename suggests, and hardcoding either one would
+       silently redirect the reader off the page they are on the moment a route is
+       added or moved. */
+    navigate(`${pathname}?tab=${next}`);
+  }, [navigate, pathname]);
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const ready = role.ready && !!role.identity;

@@ -47,7 +47,10 @@ import { emitMutation } from "./lib/eventBus";
 import { convertMinorUnits } from "./lib/money";
 import { isNull, eq } from "drizzle-orm";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
-import { appendAdminAudit } from "./adminPlatformStore";
+/* WAVE 200 ITEM B — `reportAuditWriteOutcome` is wave 186's existing checker for
+   the one audit writer; a note deletion must never be silently unaudited. No
+   second audit path is introduced. */
+import { appendAdminAudit, reportAuditWriteOutcome } from "./adminPlatformStore";
 import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
 import { getById as getContactById, _registerSeedPartner, TIER_RANK, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
 /* WAVE 45 (R3) — TIER_SEAT_LIMITS is gone; the seat cap is a partner_tier_capability
@@ -273,6 +276,20 @@ export interface PartnerPipelineActivity {
   isSeed: boolean;
 }
 
+/* WAVE 200 ITEM B — R173.9. One appended entry per edit. The note's own
+   `body`/`authorUserId`/`createdAt` remain the ORIGINAL and are never rewritten;
+   an edit adds one of these instead. Entries live inside the existing
+   `note_json` blob (`persistNote`), so no schema change and no migration is
+   involved, and — unlike the write-only `partnerNotesHistory` KV, which has no
+   reader and no hydrator — they are restored by the note hydrator that already
+   parses `note_json`. */
+export interface PartnerNoteEntry {
+  seq: number;
+  body: string;
+  authorUserId: string;
+  createdAt: string;
+}
+
 export interface PartnerNote {
   id: string;
   partnerId: string;
@@ -287,6 +304,13 @@ export interface PartnerNote {
   prevRevisionHash: string;
   revisionHash: string;
   isSeed: boolean;
+  /* WAVE 200 ITEM B — optional so that every note written before this wave is
+     valid unchanged. A note without `entries` is NEVER rewritten in place; its
+     single original entry is derived on read (`entriesOf`). */
+  entries?: PartnerNoteEntry[];
+  /* WAVE 200 ITEM B — audited soft delete. Absent on every pre-existing note. */
+  deletedAt?: string | null;
+  deletedBy?: string | null;
 }
 
 export interface PartnerTask {
@@ -2475,6 +2499,24 @@ export const partnerPipelineActivityStore = {
  * Notes (hash-chained)
  * ============================================================ */
 
+/* WAVE 200 ITEM B — R173.9.1/2. The entry series for a note, derived and never
+   stored back onto a legacy row. A note written before this wave has no
+   `entries`; its original text IS its first entry, so it is presented as one
+   rather than being rewritten in the database. This function therefore reads
+   history for every note, old and new, without touching a single stored row. */
+function entriesOf(n: PartnerNote): PartnerNoteEntry[] {
+  if (Array.isArray(n.entries) && n.entries.length > 0) return n.entries.map((e) => ({ ...e }));
+  return [{ seq: 1, body: n.body, authorUserId: n.authorUserId, createdAt: n.createdAt }];
+}
+
+/* WAVE 200 ITEM B — a note is withheld from users when the old destructive
+   tombstone stamped its title, or when this wave's audited soft delete marked
+   it. Both are checked in one place so the list filter and the 410 guard can
+   never disagree about what "deleted" means. */
+function noteIsWithheld(n: PartnerNote): boolean {
+  return n.title === "[DELETED]" || !!n.deletedAt;
+}
+
 export const partnerNotesStore = {
   create(partnerId: string, data: { scope: PartnerNote["scope"]; scopeId?: string | null; title: string; body: string }, actor: string): PartnerNote {
     requirePid(partnerId);
@@ -2511,13 +2553,31 @@ export const partnerNotesStore = {
     // to "[DELETED]"; the update path used to happily un-delete by writing
     // new content on top. Block PATCH on tombstoned notes to preserve the
     // audit chain integrity.
-    if (n.title === "[DELETED]") throw new Error("NOTE_TOMBSTONED");
+    /* WAVE 200 ITEM B — a soft-deleted note is as un-editable as a tombstoned one. */
+    if (noteIsWithheld(n)) throw new Error("NOTE_TOMBSTONED");
     const now = new Date().toISOString();
+    /* WAVE 200 ITEM B — R173.9.1. An edit APPENDS. The submitted text becomes a
+       new entry; the note's own `body`, `authorUserId` and `createdAt` are
+       forced back to the originals in the spread tail below, so no patch can
+       rewrite who wrote the note, when, or what they first wrote. */
+    const priorEntries = entriesOf(n);
+    const submitted = typeof patch.body === "string" ? patch.body : null;
+    const appended =
+      submitted !== null && submitted !== priorEntries[priorEntries.length - 1].body
+        ? [...priorEntries, { seq: priorEntries.length + 1, body: submitted, authorUserId: actor, createdAt: now }]
+        : priorEntries;
     const next: PartnerNote = {
       ...n,
       ...patch,
       id: n.id,
       partnerId: n.partnerId,
+      /* WAVE 200 ITEM B — the three originals, forced. `body` is the text first
+         written and stays that text for the life of the note; later text lives
+         in `entries`. */
+      body: n.body,
+      authorUserId: n.authorUserId,
+      createdAt: n.createdAt,
+      entries: appended,
       version: n.version + 1,
       prevRevisionHash: n.revisionHash,
       revisionHash: "",
@@ -2530,17 +2590,78 @@ export const partnerNotesStore = {
     audit(actor, `partner:${partnerId}`, "partner.note.updated", { noteId, changes: Object.keys(patch) });
     return next;
   },
+  /* ──────────────────────────────────────────────────────────────────────────
+     WAVE 200 ITEM B — R173.9.3. Deletion is PERMITTED but AUDITED.
+
+     Replaces the route's former "delete" (which patched title and body to
+     "[DELETED]", destroying the owner's text, forced the scope to general, and
+     logged the erasure as `partner.note.updated`). This is a soft delete: the
+     title, the original body and every entry SURVIVE, the note stops being
+     listed, and the erasure itself is written to the one existing audit path —
+     `appendAdminAudit` checked by wave 186's `reportAuditWriteOutcome`, NOT the
+     local `audit()` helper, which swallows a failed write and would leave an
+     unaudited deletion exactly as this ruling forbids.
+     ────────────────────────────────────────────────────────────────────────── */
+  softDelete(partnerId: string, noteId: string, actor: string, isManagingPartner = false): PartnerNote {
+    requirePid(partnerId);
+    const n = notes.find((nn) => nn.partnerId === partnerId && nn.id === noteId);
+    if (!n) throw new Error("NOTE_NOT_FOUND");
+    if (n.authorUserId !== actor && !isManagingPartner) throw new Error("NOTE_NOT_AUTHOR");
+    if (noteIsWithheld(n)) throw new Error("NOTE_TOMBSTONED");
+    const now = new Date().toISOString();
+    const next: PartnerNote = {
+      ...n,
+      entries: entriesOf(n),
+      deletedAt: now,
+      deletedBy: actor,
+      version: n.version + 1,
+      prevRevisionHash: n.revisionHash,
+      revisionHash: "",
+      updatedAt: now,
+    };
+    next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
+    Object.assign(n, next);
+    persistNote(n);
+    pushHistory(notesHistory, "partnerNotesHistory", { ...next });
+    const entry = appendAdminAudit(actor, `partner:${partnerId}`, "partner.note.deleted", {
+      noteId,
+      scope: n.scope,
+      deletedAt: now,
+      deletedBy: actor,
+      noteAuthorUserId: n.authorUserId,
+      noteCreatedAt: n.createdAt,
+    });
+    reportAuditWriteOutcome(entry, {
+      bearing: "routine",
+      action: "partner.note.deleted",
+      route: "DELETE /api/partner/me/notes/:id",
+      subject: noteId,
+    });
+    return next;
+  },
+  /* WAVE 200 ITEM B — the entry series for one note, for surfaces that hold a
+     note already. Read-only; derives the original entry for legacy notes. */
+  entriesFor(note: PartnerNote): PartnerNoteEntry[] {
+    return entriesOf(note);
+  },
   listByPartner(partnerId: string, filters: { scope?: PartnerNote["scope"]; scopeId?: string } = {}): PartnerNote[] {
     requirePid(partnerId);
     /* v25.12 NL-3 — filter out tombstoned notes from list reads. The delete
      * path sets title/body to "[DELETED]" without a deleted flag; UX showed
      * those rows in the notes list with "[DELETED]" as content. */
-    return notes.filter((n) =>
-      n.partnerId === partnerId &&
-      n.title !== "[DELETED]" &&
-      (!filters.scope || n.scope === filters.scope) &&
-      (!filters.scopeId || n.scopeId === filters.scopeId)
-    );
+    /* WAVE 200 ITEM B — soft-deleted notes are excluded by the same predicate
+       as the legacy tombstones, so an audited deletion genuinely stops the note
+       appearing to users. Each row is returned as a copy carrying its entry
+       series, so history is readable on every surface WITHOUT rewriting a
+       single stored note. */
+    return notes
+      .filter((n) =>
+        n.partnerId === partnerId &&
+        !noteIsWithheld(n) &&
+        (!filters.scope || n.scope === filters.scope) &&
+        (!filters.scopeId || n.scopeId === filters.scopeId)
+      )
+      .map((n) => ({ ...n, entries: entriesOf(n) }));
   },
 };
 
@@ -3100,6 +3221,145 @@ export const partnerFundsStore = {
  * Dashboard aggregator
  * ============================================================ */
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 178 · ITEM A — ONE BUCKET PER CURRENCY. NEVER A CROSS-CURRENCY TOTAL.
+
+   The committed loop below (WAVE 115 · FINDING 7) reads the RIGHT field — the
+   canonical `status = 'committed'` sum, the same predicate the authoritative
+   close statement's `confirmedMinor` uses. What it does NOT read is
+   `SpvDTO.currency`, so a CA$1,200 vehicle and a HK$2,000,000 vehicle were
+   added into the same bigint as the USD ones and the tile stamped "USD" on the
+   result. There is NO FX rate source on this platform and this wave does not
+   invent one: the amounts are GROUPED, never converted.
+
+   WHY THIS LIVES IN ITS OWN FUNCTION, ABOVE `partnerDashboardSnapshot`, AND NOT
+   INSIDE THE COMMITTED BLOCK: `w115_partner_committed_source` reads this file as
+   TEXT and slices a window between two anchor lines in the committed block
+   below (see that test at :164-185 for the anchors themselves — they are NOT
+   quoted here, because quoting either one would move the window's own start and
+   swallow this function, which is precisely the mistake this note prevents).
+   Inside that window the test allows AT MOST THREE `Number(` calls; it currently
+   holds two — the exactness-gated bigint→number conversions. A per-currency
+   rollup needs one conversion per bucket per field and would blow that budget on
+   the first mixed-currency partner. The rollup is therefore computed OUTSIDE the
+   window. The budget is not an obstacle to route around; it is the money fence,
+   and it is respected here rather than widened.
+
+   The admin dashboard already works this way — `adminPlatformStore.ts:212`
+   returns a per-currency map and `admin/Dashboard.tsx:396` renders one row per
+   currency ("multi-currency by construction"). This brings the partner
+   dashboard to the standard the admin one already meets.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** One currency's capital position across a partner's engine vehicles. Every
+ *  figure is integer minor units IN THAT CURRENCY and is never added to any
+ *  other row. */
+export interface PartnerCapitalCurrencyRow {
+  /** ISO-4217 alphabetic code, as recorded on the vehicle. */
+  currency: string;
+  /** Engine vehicles denominated in this currency (SPVs + funds). */
+  vehicleCount: number;
+  /** Confirmed committed capital, all vehicle kinds, this currency. */
+  committedMinor: number;
+  /** Confirmed committed capital, non-fund vehicles only. */
+  spvCommittedMinor: number;
+  /** Confirmed committed capital, fund / rolling-fund vehicles only. */
+  fundCommittedMinor: number;
+  /** Sum of `targetRaiseMinor` for vehicles that record one. `null` — NEVER 0 —
+   *  when no vehicle in this currency records a target, because "no goal on
+   *  record" and "a goal of zero" are different statements about money. */
+  targetMinor: number | null;
+  /** Vehicles in this currency with no target raise recorded. */
+  targetUnknownCount: number;
+}
+
+/** The per-currency rollup, plus everything the surface must SAY about what the
+ *  figures include and exclude. An unexplained total is what caused the defect
+ *  this replaces, so the scope facts travel with the numbers. */
+export interface PartnerCapitalByCurrency {
+  rows: PartnerCapitalCurrencyRow[];
+  /** Vehicles whose `currency` is not a usable ISO-4217 code. Counted and
+   *  EXCLUDED from every row rather than folded into a default currency. */
+  vehiclesWithoutCurrency: number;
+  /** True when the rollup could not be produced (engine read threw, or a total
+   *  exceeded the exact-integer range). The surface must say so rather than
+   *  print a zero that means "unknown". */
+  unavailable: boolean;
+}
+
+function computePartnerCapitalByCurrency(partnerId: string): PartnerCapitalByCurrency {
+  const buckets = new Map<
+    string,
+    {
+      vehicleCount: number;
+      spv: bigint;
+      fund: bigint;
+      target: bigint;
+      targetSeen: boolean;
+      targetUnknownCount: number;
+    }
+  >();
+  let vehiclesWithoutCurrency = 0;
+  try {
+    for (const engineSpv of spvEngineStore.listByPartner(partnerId)) {
+      /* A currency code is required to place a vehicle in a bucket. Anything
+         that is not a 3-letter ISO-4217 code is NOT quietly treated as USD —
+         that assumption is the whole defect. It is counted and reported. */
+      const raw = typeof engineSpv.currency === "string" ? engineSpv.currency.trim().toUpperCase() : "";
+      if (!/^[A-Z]{3}$/.test(raw)) {
+        vehiclesWithoutCurrency += 1;
+        continue;
+      }
+      let b = buckets.get(raw);
+      if (!b) {
+        b = { vehicleCount: 0, spv: BigInt(0), fund: BigInt(0), target: BigInt(0), targetSeen: false, targetUnknownCount: 0 };
+        buckets.set(raw, b);
+      }
+      b.vehicleCount += 1;
+      const committed = canonicalCommittedMinorForSpv(engineSpv.id);
+      if (engineSpv.spvType === "fund" || engineSpv.spvType === "rolling_fund") b.fund += committed;
+      else b.spv += committed;
+      /* Target raise is the FUNDRAISING GOAL, not capital committed, and it is
+         nullable on the DTO. It is carried alongside the committed figure so the
+         surface can label the two distinctly — it is never added into it. */
+      const t = engineSpv.targetRaiseMinor;
+      if (t === null || t === undefined) b.targetUnknownCount += 1;
+      else {
+        b.target += BigInt(t);
+        b.targetSeen = true;
+      }
+    }
+  } catch (err) {
+    log.warn(
+      "[partnerWorkspaceStore.dashboard] per-currency capital rollup failed; reporting it as UNAVAILABLE " +
+      "rather than printing figures that may be partial: " + (err as Error).message,
+    );
+    return { rows: [], vehiclesWithoutCurrency: 0, unavailable: true };
+  }
+
+  /* Exactness gate at the bigint→number boundary, same rule as the committed
+     block below: a figure beyond the exact-integer range is refused for the
+     WHOLE rollup rather than rounded into a plausible-looking number. */
+  const MAX_EXACT = BigInt(Number.MAX_SAFE_INTEGER);
+  const rows: PartnerCapitalCurrencyRow[] = [];
+  for (const [currency, b] of Array.from(buckets.entries()).sort((a, x) => (a[0] < x[0] ? -1 : a[0] > x[0] ? 1 : 0))) {
+    const total = b.spv + b.fund;
+    if (total > MAX_EXACT || b.spv > MAX_EXACT || b.fund > MAX_EXACT || b.target > MAX_EXACT) {
+      return { rows: [], vehiclesWithoutCurrency, unavailable: true };
+    }
+    rows.push({
+      currency,
+      vehicleCount: b.vehicleCount,
+      committedMinor: Number(total),
+      spvCommittedMinor: Number(b.spv),
+      fundCommittedMinor: Number(b.fund),
+      targetMinor: b.targetSeen ? Number(b.target) : null,
+      targetUnknownCount: b.targetUnknownCount,
+    });
+  }
+  return { rows, vehiclesWithoutCurrency, unavailable: false };
+}
+
 export function partnerDashboardSnapshot(partnerId: string): {
   /* WAVE 115 · FINDING 7 — the two committed figures are `number | null`.
      `null` means "we could not read the authoritative figure", and the client
@@ -3113,6 +3373,10 @@ export function partnerDashboardSnapshot(partnerId: string): {
     /** The two dead denorms, retained as evidence for the wave-115 test only. */
     deadSpvDenormTotal: number;
     deadFundDenormTotal: number;
+    /** WAVE 178 · ITEM A — additive. One row per currency; never a sum across
+     *  them. The two scalars above remain the all-vehicle engine sums and are
+     *  no longer rendered as a single labelled figure. */
+    capitalByCurrency: PartnerCapitalByCurrency;
   };
   pipeline: { byStage: Record<PipelineStage, number>; topDeals: PartnerPipelineDeal[] };
   recentActivity: PartnerPipelineActivity[];
@@ -3247,6 +3511,10 @@ export function partnerDashboardSnapshot(partnerId: string): {
      used instead — this file's own note at :1845-1857 records that `require()`
      of a `.ts` module throws on the first type annotation under the tsx runtime.
      ═══════════════════════════════════════════════════════════════════════════ */
+  /* WAVE 178 · ITEM A — computed HERE, deliberately ahead of the block below, so
+     it sits outside `w115_partner_committed_source`'s text window. See the
+     helper's own header for why that matters. */
+  const capitalByCurrency = computePartnerCapitalByCurrency(partnerId);
   let totalSpvCommittedMinor: number | null;
   let totalFundCommittedMinor: number | null;
   try {
@@ -3288,6 +3556,8 @@ export function partnerDashboardSnapshot(partnerId: string): {
       committedFigureSource: "canonical_spv_engine" as const,
       deadSpvDenormTotal,
       deadFundDenormTotal,
+      /* WAVE 178 · ITEM A — the summable form of the same money. */
+      capitalByCurrency,
     },
     pipeline: { byStage, topDeals },
     recentActivity,

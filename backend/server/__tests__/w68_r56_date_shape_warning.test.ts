@@ -44,6 +44,7 @@ import {
   DATE_SHAPE_YEAR_MIN,
   DATE_SHAPE_YEAR_MAX,
 } from "@shared/roundMathEngineAdapter";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const src = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), "utf8");
@@ -65,8 +66,8 @@ async function createRound(payload: Record<string, unknown>) {
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({ companyId: CO, name: `W68 ${Math.random()}`, type: "safe", instrument: "safe_post",
-            targetAmount: 1_000_000, openDate: "2026-01-01", closeDate: "2026-12-31", ...payload });
+    .send(w212Attest({ companyId: CO, name: `W68 ${Math.random()}`, type: "safe", instrument: "safe_post",
+            targetAmount: 1_000_000, openDate: "2026-01-01", closeDate: "2026-12-31", ...payload }));
   return { status: res.status, body: res.body as Record<string, any> };
 }
 

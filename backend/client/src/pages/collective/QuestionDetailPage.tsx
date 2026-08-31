@@ -33,6 +33,7 @@ import {
   ArrowLeft,
   Award,
 } from "lucide-react";
+import { describeFailure } from "@/lib/failureMessage";
 
 interface FeatureFlagsResponse {
   COLLECTIVE_ENABLED?: boolean;
@@ -173,8 +174,11 @@ export default function QuestionDetailPage(): JSX.Element | null {
 
   /* v25.12 NH3 — toast helper for mutation error feedback. */
   const { toast } = useToast();
+  /* WAVE 197 #39 — WRITE. Shared by every Q&A mutation in this page; the
+     `${label} failed` template and the parameter name are untouched, so the
+     tab/copy identities the source-text gates fingerprint do not move. */
   const mutationErrorHandler = (label: string) => (e: Error) =>
-    toast({ variant: "destructive", title: `${label} failed`, description: e.message });
+    toast({ variant: "destructive", title: `${label} failed`, description: describeFailure(e, "write") });
 
   const answerMut = useMutation({
     mutationFn: async () => {

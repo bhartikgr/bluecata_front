@@ -19,6 +19,16 @@ import type { Express, Request, Response } from "express";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getLedger } from "./captableCommitStore";
 import { persistEntry, persistEntryStrict, hydrateEntries } from "./lib/storePersistenceShim";
+/* WAVE 183 · ITEM B FIX 1a — the id-namespace bridge (R150.2 class).
+   `investor_identity_alias` is written by the "Check for earlier investments"
+   claim path and, until this wave, was read by NOTHING on the portfolio read
+   path. `resolveInvestorIdSet` returns the caller's canonical id FIRST followed
+   by their own ACTIVE aliases, and fails CLOSED to `[canonical]` on any read
+   error, so this import can only ever widen a lookup to ids the caller has
+   already proved are theirs. `investorIdentityAliasStore` imports only
+   `node:crypto`, `./lpIdentity`, `../db/*` and `./logger`, so there is no
+   import cycle back into this module. */
+import { resolveInvestorIdSet } from "./lib/investorIdentityAliasStore";
 
 const PERSIST_STORE = "membershipStore";
 
@@ -145,10 +155,67 @@ function rebuildLedgerIndexIfStale(): void {
   _ledgerIndexLen = ledger.length;
 }
 
+/**
+ * WAVE 183 · ITEM B FIX 1a — THE READ COULD NOT SEE WHAT THE WRITE WROTE.
+ *
+ * THE DEFECT. `_ledgerIndex` is keyed by the RAW `captable_commits.investor_id`.
+ * On the inspected database 654 of 1017 committed rows are keyed under a
+ * synthetic `ext_<hash>` identifier while this lookup was performed with the
+ * canonical `usr_`/`u_` user id ONLY. So an LP whose ledger rows sit in the
+ * `ext_` namespace resolved to ZERO positions, `ctx.investor.capTablePositions`
+ * came back empty, and `gate("investor.hasAnyCapTable")` returned 403
+ * `CAP_TABLE_REQUIRED` on `/api/investor/portfolio2`. The LP was shown
+ * "We couldn't load your portfolio positions." — a transient-sounding sentence
+ * for a permanent condition.
+ *
+ * This is the same class as wave 177's `partner_team_members.partner_id` holding
+ * a tenant id (R150.2): not a null column, a value in the wrong namespace.
+ *
+ * WHY THE WRITE PATH APPEARED TO SUCCEED. "Check for earlier investments"
+ * (`client/src/pages/investor/ClaimPositions.tsx`) POSTs
+ * `/api/me/investor-identity/claim`, which writes an `investor_identity_alias`
+ * row binding `ext_<hash>` to the canonical user. It genuinely succeeded. It
+ * wrote to a table THIS FUNCTION NEVER READ. Write and read disagreed because
+ * they were looking at two different namespaces.
+ *
+ * THE FIX, AND WHY IT IS SHAPED THIS WAY.
+ *   - The union is performed HERE, at READ time, and `_ledgerIndex` keeps its
+ *     raw keying. Rewriting the index to canonicalise its keys would have
+ *     changed `listMembersForCompany` and every other index consumer, and — the
+ *     reason that would have been a silent bug rather than a loud one — the
+ *     index is only rebuilt when `ledger.length` CHANGES. An alias claimed after
+ *     the index was built moves no ledger row, so a canonicalising index would
+ *     have kept serving the pre-claim answer until the next commit anywhere on
+ *     the platform. Read-time resolution has no such staleness.
+ *   - `resolveInvestorIdSet` puts the canonical id first and appends only the
+ *     caller's own ACTIVE aliases; `claimAlias` refuses a cross-user claim with
+ *     `ALIAS_ALREADY_CLAIMED`. This can therefore widen the answer only to rows
+ *     the caller has already proved are theirs. It cannot leak another
+ *     investor's position.
+ *   - Dedupe is by `companyId`, and the canonical id is merged FIRST, so a
+ *     company held under both namespaces yields ONE position and the canonical
+ *     row wins. No count is inflated.
+ *   - No figure is invented: the `ownershipPct` sentinel and its
+ *     `ownershipPctKnown: false` / `ownershipBasis: null` labels are carried
+ *     through unchanged from `rebuildLedgerIndexIfStale`.
+ */
 function derivedPositionsFor(userId: string): Array<{ companyId: string; companyName: string; ownershipPct: number; ownershipPctKnown: boolean; ownershipBasis: string | null }> {
   rebuildLedgerIndexIfStale();
-  const per = _ledgerIndex.get(userId);
-  if (!per) return [];
+  const ids = resolveInvestorIdSet(userId);
+  const per = new Map<string, LedgerPosition>();
+  for (const id of ids.length > 0 ? ids : [userId]) {
+    const forId = _ledgerIndex.get(id);
+    if (!forId) continue;
+    /* `forEach` rather than `for...of` deliberately: this project's `tsc` target
+       is below ES2015 for iteration purposes and a `for...of` over a Map raises
+       TS2802 (`--downlevelIteration`). The pre-existing TS2802 at
+       `listMembersForCompany` is exactly that error and is NOT this wave's to
+       fix; adding a second one would have raised the error count. */
+    forId.forEach((pos, companyId) => {
+      if (!per.has(companyId)) per.set(companyId, pos);
+    });
+  }
+  if (per.size === 0) return [];
   return Array.from(per.values()).map((p) => ({
     companyId: p.companyId,
     companyName: p.companyName,

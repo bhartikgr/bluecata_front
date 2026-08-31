@@ -39,6 +39,7 @@ import { roundStoredTerms } from "../lib/roundStoredTerms";
 import { readLiquidationTerms, describeLiquidationTerms, parseCapMultiple } from "../../shared/liquidationTermsReader";
 import { readGovernanceTerms, GOVERNANCE_TERM_NOT_RECORDED } from "../../shared/roundGovernanceTerms";
 import { readRoundMoneyOnRecord } from "../../shared/roundMoneyOnRecordView";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ADMIN = "u_admin";
 const STAMP = `w114${Date.now().toString(36)}`;
@@ -62,7 +63,7 @@ async function makeRound(companyId: string, extra: Record<string, unknown> = {})
   const created = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({
+    .send(w212Attest({
       companyId,
       name: `${companyId} W114 Round`,
       type: "seed",
@@ -77,7 +78,7 @@ async function makeRound(companyId: string, extra: Record<string, unknown> = {})
       region: "HK",
       liquidationPreference: "1x participating",
       ...extra,
-    });
+    }));
   expect(created.status).toBe(200);
   return String((created.body as { id?: string }).id ?? "");
 }

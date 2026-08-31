@@ -55,6 +55,7 @@
 import { rawDb } from "../db/connection";
 import { readUserPrivacy } from "./userPrivacyResolver";
 import { notSpvBackedSql } from "./spvBackedCompanies";
+import { resolveInvestorIdSet, resolveCanonicalUserId } from "./investorIdentityAliasStore";
 
 export type CommsRole = "founder" | "investor" | "soft_circler" | "admin" | "co_member";
 
@@ -390,17 +391,65 @@ export function durableChapterPeerIds(userId: string): string[] {
  * Users who are committed holders on at least one cap table `userId` is also a
  * committed holder on. Mirrors the SACRED `areCoMembersOnAnyCapTable` predicate
  * in list form; that function stays the authorisation gate and is unmodified.
+ *
+ * WAVE 185 · ITEM A · R156.5 — ALIAS-AWARE ON BOTH SIDES OF THE JOIN.
+ * ────────────────────────────────────────────────────────────────────────────
+ * `captable_commits.investor_id` holds two id namespaces. On the owner's
+ * database 654 of 1017 rows carry an `ext_<hash>` ledger id and 362 carry a
+ * canonical `u_*` user id. That produced TWO independent defects here, and
+ * fixing only one of them would have left the picker just as empty:
+ *
+ *   PROBE SIDE — `ca.investor_id = ?` was fed the viewer's canonical `u_*` id,
+ *   so an investor whose own commits are seated under `ext_*` matched ZERO rows
+ *   and resolved no peers whatsoever. This is R154.5's live symptom: the
+ *   recipient search returns no users at all, only "New contact".
+ *
+ *   RESULT SIDE — the `cb.investor_id` values returned were handed BACK as
+ *   platform user ids. An `ext_*` value is not a user id, so it was silently
+ *   discarded downstream (it is in neither `COMMS_USERS` nor `users`) and no
+ *   log recorded the loss. Widening only the probe would have produced a
+ *   longer list of ids that still resolved to nobody.
+ *
+ * So the probe expands to every identifier that denotes the viewer, and every
+ * value returned is canonicalised back to a real user id before it leaves.
+ *
+ * THE FENCE IS NOT TOUCHED. The SQL predicate is unchanged apart from `= ?`
+ * becoming `IN (...)` over the viewer's OWN identifiers: `state = 'committed'`,
+ * both `deleted_at IS NULL` clauses, the `cb.investor_id <> ca.investor_id`
+ * self-exclusion and the `notSpvBackedSql` SPV exclusion are all byte-identical
+ * to before. `ext_*` ids are minted mostly by the SPV LP-commit path, so the
+ * population this newly resolves is disproportionately SPV LPs — exactly the
+ * people WAIVER-4 exists to keep apart. That exclusion is what keeps them
+ * apart, and it is deliberately left exactly as it was.
+ *
+ * WHY THE ALIAS SET CANNOT WIDEN THE JOIN. `resolveInvestorIdSet` returns
+ * `[canonical]` when the investor has no aliases and `[]` only for empty input,
+ * never an empty list for a real user — so the `IN (...)` can never degenerate
+ * to "all rows". With `investor_identity_alias` empty, which is the state of the
+ * owner's database today, exactly one placeholder is bound and the behaviour is
+ * byte-for-byte what it is today.
+ *
+ * The viewer's own identifiers are excluded from the OUTPUT after
+ * canonicalisation, because an alias of the viewer resolving through the join
+ * would otherwise present the viewer to themselves as their own co-investor.
  */
 export function durableCapTablePeerIds(userId: string): string[] {
   if (!isValidId(userId)) return [];
   try {
     const db: any = rawDb();
+    /* Every identifier that denotes THIS viewer — canonical first. Wave 183
+       established this same expansion for the investor portfolio read
+       (`membershipStore.derivedPositionsFor`); this is that pattern, not a
+       second approach to the same problem. */
+    const selfIds = resolveInvestorIdSet(userId.trim());
+    if (selfIds.length === 0) return [];
+    const placeholders = selfIds.map(() => "?").join(", ");
     const rows = db
       .prepare(
         `SELECT DISTINCT cb.investor_id AS user_id
            FROM captable_commits ca
            JOIN captable_commits cb ON cb.company_id = ca.company_id
-          WHERE ca.investor_id = ?
+          WHERE ca.investor_id IN (${placeholders})
             AND ca.state = 'committed'
             AND cb.state = 'committed'
             AND ca.deleted_at IS NULL
@@ -413,8 +462,23 @@ export function durableCapTablePeerIds(userId: string): string[] {
             -- cannot drift away from the gate it mirrors.
             AND ${notSpvBackedSql("ca")}`,
       )
-      .all(userId.trim()) as Array<{ user_id?: string | null }>;
-    return rows.map((r) => r?.user_id).filter(isValidId).map((s) => s.trim());
+      .all(...selfIds) as Array<{ user_id?: string | null }>;
+
+    /* RESULT SIDE. Canonicalise every ledger id to the user it denotes, drop
+       anything that denotes the viewer, and dedupe — because two aliases of one
+       peer must present as ONE person, not as two. */
+    const selfCanonical = new Set(selfIds.map((id) => resolveCanonicalUserId(id)));
+    selfCanonical.add(userId.trim());
+    const out: string[] = [];
+    for (const r of rows) {
+      const raw = r?.user_id;
+      if (!isValidId(raw)) continue;
+      const canonical = resolveCanonicalUserId(raw.trim());
+      if (!isValidId(canonical)) continue;
+      if (selfCanonical.has(canonical)) continue;
+      if (!out.includes(canonical)) out.push(canonical);
+    }
+    return out;
   } catch {
     return [];
   }

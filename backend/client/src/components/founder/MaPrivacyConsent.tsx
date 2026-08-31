@@ -106,6 +106,28 @@ export function MaPrivacyConsent() {
             data-testid="switch-redact-narrative"
           />
         </div>
+        {/* ══════════════════════════════════════════════════════════════════
+            WAVE 213 · draft 05 Part B4 (map row 39) — ONE CONSEQUENCE LINE beside
+            the founder sharing switches. THE SWITCHES THEMSELVES ARE ADEQUATE AND
+            ARE NOT TOUCHED: their labels, order, testids and handlers are
+            unchanged, and no default is altered. This is an APPENDED static
+            sibling, so no existing text node is replaced (R143.1).
+
+            Why it is needed: the first switch offers "benchmarking and matchmaking"
+            without saying what either does. The comparison is real —
+            `server/dscScoringEngine.ts` computes a sector median composite across
+            all companies in the sector, and `server/portfolioAnalyticsStore.ts`
+            builds cohort benchmarks from platform data — so R190.10's instruction
+            holds: the sharing stays open and the WORDS change. Nothing here claims
+            a figure the platform did not measure (R-ASSERT): it names what the
+            comparison uses and what turning the switch on widens, and no more. */}
+        <p className="text-[11px] text-[var(--cv-color-text-secondary)]" data-testid="ma-privacy-consequence">
+          What these switches change: your reported figures are compared against other companies to
+          place you in sector benchmarks and to suggest matches. Left as they are, that comparison
+          and the profile behind it stay within your own chapter. Turning Collective-wide sharing on
+          widens it to every Collective member, and a benchmark someone has already seen cannot be
+          recalled by switching it back off.
+        </p>
         {saveState === "ok" && <p className="text-[11px] text-green-700" data-testid="ma-privacy-saved">Saved.</p>}
         {saveState === "error" && <p className="text-[11px] text-red-700" data-testid="ma-privacy-error">Couldn't save.</p>}
       </CardContent>

@@ -33,6 +33,12 @@ import { spvEngineStore } from "../spvEngineStore";
 import { chargeOrIdempotent } from "../paymentStore";
 import { __authorizeForTest, isFeeSettlementAuthorization } from "../lib/feeSettlementAuthority";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_DISTRIBUTION_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const ADMIN = "u_admin";
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
@@ -260,6 +266,7 @@ describe("S-2 / SINK 2 + SINK 5 — the distribution path (routes :395/:397 → 
     await commitLp(spvId, "inv_s2_e", 100000);
 
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000, collectionOutcome: "succeeded",
     });
     expect(r.status).toBe(400);
@@ -277,6 +284,7 @@ describe("S-2 / SINK 2 + SINK 5 — the distribution path (routes :395/:397 → 
     await commitLp(spvId, "inv_s2_e2", 100000);
 
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000,
     });
     expect(r.status).toBe(403);
@@ -292,6 +300,7 @@ describe("S-2 / SINK 2 + SINK 5 — the distribution path (routes :395/:397 → 
     const spvId = await createSpv("S2 dist zero carry", { carryBasis: "per_deployment" });
     await commitLp(spvId, "inv_s2_e3", 100000);
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
+      ...W226_DISTRIBUTION_ATT, /* WAVE 226 · R202 — see the fixture note */
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000,
     });
     expect(r.status).toBe(201);

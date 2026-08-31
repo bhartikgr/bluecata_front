@@ -28,12 +28,31 @@ import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure 
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, requirePartnerSelf, assertSubRole, assertTier, assertTierSeats, assertSeatCapacity } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+/* WAVE 194 · ITEM B · R165.4 — the two PATCHes below answered 200 for a write they
+   dropped. Wave 193 named both from `spvVehiclePatchApplicability.ts`'s header and
+   left them; this closes them with an accept-list mirroring each route's OWN key
+   ladder, because reusing wave 193's nine-key store list would have accepted three
+   keys neither route maps. See `server/lib/legacyVehiclePatchApplicability.ts`. */
+import {
+  assertLegacyVehiclePatchFullyApplied,
+  isSpvPatchUnappliedError,
+  LEGACY_SPV_PATCH_APPLIED_KEYS,
+  LEGACY_FUND_PATCH_APPLIED_KEYS,
+} from "./lib/legacyVehiclePatchApplicability";
 /* WAVE 154 · ITEM K — the SPV eligibility gate: every company an SPV invests
    into must hold a current paid Capavate membership before the vehicle may be
    created/launched or take money in (R116.3). */
 import { resolvePartnerEffectivePlan, EffectivePlanError } from "./lib/partnerEffectivePlan"; /* GROUP C (C5) — /api/partner/me surfaces the dynamic effective plan (price incl override, commission, report-only quota, rev-share) that drives the partner FE. */
 import { getUserContext } from "./lib/userContext";
-import { appendAdminAudit } from "./adminPlatformStore";
+import { appendAdminAudit, reportAuditWriteOutcome } from "./adminPlatformStore"; /* WAVE 213 — wave 186's writer + its outcome guard; no second audit path is created. */
+import {
+  PUBLISH_ACK_FIELD,
+  PUBLISH_ACK_MISSING_MESSAGE,
+  PUBLISH_ACK_STALE_MESSAGE,
+  PUBLISH_CLAUSE_ID,
+  PUBLISH_CLAUSE_VERSION,
+  publishAcknowledgementText,
+} from "../shared/wave213PublishGoverningClause"; /* WAVE 213 · R188.4 item 3 — ONE definition of the sentence, read by the screen and re-derived here. */
 import { emitBridgeEvent } from "./bridgeStore";
 import { TIER_RANK, type PartnerTier, type PartnerType, type PartnerSubRole, getById } from "./adminContactsStoreShim";
 import {
@@ -69,7 +88,24 @@ import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
+/* WAVE 185 · ITEM B — the SAME resolver and the SAME diagnostic the messaging
+   read path uses, so the admin verification cannot report success about a path it
+   did not actually exercise. */
+import {
+  resolvePartnerIdForUser,
+  partnerIdResolvesToAPartner,
+  diagnosePartnerAudienceEmptiness,
+} from "./lib/partnerDelegatedContext";
 import { log } from "./lib/logger"; /* w-partner F7 — non-fatal mirror warnings */
+/* WAVE 214 · surface 3 — authority confirmation on the partner team invitation. */
+import {
+  evaluateTickAuthority,
+  recordAuthorityConfirmation,
+} from "./lib/wave214ThirdPartyAuthorityStore";
+import {
+  WAVE214_AUTHORITY_SURFACES,
+  WAVE214_PARTNER_TEAM_INVITE_AUTHORITY_STATEMENT,
+} from "../shared/wave214ThirdPartyAuthorityCopy";
 /* WAVE 56 (R21/R36) — the tier domain and the access ladder are DATA. */
 import { partnerTierDomainSlugs } from "./lib/partnerTierResolver";
 import { compareTierRank } from "./lib/partnerTierDomain";
@@ -96,8 +132,99 @@ import {
 import { PORTFOLIO_PROFILE_WRITE_ROLES } from "../shared/partnerRoles"; /* w-partner F-new2 — shared server/client write-role constant */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
-import { spvEngineStore } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
+import { spvEngineStore, isSpvClosedToNewCapitalError } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
+/* ═════════════════════════════════════════════════════════════════════════════
+ * WAVE 182 · ITEM A · R152 — THE TWO SPV WRITE ROUTES IN THIS FILE ANSWER A CODE.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `POST /api/partner/me/spvs/:id/positions` and
+ * `POST /api/partner/me/funds/:id/commitments` both catch every store error as
+ * `res.status(400).json({ error: (e as Error).message })` — a bare machine code and
+ * no words. That was survivable while the codes were internal, but wave 182's
+ * closed-vehicle gate lives in the shared sink both routes call, so without this
+ * the refusal a general partner reads on those two surfaces would be the literal
+ * string `SPV_CLOSED_TO_NEW_LPS`. R152 item 3 forbids exactly that.
+ *
+ * ADDITIVE AND NARROWLY SCOPED: the `error` key and the pre-existing status keep
+ * their exact values for every OTHER code, so no shipped assertion changes; only
+ * the closed-vehicle refusal gains `message`/`guidance` and the 409 that says the
+ * request was fine and the vehicle's state was not.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+function respondSpvWriteRefusal(res: Response, e: unknown): Response {
+  if (isSpvClosedToNewCapitalError(e)) {
+    return res.status(409).json({
+      error: e.message,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      closedToNewLps: { reason: e.closedReason },
+    });
+  }
+  /* WAVE 189 · ITEM C · R159.6 — THE UNATTESTED-DRAFT REFUSAL, HERE TOO.
+
+     WHY THIS FILE NEEDS ITS OWN BRANCH. There are TWO refusal responders in the
+     tree: `err()` in `spvEngineRoutes.ts` and this one. `POST
+     /api/partner/me/spvs/:id/positions` — a second, legacy-named door onto the very
+     same `spvEngineStore.subscribe` sink — answers through THIS function. Without
+     this branch the store's refusal would still hold (no capital attaches) but the
+     general partner would be shown a bare 400 carrying the ALL-CAPS code, which is
+     precisely what R159.6 item 4 forbids. The store gate is the enforcement; this is
+     the difference between enforcing and explaining, and the owner asked for both.
+
+     Byte-identical body shape to the `err()` branch, deliberately: 409, machine code
+     in `error`, short sentence in `message`, unabridged in `guidance`, and the
+     structured `attestation` field. One refusal cannot be reported two ways. */
+  if (isSpvUnattestedDraftError(e)) {
+    return res.status(409).json({
+      error: e.message,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      attestation: { required: true, attaching: e.attachKind },
+    });
+  }
+  /* WAVE 192 · ITEM B1 · R164.3 — AND THE CASE WHERE THE PLATFORM CANNOT TELL.
+     `spvIsAttested` used to return ATTESTED whenever `spv_launch_signoffs` could
+     not be read, so an unreadable table let capital attach to an unattested draft
+     while reporting success. It now refuses. Reported separately from the branch
+     above because the remedies differ — signing versus restoring a table — and
+     `attestation.unreadable` lets a caller tell them apart without parsing prose.
+     Same body shape as the two branches it sits beside; one refusal cannot be
+     reported three ways. */
+  if (isSpvAttestationUnreadableError(e)) {
+    return res.status(409).json({
+      error: e.message,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      attestation: { required: true, attaching: e.attachKind, unreadable: true },
+    });
+  }
+  return res.status(400).json({ error: (e as Error).message });
+}
+/* WAVE 189 · ITEM C · R159.6 — imported from the same module the store sinks and
+   `spvEngineRoutes.ts` use, so all three agree on what the refusal is. */
+/* WAVE 192 · ITEM B1 · R164.3 — `isSpvAttestationUnreadableError` added to the
+   import this file ALREADY had. */
+import {
+  isSpvUnattestedDraftError,
+  isSpvAttestationUnreadableError,
+} from "./lib/spvAttestationGate";
+import {
+  partnerHasCompanyRelationship,
+  partnerMayAttributeSpvToCompany,
+  SPV_TARGET_COMPANY_NOT_YOURS,
+  SPV_TARGET_COMPANY_NOT_YOURS_MESSAGE,
+} from "./lib/partnerCompanyLinkGate"; /* WAVE 179 · ITEM A · R151.1 — one partner↔company predicate, shared with spvEngineRoutes */
+import { setSpvLegalForm } from "./spvLegalFormStore"; /* WAVE 179 · ITEM B · R151.3 — OPTIONAL legal-form annotation on the legacy create path */
 import { resolveSpvJurisdiction } from "../shared/spvEngine"; /* WAVE 4A follow-up 2 */
+/* WAVE 198 · ITEM D — the four partner PATCH routes stop reporting success for a
+   write their store would discard. See the module header for why three of the four
+   refuse only provably-forced keys rather than an interface-derived accept-list. */
+import {
+  PARTNER_PATCH_UNAPPLIED_CODE,
+  isPartnerPatchUnappliedError,
+  assertAdminPartnerPatchFullyApplied,
+  assertPartnerPipelinePatchFullyApplied,
+  assertPartnerNotePatchFullyApplied,
+  assertPartnerWorkspaceSettingsPatchFullyApplied,
+} from "./lib/partnerPatchApplicability";
 
 /* ============================================================
  * Helpers
@@ -426,6 +553,28 @@ export function registerPartnerRoutes(app: Express): void {
 
   app.patch("/api/admin/partners/:id", requireAdmin, (req: Request, res: Response) => {
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
+    /* WAVE 198 · ITEM D-1 — ASSERTED BEFORE THE UPDATE, AND DELIBERATELY OUTSIDE
+       THE try. `updateContact` -> `persistContact` writes named columns and a fixed
+       metadata key set; anything else was accepted here and discarded on write while
+       this route answered 200 with the object it had failed to change. The check
+       runs before the call so nothing is half-written, and outside the try because
+       that catch turns EVERY throw into `PARTNER_NOT_FOUND` — a refusal raised
+       inside it would be reported to the admin as a missing partner, which is a
+       second wrong answer rather than a fix. The 404 below is untouched. */
+    try {
+      assertAdminPartnerPatchFullyApplied(req.body ?? {});
+    } catch (e) {
+      if (isPartnerPatchUnappliedError(e)) {
+        return res.status(400).json({
+          error: PARTNER_PATCH_UNAPPLIED_CODE,
+          refusalHeadline: e.refusalHeadline,
+          refusalGuidance: e.refusalGuidance,
+          message: e.refusalHeadline,
+          unappliedFields: e.unappliedFields,
+        });
+      }
+      throw e;
+    }
     try {
       const updated = updateContact(String(req.params.id), req.body ?? {}, actor, "partner.updated");
       res.json({ partner: updated });
@@ -610,6 +759,44 @@ export function registerPartnerRoutes(app: Express): void {
         ...teamMembers,
         ...(dbTeamMembers as Array<{ id?: string }>).filter((r) => r.id && !memTeamIds.has(r.id)),
       ],
+      /* ═══ WAVE 192 · ITEM C2 · R160.4 — TWO ADMIN SURFACES DISAGREED ON THE TEAM
+         COUNT, AND THIS ONE WAS THE WRONG ONE.
+
+         WHAT WAS ON SCREEN. This endpoint's `teamMembers` array had TWO rows
+         (`ptm_9165f3f80152715d`, `ptm_662e6d2d8605977b`) and the admin partner
+         detail page rendered its `.length` as "Team Members (2)", while the
+         partner-facing team page reported "1 of 2 seats filled, 0 pending".
+
+         WHY THIS ONE IS WRONG. `teamMembers` is deliberately a UNION of two
+         reads: `partnerTeamStore.listByPartner()`, which filters to
+         `status === "active"` (partnerWorkspaceStore.ts:1051), and the DB
+         supplement above, whose SELECT has NO status and NO `removed_at` filter
+         — by design, so an archived partner's rows stay auditable. That union is
+         CORRECT as a LIST and wrong as a COUNT: `.length` counts removed and
+         non-active rows as occupied seats. The partner side counts seats, and
+         seats are what the word means.
+
+         SO THE COUNT NOW COMES FROM THE ONE PLACE THAT DEFINES IT.
+         `partnerTeamStore.countActiveSeats()` (partnerWorkspaceStore.ts:1222) is
+         already the platform's seat definition: it is what
+         `lib/requirePartnerAuth.ts:204` ENFORCES seat limits against, and what
+         `GET /api/partner/me/team` returns as `activeSeats` — the number the
+         partner-facing page renders. Admin and partner now derive the same number
+         from the same function, so they cannot drift again.
+
+         THE LIST IS NOT TRUNCATED. `teamMembers` above is unchanged, every row
+         included, because an auditor needs to SEE the removed rows — they are
+         exactly what made the old count look inflated. What changes is that the
+         heading no longer calls them occupied seats.
+
+         WHY THIS MATTERS BEYOND THE HEADING (R150.2 / R160.2). The owner's false
+         tenant-id theory was reasoned from this inflated count: two rows on this
+         screen implied the binding row existed, while `resolvePartnerIdForUser`
+         (lib/partnerDelegatedContext.ts:50) requires `status='active' AND
+         removed_at IS NULL` and was returning null. A count that ignores both
+         predicates cannot tell you whether that binding exists. PROBABLE origin,
+         not proven — there is no live access from this wave. */
+      activeSeatCount: partnerTeamStore.countActiveSeats(partnerId),
       notes: [
         ...notes,
         ...(dbNotes as Array<{ id?: string }>).filter((r) => r.id && !memNoteIds.has(r.id)),
@@ -623,6 +810,585 @@ export function registerPartnerRoutes(app: Express): void {
         ...(dbFiles as Array<{ id?: string }>).filter((r) => r.id && !memFileIds.has(r.id)),
       ],
     });
+  });
+
+  /* ════════════════════════════════════════════════════════════════════════════
+     WAVE 177 · ITEM A · R148.1 — THE PARTNER IDENTITY BINDING, ADMIN-MANAGED.
+     ════════════════════════════════════════════════════════════════════════════
+     WHY THIS EXISTS. On live, `ozan@trendwellventures.com` sees "No eligible
+     contacts." for every recipient search. R148.1 proved the cause against live
+     data: `resolvePartnerIdForUser()` (lib/partnerDelegatedContext.ts:50) reads
+     `partner_team_members WHERE user_id = ? AND status='active' AND removed_at IS
+     NULL` and returns null, so BOTH `partner_own_lp_peers` AND
+     `partner_team_peers` return `[]` by construction — the LP logic and the team
+     logic never execute. Waves 167/168 shipped CORRECT code; the live DATABASE is
+     missing the row that binds the logged-in human to their partner organisation.
+
+     SO THE FIX IS A MANAGEMENT SURFACE, NOT A SEED. A seeded row for one partner
+     id would make one symptom disappear and leave the platform unable to do this
+     again for the next partner. Nothing below references a specific partner, user
+     or membership id: the owner supplies the email, the platform resolves it.
+
+     FOUR ROUTES, ALL `requireAdmin`, ALL DB-DRIVEN:
+       GET  …/team/identity          — read the truth, with names WHERE DERIVABLE
+       POST …/team/bind              — bind an existing platform user by email
+       POST …/team/:memberId/deactivate — status/removed_at, NEVER a hard delete
+       POST …/organization-name      — the registered name the owner TYPES
+
+     NO MIGRATION. Every column written already exists:
+     `partner_team_members(id, partner_id, user_id, sub_role, status, joined_at,
+     removed_at, created_by, is_seed, updated_at)` — db/connection.ts:5090 — and
+     `partner_organizations(id, tenant_id, name, …, created_at, updated_at)` —
+     db/connection.ts:4535. The uniqueness the bind path relies on
+     (`ux_ptm_partner_user_active`) landed in migration 0211. The email lookup uses
+     the pre-existing `users_email_unique` index. Adding a no-op 0213 would only
+     add two mirrored files and two more chances of the R144 unmirrored-migration
+     failure.
+
+     NO MONEY. Neither table has a money column. The only numbers here are integer
+     SEAT COUNTS from `countActiveSeats()` / `resolvePartnerSeatLimit()` — the same
+     pair `requirePartnerAuth.ts:204` enforces with, so this surface cannot
+     disagree with the partner-side 403.
+     ════════════════════════════════════════════════════════════════════════════ */
+
+  /** The five permission tiers a membership may carry (partnerWorkspaceStore.ts:121). */
+  const W177_BINDABLE_SUB_ROLES: PartnerSubRole[] = [
+    "managing_partner", "associate", "bd", "analyst", "viewer",
+  ];
+
+  /* One shape for "what the platform can honestly say about this membership".
+     `resolvedName` and `email` are `null` when NOT DERIVABLE — never a
+     placeholder. `resolveDisplayName` returns "Pending member" / "Invited
+     member" / "Public applicant" with `resolved:false` when it finds nothing
+     (lib/displayNameResolver.ts:45-50), and printing one of those as if it were
+     a person's name is exactly the invented name Item A.3 forbids. So the flag
+     is read and the placeholder is DISCARDED; the client prints its own stated
+     fallback next to the id. */
+  function w177MembershipIdentity(partnerId: string) {
+    let rows: Array<{
+      id?: string; user_id?: string; sub_role?: string; status?: string;
+      joined_at?: string; removed_at?: string | null; is_seed?: number;
+    }> = [];
+    try {
+      rows = (rawDb().prepare(
+        `SELECT id, user_id, sub_role, status, joined_at, removed_at, is_seed
+           FROM partner_team_members
+          WHERE partner_id = ?
+          ORDER BY (status = 'active') DESC, joined_at ASC, id ASC`,
+      ).all(partnerId) as typeof rows) ?? [];
+    } catch {
+      /* An unreadable table is reported as unreadable by the caller, never as an
+         empty team — the two are different facts. */
+      return null;
+    }
+    const resolved = resolveDisplayNames(
+      rows.map((r) => String(r.user_id ?? "")).filter((s) => s.length > 0),
+    );
+    return rows.map((r) => {
+      const userId = String(r.user_id ?? "").trim();
+      const hit = userId ? resolved.get(userId) : undefined;
+      return {
+        memberId: String(r.id ?? ""),
+        /* Empty string is reported as null so "no user on this row" and "a user
+           whose name we cannot read" never look the same. */
+        userId: userId.length > 0 ? userId : null,
+        subRole: typeof r.sub_role === "string" && r.sub_role.trim().length > 0 ? r.sub_role.trim() : null,
+        status: typeof r.status === "string" && r.status.trim().length > 0 ? r.status.trim() : null,
+        joinedAt: typeof r.joined_at === "string" && r.joined_at.trim().length > 0 ? r.joined_at.trim() : null,
+        removedAt: typeof r.removed_at === "string" && r.removed_at.trim().length > 0 ? r.removed_at.trim() : null,
+        isSeed: r.is_seed === 1,
+        resolvedName: hit?.resolved ? hit.name : null,
+        email: hit?.email ?? null,
+      };
+    });
+  }
+
+  /** The partner organisation's registered name, or null. Same read as
+   *  `resolvePartnerName` (lib/partnerDelegatedContext.ts:74), so this surface
+   *  reports exactly what the messaging stamp will read. */
+  function w177OrganizationName(partnerId: string): string | null {
+    try {
+      const row = rawDb()
+        .prepare(`SELECT name FROM partner_organizations WHERE id = ? LIMIT 1`)
+        .get(partnerId) as { name?: string } | undefined;
+      const name = String(row?.name ?? "").trim();
+      return name.length > 0 ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function w177Seats(partnerId: string, tier: string | undefined) {
+    try {
+      const { seatLimit, resolution, capability } = resolvePartnerSeatLimit(
+        partnerId,
+        (tier as PartnerTier) ?? "catalyst",
+      );
+      return {
+        activeSeats: partnerTeamStore.countActiveSeats(partnerId),
+        seatLimit,
+        seatLimitResolution: resolution,
+        seatLimitDisplay: describeCapability(capability),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  app.get("/api/admin/partners/:partnerId/team/identity", requireAdmin, (req: Request, res: Response) => {
+    const partnerId = String(req.params.partnerId || "").trim();
+    if (!partnerId) return badRequest(res, "partnerId required");
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ ok: false, error: "PARTNER_NOT_FOUND", partnerId });
+    }
+    const members = w177MembershipIdentity(partnerId);
+    if (members === null) {
+      return res.status(500).json({ ok: false, error: "MEMBERSHIP_TABLE_UNREADABLE", partnerId });
+    }
+    return res.json({
+      ok: true,
+      partnerId,
+      organizationName: w177OrganizationName(partnerId),
+      seats: w177Seats(partnerId, contact.tier as string | undefined),
+      members,
+      /* The permission tiers the bind form may offer. Data, not a hardcoded list
+         in the client, so the two cannot drift apart. */
+      bindableSubRoles: W177_BINDABLE_SUB_ROLES,
+    });
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 185 · ITEM B.2 · R156.5 — "WILL MESSAGING WORK FOR THIS PERSON, AND IF
+     NOT, WHICH FACT IS MISSING?" ANSWERED WITHOUT READING A DATABASE.
+     ══════════════════════════════════════════════════════════════════════════
+     R156.5's "completely" means an admin can make messaging work on live WITHOUT
+     anyone hand-editing rows. Wave 177 shipped the repair but no way to confirm
+     it: an admin clicked "Link this person", saw a success toast, and had no way
+     to know whether the partner could now actually address anybody. On the R150.2
+     case the toast would never even have appeared — the bind was refused 409.
+
+     THIS REUSES WAVE 177's DIAGNOSTIC RATHER THAN BUILDING A SECOND ONE.
+     `diagnosePartnerAudienceEmptiness` is the single place that decides which
+     fact is missing, it is already what the partner-facing empty state renders
+     through `emptyReason`, and a second implementation here would be free to
+     disagree with the sentence the partner is reading on their own screen. Wave
+     185 EXTENDED it with the `partner_binding_unresolvable` cause instead.
+
+     IT NAMES NO MACHINE TOKENS IN ITS PROSE. Wave 167's test P-2 established that
+     an admin-facing diagnostic must not leak rule keys, column names or peer ids;
+     the sentences come from the diagnostic, which is bound by that rule, and the
+     only identifier this route echoes is the one the ADMIN just typed. It returns
+     no peer ids and no LP names — only counts of the partner's OWN people. */
+  app.get("/api/admin/partners/:partnerId/team/messaging-check", requireAdmin, (req: Request, res: Response) => {
+    const partnerId = String(req.params.partnerId || "").trim();
+    if (!partnerId) return badRequest(res, "partnerId required");
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ ok: false, error: "PARTNER_NOT_FOUND", partnerId });
+    }
+    /* Addressed by email OR by user id, because an admin has the email in front
+       of them and a support ticket has the id. */
+    const emailParam = String((req.query.email as string) ?? "").trim().toLowerCase();
+    const userIdParam = String((req.query.userId as string) ?? "").trim();
+    if (!emailParam && !userIdParam) return badRequest(res, "email or userId required");
+
+    let userId = userIdParam;
+    if (!userId) {
+      try {
+        const row = rawDb()
+          .prepare(`SELECT id FROM users WHERE lower(email) = ? AND deleted_at IS NULL LIMIT 1`)
+          .get(emailParam) as { id?: string } | undefined;
+        userId = String(row?.id ?? "").trim();
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "USER_LOOKUP_FAILED", message: (err as Error).message });
+      }
+    }
+    if (!userId) {
+      /* NOT a 404 and NOT a failure: "there is no platform account with this
+         address" is itself the missing fact, and it is the most common one. */
+      return res.json({
+        ok: true,
+        partnerId,
+        email: emailParam || null,
+        userId: null,
+        messagingWillWork: false,
+        cause: "no_platform_account",
+        missingFact:
+          "There is no platform account with this email address, so there is nothing to link yet. The person has to register before an administrator can link them.",
+        boundPartnerId: null,
+        boundPartnerIsARealPartner: null,
+        boundToThisPartner: false,
+        ownLpCount: 0,
+        otherTeamMemberCount: 0,
+      });
+    }
+
+    /* THE SAME RESOLVER THE MESSAGING PATH USES. Reporting anything else would
+       make this surface capable of saying "it works" about a path it did not
+       actually exercise. */
+    const boundPartnerId = resolvePartnerIdForUser(userId);
+    const boundPartnerIsARealPartner =
+      boundPartnerId === null ? null : partnerIdResolvesToAPartner(boundPartnerId);
+    const diagnosis = diagnosePartnerAudienceEmptiness(userId, "both");
+    const boundToThisPartner = boundPartnerId === partnerId;
+
+    /* MESSAGING WORKS only when the binding resolves to THIS partner AND that
+       partner actually has somebody to reach. `not_empty` is the diagnostic's own
+       word for "there is in fact an audience", so the two cannot disagree. */
+    const messagingWillWork = boundToThisPartner && diagnosis.cause === "not_empty";
+
+    /* One sentence, chosen by the diagnostic wherever the diagnostic has an
+       opinion. The only case it cannot speak to is "bound to a DIFFERENT real
+       partner", which is not an emptiness at all — from this page's point of view
+       it is the missing fact. */
+    const missingFact = messagingWillWork
+      ? null
+      : boundPartnerId !== null && boundPartnerIsARealPartner === true && !boundToThisPartner
+        ? "This person's account is linked to a different partner organisation. Only an owner decision can move them, so the existing link has to be deactivated on that organisation's page first."
+        : diagnosis.sentence;
+
+    return res.json({
+      ok: true,
+      partnerId,
+      email: emailParam || null,
+      userId,
+      messagingWillWork,
+      cause: messagingWillWork ? "ready" : diagnosis.cause,
+      missingFact,
+      boundPartnerId,
+      boundPartnerIsARealPartner,
+      boundToThisPartner,
+      /* Counts of the partner's OWN people only — never names, never ids. */
+      ownLpCount: diagnosis.ownLpCount,
+      otherTeamMemberCount: diagnosis.otherTeamMemberCount,
+    });
+  });
+
+  app.post("/api/admin/partners/:partnerId/team/bind", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const partnerId = String(req.params.partnerId || "").trim();
+    if (!partnerId) return badRequest(res, "partnerId required");
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ ok: false, error: "PARTNER_NOT_FOUND", partnerId });
+    }
+    const body = (req.body ?? {}) as {
+      email?: unknown;
+      subRole?: unknown;
+      /* WAVE 185 · ITEM B · R150.2 — explicit, opt-in, never a default. */
+      supersedeUnresolvableBinding?: unknown;
+    };
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!email) return badRequest(res, "email required");
+    const subRole = String(body.subRole ?? "").trim();
+    if (!W177_BINDABLE_SUB_ROLES.includes(subRole as PartnerSubRole)) {
+      return badRequest(res, "subRole must be one of the platform's five permission tiers");
+    }
+
+    /* BIND AN EXISTING PLATFORM USER ONLY. This route repairs an identity
+       binding; it does not create accounts. Inventing a user here would produce
+       a membership pointing at an id nobody can log in as — the same class of
+       unusable row this wave exists to fix. */
+    let userRow: { id?: string; email?: string; name?: string } | undefined;
+    try {
+      userRow = rawDb()
+        .prepare(`SELECT id, email, name FROM users WHERE lower(email) = ? AND deleted_at IS NULL LIMIT 1`)
+        .get(email) as typeof userRow;
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "USER_LOOKUP_FAILED", message: (err as Error).message });
+    }
+    const userId = String(userRow?.id ?? "").trim();
+    if (!userId) {
+      return res.status(404).json({ ok: false, error: "PLATFORM_USER_NOT_FOUND", email });
+    }
+
+    /* ALREADY BOUND ELSEWHERE IS A REFUSAL, NOT A MOVE. `resolvePartnerIdForUser`
+       takes the EARLIEST active row, so silently adding a second organisation
+       would leave which partner a person acts for decided by a timestamp. Moving
+       a human between partner organisations is an owner decision: deactivate the
+       old membership first, deliberately. */
+    let existingElsewhere: string | null = null;
+    try {
+      const row = rawDb()
+        .prepare(
+          `SELECT partner_id FROM partner_team_members
+            WHERE user_id = ? AND status = 'active' AND removed_at IS NULL AND partner_id <> ?
+            ORDER BY joined_at ASC LIMIT 1`,
+        )
+        .get(userId, partnerId) as { partner_id?: string } | undefined;
+      const pid = String(row?.partner_id ?? "").trim();
+      existingElsewhere = pid.length > 0 ? pid : null;
+    } catch { /* treated as "none found"; the add() below is still fail-closed */ }
+    /* WAVE 185 · ITEM B · R150.2 — TWO CASES WAVE 177 CONFLATED, NOW SEPARATED.
+
+       WAVE 185 PREFLIGHT PROVED (probes P1-P4) that wave 177's repair does NOT
+       resolve the live case. R150.2 measured `partner_team_members.partner_id`
+       holding a TENANT id (`tenant_cp_keiretsu_ca`) where an
+       `ac_consortium_partner_…` id belongs. That row is ACTIVE and OLDER than any
+       repair, so:
+         • `resolvePartnerIdForUser` is `ORDER BY joined_at ASC LIMIT 1` — the
+           stale row wins forever, and a correct new binding can never outrank it;
+         • the refusal below fired, naming a tenant id as "another partner", so the
+           admin was HARD-BLOCKED before anything was written;
+         • `w177MembershipIdentity` is `WHERE partner_id = ?`, so the obstructing
+           row appears on NO partner page and has NO Deactivate control anywhere.
+       A non-technical admin following LIVE_REPAIR_STEPS.md reached a dead end.
+
+       SO THE REFUSAL IS SPLIT BY WHETHER THE EXISTING BINDING IS A PARTNER AT ALL.
+
+       (1) IT IS A REAL PARTNER — refused exactly as before, byte-for-byte. Moving
+           a human between two partner organisations stays an owner decision, and
+           allowing it here is the one change that could leak partner A's LPs to
+           partner B. Not weakened, not made supersedable.
+
+       (2) IT IS NOT A PARTNER — a distinct error, and the admin may supersede it
+           by opting in EXPLICITLY. Superseding deactivates (`status='removed'` +
+           `removed_at`, never a hard delete: an identity claim that was once acted
+           upon stays auditable) only rows whose `partner_id` resolves to no
+           partner organisation. It therefore CANNOT move anyone between real
+           partners — the fence cannot move by one person through this path. */
+    if (existingElsewhere) {
+      const existingIsARealPartner = partnerIdResolvesToAPartner(existingElsewhere);
+      if (existingIsARealPartner) {
+        return res.status(409).json({
+          ok: false,
+          error: "USER_ALREADY_BOUND_TO_ANOTHER_PARTNER",
+          email,
+          userId,
+          boundPartnerId: existingElsewhere,
+        });
+      }
+      const supersede = body.supersedeUnresolvableBinding === true;
+      if (!supersede) {
+        /* NOT a silent success and NOT a dead end: the admin is told the link
+           points at something that is not a partner, and that they may replace
+           it. `supersedable` is what the client keys its confirm control off, so
+           the button cannot appear for case (1). */
+        return res.status(409).json({
+          ok: false,
+          error: "USER_BOUND_TO_UNRESOLVABLE_PARTNER_ID",
+          email,
+          userId,
+          boundPartnerId: existingElsewhere,
+          supersedable: true,
+          message:
+            "This person's account is already linked to a record that is not a partner organisation. Replacing that link will deactivate it and link them to this partner instead.",
+        });
+      }
+      /* THE SUPERSEDE. Scoped by the SAME predicate that classified the refusal,
+         re-evaluated per row inside the loop rather than trusting the single row
+         the pre-check happened to surface — there may be more than one, and a
+         second stale row left behind would win the `joined_at ASC` race again and
+         reproduce the whole defect one wave later. */
+      let supersededMemberIds: string[] = [];
+      try {
+        const rows = (rawDb()
+          .prepare(
+            `SELECT id, partner_id FROM partner_team_members
+              WHERE user_id = ? AND status = 'active' AND removed_at IS NULL AND partner_id <> ?`,
+          )
+          .all(userId, partnerId) as Array<{ id?: string; partner_id?: string }>) ?? [];
+        const stmt = rawDb().prepare(
+          `UPDATE partner_team_members
+              SET status = 'removed', removed_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'active'`,
+        );
+        const stamp = new Date().toISOString();
+        for (const r of rows) {
+          const pid = String(r.partner_id ?? "").trim();
+          const mid = String(r.id ?? "").trim();
+          if (!mid || !pid) continue;
+          /* THE GUARD THAT MAKES THIS SAFE. A real partner membership is never
+             touched, even inside an explicitly opted-in supersede. */
+          if (partnerIdResolvesToAPartner(pid)) continue;
+          stmt.run(stamp, stamp, mid);
+          supersededMemberIds.push(mid);
+        }
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          error: "SUPERSEDE_PERSIST_FAILED",
+          message: (err as Error).message,
+        });
+      }
+      /* Audited, because deactivating a membership is a real administrative act
+         and the owner must be able to see who did it and to what. */
+      try {
+        appendAdminAudit(
+          actor,
+          `partner:${partnerId}`,
+          "partner.team_member.unresolvable_binding_superseded",
+          { userId, email, supersededPartnerId: existingElsewhere, supersededMemberIds },
+        );
+      } catch { /* an audit sink failure must not strand the repair half-done */ }
+      /* If nothing was actually deactivated the obstruction is still there, and
+         reporting success would be the false claim this whole wave exists to
+         stop. */
+      if (supersededMemberIds.length === 0) {
+        return res.status(409).json({
+          ok: false,
+          error: "SUPERSEDE_FOUND_NOTHING_TO_REPLACE",
+          email,
+          userId,
+          boundPartnerId: existingElsewhere,
+        });
+      }
+    }
+
+    /* SEATS. A paid limit is a paid limit even on a repair, so an over-limit bind
+       is refused with BOTH numbers named — the seat override editor is on this
+       same page, so the refusal is actionable without leaving the screen. Only a
+       CONFIGURED numeric cap can be exceeded (WAVE 45): null means unlimited or
+       unconfigured, and neither is a breach. Already-active members are exempt
+       because re-binding them adds no seat. */
+    const seats = w177Seats(partnerId, contact.tier as string | undefined);
+    let alreadyActiveHere = false;
+    try {
+      const row = rawDb()
+        .prepare(
+          `SELECT id FROM partner_team_members
+            WHERE partner_id = ? AND user_id = ? AND status = 'active' AND removed_at IS NULL LIMIT 1`,
+        )
+        .get(partnerId, userId) as { id?: string } | undefined;
+      alreadyActiveHere = !!row?.id;
+    } catch { /* fall through — add() is idempotent for an existing active row */ }
+    if (!alreadyActiveHere && seats && seats.seatLimit !== null && seats.activeSeats >= seats.seatLimit) {
+      return res.status(409).json({
+        ok: false,
+        error: "SEAT_LIMIT_REACHED",
+        activeSeats: seats.activeSeats,
+        seatLimit: seats.seatLimit,
+        seatLimitDisplay: seats.seatLimitDisplay,
+      });
+    }
+
+    /* The write. `add()` persists with strict=true (fail-closed: it throws rather
+       than leave a RAM-only membership), sets status='active', joined_at=now and
+       removed_at=null, audits `partner.team_member.added` and emits
+       `partner.team_member_added`. It returns the existing active row unchanged
+       if one is already there, so a double-click cannot twin a membership. */
+    let member;
+    try {
+      member = partnerTeamStore.add(partnerId, userId, subRole as PartnerSubRole, actor, { isSeed: false });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "BIND_PERSIST_FAILED", message: (err as Error).message });
+    }
+    appendAdminAudit(actor, `partner:${partnerId}`, "partner.identity_binding.bound", {
+      partnerId, userId, email, subRole, memberId: member.id,
+    });
+    /* NO NEW BRIDGE EVENT TYPE. `partnerTeamStore.add()` already emits
+       `partner.team_member_added` for this exact fact, and `OutboundEventType` is
+       a closed union whose members are contracts with the Collective receiver.
+       Minting a second event for one write would double-count the membership
+       downstream — and per R148.2 the bridge currently has no real destination,
+       so a new event type could not be verified end to end anyway. */
+    const members = w177MembershipIdentity(partnerId);
+    return res.json({
+      ok: true,
+      partnerId,
+      boundUserId: userId,
+      memberId: member.id,
+      organizationName: w177OrganizationName(partnerId),
+      seats: w177Seats(partnerId, contact.tier as string | undefined),
+      members: members ?? [],
+    });
+  });
+
+  app.post("/api/admin/partners/:partnerId/team/:memberId/deactivate", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const partnerId = String(req.params.partnerId || "").trim();
+    const memberId = String(req.params.memberId || "").trim();
+    if (!partnerId || !memberId) return badRequest(res, "partnerId + memberId required");
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ ok: false, error: "PARTNER_NOT_FOUND", partnerId });
+    }
+    /* The membership id is resolved to its user id under the SAME partner id the
+       URL names, so a member id from another organisation cannot be deactivated
+       through this route even if one is guessed. */
+    let row: { user_id?: string; status?: string } | undefined;
+    try {
+      row = rawDb()
+        .prepare(`SELECT user_id, status FROM partner_team_members WHERE id = ? AND partner_id = ? LIMIT 1`)
+        .get(memberId, partnerId) as typeof row;
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "MEMBERSHIP_LOOKUP_FAILED", message: (err as Error).message });
+    }
+    const userId = String(row?.user_id ?? "").trim();
+    if (!userId) return res.status(404).json({ ok: false, error: "MEMBERSHIP_NOT_FOUND", memberId });
+
+    /* NEVER A HARD DELETE. `remove()` sets status='removed' and removed_at, keeps
+       the row, audits and emits. It refuses to remove the LAST managing_partner
+       (LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED, partnerWorkspaceStore.ts:1000)
+       — surfaced as a 409 the admin can act on, not a 500. */
+    let removed;
+    try {
+      removed = partnerTeamStore.remove(partnerId, userId, actor);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === "LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED") {
+        return res.status(409).json({ ok: false, error: message, memberId, userId });
+      }
+      return res.status(500).json({ ok: false, error: "DEACTIVATE_FAILED", message });
+    }
+    if (!removed) {
+      return res.status(409).json({ ok: false, error: "MEMBERSHIP_NOT_ACTIVE", memberId, userId });
+    }
+    appendAdminAudit(actor, `partner:${partnerId}`, "partner.identity_binding.deactivated", {
+      partnerId, userId, memberId, removedAt: removed.removedAt,
+    });
+    const members = w177MembershipIdentity(partnerId);
+    return res.json({
+      ok: true,
+      partnerId,
+      memberId,
+      userId,
+      removedAt: removed.removedAt,
+      organizationName: w177OrganizationName(partnerId),
+      seats: w177Seats(partnerId, contact.tier as string | undefined),
+      members: members ?? [],
+    });
+  });
+
+  app.post("/api/admin/partners/:partnerId/organization-name", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const partnerId = String(req.params.partnerId || "").trim();
+    if (!partnerId) return badRequest(res, "partnerId required");
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ ok: false, error: "PARTNER_NOT_FOUND", partnerId });
+    }
+    /* R148.3 item 4: `partner_organizations` is empty platform-wide, so
+       `resolvePartnerName` returns null everywhere and every surface showing a
+       partner falls back rather than naming it. The name is TYPED BY THE OWNER —
+       deliberately NOT derived from `contact.legalName`, because an automatic
+       backfill would put a guess into the field the messaging stamp reads and
+       nobody would ever know it had been guessed. */
+    const name = String(((req.body ?? {}) as { name?: unknown }).name ?? "").trim();
+    if (!name) return badRequest(res, "name required");
+    const previous = w177OrganizationName(partnerId);
+    const tenantId = String((contact as { tenantId?: string }).tenantId ?? "").trim() || "tenant_platform";
+    const stamp = new Date().toISOString();
+    try {
+      /* Additive upsert on the PRIMARY KEY. Only `name` and `updated_at` move; no
+         other column of an existing row is rewritten, so a jurisdiction or
+         status set elsewhere survives. */
+      rawDb().prepare(
+        `INSERT INTO partner_organizations (id, tenant_id, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+      ).run(partnerId, tenantId, name, stamp, stamp);
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "ORGANIZATION_NAME_PERSIST_FAILED", message: (err as Error).message });
+    }
+    appendAdminAudit(actor, `partner:${partnerId}`, "partner.organization_name.set", {
+      partnerId, previous, name,
+    });
+    return res.json({ ok: true, partnerId, organizationName: w177OrganizationName(partnerId), previous });
   });
 
   app.post("/api/admin/partners/:id/attributions", requireAdmin, (req: Request, res: Response) => {
@@ -902,6 +1668,49 @@ export function registerPartnerRoutes(app: Express): void {
     });
   });
 
+  /* ══ WAVE 179 · ITEM A · R151.1 — THE VEHICLES A MANAGED CLIENT ALREADY HAS ══
+     R151.1 asks for a "Create SPV for this managed client" affordance whose result
+     is READ BACK FROM PERSISTED DATA, not shown from an optimistic mutation
+     response. Nothing could answer "which of my vehicles target this company":
+     `spv.target_company_id` was written and read back per-SPV, but no route
+     queried BY company. This is that read, and it is the only new read the
+     affordance needs.
+
+     DERIVES NOTHING. It filters `spvEngineStore.listByPartner` — the same store
+     call the partner's own SPV list uses — on the persisted `targetCompanyId`.
+     No figure is computed here.
+
+     FAIL-CLOSED ON ATTRIBUTION, exactly like `/clients/:id` above and for the same
+     reason: the company must be attributed to THE SESSION's partner, never to
+     whoever the URL names, and a miss is a 404 that does not reveal whether the
+     company exists elsewhere. `listByPartner` is already partner-scoped, so even a
+     hypothetical attribution bug could not surface another partner's vehicle. */
+  app.get("/api/partner/me/clients/:id/spvs", requirePartnerAuth, (req: Request, res: Response) => {
+    const pid = req.partnerContext!.partnerId;
+    const companyId = String(req.params.id);
+    const attribution = partnerAttributionStore
+      .listByPartner(pid)
+      .find((a) => a.companyId === companyId);
+    if (!attribution) {
+      return res.status(404).json({ error: "CLIENT_NOT_FOUND_OR_NOT_ATTRIBUTED" });
+    }
+    const spvs = spvEngineStore
+      .listByPartner(pid)
+      .filter((s) => s.targetCompanyId === companyId && !s.archivedAt)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        spvType: s.spvType,
+        status: s.status,
+        jurisdiction: s.jurisdiction,
+        currency: s.currency,
+        targetRaiseMinor: s.targetRaiseMinor,
+        targetCompanyId: s.targetCompanyId,
+        createdAt: s.createdAt,
+      }));
+    res.json({ companyId, spvs });
+  });
+
   // PIPELINE
   app.get("/api/partner/me/pipeline", requirePartnerAuth, (req: Request, res: Response) => {
     res.json({ pipeline: partnerPipelineStore.listByPartner(req.partnerContext!.partnerId), stages: ALL_PIPELINE_STAGES });
@@ -940,24 +1749,14 @@ export function registerPartnerRoutes(app: Express): void {
    * relationship. Following (member personal interest) is intentionally NOT a proof.
    * Returns 404 (not 403) on failure so the route cannot be used as an existence oracle.
    */
-  const partnerCanAccessCompanyPortfolio = (partnerId: string, companyId: string): boolean => {
-    if (!partnerId || !companyId) return false;
-    // 1) live partner-owned portfolio row
-    if (getPortfolioCompany(partnerId, companyId)) return true;
-    // 2) live attribution (listByPartner excludes revoked by default)
-    if (partnerAttributionStore.listByPartner(partnerId).some((a) => a.companyId === companyId && !a.revokedAt)) return true;
-    // 3) consortium sponsor link
-    if (getConsortiumPartnerId(companyId) === partnerId) return true;
-    // 4) partner pipeline deal
-    if (partnerPipelineStore.listByPartner(partnerId).some((p) => p.companyId === companyId)) return true;
-    // 5) live partner deal promotion (exclude terminal/negative states)
-    if (partnerDealPromotionsStore.listByPartner(partnerId).some((p) =>
-      p.companyId === companyId && !(["rejected", "withdrawn", "archived"] as string[]).includes(String(p.status)),
-    )) return true;
-    // 6) partner-sponsored SPV target company
-    if (spvEngineStore.listByPartner(partnerId).some((s) => s.targetCompanyId === companyId && !s.archivedAt)) return true;
-    return false;
-  };
+  /* WAVE 179 · ITEM A · R151.1 — THE SIX PROOFS MOVED, NOT COPIED.
+     The body of this predicate now lives in `lib/partnerCompanyLinkGate.ts` so
+     that `spvEngineRoutes.ts` can gate a partner-supplied `targetCompanyId`
+     against the SAME derivation instead of against a second copy of it. This
+     name, its signature and its 404-not-403 contract are unchanged, and every
+     existing caller below is untouched. */
+  const partnerCanAccessCompanyPortfolio = (partnerId: string, companyId: string): boolean =>
+    partnerHasCompanyRelationship(partnerId, companyId);
 
   // List all private-portfolio company profiles for this partner.
   app.get("/api/partner/me/portfolio", requirePartnerAuth, (req: Request, res: Response) => {
@@ -1083,9 +1882,28 @@ export function registerPartnerRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       try {
+        /* WAVE 198 · ITEM D-2 — asserted BEFORE the update. Only the keys the store
+           forces in its own spread tail are refused: a value sent for those is
+           overwritten in the same statement that writes it, so accepting it and
+           answering 200 told the partner their change had saved when it had not.
+           Every other key is left alone, because `persistEntry` JSON-encodes the
+           whole object and an unrecognised key durably round-trips — refusing it
+           would block a write that works today. Handled inside this try, and
+           discriminated first, so `DEAL_NOT_FOUND` and `INVALID_STAGE` keep their
+           existing 404. */
+        assertPartnerPipelinePatchFullyApplied(req.body ?? {});
         const deal = partnerPipelineStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId);
         res.json({ deal });
       } catch (e) {
+        if (isPartnerPatchUnappliedError(e)) {
+          return res.status(400).json({
+            error: PARTNER_PATCH_UNAPPLIED_CODE,
+            refusalHeadline: e.refusalHeadline,
+            refusalGuidance: e.refusalGuidance,
+            message: e.refusalHeadline,
+            unappliedFields: e.unappliedFields,
+          });
+        }
         res.status(404).json({ error: (e as Error).message });
       }
     },
@@ -1182,7 +2000,33 @@ export function registerPartnerRoutes(app: Express): void {
 
   // POST /api/partner/me/pipeline/:id/promote-to-collective
   // Promotes a partner-owned pipeline deal to the Collective Deal Room.
-  // Goes live immediately. Idempotent via PromotionConflictError -> 409.
+  /* WAVE 213 — the previous comment here said "Goes live immediately", which is
+   * false and is one of the four ways the wave-213 brief's description of this
+   * feature was wrong. `partnerDealPromotionsStore.create` writes
+   * status="pending_collective_review" / moderationStatus="pending"; visibility
+   * begins only when a chapter admin approves in promotionModerationRoutes.ts,
+   * which is what calls ensurePromotionDirectoryListing. Corrected because a
+   * false comment is how the misdescription propagated. */
+  // Pending Collective review; becomes visible only on admin approval.
+  // Idempotent via PromotionConflictError -> 409.
+  /* WAVE 213 · GOVERNING CLAUSE AT THE POINT IT GOVERNS.
+   * A partner publishes a THIRD PARTY's company profile — revenue, margin,
+   * cap-table summary, readiness scores, recent activity — to a chapter of
+   * investors, with their own firm named as the source, and the company is never
+   * told. Before this wave the request carried `{notes?}` and the screen showed
+   * no term at all. The acknowledgement is now REQUIRED HERE, on the server, so a
+   * disabled button is not the control: a direct API call without it is refused.
+   *
+   * The text is re-derived from `shared/wave213PublishGoverningClause.ts` rather
+   * than trusted from the request, so the recorded sentence is the shipped
+   * sentence. `deal.dealName` is the subject because it is what the partner reads
+   * on the screen AND what this route holds, so both sides produce identical
+   * bytes; the audit row additionally carries companyId and the registered
+   * company name, so the evidence identifies the real company.
+   *
+   * R190.10 — THIS ADDS NO BARRIER. assertSubRole and requireSignedAgreement are
+   * unchanged, no field is withheld, no audience is narrowed, and the only new
+   * refusal is cleared by one tick on the same screen. */
   app.post(
     "/api/partner/me/pipeline/:id/promote-to-collective",
     requirePartnerAuth,
@@ -1207,6 +2051,34 @@ export function registerPartnerRoutes(app: Express): void {
         });
       }
       const { notes } = (req.body ?? {}) as { notes?: unknown };
+
+      /* ── WAVE 213 · the acknowledgement, enforced before anything is written ──
+       * Presence and TYPE are established first, and only then is anything
+       * compared. A missing or non-string value never reaches the equality check,
+       * so `undefined` can never be compared as though it were the sentence. */
+      const ackRaw = (req.body ?? {}) as Record<string, unknown>;
+      const ackEnvelope = ackRaw[PUBLISH_ACK_FIELD];
+      const ack =
+        ackEnvelope !== null && typeof ackEnvelope === "object"
+          ? (ackEnvelope as Record<string, unknown>)
+          : null;
+      const ackVersion = ack ? ack.clauseVersion : undefined;
+      const ackText = ack ? ack.text : undefined;
+      if (!ack || !isString(ackVersion) || !isString(ackText)) {
+        return res.status(400).json({
+          error: "PUBLISH_ACKNOWLEDGEMENT_REQUIRED",
+          message: PUBLISH_ACK_MISSING_MESSAGE,
+        });
+      }
+      /* The sentence the platform SHIPS, rebuilt here. Never the client's copy. */
+      const expectedAckText = publishAcknowledgementText(deal.dealName);
+      if (ackVersion !== PUBLISH_CLAUSE_VERSION || ackText !== expectedAckText) {
+        return res.status(400).json({
+          error: "PUBLISH_ACKNOWLEDGEMENT_STALE",
+          message: PUBLISH_ACK_STALE_MESSAGE,
+        });
+      }
+
       try {
         const p = partnerDealPromotionsStore.create(
           ctx.partnerId,
@@ -1218,6 +2090,56 @@ export function registerPartnerRoutes(app: Express): void {
           },
           ctx.userId,
         );
+        /* ── WAVE 213 · RECORD THE ACKNOWLEDGEMENT ─────────────────────────────
+         * Wave 186's writer, into the platform's existing append-only,
+         * hash-chained `audit_log` — the same store this route already writes
+         * `partner.deal_promotion.created` into. NO second consent store and NO
+         * second audit path.
+         *
+         * WHY NOT `legal_consents`. Structurally impossible without becoming a
+         * second consent shape: its `documentId` is a five-value union with no id
+         * that names publishing, its `documentVersion` is forced to the single
+         * global LEGAL_VERSION so "PUBLISH-v1" cannot be recorded, it has no
+         * field for the subject company, and `recordConsent` is idempotent on
+         * (tenant, user, doc, version) — so the SECOND company a partner
+         * published would produce no row at all. A per-event acknowledgement
+         * cannot live in a per-document idempotent store.
+         *
+         * The audit write does NOT gate the business effect: wave 186 settled
+         * that a failed audit must be reported loudly rather than turned into an
+         * unaudited commitment plus a 500. It is safe here because the
+         * acknowledgement was already ENFORCED above — no code path creates this
+         * promotion without having matched the sentence first — so a lost audit
+         * row loses evidence, never the control. */
+        const ackEntry = appendAdminAudit(
+          ctx.userId,
+          `promotion:${p.id}`,
+          "partner.deal_promotion.publish_disclosure_acknowledged",
+          {
+            promotionId: p.id,
+            partnerId: ctx.partnerId,
+            pipelineDealId: dealId,
+            dealName: deal.dealName,
+            companyId: deal.companyId,
+            /* The company's own registered name, resolved from the record the
+               route already looked up above. Kept ALONGSIDE dealName because the
+               acknowledgement names the deal as the partner sees it, while the
+               evidence must identify the real company. `?? null` because an
+               unresolvable name is recorded as absent, never as an empty string
+               that a later reader could compare as if it were a name. */
+            companyName: getCompanyRecordById(deal.companyId)?.companyName ?? null,
+            clauseId: PUBLISH_CLAUSE_ID,
+            clauseVersion: PUBLISH_CLAUSE_VERSION,
+            acknowledgementText: expectedAckText,
+            ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
+          },
+        );
+        reportAuditWriteOutcome(ackEntry, {
+          bearing: "identity",
+          action: "partner.deal_promotion.publish_disclosure_acknowledged",
+          route: "POST /api/partner/me/pipeline/:id/promote-to-collective",
+          subject: `promotion:${p.id}`,
+        });
         res.status(201).json({ promotion: p });
       } catch (e) {
         if (e instanceof PromotionConflictError) {
@@ -1583,6 +2505,26 @@ export function registerPartnerRoutes(app: Express): void {
       const resolvedTitle: string | null = isPartnerTitle(title) ? title : null;
       const ip = (req.ip ?? "").toString();
       const ua = String(req.headers["user-agent"] ?? "");
+
+      /* WAVE 214 surface 3 — authority tick; terse on purpose, see W214_BUILD.md
+         (a 3500-char source window in wave 19's test starts at this path). */
+      const authority = evaluateTickAuthority({
+        req,
+        body: (req.body ?? {}) as Record<string, unknown>,
+        surface: WAVE214_AUTHORITY_SURFACES.partnerTeamInvitation,
+        expectedStatement: WAVE214_PARTNER_TEAM_INVITE_AUTHORITY_STATEMENT,
+      });
+      if (!authority.ok) {
+        return res.status(authority.httpStatus).json({ error: authority.error, message: authority.message });
+      }
+      recordAuthorityConfirmation({
+        actor: `partner:${ctx.partnerId}:${ctx.userId}`,
+        surface: WAVE214_AUTHORITY_SURFACES.partnerTeamInvitation,
+        subject: `partner:${ctx.partnerId}`,
+        envelope: authority.envelope,
+        route: "POST /api/partner/me/team/invitations",
+        extra: { invitedEmail: String(email), subRole: String(subRole) },
+      });
       /* WAVE 19 FE-19 (SEAT-04) — the seat check and the insert are now ONE
          transaction. Previously `assertTierSeats()` ran here and
          `partnerInvitationStore.create()` ran on the next line with no lock
@@ -1686,11 +2628,20 @@ export function registerPartnerRoutes(app: Express): void {
       // Full delete: remove from store by filtering out (store.listByPartner excludes it).
       // For now, just mark it archived by patching an internal flag.
       // The store doesn't support hard delete — we zero out the body as a tombstone.
+      /* WAVE 200 ITEM B — R173.9.3. The comment above describes what this route
+         used to do: it patched title and body to "[DELETED]", which ERASED the
+         partner's own text irrecoverably, forced the scope to general, and
+         recorded the erasure in the audit log as `partner.note.updated` with
+         `changes: ["body","title","scope"]` — so nothing in the ledger said a
+         note had been deleted. The owner ruled deletion is permitted but must be
+         logged, and "I'd rather add than delete". `softDelete` therefore keeps
+         the title, the original body and every entry, stops the note being
+         listed, and writes a `partner.note.deleted` row through wave 186's
+         checked audit path. The 404 behaviour below is unchanged. */
       try {
-        const note = partnerNotesStore.update(
+        const note = partnerNotesStore.softDelete(
           ctx.partnerId,
           String(req.params.id),
-          { body: "[DELETED]", title: "[DELETED]", scope: "general" },
           ctx.userId,
           ctx.partnerSubRole === "managing_partner",
         );
@@ -1709,9 +2660,24 @@ export function registerPartnerRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       try {
+        /* WAVE 198 · ITEM D-3 — asserted BEFORE the update, for the reason given on
+           the pipeline route above: only the store's own forced spread-tail keys are
+           refused, because `persistNote` JSON-encodes the whole object and any other
+           unrecognised key durably round-trips. Discriminated ahead of the three
+           existing outcomes so 404 / 410 / 403 are all preserved exactly. */
+        assertPartnerNotePatchFullyApplied(req.body ?? {});
         const note = partnerNotesStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId, ctx.partnerSubRole === "managing_partner");
         res.json({ note });
       } catch (e) {
+        if (isPartnerPatchUnappliedError(e)) {
+          return res.status(400).json({
+            error: PARTNER_PATCH_UNAPPLIED_CODE,
+            refusalHeadline: e.refusalHeadline,
+            refusalGuidance: e.refusalGuidance,
+            message: e.refusalHeadline,
+            unappliedFields: e.unappliedFields,
+          });
+        }
         // v25.14 NL2 — distinguish tombstoned (410) from forbidden (403) and
         // not-found (404) so the client can show a sensible error.
         const msg = (e as Error).message;
@@ -1762,6 +2728,31 @@ export function registerPartnerRoutes(app: Express): void {
       }
       if (touchesWl && !whiteLabelAllowed) {
         return res.status(403).json({ error: "PARTNER_TIER_INSUFFICIENT", details: { current: ctx.tier, required: "nexus" } });
+      }
+      /* WAVE 198 · ITEM D-4 — ASSERTED AFTER THE TIER GATE AND BEFORE THE PATCH.
+         Ordering is deliberate: a partner below `nexus` who sends white-label keys
+         must still get the existing 403 about their tier, because that is the true
+         and more useful answer; a refusal about forced identity keys must not
+         pre-empt it. Only the keys `persistWorkspaceSettings` forces in its own
+         spread tail are refused. NOTHING ELSE IS, and that is the whole finding of
+         this item: `client/src/pages/partner/PartnerSettings.tsx` sends a 13-key
+         object of which twelve are absent from the `PartnerWorkspaceSettings`
+         interface, and all twelve persist correctly because the store JSON-encodes
+         the whole object into `settings_json`. An interface-derived accept-list
+         would have 400'd every Partner Settings save for every partner. */
+      try {
+        assertPartnerWorkspaceSettingsPatchFullyApplied(patch);
+      } catch (e) {
+        if (isPartnerPatchUnappliedError(e)) {
+          return res.status(400).json({
+            error: PARTNER_PATCH_UNAPPLIED_CODE,
+            refusalHeadline: e.refusalHeadline,
+            refusalGuidance: e.refusalGuidance,
+            message: e.refusalHeadline,
+            unappliedFields: e.unappliedFields,
+          });
+        }
+        throw e;
       }
       try {
         const s = partnerWorkspaceSettingsStore.patch(ctx.partnerId, patch, ctx.userId, { whiteLabelAllowed });
@@ -1844,6 +2835,23 @@ export function registerPartnerRoutes(app: Express): void {
       const signoffAccepted = body.signoffAccepted === true;
       if (!signoffLegalName) return res.status(400).json({ error: "SIGNOFF_LEGAL_NAME_REQUIRED" });
       if (!signoffAccepted) return res.status(400).json({ error: "SIGNOFF_ATTESTATION_REQUIRED" });
+      /* ── WAVE 179 · ITEM A · R151.1 — THE FENCE ───────────────────────────
+         "A partner must never attribute an SPV to a client they do not manage."
+         Until this wave nothing checked `targetCompanyId` on either create route,
+         so a partner could attribute a vehicle to ANOTHER partner's managed
+         client and it persisted and rendered. Checked BEFORE the sign-off is
+         recorded and before anything is written, so a refusal leaves no sign-off
+         row and no SPV — a refusal after the write would be a different defect.
+         A blank/absent target is still allowed: the fence is on attribution, not
+         a new requirement to attribute. */
+      const targetGate = partnerMayAttributeSpvToCompany(ctx.partnerId, targetCompanyId);
+      if (!targetGate.ok) {
+        return res.status(404).json({
+          error: SPV_TARGET_COMPANY_NOT_YOURS,
+          message: SPV_TARGET_COMPANY_NOT_YOURS_MESSAGE,
+        });
+      }
+      const attributableTargetCompanyId = targetGate.companyId;
       let legacySignoff;
       try {
         legacySignoff = recordSignoff({
@@ -1874,13 +2882,25 @@ export function registerPartnerRoutes(app: Express): void {
             status: LEGACY_TO_CANONICAL_SPV_STATUS[status] ?? "draft",
             // WAVE 138 · DEFECT A — mirrors the fund route's mapping at :1996.
             targetRaiseMinor: isNumber(targetSizeMinor) ? targetSizeMinor : null,
-            targetCompanyId: targetCompanyId ?? null,
+            /* WAVE 179 · ITEM A · R151.1 — gated above. `attributableTargetCompanyId`
+               is the value the fence approved, which is `null` for the (legitimate,
+               common) no-target case and otherwise a company this partner really
+               works with. The raw body value never reaches the store again. */
+            targetCompanyId: attributableTargetCompanyId,
             terms: { legacyShim: true, vintage, entityStructure, externalAdminProvider, externalAdminRef, notes, legacyJurisdiction: jurisdiction },
           },
           ctx.userId,
         );
         linkSignoffToSpv(legacySignoff.id, spv.id);
-        res.status(201).json({ spv });
+        /* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form, on the legacy create
+           path too. Both partner-facing create routes accept it, or a GP who used
+           this screen would silently have no way to state it. Validated against the
+           jurisdiction the store PERSISTED (canonicalised from the legacy string by
+           `resolveSpvJurisdiction`), never against the raw input, so the option set
+           matches the vehicle that now exists. An absent key writes NULL and changes
+           nothing anyone can see. */
+        const legalForm = setSpvLegalForm(spv.id, spv.jurisdiction, body.legalForm);
+        res.status(201).json({ spv, legalForm });
       } catch (e) {
         return badRequest(res, (e as Error).message);
       }
@@ -1910,29 +2930,68 @@ export function registerPartnerRoutes(app: Express): void {
       // never diverge the legacy row from the canonical `spv` table. Legacy status
       // strings are normalised to canonical enums; `spvName` maps to `name`.
       const b = (req.body ?? {}) as Record<string, unknown>;
-      const patch: Record<string, unknown> = {};
-      if (typeof b.spvName === "string") patch.name = b.spvName;
-      if (typeof b.name === "string") patch.name = b.name;
-      if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_SPV_STATUS[b.status] ?? b.status;
-      /* WAVE 140 · BATCH 1 ITEM 1 — THE OTHER WRITER OF `cap_minor`, AND IT WAS
-         UNTYPED. This legacy PATCH accepted whatever arrived. A blank field from
-         any legacy caller arrives as `""`, and `""` stored through this door
-         became a 0 cap — the exact defect ITEM 1 repairs on the wizard path, so
-         fixing only the wizard would have left this door open. An empty string
-         (and an explicit null) now mean NO CAP / NOT GIVEN and persist as SQL
-         NULL. A DELIBERATE 0 IS NOT REWRITTEN: only `""` and null are
-         normalised, because this route carries no provenance and cannot tell a
-         typed 0 from a blank one. `server/spvTemplateStore.ts:203`
-         (`normaliseMinor`) is the house precedent: `""` → null. */
-      const blankToNull = (v: unknown) => (v === "" || v === null ? null : v);
-      if (b.targetRaiseMinor !== undefined) patch.targetRaiseMinor = blankToNull(b.targetRaiseMinor);
-      if (b.minCheckMinor !== undefined) patch.minCheckMinor = blankToNull(b.minCheckMinor);
-      if (b.capMinor !== undefined) patch.capMinor = blankToNull(b.capMinor);
-      if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
+      /* ── WAVE 194 · ITEM B · R165.4 — REFUSED BEFORE ANYTHING IS WRITTEN ──────
+         THE DEFECT. Every key this handler does not name below was read out of the
+         body, silently discarded, and answered `200 { spv }` with the vehicle
+         unchanged. A managing partner correcting a vehicle's currency, carry basis
+         or jurisdiction — any of which is the UNIT or the LEGAL BASIS of every
+         figure on it — was told the correction saved. It had not been. Wave 193 fixed
+         the canonical PATCH and reported this one; a protection that stops at one of
+         three doors is not a protection.
+
+         PLACED BEFORE `updateSpv`, DELIBERATELY. A refused request must change
+         NOTHING, so there is no partial write to explain and no half-applied patch
+         to unwind. It also runs after all three auth guards, so an unauthorised
+         caller still learns only that it is unauthorised.
+         The accept-list mirrors the ladder immediately below, one key for one key. */
+      /* The `try` opens HERE, one statement earlier than it used to, so the
+         assertion's throw is caught by this handler's own catch and answered as a
+         400 refusal instead of escaping to Express as a 500. The ladder it now
+         encloses is pure assignment and cannot throw, so no other behaviour of
+         this route changes. */
       try {
+        assertLegacyVehiclePatchFullyApplied(b, LEGACY_SPV_PATCH_APPLIED_KEYS, "SPV");
+        const patch: Record<string, unknown> = {};
+        if (typeof b.spvName === "string") patch.name = b.spvName;
+        if (typeof b.name === "string") patch.name = b.name;
+        if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_SPV_STATUS[b.status] ?? b.status;
+        /* WAVE 140 · BATCH 1 ITEM 1 — THE OTHER WRITER OF `cap_minor`, AND IT WAS
+           UNTYPED. This legacy PATCH accepted whatever arrived. A blank field from
+           any legacy caller arrives as `""`, and `""` stored through this door
+           became a 0 cap — the exact defect ITEM 1 repairs on the wizard path, so
+           fixing only the wizard would have left this door open. An empty string
+           (and an explicit null) now mean NO CAP / NOT GIVEN and persist as SQL
+           NULL. A DELIBERATE 0 IS NOT REWRITTEN: only `""` and null are
+           normalised, because this route carries no provenance and cannot tell a
+           typed 0 from a blank one. `server/spvTemplateStore.ts:203`
+           (`normaliseMinor`) is the house precedent: `""` → null. */
+        const blankToNull = (v: unknown) => (v === "" || v === null ? null : v);
+        if (b.targetRaiseMinor !== undefined) patch.targetRaiseMinor = blankToNull(b.targetRaiseMinor);
+        if (b.minCheckMinor !== undefined) patch.minCheckMinor = blankToNull(b.minCheckMinor);
+        if (b.capMinor !== undefined) patch.capMinor = blankToNull(b.capMinor);
+        if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
         const spv = spvEngineStore.updateSpv(ctx.partnerId, String(req.params.id), patch, ctx.userId);
         res.json({ spv });
-      } catch (e) { res.status(404).json({ error: (e as Error).message }); }
+      } catch (e) {
+        /* WAVE 194 · ITEM B — the refusal, in the SAME envelope wave 193 shipped at
+           `server/spvEngineRoutes.ts:480-487`: the machine code stays in `error` so
+           nothing that keys on a code changes (R44 — add, do not substitute),
+           `message` is the short headline that survives `queryClient.ts`'s
+           240-character `looksHuman` gate, `guidance` carries the unabridged
+           sentence, and `unappliedFields` names the keys machine-readably so no
+           caller has to parse prose. HTTP 400: the request is malformed for this
+           route, and it is not a 404 — the vehicle was found and is untouched.
+           NEVER an all-caps underscore code on screen (R152 item 3 / R165.4). */
+        if (isSpvPatchUnappliedError(e)) {
+          return res.status(400).json({
+            error: (e as Error).message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            unappliedFields: e.unappliedFields,
+          });
+        }
+        res.status(404).json({ error: (e as Error).message });
+      }
     },
   );
   app.get("/api/partner/me/spvs/:id/positions", requirePartnerAuth, (req: Request, res: Response) => {
@@ -1967,7 +3026,7 @@ export function registerPartnerRoutes(app: Express): void {
           ctx.userId,
         );
         res.status(201).json({ position: sub });
-      } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+      } catch (e) { respondSpvWriteRefusal(res, e); }
     },
   );
 
@@ -2119,16 +3178,40 @@ export function registerPartnerRoutes(app: Express): void {
       const existing = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
       if (!existing || existing.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
       const b = (req.body ?? {}) as Record<string, unknown>;
-      const patch: Record<string, unknown> = {};
-      if (typeof b.fundName === "string") patch.name = b.fundName;
-      if (typeof b.name === "string") patch.name = b.name;
-      if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_FUND_STATUS[b.status] ?? b.status;
-      if (b.targetSizeMinor !== undefined) patch.targetRaiseMinor = b.targetSizeMinor;
-      if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
+      /* ── WAVE 194 · ITEM B · R165.4 — THE SAME DEFECT, THE FUND DOOR ──────────
+         Identical shape to the SPV PATCH above and identically silent: anything not
+         named in the five-key ladder below was dropped and answered `200 { fund }`.
+         The accept-list is its OWN — `fundName` and `targetSizeMinor` are legacy
+         names this route translates, and it maps neither `distributionScope` nor
+         `lpVisibility` nor `terms`, so wave 193's store-shaped nine-key list would
+         have accepted three keys this route discards. Refused BEFORE `updateSpv`,
+         so a refused request leaves the fund exactly as it was. */
+      /* The `try` opens HERE so the assertion's throw reaches this handler's catch
+         and becomes a 400 refusal rather than an unhandled 500. The enclosed ladder
+         is pure assignment and cannot throw. */
       try {
+        assertLegacyVehiclePatchFullyApplied(b, LEGACY_FUND_PATCH_APPLIED_KEYS, "fund");
+        const patch: Record<string, unknown> = {};
+        if (typeof b.fundName === "string") patch.name = b.fundName;
+        if (typeof b.name === "string") patch.name = b.name;
+        if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_FUND_STATUS[b.status] ?? b.status;
+        if (b.targetSizeMinor !== undefined) patch.targetRaiseMinor = b.targetSizeMinor;
+        if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
         const fund = spvEngineStore.updateSpv(ctx.partnerId, String(req.params.id), patch, ctx.userId);
         res.json({ fund });
-      } catch (e) { res.status(404).json({ error: (e as Error).message }); }
+      } catch (e) {
+        /* WAVE 194 · ITEM B — same envelope as the SPV PATCH above and as wave
+           193's canonical route. 400, not 404: the fund exists and is unchanged. */
+        if (isSpvPatchUnappliedError(e)) {
+          return res.status(400).json({
+            error: (e as Error).message,
+            message: e.refusalHeadline,
+            guidance: e.refusalGuidance,
+            unappliedFields: e.unappliedFields,
+          });
+        }
+        res.status(404).json({ error: (e as Error).message });
+      }
     },
   );
   app.get("/api/partner/me/funds/:id/commitments", requirePartnerAuth, (req: Request, res: Response) => {
@@ -2164,7 +3247,7 @@ export function registerPartnerRoutes(app: Express): void {
           ctx.userId,
         );
         res.status(201).json({ commitment: sub });
-      } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+      } catch (e) { respondSpvWriteRefusal(res, e); }
     },
   );
 

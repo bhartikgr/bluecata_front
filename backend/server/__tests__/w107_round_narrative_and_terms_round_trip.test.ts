@@ -26,6 +26,7 @@ import http from "node:http";
 import request from "supertest";
 import { registerRoutes } from "../routes";
 import { roundStoredTerms } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ADMIN = "u_admin";
 const STAMP = `w107${Date.now().toString(36)}`;
@@ -54,7 +55,7 @@ async function makeQaRound(companyId: string, extra: Record<string, unknown> = {
   const created = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({
+    .send(w212Attest({
       companyId,
       name: `${companyId} QA Verify Round`,
       type: "seed",
@@ -76,7 +77,7 @@ async function makeQaRound(companyId: string, extra: Record<string, unknown> = {
       liquidationPreference: "1x participating",
       capParticipation: "3",
       ...extra,
-    });
+    }));
   expect(created.status).toBe(200);
   return String((created.body as { id?: string }).id ?? "");
 }
@@ -245,7 +246,7 @@ describe("W107 · FINDING 1-D — the anti-dilution vocabulary mismatch, recorde
     const created = await request(app)
       .post("/api/rounds")
       .set("x-user-id", ADMIN)
-      .send({
+      .send(w212Attest({
         companyId,
         name: `${companyId} vocabulary probe`,
         type: "seed",
@@ -258,7 +259,7 @@ describe("W107 · FINDING 1-D — the anti-dilution vocabulary mismatch, recorde
         fdPreMoneyShares: "8000000",
         sharesAuthorized: "2000000",
         antiDilutionType: "broad_based_wa",
-      });
+      }));
     expect(created.status).toBe(400);
     expect(String((created.body as { error?: string }).error)).toBe("invalid_antiDilutionType");
     /* The refusal names the accepted vocabulary and what it received, so the

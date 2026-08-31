@@ -80,6 +80,24 @@ interface DashboardSnapshot {
     totalSpvCommittedMinor: number | null;
     totalFundCommittedMinor: number | null;
     committedFigureSource?: string;
+    /* WAVE 178 · ITEM A — the per-currency rollup. The two scalars above are the
+       engine's all-vehicle sums and are NOT displayed as one labelled figure any
+       more: adding CA$ and HK$ into a USD total is not a quantity. Optional on
+       this type so a stale cached payload cannot crash the tile. */
+    capitalByCurrency?: {
+      rows: Array<{
+        currency: string;
+        vehicleCount: number;
+        committedMinor: number;
+        spvCommittedMinor: number;
+        fundCommittedMinor: number;
+        /** `null` — never 0 — when no vehicle in this currency records a goal. */
+        targetMinor: number | null;
+        targetUnknownCount: number;
+      }>;
+      vehiclesWithoutCurrency: number;
+      unavailable: boolean;
+    };
   };
   pipeline: { byStage: Record<string, number>; topDeals: Array<{ id: string; dealName: string; estCheckSizeMinor: number | null; currency: string | null }> };
   recentActivity: Array<{ id: string; activityType: string; body: string; occurredAt: string }>;
@@ -174,6 +192,26 @@ export default function PartnerDashboard() {
 
   if (!role.ready || !role.identity) return null;
   const data = q.data;
+  /* ═════════════════════════════════════════════════════════════════════
+     WAVE 178 · ITEM A — THE HEADLINE WAS A CROSS-CURRENCY SUM LABELLED "USD".
+
+     The figure itself was the RIGHT quantity: the server derives it from the
+     canonical `status = 'committed'` predicate, the same one the authoritative
+     close statement's `confirmedMinor` uses. It was not a sum of target raises.
+     What was wrong is that vehicles denominated in CAD and HKD were added into
+     the same number and the label said USD.
+
+     Capavate has NO exchange-rate source, and none is invented here. The server
+     now returns one row per currency; this tile shows the US-dollar figures
+     beside the existing "USD" label — which makes that label true — and every
+     currency is listed separately below with its own committed total and its own,
+     distinctly labelled, target raise. No selection or arithmetic on money
+     happens in this file: each rendered figure is a single server-computed
+     integer handed straight to `formatMinor` with ITS OWN currency.
+     ═════════════════════════════════════════════════════════════════════ */
+  const capital = data?.portfolio.capitalByCurrency ?? null;
+  const capitalRows = capital?.rows ?? [];
+  const usdRow = capitalRows.find((r) => r.currency === "USD") ?? null;
   /* GROUP F3 — admin-set status from the /me payload drives the non-blocking
    * PartnerShell banner (DISPLAY only; server still gates all data/writes). */
   const partnerStatus = planQ.data?.status ?? role.identity.status ?? null;
@@ -235,7 +273,7 @@ export default function PartnerDashboard() {
                   <span data-testid="kpi-spv-unavailable">not available right now — we could not read the committed total</span>
                 ) : (
                   <>
-                    {formatMinor(data.portfolio.totalSpvCommittedMinor, "USD", { locale: "en-US" })}{" "}
+                    {formatMinor(usdRow ? usdRow.spvCommittedMinor : 0, "USD", { locale: "en-US" })}{" "}
                     <span className="text-[var(--cv-color-text-faint)]">USD</span>
                   </>
                 )}
@@ -246,11 +284,68 @@ export default function PartnerDashboard() {
                   <span data-testid="kpi-fund-unavailable">not available right now — we could not read the committed total</span>
                 ) : (
                   <>
-                    {formatMinor(data.portfolio.totalFundCommittedMinor, "USD", { locale: "en-US" })}{" "}
+                    {formatMinor(usdRow ? usdRow.fundCommittedMinor : 0, "USD", { locale: "en-US" })}{" "}
                     <span className="text-[var(--cv-color-text-faint)]">USD</span>
                   </>
                 )}
               </div>
+              {/* WAVE 178 · ITEM A — everything from here down is ADDITIVE. Not one
+                  literal above was reworded: a replaced text node scores as a
+                  removed copy string (R143.1), and the clarifiers this defect
+                  needs are static siblings. The card previously printed a total
+                  and said nothing about its basis, its currency scope or what it
+                  left out. That silence is what let a cross-currency sum sit on
+                  the owner's front page unnoticed, so the scope is now stated on
+                  screen next to the money. */}
+              <div className="text-xs mt-3 text-[var(--cv-color-text-secondary)]" data-testid="kpi-currency-scope">
+                Committed capital is never added across currencies, because Capavate holds no exchange-rate source. The two figures above count your US-dollar vehicles only. Vehicles held in any other currency are excluded from them and are listed separately below, each in its own currency.
+              </div>
+              {capital != null && capital.unavailable && (
+                <div className="text-xs mt-2 text-[var(--cv-color-text-secondary)]" data-testid="kpi-by-currency-unavailable">
+                  The per-currency breakdown could not be read, so no currency totals are shown here. That is a stated failure, not an amount of zero.
+                </div>
+              )}
+              {capital != null && !capital.unavailable && usdRow === null && (
+                <div className="text-xs mt-2 text-[var(--cv-color-text-secondary)]" data-testid="kpi-no-usd-vehicles">
+                  Your firm holds no US-dollar vehicles, so the two US-dollar figures above are zero as a matter of record, not because a figure was missing.
+                </div>
+              )}
+              {capital != null && !capital.unavailable && capitalRows.length === 0 && capital.vehiclesWithoutCurrency === 0 && (
+                <div className="text-xs mt-2 text-[var(--cv-color-text-secondary)]" data-testid="kpi-capital-none">
+                  No SPV or fund vehicles are on record for your firm yet, so there is no committed capital and no target raise to report.
+                </div>
+              )}
+              {capitalRows.length > 0 && (
+                <>
+                  <div className="text-xs mt-3 font-medium text-[var(--cv-color-text-secondary)]" data-testid="kpi-by-currency-heading">
+                    Committed capital and target raise, by currency:
+                  </div>
+                  <ul className="text-xs space-y-1" data-testid="kpi-by-currency">
+                    {capitalRows.map((r) => (
+                      <li key={r.currency} data-testid={`kpi-ccy-${r.currency}`}>
+                        <span className="font-medium" data-testid={`kpi-ccy-code-${r.currency}`}>{r.currency}</span>{" "}
+                        <span data-testid={`kpi-ccy-committed-${r.currency}`}>
+                          committed capital: {formatMinor(r.committedMinor, r.currency, { locale: "en-US" })}
+                        </span>{" "}
+                        <span data-testid={`kpi-ccy-target-${r.currency}`}>
+                          target raise, a fundraising goal and not capital committed:{" "}
+                          {r.targetMinor == null ? (
+                            <span data-testid={`kpi-ccy-target-absent-${r.currency}`}>no goal on record</span>
+                          ) : (
+                            formatMinor(r.targetMinor, r.currency, { locale: "en-US" })
+                          )}
+                        </span>{" "}
+                        <span data-testid={`kpi-ccy-count-${r.currency}`}>vehicles counted: {r.vehicleCount}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {capital != null && capital.vehiclesWithoutCurrency > 0 && (
+                <div className="text-xs mt-2 text-[var(--cv-color-text-secondary)]" data-testid="kpi-no-currency">
+                  Vehicles with no currency on record, excluded from every figure on this card rather than assumed to be US dollars: {capital.vehiclesWithoutCurrency}
+                </div>
+              )}
             </div>
           </AppCard>
           <AppCard data-testid="card-pipeline">

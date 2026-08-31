@@ -64,6 +64,9 @@ export const SPV_CAP_MAXIMUM_LABEL =
 /** What a BLANK cap means. Blank is NOT zero, and zero is NOT "no cap". */
 export const SPV_CAP_BLANK_LABEL = "no maximum";
 
+/* WAVE 198 · ITEM C · R166.2 — the ONE length discipline for refusal headlines. */
+import { fitToGate, boundedFragment } from "./refusalHeadlineGate";
+
 /** The one spelling of "we hold no figure for this", used instead of a bare
  *  em dash or "not recorded" so absence reads as absence rather than as zero. */
 export const SPV_NOT_ON_RECORD_LABEL = "Not on record";
@@ -198,17 +201,34 @@ export function spvCapSplitRefusalSentence(
 }
 
 /** The boundary-safe headline. Still names the cap, the resulting total and the
- *  overage, and still says what to do — it is written short, never truncated. */
+ *  overage, and still says what to do — it is written short, never truncated.
+ *
+ *  ── WAVE 198 · ITEM C · R166.2 — "WRITTEN SHORT" WAS AN ASSUMPTION, AND IT IS
+ *  MEASURABLY WRONG AT THE BOUNDARY. The fixed prose is 139 characters and there
+ *  are FOUR interpolated money fragments. Each carries the vehicle's RECORDED
+ *  currency code, and wave 198's Item A established that the code is an
+ *  unvalidated database string — a vehicle whose currency column holds a phrase
+ *  rather than a three-letter code is a shape the platform accepts. Four
+ *  24-character fragments already reach 235 characters, five short of the client's
+ *  gate; four 40-character fragments reach 299 and the refusal disappears. That is
+ *  a cap breach going unreported to the person subscribing over the cap.
+ *
+ *  The prose is byte-unchanged (R143.1). The four figures are the SUBSTANCE of the
+ *  refusal, so the first rung is deliberately wide at 40 characters — every
+ *  ordinary formatted amount (about 17) renders exactly as it does today, and only
+ *  a pathological currency string is tightened. */
 export function spvCapSplitRefusalHeadline(
   figures: SpvCapSplitFigures,
   exponent: number,
 ): string {
   const fmt = (m: number | null) => formatSpvSplitMinor(m, exponent, figures.currency);
   const capText = figures.capMinor == null ? SPV_CAP_BLANK_LABEL : fmt(figures.capMinor);
-  return (
-    `Not accepted: this would put the vehicle ${fmt(figures.overageMinor)} over its cap of ` +
-    `${capText}. Confirmed capital ${fmt(figures.confirmedCapitalMinor)}, soft-circled interest ` +
-    `${fmt(figures.softCircledInterestMinor)}. Reduce the amount or free capacity.`
+  return fitToGate(
+    (b) =>
+      `Not accepted: this would put the vehicle ${boundedFragment(fmt(figures.overageMinor), b)} over its cap of ` +
+      `${boundedFragment(capText, b)}. Confirmed capital ${boundedFragment(fmt(figures.confirmedCapitalMinor), b)}, soft-circled interest ` +
+      `${boundedFragment(fmt(figures.softCircledInterestMinor), b)}. Reduce the amount or free capacity.`,
+    [40, 24, 16, 8, 0],
   );
 }
 

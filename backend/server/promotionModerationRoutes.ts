@@ -45,6 +45,11 @@ import { getDb } from "./db/connection";
 import { and, eq, isNull } from "drizzle-orm";
 import { chapterMemberships as chapterMembershipsTable } from "@shared/schema";
 import { log } from "./lib/logger";
+/* WAVE 214 · item 3 — R197.2. The chapter is told; the company was not. This
+   helper resolves the company's OWN accounts and reuses `emitNotification` (the
+   same sacred notifier `notifyChapterMembersOfApproval` below already calls).
+   It is additive: it never blocks or narrows the publication. */
+import { notifyCompanyOfPublication } from "./lib/wave214CompanyPublicationNotice";
 
 /**
  * CP Phase C — cross-platform notification fanout (CP-035/036/037).
@@ -315,6 +320,24 @@ export function registerPromotionModerationRoutes(app: Express): void {
             promotionId: updated.id,
             partnerId: updated.partnerId,
           });
+          /* WAVE 214 · item 3 — and now the company itself. Deliberately placed
+             AFTER the chapter notification and inside the same `approve` branch,
+             so it cannot change who gets told what they were told before, and a
+             failure here cannot unwind a moderation decision that has already
+             been applied. `notifyCompanyOfPublication` never throws. */
+          try {
+            notifyCompanyOfPublication({
+              companyId: updated.companyId ?? null,
+              partnerId: updated.partnerId,
+              promotionId: updated.id,
+              actor,
+            });
+          } catch (e) {
+            log.warn(
+              "[promotion.moderation.approve] company publication notice failed (non-fatal):",
+              (e as Error).message,
+            );
+          }
         }
 
         res.json({ promotion: updated });

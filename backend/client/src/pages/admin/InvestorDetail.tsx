@@ -122,6 +122,12 @@ interface ContactRevision {
   updatedAt: string;
   updatedBy: string;
   action: string;
+  /* WAVE 200 ITEM B — R173.9.2. The server has always returned a full snapshot of
+     the contact with every revision (`adminContactsStore.ts:405`), so each earlier
+     version of the free-form notes was already stored and already sent to this
+     page — it was simply never displayed, which left the owner's earlier note text
+     unreadable to him. Only the field this panel reads is declared. */
+  snapshot?: { notes?: string };
 }
 
 interface ChainResult {
@@ -1083,6 +1089,44 @@ export default function AdminInvestorDetail() {
                       </tbody>
                     </table>
                   )}
+                </CardContent>
+              </Card>
+
+              {/* WAVE 200 ITEM B — R173.9.2: earlier note text, made readable.
+                  Appended as its own panel rather than as a column on the table
+                  above, because adding a cell to an existing table renumbers its
+                  siblings (R143.1, wave 182). Nothing above is altered. */}
+              <Card>
+                <CardContent className="px-0">
+                  <div className="px-6 py-4 text-sm font-semibold border-b border-border/60">
+                    Earlier notes on this contact
+                  </div>
+                  <div className="px-6 py-4" data-testid="panel-notes-history">
+                    {(() => {
+                      const versions = (historyQuery.data?.history ?? [])
+                        .filter((r) => typeof r.snapshot?.notes === "string" && r.snapshot.notes.trim() !== "")
+                        .filter((r, i, arr) => i === 0 || arr[i - 1].snapshot?.notes !== r.snapshot?.notes);
+                      if (versions.length === 0) {
+                        return (
+                          <div className="text-xs text-muted-foreground" data-testid="notes-history-empty">
+                            No earlier note text has been recorded for this contact yet.
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="space-y-3">
+                          {versions.map((r) => (
+                            <div key={r.version} data-testid={`notes-history-v${r.version}`}>
+                              <div className="text-[10px] uppercase text-muted-foreground">
+                                v{r.version} · {r.updatedBy} · {new Date(r.updatedAt).toLocaleString()}
+                              </div>
+                              <div className="text-xs whitespace-pre-wrap">{r.snapshot?.notes}</div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </CardContent>
               </Card>
             </div>

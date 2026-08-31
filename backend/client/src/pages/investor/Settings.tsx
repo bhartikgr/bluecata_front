@@ -19,6 +19,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+/* WAVE 221 — every rendered string comes from the wave's copy module, which puts
+   each one through fitToGate(). Nothing is retyped at the call site. */
+import {
+  wave221SwitchLabel,
+  wave221ConsequenceLine,
+  wave221PlainStatement,
+  wave221NoRetrospectionLine,
+  wave221StateLine,
+} from "@shared/wave221BenchmarkingOptOutCopy";
 import {
   Select,
   SelectContent,
@@ -96,6 +105,25 @@ export default function InvestorSettings() {
   useRealtimeSync();
 
   const me = useQuery<MeData>({ queryKey: ["/api/auth/me"] });
+
+  /* -------- WAVE 221 · benchmarking sharing -------- */
+  const w221 = useQuery<{ ok: boolean; sharingEnabled: boolean; optOutAt: string | null }>({
+    queryKey: ["/api/investor/me/benchmarking-sharing"],
+  });
+  /* Default OFF. `?? false` is the whole default: while the query is loading, or if
+     it fails, the switch shows OFF rather than implying the data is being shared. */
+  const w221SharingEnabled = w221.data?.sharingEnabled ?? false;
+  const w221Mut = useMutation({
+    mutationFn: async (sharingEnabled: boolean) => {
+      const r = await apiRequest("PATCH", "/api/investor/me/benchmarking-sharing", { sharingEnabled });
+      return r.json();
+    },
+    onSuccess: () => {
+      /* Invalidate so the next render comes from a RE-READ of the server, not from
+         the value we optimistically believed we wrote (§5.10). */
+      qc.invalidateQueries({ queryKey: ["/api/investor/me/benchmarking-sharing"] });
+    },
+  });
 
   /* -------- Timezone edit state -------- */
   /* AVI-TZ (Wave 3) — the PERSISTED value is the source of truth. The old code
@@ -335,6 +363,7 @@ export default function InvestorSettings() {
             </CardContent>
           </Card>
 
+
           {/* ---- Privacy ---- */}
           <Card>
             <CardHeader className="pb-2">
@@ -413,6 +442,52 @@ export default function InvestorSettings() {
             <CardContent className="text-sm text-muted-foreground space-y-3">
               <p>Complete or re-certify your accredited-investor self-certification below.</p>
               <AccreditationDeclaration />
+            </CardContent>
+          </Card>
+
+          {/* ---- WAVE 221 · benchmarking & matchmaking sharing (R190.10) ----
+              APPENDED as a new sibling Card. No existing card, label, testid or
+              handler expression is replaced (R143.1). The switch is OFF by default
+              on a fresh account because the server returns sharingEnabled=false
+              until the user turns it on. Every string is imported from
+              shared/wave221BenchmarkingOptOutCopy.ts, which builds them through
+              fitToGate() — none is retyped here. */}
+          <Card data-testid="w221-benchmarking-sharing">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Shield className="h-4 w-4 text-muted-foreground" />
+                Benchmarking &amp; matchmaking
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <p className="text-muted-foreground" data-testid="w221-statement">
+                {wave221PlainStatement("investor")}
+              </p>
+              <div className="flex items-start justify-between gap-4">
+                <label
+                  className="text-sm"
+                  htmlFor="w221-sharing-switch"
+                  data-testid="w221-label"
+                >
+                  {wave221SwitchLabel("investor")}
+                </label>
+                <Switch
+                  id="w221-sharing-switch"
+                  data-testid="w221-sharing-switch"
+                  checked={w221SharingEnabled}
+                  disabled={w221Mut.isPending}
+                  onCheckedChange={(v: boolean) => w221Mut.mutate(v)}
+                />
+              </div>
+              <p className="text-muted-foreground" data-testid="w221-consequence">
+                {wave221ConsequenceLine("investor")}
+              </p>
+              <p className="text-muted-foreground" data-testid="w221-no-retrospection">
+                {wave221NoRetrospectionLine()}
+              </p>
+              <p className="text-muted-foreground" data-testid="w221-state">
+                {wave221StateLine(!w221SharingEnabled)}
+              </p>
             </CardContent>
           </Card>
 

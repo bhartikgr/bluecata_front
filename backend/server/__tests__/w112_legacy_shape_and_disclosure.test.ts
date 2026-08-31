@@ -29,6 +29,12 @@ import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { spvEngineStore } from "../spvEngineStore";
 import { lpCommitInvitationId } from "../lib/lpIdentity";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_COMMIT_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 let app: express.Express;
 
@@ -91,6 +97,7 @@ describe("W112 — the legacy /detail contract is preserved, not reshaped", () =
   it("uncalledMinor stays consistent with the committedMinor in the SAME response", async () => {
     const spvId = await newSpv("W112 Shape Consistency");
     await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Nia",
       holderLastName: "Fernandes",
       investorEmail: "w112-shape@example.com",

@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { BarChart3, TrendingUp, ChevronRight, ExternalLink, FileText } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { safeExternalHref } from "@/lib/safeUrl";
+import { describeFailure } from "@/lib/failureMessage";
 
 interface PipelineCard {
   companyId: string;
@@ -196,7 +197,8 @@ function DscReviewModal({
       onClose();
     },
     onError: (err: Error) => {
-      toast({ title: "Vote failed", description: err.message, variant: "destructive" });
+      /* WAVE 197 #34 — WRITE. Title literal untouched. */
+      toast({ title: "Vote failed", description: describeFailure(err, "write"), variant: "destructive" });
     },
   });
 
@@ -212,7 +214,8 @@ function DscReviewModal({
       onClose();
     },
     onError: (err: Error) => {
-      toast({ title: "Compute failed", description: err.message, variant: "destructive" });
+      /* WAVE 197 #35 — WRITE. Title literal untouched. */
+      toast({ title: "Compute failed", description: describeFailure(err, "write"), variant: "destructive" });
     },
   });
 

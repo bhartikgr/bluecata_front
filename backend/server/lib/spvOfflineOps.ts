@@ -284,14 +284,38 @@ export function computeCloseSummary(
 ): CloseSummary {
   const committed = subs.filter((s) => s.status === "committed");
   const confirmedMinor = committed.reduce((a, s) => a + Math.max(0, asMinor(s.commitmentMinor)), 0);
-  const target = targetMinor != null && Number.isFinite(Number(targetMinor)) && Number(targetMinor) > 0 ? asMinor(targetMinor) : null;
+  /* WAVE 197 / R169 Item C.1 — A ZERO TARGET IS NOT AN ABSENT TARGET.
+
+     This line previously read `... && Number(targetMinor) > 0 ? asMinor(...) : null`,
+     which collapsed a STORED ZERO into `null`. R169.5 established that a zero
+     target is legitimate by design, so the platform then told a GP who HAD set a
+     target of zero the same sentence it tells a GP who set none — "No target
+     set." — which is false for the first GP. `SpvDetailTabs.tsx` renders the
+     target clause only when `targetMinor != null`, so the figure the GP entered
+     also vanished from the close panel.
+
+     `Number.isSafeInteger` replaces `Number.isFinite(Number(...))`: it is a
+     strictly tighter validity test on a value that is already an integer count of
+     minor units, and it performs no conversion — there is no arithmetic on a
+     money value here, only a shape check (R156 boundary discipline). Negative
+     values are still rejected as unusable rather than treated as a target. */
+  const target =
+    targetMinor != null && Number.isSafeInteger(targetMinor) && targetMinor >= 0
+      ? asMinor(targetMinor)
+      : null;
   const underTarget = target != null && confirmedMinor < target;
   const shortfallMinor = underTarget ? target! - confirmedMinor : 0;
   const note = underTarget
     ? "Confirmed capital is below the original target. You can close anyway with the amount raised — the platform will proceed, and you may set the target to the confirmed amount."
-    : target != null
-      ? "Target met. Ready to close to new LPs and deploy."
-      : "No target set. Ready to close to new LPs with the confirmed capital.";
+    : target === 0
+      /* A recorded target of zero is met by anything, including nothing. Saying
+         "Target met" alone would be technically true and practically misleading,
+         so the sentence names the figure it is reasoning about. The pre-existing
+         two sentences below are preserved verbatim; this is the only addition. */
+      ? "The recorded target for this SPV is zero, so it is met by definition. Ready to close to new LPs with the confirmed capital."
+      : target != null
+        ? "Target met. Ready to close to new LPs and deploy."
+        : "No target set. Ready to close to new LPs with the confirmed capital.";
   return {
     confirmedCount: committed.length,
     confirmedMinor,

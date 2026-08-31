@@ -27,6 +27,12 @@ import { applyWave9ReportingSchema } from "./lib/applyWave9ReportingSchema";
 import { applyWave38EventLedgerSchema } from "./lib/applyWave38EventLedgerSchema";
 import { getRoundsForCompany } from "./roundsStore";
 import { toMinor } from "./lib/currency";
+/* WAVE 180 · ITEM A SITE 3 — the same normaliser the WAVE 21 currency contract
+ * uses, so "cad", " CAD " and "CAD" cannot masquerade as three currencies and
+ * trip a false refusal. */
+import { normalizeCurrency } from "./lib/currencyScalar";
+/* WAVE 221 — the benchmarking opt-out, read at the point of computation. */
+import { wave221OptedOutIds } from "./lib/wave221BenchmarkingOptOut";
 import {
   computeFundMetrics,
   toEpochDay,
@@ -823,12 +829,41 @@ export function computeCohortBenchmark(opts: {
   const period = monthStart(opts.periodStart);
   const col = opts.metric === "net_irr" ? "net_irr" : opts.metric;
   const subjectKind = opts.subjectKind ?? "investor";
-  const rows = db()
+  /* WAVE 221 — `let`, not `const`: the opt-out filter below rebinds this. */
+  let rows = db()
     .prepare(
       `SELECT subject_id, ${col} AS v FROM portfolio_metric_snapshot
         WHERE period='monthly' AND period_start=? AND subject_kind=? AND ${col} IS NOT NULL`,
     )
     .all(period, subjectKind) as Array<{ subject_id: string; v: number }>;
+
+  /* ── WAVE 221 · the benchmarking opt-out, honoured HERE and not at display ──
+   *
+   * R190.10: users may switch off having their data used for benchmarking and
+   * matchmaking. That has to bind where the number is MADE, because a benchmark
+   * filtered only on the way to the screen has still been computed from the data
+   * of someone who asked it not to be.
+   *
+   * `unfilteredRows` is kept because `you` is resolved from it below: an opted-out
+   * investor must still see THEIR OWN figure on their own screen. Removing that
+   * would hide something from its owner, which R190.10 forbids.
+   *
+   * WITH NO TAKERS THIS IS A NO-OP. `wave221OptedOutIds` returns an empty Set for
+   * a platform where nobody has switched off — and for a database that has never
+   * seen migration 0228 — so `rows` is the same array contents, in the same order,
+   * and every branch below produces byte-identical output to before this wave. The
+   * filter is placed BEFORE the NO_DATA and minN branches deliberately: if an
+   * opt-out drops a cohort under the published minimum, the benchmark must be
+   * suppressed with a truthful reason, not published from a short sample. */
+  const unfilteredRows = rows;
+  const w221Silo: "investor" | "partner" | null =
+    subjectKind === "investor" ? "investor" : subjectKind === "partner" ? "partner" : null;
+  if (w221Silo !== null) {
+    const optedOut = wave221OptedOutIds(w221Silo);
+    if (optedOut.size > 0) {
+      rows = rows.filter((r) => !optedOut.has(String(r.subject_id)));
+    }
+  }
 
   if (rows.length === 0) {
     return {
@@ -843,8 +878,10 @@ export function computeCohortBenchmark(opts: {
     };
   }
   const values = rows.map((r) => r.v).sort((a, b) => a - b);
+  /* WAVE 221 — resolved from the UNFILTERED rows on purpose. An opted-out subject
+     is out of the peer sample above but must still be shown their own number. */
   const you = opts.youSubjectId
-    ? (rows.find((r) => r.subject_id === opts.youSubjectId)?.v ?? null)
+    ? (unfilteredRows.find((r) => r.subject_id === opts.youSubjectId)?.v ?? null)
     : null;
   return {
     benchmark: {
@@ -888,10 +925,40 @@ export interface InvestorMetricBundle {
   unmarkedPositions: number;
   expiredMarks: number;
   staleMarks: number;
-  currency: string;
-  contributedMinor: number;
-  distributedMinor: number;
+  /* WAVE 180 · ITEM A SITE 3 — `currency` used to be `positions[0].currency`,
+   * i.e. the FIRST holding's code stamped onto totals accumulated over every
+   * holding. It is now null when the ledger spans codes, and the money scalars
+   * below go null with it. NOTHING IS CONVERTED: this platform has no FX rate
+   * source, so a mixed ledger yields a stated refusal, never a number. */
+  currency: string | null;
+  contributedMinor: number | null;
+  distributedMinor: number | null;
   residualValueMinor: number | null;
+  /* WAVE 180 · ITEM A SITE 3 — every ISO code seen across the positions AND the
+   * ledgered cashflows, sorted. Length > 1 is the refusal condition. */
+  currencies: string[];
+  /* WAVE 180 · ITEM A SITE 3 — false when the scalars above are null because the
+   * ledger is cross-currency. Callers MUST NOT read `metrics`' money inputs or
+   * its ratios when this is false: they were computed over a flow array spanning
+   * currencies and are not denominated in anything real. The shape deliberately
+   * mirrors the endpoint refusal wave 21 already ships in
+   * server/lib/reportingEngineRoutes.ts, so the store and the routes refuse
+   * cross-currency data in one recognisable way. */
+  metricsAvailable: boolean;
+  metricsUnavailable: {
+    reason: "needs_fx_conversion";
+    currencies: string[];
+    message: string;
+  } | null;
+  /* WAVE 180 · ITEM A SITE 3 — the per-currency truth that replaces the mixed
+   * sum. Always populated, single-currency included, so a caller never has to
+   * branch on availability just to render the breakdown. */
+  byCurrency: Array<{
+    currency: string;
+    contributedMinor: number;
+    residualValueMinor: number | null;
+    positions: number;
+  }>;
 }
 
 /* WAVE 33 OQ-33-2 sink 1 — this function previously read
@@ -944,8 +1011,6 @@ export function buildInvestorMetrics(
     };
   });
 
-  const currency = positions[0]?.currency ?? "USD";
-
   const flows: IlpaFlow[] = positions.map((p) => ({
     valueDate: (p.ts || asOf).slice(0, 10),
     amountMinor: -toMinorUnits(p.invested, p.currency),
@@ -974,8 +1039,61 @@ export function buildInvestorMetrics(
   /* Residual value is reported ONLY when EVERY position is marked. A partial
    * sum would understate the portfolio while looking like a complete figure —
    * the single most dangerous shape a reporting number can take. */
+  /* WAVE 180 · ITEM A SITE 3 — THE DEFECT.
+   *
+   * This store carried the exact defect wave 21 fixed one layer up in
+   * server/lib/reportingEngineRoutes.ts, and was missed: `currency` was
+   * `positions[0]?.currency ?? "USD"`, the FIRST holding's code, while
+   * `residualValueMinor` reduced `toMinorUnits(...)` over EVERY holding and the
+   * flow array handed to `computeFundMetrics` mixed each position's own currency
+   * (plus every ledgered cashflow's currency) into one `paidInMinor` and one
+   * `distributedMinor`. An investor holding CA$1,200.00 and HK$2,000,000.00
+   * alongside USD got those minor units added and the result labelled with
+   * whichever holding happened to sort first — then `snapshotInvestor` PERSISTED
+   * that label next to that total, which is a durable financial record of money
+   * that does not exist.
+   *
+   * THE FIX. Currency is a precondition, exactly as it is in the routes. The set
+   * of codes is taken across BOTH poles that feed the metrics — the positions and
+   * the appended `vehicle_cashflow` rows — because a USD-only holdings list with a
+   * CAD distribution row is the same defect. More than one code ⇒ every money
+   * scalar is null, `metricsAvailable` is false, and the reason is stated. NO FX
+   * RATE IS INVENTED OR HARDCODED; there is no rate source in this repository.
+   *
+   * The per-currency breakdown is computed unconditionally so the surface has
+   * something true to show in place of the refused total. */
+  const currencySet = new Set<string>();
+  for (const p of positions) currencySet.add(normalizeCurrency(p.currency));
+  for (const f of flows) currencySet.add(normalizeCurrency(f.currency));
+  const currencies = Array.from(currencySet).sort();
+  const crossCurrency = currencies.length > 1;
+
+  const byCurrencyMap = new Map<string, { contributedMinor: number; residualValueMinor: number | null; positions: number }>();
+  for (const p of positions) {
+    const code = normalizeCurrency(p.currency);
+    const row = byCurrencyMap.get(code) ?? { contributedMinor: 0, residualValueMinor: null, positions: 0 };
+    row.positions += 1;
+    row.contributedMinor += toMinorUnits(p.invested, code);
+    byCurrencyMap.set(code, row);
+  }
+  /* A per-currency residual is reported only when EVERY holding in THAT currency
+   * is marked — the same all-or-nothing rule the single-currency total has always
+   * used, applied per bucket rather than abandoned. */
+  for (const code of Array.from(byCurrencyMap.keys())) {
+    const inCode = positions.filter((p) => normalizeCurrency(p.currency) === code);
+    const row = byCurrencyMap.get(code)!;
+    row.residualValueMinor = inCode.length > 0 && inCode.every((p) => p.currentValue !== null)
+      ? inCode.reduce((s, p) => s + toMinorUnits(p.currentValue as number, code), 0)
+      : null;
+  }
+  const byCurrency = Array.from(byCurrencyMap.entries())
+    .map(([currency, r]) => ({ currency, ...r }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+
+  const currency = crossCurrency ? null : (currencies[0] ?? "USD");
+
   const residualValueMinor =
-    positions.length > 0 && unmarkedPositions === 0
+    !crossCurrency && positions.length > 0 && unmarkedPositions === 0
       ? positions.reduce((s, p) => s + toMinorUnits(p.currentValue as number, p.currency), 0)
       : null;
 
@@ -987,14 +1105,31 @@ export function buildInvestorMetrics(
     marksStale: staleMarks > 0,
   });
 
-  const contributedMinor = metrics.inputs.picMinor;
-  const distributedMinor = metrics.inputs.distributedMinor;
+  /* WAVE 180 · ITEM A SITE 3 — these two came straight off `metrics.inputs`,
+     which sums across the whole flow array. On a mixed ledger that sum is not
+     denominated in any currency, so it is withheld rather than relabelled. */
+  const contributedMinor = crossCurrency ? null : metrics.inputs.picMinor;
+  const distributedMinor = crossCurrency ? null : metrics.inputs.distributedMinor;
 
   void t;
   return {
     positions, metrics, markedPositions, unmarkedPositions,
     expiredMarks, staleMarks, currency,
     contributedMinor, distributedMinor, residualValueMinor,
+    currencies,
+    metricsAvailable: !crossCurrency,
+    metricsUnavailable: crossCurrency
+      ? {
+          reason: "needs_fx_conversion",
+          currencies,
+          message:
+            `This portfolio is recorded in ${currencies.join(", ")}. ` +
+            "Contributed, distributed and current value are shown per currency rather than as one figure, " +
+            "because adding them would need an exchange rate, an as-of date and an audit trail, " +
+            "and no FX conversion source is configured on this platform.",
+        }
+      : null,
+    byCurrency,
   };
 }
 
@@ -1010,6 +1145,20 @@ export function snapshotInvestor(
 ): string | null {
   try {
     const b = buildInvestorMetrics(commits, { asOf, lpId: investorId });
+    /* WAVE 180 · ITEM A SITE 3 — REFUSE THE DURABLE WRITE, mirroring the HTTP 409
+     * CROSS_CURRENCY_SNAPSHOT_BLOCKED that wave 21 put on the vehicle snapshot
+     * route. A snapshot row carries ONE currency column; this path used to write
+     * `currency: b.currency` — the first holding's code — beside totals summed
+     * over every currency in the ledger. A skipped month is recoverable from the
+     * live ledger; a wrong persisted financial record is not. */
+    if (!b.metricsAvailable || b.currency === null || b.contributedMinor === null || b.distributedMinor === null) {
+      log.warn(
+        `[wave9][M-3] snapshot REFUSED for ${investorId}: cross-currency ledger ` +
+        `(${b.currencies.join(", ")}). A snapshot row carries a single currency; writing one ` +
+        "would record totals that are not denominated in any real currency. No FX conversion source is configured.",
+      );
+      return null;
+    }
     return writeMonthlySnapshot({
       tenantId,
       subjectKind: "investor",

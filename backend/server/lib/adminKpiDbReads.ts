@@ -28,6 +28,11 @@ import { DbUnavailableError } from "./errors";
    No second derivation is written here. */
 import { roundMoneyOnRecord } from "./roundRaisedTotals";
 import type { RoundMoneyRowInput } from "./roundRaisedTotals";
+/* WAVE 198 · ITEM A · R170 — the ONE definition of currency-code sameness
+   (case + whitespace only; nothing mapped or converted, R156.1). Imported
+   rather than re-implemented so this surface cannot drift from the engine's
+   mixture rule and reintroduce a false refusal. */
+import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 
 // v25.48 DATA-2 (fail-closed hardening per GPT-5.5) — these helpers MUST NOT
 // swallow a DB read failure into a false 0/[] KPI (which would silently serve
@@ -409,7 +414,18 @@ export function dbRegions(): Array<{ code: string; companies: number; raised: nu
         if (funded === BigInt(0)) continue;
         /* A region that mixes currencies cannot be summed into one scalar, so it
            refuses for good. It is not reset to zero. */
-        if (cur.currency !== null && money.currency && money.currency !== cur.currency) {
+        /* WAVE 198 · ITEM A · R170 — the SAMENESS test folds case and surrounding
+           whitespace (and only those; nothing is mapped or converted, R156.1), so
+           a region whose rounds record the same code in different case is no
+           longer declared un-summable and its KPI no longer goes permanently
+           undetermined. The values STORED on the accumulator below are still the
+           recorded ones — normalisation is how they are compared, not what they
+           become. */
+        if (
+          cur.currency !== null &&
+          money.currency &&
+          normaliseCurrencyForComparison(money.currency) !== normaliseCurrencyForComparison(cur.currency)
+        ) {
           cur.determined = false;
           cur.currency = "__mixed__";
           acc.set(code, cur);

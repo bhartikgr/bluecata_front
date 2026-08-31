@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MessageCircle, ThumbsUp, CheckCircle2, Flag } from "lucide-react";
+import { describeFailure } from "@/lib/failureMessage";
 
 interface FeatureFlagsResponse {
   COLLECTIVE_ENABLED?: boolean;
@@ -155,7 +156,9 @@ export default function AskExpertPage(): JSX.Element | null {
       setDraftError(null);
     },
     onError: (err: Error) => {
-      setDraftError(err.message);
+      /* WAVE 197 #33 — WRITE. The draft POST may have landed before the
+         failure surfaced, so the copy must not claim nothing was posted. */
+      setDraftError(describeFailure(err, "write"));
     },
   });
 

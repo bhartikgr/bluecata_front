@@ -53,6 +53,7 @@ import {
   PRICE_PER_SHARE_DECIMALS,
 } from "../../client/src/lib/roundMath";
 import { displayedOwnershipTotal } from "../../client/src/pages/founder/CapTable";
+import { w212Attest } from "./_w212RoundAttestation";
 
 let app: Express;
 const STAMP = String(Date.now());
@@ -70,7 +71,7 @@ async function createRound(payload: Record<string, unknown>): Promise<{ status: 
   const res = await request(app)
     .post("/api/rounds")
     .set("x-user-id", ADMIN)
-    .send({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload });
+    .send(w212Attest({ openDate: "2026-01-01", closeDate: "2026-12-31", ...payload }));
   return { status: res.status, body: res.body };
 }
 

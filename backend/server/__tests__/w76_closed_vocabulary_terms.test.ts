@@ -28,6 +28,7 @@ import request from "supertest";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { roundStoredTerms } from "../lib/roundStoredTerms";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const ADMIN = "u_admin";
@@ -44,14 +45,14 @@ async function buildRound(
   const companyId = `co_${STAMP}_${key}`;
   await request(app).post("/api/founder/companies").set("x-user-id", ADMIN)
     .send({ companyId, companyName: `W76 ${key}` });
-  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+  const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
     companyId, name: `${STAMP} ${key}`, type: "seed", instrument,
     openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
     ...(instrument === "preferred"
       ? { pricePerShare: 2.5, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000 }
       : { valuationCap: 12_000_000 }),
     ...extra,
-  });
+  }));
   return { companyId, roundId: String((created.body as any)?.id ?? ""), status: created.status, body: created.body };
 }
 

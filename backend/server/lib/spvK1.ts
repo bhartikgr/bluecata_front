@@ -47,6 +47,11 @@
  * Ownership is a FRACTION (0.25 = 25%), never a percent.
  */
 import { allocateResidualCents } from "./money";
+/* WAVE 198 · ITEM A · R170 — the ONE definition of currency-code sameness
+   (case + whitespace only; nothing mapped or converted, R156.1). Imported
+   rather than re-implemented so this surface cannot drift from the engine's
+   mixture rule and reintroduce a false refusal. */
+import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 
 export type K1RefusalCode =
   | "NO_FUNDS_CONFIRMATION"
@@ -172,7 +177,15 @@ export function computeK1Statements(args: K1ComputeArgs): K1Statement[] {
 
   /* NEVER SUM ACROSS CURRENCIES. Checked over the whole history, not just the
      tax year: a roll-forward reaches back through prior years. */
-  const currencies = new Set<string>([vehicleCurrency, ...distributions.map((d) => d.currency)]);
+  /* WAVE 198 · ITEM A · R170 — compared on NORMALISED codes, so a vehicle whose
+     distributions record the same code in different case is ONE currency and its
+     K-1s still compute. Refusing them was a false refusal: it withheld every LP's
+     statement for a transcription difference. Case and whitespace only — nothing
+     is mapped or converted (R156.1). `vehicleCurrency` itself is still REPORTED
+     verbatim below; only the sameness test is normalised. */
+  const currencies = new Set<string>(
+    [vehicleCurrency, ...distributions.map((d) => d.currency)].map(normaliseCurrencyForComparison),
+  );
   if (currencies.size > 1) {
     return register.map((r) => ({
       investorId: r.investorId,

@@ -10,6 +10,7 @@
  * Consumes ONLY the additive read endpoint GET /api/companies/:id/captable/snapshots.
  * No writes, no engine mutation — the money core is untouched.
  */
+import { NO_CURRENCY_ON_RECORD_CELL } from "@/lib/currencyOnRecordDisplay"; /* WAVE 190 · ITEM A */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -49,8 +50,16 @@ interface SnapshotsResponse {
   };
 }
 
-function fmtMoney(sym: string, n: number): string {
+/* WAVE 190 · ITEM A — `sym` is now `string | null`. `null` means the company has
+   NO CURRENCY ON RECORD, and this panel must not print an amount in a
+   denomination nobody recorded (R6). The `sym = "$"` default that used to sit on
+   the props below is exactly the fabricated dollar sign this wave exists to
+   remove: it made a Hong Kong or Canadian company's snapshot read as US dollars
+   whenever the parent did not pass a symbol. No amount changes and nothing is
+   converted (R156.1) — only whether, and with which glyph, it is printed. */
+function fmtMoney(sym: string | null, n: number): string {
   if (!Number.isFinite(n) || n === 0) return "—";
+  if (sym === null) return NO_CURRENCY_ON_RECORD_CELL;
   return `${sym}${Math.round(n).toLocaleString()}`;
 }
 function fmtShares(n: number): string {
@@ -58,7 +67,7 @@ function fmtShares(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: string }) {
+function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: string | null }) {
   if (positions.length === 0) {
     return <p className="text-xs text-muted-foreground px-1 py-2">No positions in this snapshot.</p>;
   }
@@ -88,7 +97,7 @@ function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: 
   );
 }
 
-export default function CapTableSnapshots({ companyId, sym = "$" }: { companyId: string; sym?: string }) {
+export default function CapTableSnapshots({ companyId, sym = null }: { companyId: string; sym?: string | null }) {
   const [showPrevious, setShowPrevious] = useState(false);
 
   const q = useQuery<SnapshotsResponse>({

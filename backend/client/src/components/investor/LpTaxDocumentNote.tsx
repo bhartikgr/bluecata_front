@@ -43,22 +43,52 @@ import {
   SPV_TAX_DOCUMENT_NOT_ON_RECORD,
   SPV_TAX_DOCUMENT_NOT_ON_RECORD_NOTICE,
   SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE,
+  /* WAVE 189 · ITEM A · R159.5 — the STRONGER disclaimer, naming BOTH Capavate and
+     BluePrint Catalyst Limited, rendered as a STATIC SIBLING of the notice above
+     (which stays byte-verbatim per R143.1). Same constant the GP surface renders,
+     so the two audiences the owner named cannot be shown different disclaimers. */
+  SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER,
   SPV_TAX_DOCUMENT_NO_STANDARD_FORM_LABEL,
   SPV_TAX_DOCUMENT_NO_STANDARD_FORM_NOTICE,
   SPV_TAX_DOCUMENT_FORM_NUMBER_NOT_ESTABLISHED,
   SPV_TAX_DOCUMENT_VEHICLE_FORM_NOTICE,
   SPV_TAX_DOCUMENT_SOURCES_LABEL,
 } from "@shared/spvEngine";
+/* WAVE 189 · ITEM A · R154.3 — the SAME resolver the GP surface uses. Wave 179 wired
+   the optional legal-form field into `GpTaxDocumentNotice` only, so a GP who stated
+   their vehicle's legal form saw the conditional RESOLVED to one branch while the
+   LP — the person who actually files a return — kept seeing the unresolved hedge on
+   the very same vehicle. Same function, same table, no new tax content. */
+import { spvLegalFormResolvedTreatment } from "@shared/spvLegalForm";
 
 export function LpTaxDocumentNote({
   jurisdiction,
   testidPrefix = "investor-lp-tax-document",
+  legalForm = null,
 }: {
   jurisdiction: string | null | undefined;
   testidPrefix?: string;
+  /* ══ WAVE 189 · ITEM A · R154.3 — OPTIONAL, DEFAULTS TO NOT STATED ═════════
+     Mirrors `GpTaxDocumentNotice`'s prop exactly, including the default, so every
+     existing call site that does not pass it renders EXACTLY what it renders today
+     — the byte-identical hedge — and the wave 174/175 DOM tests keep passing
+     unchanged (R98).
+
+     THE PLATFORM NEVER INFERS THIS. It is threaded from the vehicle's persisted
+     `legal_form` column, written only from an explicit selection. There is no
+     fallback deriving it from `jurisdiction`, from the vehicle's name or its type. */
+  legalForm?: string | null;
 }) {
   /* Hoisted: the resolution is pure and depends only on the stored value. */
   const doc = useMemo(() => spvJurisdictionTaxDocument(jurisdiction), [jurisdiction]);
+  /* Non-null ONLY when a legal form was explicitly stated AND it genuinely belongs
+     to this vehicle's jurisdiction AND wave 175 recorded a single treatment for it.
+     `null` in every other case, including a stale form left over from a different
+     jurisdiction — which then reads as not stated, i.e. as today. */
+  const resolvedTreatment = useMemo(
+    () => spvLegalFormResolvedTreatment(doc.code, legalForm),
+    [doc.code, legalForm],
+  );
 
   return (
     <div className="mt-2 pt-2" style={{ borderTop: "1px solid rgba(4,30,65,0.10)" }} data-testid={testidPrefix}>
@@ -118,6 +148,22 @@ export function LpTaxDocumentNote({
         </div>
       )}
 
+      {/* WAVE 189 · ITEM A · R154.3 — THE RESOLVED BRANCH, WHEN THE FORM IS STATED.
+
+          ADDITIVE AND CONDITIONAL. `resolvedTreatment` is non-null only when the
+          vehicle's legal form was EXPLICITLY stated and wave 175 recorded a single
+          treatment for that (jurisdiction, form) pair. When it is not stated — which
+          is every existing call site — nothing is rendered here and the hedge above
+          stands byte-identical, exactly as before this wave.
+
+          NO NEW TAX CONTENT. The sentence comes from wave 175's sourced table via
+          the same resolver the GP surface calls; this file authors none of it. */}
+      {resolvedTreatment && (
+        <div className="text-[11px] mt-1 leading-relaxed font-medium" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-vehicle-form-resolved`}>
+          {resolvedTreatment}
+        </div>
+      )}
+
       {doc.vehicleFormDependent && (
         <div className="text-[11px] mt-0.5 leading-relaxed" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-vehicle-form-notice`}>
           {SPV_TAX_DOCUMENT_VEHICLE_FORM_NOTICE}
@@ -172,6 +218,23 @@ export function LpTaxDocumentNote({
 
       <div className="text-[11px] mt-1 leading-relaxed text-muted-foreground" data-testid={`${testidPrefix}-informational`}>
         {SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE}
+      </div>
+
+      {/* WAVE 189 · ITEM A · R159.5 — THE STRONG, UNAMBIGUOUS DISCLAIMER.
+
+          A STATIC SIBLING, not a replacement. The literal above is unchanged to the
+          byte: under R143.1 a replaced text node scores as a REMOVED copy string, so
+          strengthening the wording in place would have registered as deleting a
+          shipped sentence. Both sentences now render, in order.
+
+          Owner: *"We need to have a strong and unambiguous disclaimer here."* The
+          sentence names BOTH entities the owner named — Capavate AND BluePrint
+          Catalyst Limited — and states explicitly that the reader must consult their
+          own accounting firm or tax lawyer. UNCONDITIONAL: it renders for all sixteen
+          jurisdictions and in all three record statuses, because the owner asked for a
+          disclaimer on the guidance, not on some of it. */}
+      <div className="text-[11px] mt-1 leading-relaxed font-medium" style={{ color: "#8a5a06" }} data-testid={`${testidPrefix}-no-advice`}>
+        {SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER}
       </div>
     </div>
   );

@@ -51,6 +51,42 @@ import {
   SETTLEMENT_AUTHORIZATION_TABLE,
   SETTLEMENT_AUTHORIZATION_USE_TABLE,
 } from "../lib/feeSettlementAuthority";
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on
+   POST /api/partner/me/spv/:spvId/distributions. W3E-SINK-2 drives that route,
+   so without the attestation it was refused 400 by the gate and NEVER REACHED
+   its own 403 SETTLEMENT_AUTHORIZATION_REQUIRED assertion — the settlement
+   authority proof was MASKED, not merely failing.
+
+   This fixture supplies the attestation because the ROUTE CONTRACT changed. It
+   is NOT a bypass: no flag is set, no store is written directly, nothing about
+   the gate is relaxed or narrowed, and the request still goes over the same HTTP
+   route a real operator uses. The keys are read from the shared module both
+   sides import, so this fixture cannot drift from the server's spelling. The
+   gate itself is proved over HTTP in
+   `server/__tests__/wave211_money_event_gate_http.test.ts`. */
+import {
+  W211_BODY_KEY_VERSION,
+  W211_BODY_KEY_SIGNED_NAME,
+  W211_BODY_KEY_TICK_1,
+  W211_BODY_KEY_TICK_2,
+  W211_BODY_KEY_TICK_3,
+  W211_BODY_KEY_BASIS,
+  W211_BODY_KEY_CURRENCY_CONFIRMED,
+  W211_MONEY_EVENT_ATTESTATION_VERSION,
+} from "../../shared/wave211MoneyEventAttestation";
+
+/* Ticks are sent as the boolean `true`, never `1` and never the string "true":
+   wave 211 refuses a truthy-but-not-true tick deliberately (no coercion), and a
+   fixture relying on that coercion would be leaning on a defect. */
+const W226_MONEY_ATT = {
+  [W211_BODY_KEY_VERSION]: W211_MONEY_EVENT_ATTESTATION_VERSION,
+  [W211_BODY_KEY_SIGNED_NAME]: "Avi Managing",
+  [W211_BODY_KEY_TICK_1]: true,
+  [W211_BODY_KEY_TICK_2]: true,
+  [W211_BODY_KEY_TICK_3]: true,
+  [W211_BODY_KEY_BASIS]: "Exit proceeds and cost basis taken from the executed share purchase agreement.",
+  [W211_BODY_KEY_CURRENCY_CONFIRMED]: true,
+} as const;
 
 const MANAGING = "u_avi_managing";
 const ADMIN = "u_admin";
@@ -179,11 +215,20 @@ describe("W3E-SINK — all five WAVE 1A sinks remain closed under the DB-backed 
       await put(`/api/partner/me/compliance/${inv}`, MANAGING, { kycStatus: "verified", accreditationStatus: "self_certified" });
       await patch(`/api/partner/me/spv/${spvId}/subscriptions/${subId}`, MANAGING, { to: "committed", subscriptionDocRef: `sig_${inv}` });
     }
+    /* WAVE 226 — the attestation is supplied so the request reaches the control
+       this test exists to prove. What follows must be the SETTLEMENT AUTHORITY
+       refusal specifically, not "some refusal": accepting any non-2xx here is
+       exactly how this proof went inert. */
     const r = await post(`/api/partner/me/spv/${spvId}/distributions`, MANAGING, {
       event: "exit", grossProceedsMinor: 1_000_000, costBasisMinor: 200_000, currency: "USD",
+      ...W226_MONEY_ATT,
     });
     expect(r.status).toBe(403);
     expect(r.body.error).toBe("SETTLEMENT_AUTHORIZATION_REQUIRED");
+    /* WAVE 226 — and the refusal is NOT the attestation gate's. If a future change
+       reintroduced the mask, `error` above would be a WAVE211_* code and this
+       assertion names the confusion explicitly rather than letting a 4xx pass. */
+    expect(String(r.body.error ?? "")).not.toMatch(/^WAVE211_/);
     const obs = await get(`/api/partner/me/spv/${spvId}/fee-obligations`, MANAGING);
     expect((obs.body.obligations ?? []).some((o: any) => o.state === "paid")).toBe(false);
   });

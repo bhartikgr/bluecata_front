@@ -46,6 +46,7 @@ import {
   upsertCrmContactForInvitation,
   listContactsForCompany,
 } from "../founderCrmStore";
+import { w212Attest } from "./_w212RoundAttestation";
 
 async function buildApp(): Promise<express.Express> {
   const app = express();
@@ -169,14 +170,14 @@ describe("v24.1 — Bug B: round creation validation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send(withRoundDates({
+      .send(w212Attest(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "   ",
         type: "seed",
         targetAmount: 0,
         currency: "USD",
         region: "US",
-      }));
+      })));
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("validation_failed");
     expect(r.body.fieldErrors).toBeTruthy();
@@ -188,14 +189,14 @@ describe("v24.1 — Bug B: round creation validation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send(withRoundDates({
+      .send(w212Attest(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "v24.1 Valid Round",
         type: "seed",
         targetAmount: 1_000_000,
         currency: "USD",
         region: "US",
-      }));
+      })));
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
   });
@@ -208,7 +209,7 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
     const r = await request(app)
       .post("/api/rounds")
       .set("x-user-id", FOUNDER_ID)
-      .send(withRoundDates({
+      .send(w212Attest(withRoundDates({
         companyId: FOUNDER_COMPANY,
         name: "v24.1 PostMoney Round",
         type: "seed",
@@ -225,7 +226,7 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
         currency: "USD",
         region: "US",
         // postMoney intentionally omitted
-      }));
+      })));
     expect(r.status).toBe(200);
     const id = r.body.id as string;
     const db = rawDb();

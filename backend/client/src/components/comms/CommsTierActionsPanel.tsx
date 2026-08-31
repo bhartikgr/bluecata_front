@@ -21,7 +21,7 @@
  *     or a 400. This panel therefore posts content only, never "who I am".
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -179,6 +179,92 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 183 · ITEM B FIX 4 — THE DEAD BRANCH THAT ATE EVERY REAL DIAGNOSIS.
+
+   THE DEFECT. Eight call sites in this panel are written as:
+
+       const res = await apiRequest(...).catch(thrownAsOutcome);
+       if (!res || !res.ok) {
+         setXRefusal(await refusalCodeFor(res));
+         return;
+       }
+
+   The shape assumes `apiRequest` RESOLVES with a non-ok `Response`. It does not.
+   `apiRequest` (`client/src/lib/queryClient.ts`) calls `throwIfResNotOk` and
+   THROWS an `ApiError` for every non-2xx status. So on a 403 the `.catch`
+   swallows the ApiError, `res` becomes `null`, and `res ? ... : TRANSPORT_FAILURE`
+   takes the `TRANSPORT_FAILURE` arm — every time, for every status.
+
+   `res && !res.ok` was unreachable code. `readError` was never once called on a
+   real failure. Every HTTP refusal in this panel — 400, 401, 403, 404, 409 —
+   rendered as "We could not reach Capavate to send this — your connection
+   dropped, or the service is briefly unavailable.", which is the exact live
+   symptom in R154.2 for Founder Messages.
+
+   The cruel part: the CORRECT sentence was already compiled into this file.
+   `TIER_ERROR_COPY.NOT_ON_CAP_TABLE` = "You do not have access to this company's
+   advocate list." — which is precisely what
+   `/api/founder/crm/high-value-advocates` returns 403 for — plus keys for "400",
+   "401", "403" and more. None of them were reachable.
+
+   THE FIX adds NO new copy string and changes NO existing one. It converts the
+   thrown `ApiError` back into the outcome shape the eight call sites were already
+   written against, so the codes they always meant to read finally arrive. Every
+   entry in `TIER_ERROR_COPY` becomes reachable for the first time, and
+   `TRANSPORT_FAILURE` narrows to what it says: an actual transport failure.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** A non-ok outcome recovered from a thrown `ApiError`. `ok: false` is a LITERAL
+ *  type, not `boolean`, so `if (!res || !res.ok) return;` narrows correctly and
+ *  the success path below still sees a real `Response`. */
+export type ThrownRefusal = { ok: false; status: number; refusalCode: string };
+
+/**
+ * `.catch(thrownAsOutcome)` in place of `.catch(thrownAsOutcome)`.
+ *
+ * Preserves the status and the server's own error code from an `ApiError`, and
+ * falls back to `TRANSPORT_FAILURE` only for a genuine non-HTTP failure — a
+ * dropped connection, DNS, an aborted request — which is the single case the
+ * copy it selects actually describes.
+ */
+/* Exported so wave 183's test file can drive the recovery directly against a
+   real `ApiError`, rather than proving the fix only structurally. The dead
+   branch this replaces was never once executed, so a behavioural proof was the
+   only kind worth having here. */
+export function thrownAsOutcome(err: unknown): ThrownRefusal {
+  if (err instanceof ApiError) {
+    const payload = err.payload as { error?: string; message?: string } | null | undefined;
+    const fromPayload =
+      payload && typeof payload === "object"
+        ? (payload.error ?? payload.message ?? null)
+        : null;
+    return {
+      ok: false,
+      status: err.status,
+      /* Order matters: the server's `error` code is what `TIER_ERROR_COPY` keys
+         on (e.g. `NOT_ON_CAP_TABLE`). The numeric status is the last resort, and
+         `TIER_ERROR_COPY` has entries for those too ("400", "401", "403", ...). */
+      refusalCode: String(fromPayload ?? err.code ?? err.status),
+    };
+  }
+  return { ok: false, status: 0, refusalCode: TRANSPORT_FAILURE };
+}
+
+/**
+ * The refusal code for either failure route, so the eight call sites keep one
+ * line each.
+ *
+ * `Response` covers the (still possible) resolved-but-not-ok case and keeps
+ * `readError` live; `ThrownRefusal` covers the case that actually happens;
+ * `null` preserves the old contract for any caller still using `() => null`.
+ */
+export async function refusalCodeFor(out: Response | ThrownRefusal | null): Promise<string> {
+  if (out === null) return TRANSPORT_FAILURE;
+  if (out instanceof Response) return readError(out);
+  return out.refusalCode;
+}
+
 export function CommsTierActionsPanel({
   companyId,
   roundId,
@@ -212,12 +298,12 @@ export function CommsTierActionsPanel({
     const res = await apiRequest(
       "GET",
       `/api/comms/co-investor-groups/${encodeURIComponent(companyId)}`,
-    ).catch(() => null);
+    ).catch(thrownAsOutcome);
     if (!res || !res.ok) {
       /* Fail-closed and RENDERED. An empty list here would read as "you are in
          no groups", which is a different and false statement. */
       setGroups(null);
-      setGroupsRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+      setGroupsRefusal(await refusalCodeFor(res));
       return;
     }
     const j = (await res.json()) as { groups?: CoInvestorGroupRow[] };
@@ -248,9 +334,9 @@ export function CommsTierActionsPanel({
       const res = await apiRequest("POST", "/api/comms/co-investor-groups", {
         companyId,
         participants,
-      }).catch(() => null);
+      }).catch(thrownAsOutcome);
       if (!res || !res.ok) {
-        setCreateRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+        setCreateRefusal(await refusalCodeFor(res));
         return;
       }
       setParticipantsRaw("");
@@ -276,9 +362,9 @@ export function CommsTierActionsPanel({
         "POST",
         `/api/comms/co-investor-groups/${encodeURIComponent(groupId)}/messages`,
         { body: messageBody.trim() },
-      ).catch(() => null);
+      ).catch(thrownAsOutcome);
       if (!res || !res.ok) {
-        setMessageRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+        setMessageRefusal(await refusalCodeFor(res));
         return;
       }
       const j = (await res.json()) as { id?: string };
@@ -300,9 +386,9 @@ export function CommsTierActionsPanel({
         "POST",
         `/api/comms/co-investor-groups/${encodeURIComponent(groupId)}/intro`,
         { targetId: introTarget.trim() },
-      ).catch(() => null);
+      ).catch(thrownAsOutcome);
       if (!res || !res.ok) {
-        setIntroRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+        setIntroRefusal(await refusalCodeFor(res));
         return;
       }
       setIntroOk(introTarget.trim());
@@ -336,11 +422,11 @@ export function CommsTierActionsPanel({
       roundId,
       toUserId: dmTo.trim(),
       body: dmBody.trim(),
-    }).catch(() => null);
+    }).catch(thrownAsOutcome);
     if (!res || !res.ok) {
       /* 429 here is not a bug: it is the privacy guard or the hard cap doing its
          job. It must still be rendered as a sentence the investor can act on. */
-      setDmRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+      setDmRefusal(await refusalCodeFor(res));
       return;
     }
     const j = (await res.json()) as { id?: string; status?: string };
@@ -358,9 +444,9 @@ export function CommsTierActionsPanel({
     const res = await apiRequest("POST", "/api/comms/cross-cohort/mute", {
       roundId,
       mutedId: muteTarget.trim(),
-    }).catch(() => null);
+    }).catch(thrownAsOutcome);
     if (!res || !res.ok) {
-      setMuteRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+      setMuteRefusal(await refusalCodeFor(res));
       return;
     }
     setMutedIds((prev) => (prev.includes(muteTarget.trim()) ? prev : [...prev, muteTarget.trim()]));
@@ -381,10 +467,10 @@ export function CommsTierActionsPanel({
       setSearched(null);
       return;
     }
-    const res = await apiRequest("GET", `/api/comms/search?q=${encodeURIComponent(q)}`).catch(() => null);
+    const res = await apiRequest("GET", `/api/comms/search?q=${encodeURIComponent(q)}`).catch(thrownAsOutcome);
     if (!res || !res.ok) {
       setResults(null);
-      setSearchRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+      setSearchRefusal(await refusalCodeFor(res));
       return;
     }
     const j = (await res.json()) as { results?: CommsSearchRow[] };
@@ -411,11 +497,11 @@ export function CommsTierActionsPanel({
       const res = await apiRequest(
         "GET",
         `/api/founder/crm/high-value-advocates?companyId=${encodeURIComponent(companyId)}`,
-      ).catch(() => null);
+      ).catch(thrownAsOutcome);
       if (!live) return;
       if (!res || !res.ok) {
         setAdvocates(null);
-        setAdvocatesRefusal(res ? await readError(res) : TRANSPORT_FAILURE);
+        setAdvocatesRefusal(await refusalCodeFor(res));
         return;
       }
       const j = (await res.json()) as { advocates?: string[]; label?: string; note?: string };

@@ -24,6 +24,8 @@
  * SINGULAR table names (spv, spv_mandate, …) deliberately avoid collision with
  * the pre-existing PLURAL tables owned by spvFundStore (spvs, spv_distributions…).
  */
+/* WAVE 198 · ITEM C · R166.2 — the ONE length discipline for refusal headlines. */
+import { fitToGate, boundedFragment, NAME_FRAGMENT_BUDGETS } from "../shared/refusalHeadlineGate";
 import { createHash, randomBytes } from "crypto";
 import { recordFeeHydration, feeStateUnknown, probeFeeRowCount } from "./lib/spvFeeHydrationState";
 /* WAVE 166 · BATCH 3 ITEM D (D-4) — alias-aware viewer identity for the LP
@@ -90,6 +92,18 @@ export interface GpOfflineConfirmation {
 }
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+/* WAVE 181 · ITEM B — four SPV lifecycle events emitted a bridge envelope but
+   were never AUDITED. A bridge envelope is a delivery-queue message (drained,
+   dead-letterable, pruned by clearBridgeOutbox) and `/admin/audit-log` does not
+   read it, so "emitted" was never the same claim as "audited". See
+   server/lib/spvLifecycleAudit.ts for the who/what/when and no-placeholder-actor
+   rules these writers obey. */
+import {
+  auditSpvCreated,
+  auditSpvFundsConfirmed,
+  auditSpvClosedToNewLps,
+  auditSpvReopened,
+} from "./lib/spvLifecycleAudit";
 /* WAVE 10 / EN-1 — project distributions into the ILPA cash-flow ledger. */
 import { projectDistribution, tryProject } from "./lib/ilpaCashflowLedger";
 import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
@@ -142,6 +156,47 @@ import {
   isSpvMoneyMinor,
   spvSubscriptionTransitionLegality,
 } from "@shared/spvSubscriptionTransitions";
+/* WAVE 182 · ITEM A · R152 — the ONE spelling of "would this add capacity to a
+   vehicle that is closed to new limited partners", plus the words the refusal
+   carries. Three sinks in this file consult it (`subscribe`,
+   `projectLpCommitted`, `engineAddCommitment`); the route boundary consults the
+   same function so a refusal cannot be reported differently in two places. */
+import {
+  SPV_CLOSED_TO_NEW_CAPITAL_CODE,
+  spvClosedToNewCapitalDecision,
+  spvClosedToNewCapitalHeadline,
+  spvClosedToNewCapitalSentence,
+  type SpvClosedToNewCapitalReason,
+} from "@shared/spvClosedToNewCapital";
+/* WAVE 190 · ITEM B · R152 — THE WORDS FOR "THE GATE COULD NOT FIND ITS ROW".
+   Same shape and the same reasoning as the closed-vehicle refusal imported
+   directly above: the machine code is the thrown `Error.message` because the
+   route mappers key on it by exact string, and the sentences a general partner
+   actually reads ride on the error object. See the module header for why the
+   old fail-open branch existed, which absence is legitimate, and why resolving
+   the derived id is the fix rather than trusting a lookup miss. */
+import {
+  SPV_CANONICAL_ROW_UNRESOLVED_CODE,
+  spvUnresolvedForCommitmentHeadline,
+  spvUnresolvedForCommitmentSentence,
+  type SpvCanonicalResolutionFailure,
+} from "@shared/spvCanonicalCommitmentResolution";
+/* WAVE 189 · ITEM C · R159.6 — the attestation gate. Same shape and the same
+   reasoning as the closed-vehicle gate imported directly above: ONE spelling of
+   "may capital attach to this vehicle", called by every sink in this file that
+   could attach a limited partner, a commitment or a fee, and by the route
+   boundary too. The rule is pure and lives in `@shared/spvUnattestedDraft`; the
+   DB lookup and the thrown refusal live in `./lib/spvAttestationGate`. */
+import { assertSpvAttestedForNewCapital } from "./lib/spvAttestationGate";
+/* WAVE 182 · ITEM C · R152.4(4) — the SHARED classification of whether a carry is
+   actually configured, so the card, the route and the tests cannot disagree. */
+import {
+  spvCarryConfiguration,
+  type SpvCarryConfiguration,
+} from "@shared/spvCarryConfiguration";
+/* Both fee layers, so `carryConfiguration` asks the SAME set of layers the fee
+   breakdown does rather than a hand-written list that could fall behind. */
+import { SPV_FEE_LAYERS } from "@shared/spvEngine";
 import {
   SPV_REGISTER_ALL_STAGES_BASIS,
   SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
@@ -201,6 +256,10 @@ import { allocateDistributionMinor, exactFractionToCarryScaled, convertMinorUnit
 import { applySideLetterCarry } from "./lib/spvSideLetterWaterfall";
 import { activeCarryOverrides } from "./spvSideLetterStore";
 import { resolveCombinedCarryCapScaled } from "./lib/combinedCarryCapPolicy";
+/* WAVE 193 · ITEM A.5 · R165.1 — the ONE absent-vs-mixed decision, imported from
+   the engine rather than re-decided here, so a committed total and a cap-table
+   conversion denominator cannot disagree about what "mixed" means. */
+import { isMixedCurrency, describeStatedCurrencies } from "@capavate/cap-table-engine";
 import { normaliseSpvTermsHurdle } from "./lib/percentPolicy";
 /* WAVE 6 / SC-3 — canonical distribution-type domain + the idempotent
    third-place column bootstrap (server/db/connection.ts is SACRED). */
@@ -570,7 +629,33 @@ export const spvEngineStore = {
       name: s.name,
       leadCompanyId: s.targetCompanyId,
       gpUserId: s.gpUserId,
-      targetMinor: s.targetRaiseMinor ?? 0,
+      /* WAVE 197 / R169 Item C.1 — THE ENGINE STOPS AUTHORING A FIGURE IT DOES
+         NOT HOLD. This read `s.targetRaiseMinor ?? 0`, which handed a fabricated
+         zero to the legacy mirror for an SPV whose GP set no target, conflating
+         "no target" with "a target of zero" at the boundary. It now passes
+         `undefined`, i.e. says nothing, because saying nothing is what the engine
+         actually knows. `targetMinor` is optional on this signature, so this is
+         type-clean and not a widening.
+
+         STATED PLAINLY, BECAUSE IT WOULD BE EASY TO OVERCLAIM: this is a
+         boundary-honesty change, NOT a behavioural one. `spvFundStore.createSpv`
+         applies its own `?? 0`, and the legacy column is
+         `target_minor integer NOT NULL DEFAULT 0` (shared/schema.ts,
+         shared/schema.pg.ts), so the legacy row still stores 0 for an absent
+         target. Making that column nullable would require a migration against a
+         HASH-CHAINED table whose `computeHash` payload includes `targetMinor`,
+         plus a `number -> number | null` ripple through ~10 spvFundStore sites,
+         for no current user-visible or fee benefit. That migration was NOT done.
+
+         What makes the conflation harmless TODAY is enumeration, not hope: no
+         display path reads the legacy target (every client target render reads
+         the engine DTO's `targetRaiseMinor`, which is `number | null` and stays
+         null), and the only consumer, `lib/legacySpvActivationFeeBasis.ts`,
+         requires `target > 0`, so 0 and absent already behave identically there.
+         `server/__tests__/w197_item_c_target_and_currency.test.ts` asserts that
+         enumeration so a future wave that starts displaying the legacy mirror
+         goes red instead of quietly showing $0.00. */
+      targetMinor: s.targetRaiseMinor ?? undefined,
       formedAt: now,
       status: s.status,
       structureType: s.spvType as "spv" | "fund" | "syndicate" | "multi_asset" | "rolling_fund",
@@ -584,6 +669,20 @@ export const spvEngineStore = {
       );
     }
     emit("spv.created", s.id, { partnerId, spvId: s.id, spvType, scope });
+    /* WAVE 181 · ITEM B — a new legal vehicle now exists. Audited, not merely
+       emitted. `actor` is the value already stamped into createdBy above, so the
+       audit row and the SPV row cannot name different people. */
+    auditSpvCreated({
+      partnerId,
+      spvId: s.id,
+      name: s.name,
+      spvType: String(spvType),
+      scope: s.distributionScope ?? null,
+      targetRaiseMinor: s.targetRaiseMinor ?? null,
+      currency: s.currency ?? null,
+      targetCompanyId: s.targetCompanyId ?? null,
+      actor: actor ?? null,
+    });
     return s;
   },
 
@@ -954,6 +1053,26 @@ export const spvEngineStore = {
        same conditions; the cross-layer cap block and the fee-exceeds-raise guard
        below are untouched. */
     const feeChecked = this.validateFeeDraft(data, opts);
+    /* ═══ WAVE 189 · ITEM C · R159.6 — NO FEE ATTACHES TO AN UNATTESTED DRAFT.
+
+       Owner: no LP, no commitment and NO FEE may attach until the attestation is
+       signed. A fee is the third kind of thing that turns a draft into something
+       real: it is an economic term that binds the vehicle's limited partners, and
+       the comment immediately below says why that matters — fee terms set now are
+       the terms the vehicle is "launched, marketed and subscribed on".
+
+       PLACED AT THE SOLE WRITER. The comment below establishes that this function is
+       the ONLY `INSERT INTO spv_fee` in the tree and that both the partner route and
+       the admin-platform route funnel through it, so this gate cannot be bypassed by
+       either. Above the first write, and above the cap resolution, so a refusal
+       leaves no fee row and consumes no policy lookup.
+
+       NOT GATED: `chargeFeeObligation` and `waiveFeeObligation`, which settle a fee
+       that already exists rather than attaching a new one — the same carve-out
+       reasoning `shared/spvClosedToNewCapital.ts` documents for confirming funds
+       received. An obligation can only exist on a vehicle that already passed this
+       gate. */
+    assertSpvAttestedForNewCapital({ spvId: s.id, spvName: s.name, kind: "fee" });
     /* ── WAVE 5 / P-8 — CROSS-LAYER COMBINED-CARRY CAP AT THE SET-TIME SINK (DEF-069).
      *
      * THE GAP. The check immediately above validates ONE layer in isolation:
@@ -1135,6 +1254,43 @@ export const spvEngineStore = {
     const probe = probeFeeRowCount(spvId);
     if (!probe.ok) return true; // fee table unreadable — the strongest reason to stay shut
     return probe.count > (feesBySpv.get(spvId)?.length ?? 0); // memory is incomplete
+  },
+
+  /* ════════════════════════════════════════════════════════════════
+     WAVE 182 · ITEM C · R152.4(4) — IS A CARRY ACTUALLY CONFIGURED ON THIS VEHICLE?
+     ═════════════════════════════════════════════════════════════════
+     The SPV list card renders `SpvDTO.carryBasis`, which says over WHAT a carry
+     would be computed — not WHETHER one is charged. On live that produced a card
+     reading "Carry: Per deployment" for a vehicle whose only fee is a flat
+     management fee. The existence of a carry is only knowable from `spv_fee`, and
+     `SpvDTO` carries no fee field, so the card could not have known.
+
+     STRICTLY READ-ONLY, and it makes no fee decision of its own: the effective-fee
+     selection is `effectiveFee` (the same rule every money surface uses) and the
+     classification is the SHARED pure `spvCarryConfiguration`, so the words on the
+     card and the words in a test come from one implementation.
+
+     THE UNREADABLE CASE IS PASSED THROUGH, NOT SWALLOWED. `feeViewUnreliable` is
+     forwarded so a fee table that could not be read is reported as unknown. A
+     failed hydration must never be rendered as "no carry configured": that turns a
+     database problem into a false statement about a vehicle's terms.
+
+     NO MONEY CROSSES THIS BOUNDARY. Only `feeType` and whether `carryPct` is
+     present are read; no amount, percentage or minor-unit figure is returned, so
+     there is nothing here to scale or round. */
+  carryConfiguration(partnerId: string, spvId: string, asOf?: string): SpvCarryConfiguration {
+    if (!this.getSpv(partnerId, spvId)) {
+      return spvCarryConfiguration({ fees: [], feeViewUnreliable: true });
+    }
+    if (this.feeViewUnreliable(spvId)) {
+      return spvCarryConfiguration({ fees: [], feeViewUnreliable: true });
+    }
+    const fees: Array<{ feeType: string; carryPct: number | null }> = [];
+    for (const layer of SPV_FEE_LAYERS) {
+      const f = this.effectiveFee(spvId, layer, asOf);
+      if (f) fees.push({ feeType: String(f.feeType), carryPct: f.carryPct ?? null });
+    }
+    return spvCarryConfiguration({ fees, feeViewUnreliable: false });
   },
 
   /** Plain-language breakdown shown to an investor (commitment / mgmt / platform / net). */
@@ -1487,6 +1643,55 @@ export const spvEngineStore = {
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
     if (!Number.isFinite(data.commitmentMinor) || data.commitmentMinor <= 0) throw new Error("INVALID_COMMITMENT");
+    /* ═══ WAVE 182 · ITEM A · R152 — A CLOSED VEHICLE DOES NOT TAKE NEW CAPITAL.
+
+       THE GAP THIS CLOSES. Every guard in this method asked about the REQUEST
+       (is there an investor, is the amount finite and positive, is it above the
+       minimum check, is this investor already on the register, would it breach
+       the cap) and not one of them asked about the VEHICLE. So an SPV whose GP
+       had clicked "Close to new LPs" — and told its limited partners so — kept
+       accepting subscriptions through this sink, which serves THREE routes:
+         POST /api/partner/me/spv/:spvId/subscriptions   (spvEngineRoutes)
+         POST /api/partner/me/spvs/:id/positions         (partnerRoutes)
+         POST /api/partner/me/funds/:id/commitments      (partnerRoutes)
+       One gate here fixes all three, which is why it is here and not at any of
+       them.
+
+       PLACED HERE, deliberately, and the ordering is a decision: AFTER the
+       malformed-request refusals (a request that is not a valid commitment at all
+       should still be told so) and BEFORE `BELOW_MIN_CHECK`, the tenant guard,
+       `ALREADY_SUBSCRIBED` and the cap gate — because when a vehicle is closed
+       the answer is the same whatever those four would have said, and telling a
+       GP their amount is below the minimum check on a vehicle that cannot take
+       any amount at all is a wrong refusal.
+
+       `subscribe` ALWAYS creates a row, so every call here is new capacity and
+       the shared rule's "existing row" branch can never spare it. It is still
+       routed through `assertSpvOpenToNewCapital` rather than tested inline, so
+       this sink and `projectLpCommitted` cannot come to disagree about what
+       "closed" means. Nothing is written before this line. */
+    assertSpvOpenToNewCapital({
+      spvStatus: s.status,
+      spvName: s.name,
+      subs: subsBySpv.get(spvId) ?? [],
+      investorId: data.investorId,
+      requestedMinor: data.commitmentMinor,
+    });
+    /* ═══ WAVE 189 · ITEM C · R159.6 — AN UNATTESTED DRAFT HOLDS NO CAPITAL.
+
+       Owner: drafts allowed, clearly labelled unattested, and structurally
+       incapable of holding capital — no LP, no commitment, no fee until the
+       launch attestation is signed.
+
+       PLACED HERE, BESIDE THE CLOSE GATE, ON PURPOSE. Wave 182's lesson is that a
+       disabled button is not enforcement; the refusal has to sit where the write
+       happens. `subscribe` ALWAYS creates a row, so every call is an LP seat
+       attaching to this vehicle. Nothing is written before this line.
+
+       AFTER the close gate, not before: a closed vehicle and an unattested vehicle
+       are different facts and a GP should be told the one that is actually in the
+       way. Attested vehicles reach this line and pass through it unchanged. */
+    assertSpvAttestedForNewCapital({ spvId: s.id, spvName: s.name, kind: "limited_partner" });
     if (s.minCheckMinor != null && data.commitmentMinor < s.minCheckMinor) throw new Error("BELOW_MIN_CHECK");
     // Wave C v3 (Opus/GPT-5 IDOR fix) — tenant isolation guard.
     // An investor already bound to a DIFFERENT partner (via an active subscription
@@ -1804,6 +2009,51 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    /* ═══ WAVE 182 · ITEM A · R152 — THE SINK THE OWNER'S REPRODUCTION WENT THROUGH.
+
+       This is the store side of `POST /api/partner/me/spv/:spvId/lp-commit`, the
+       "Commit an LP to the cap table" form. It deliberately skips `subscribe`'s
+       gates (documented at `recordCapOverride` below) because the authoritative
+       money seat is the sacred ledger line the route has already written — and
+       "skips the gates" is precisely how a vehicle that had been closed, and whose
+       close had been reported to its limited partners, went from 1 LP / $400,000
+       to 2 LPs / $450,000 with no refusal and no warning.
+
+       WHY THE ROUTE IS ALSO GATED AND THIS IS NOT REDUNDANT. The route refuses
+       BEFORE `commitFunded`, so the sacred ledger is never written into a
+       half-state; this gate is the store-layer floor that a future caller of this
+       method cannot walk around. Enforcement at the store, not only at the UI: a
+       disabled button is not enforcement, and neither is a route guard alone.
+
+       WHY IT IS NOT AN UNCONDITIONAL REFUSAL. Both branches below REPLACE an
+       existing row's amount rather than adding to it, and the route reaches this
+       method again on an idempotent replay under the same deterministic invitation
+       id. An equal-or-lower re-post of a commitment the vehicle ALREADY holds adds
+       no capacity — the resulting total cannot rise — so refusing it would break a
+       working replay path to no benefit. A NEW limited partner, or a HIGHER amount
+       for an existing one, is new capacity and is refused. The rule is spelled once
+       in `shared/spvClosedToNewCapital.ts`.
+
+       Nothing has been written at this point: `_persistSub` is below. */
+    assertSpvOpenToNewCapital({
+      spvStatus: s.status,
+      spvName: s.name,
+      subs: subsBySpv.get(spvId) ?? [],
+      investorId: data.investorId,
+      requestedMinor: Number.isFinite(data.commitmentMinor) && data.commitmentMinor > 0 ? data.commitmentMinor : 0,
+    });
+    /* ═══ WAVE 189 · ITEM C · R159.6 — AN UNATTESTED DRAFT HOLDS NO CAPITAL.
+
+       This is the sink the owner's wave-182 reproduction went through, so it is the
+       sink that most needs the second gate too. UNLIKE the close gate above, this
+       one IS unconditional: the close gate spares an equal-or-lower idempotent
+       replay because such a replay adds no CAPACITY to the vehicle, but an
+       unattested draft may hold no commitment AT ALL — replaying one onto it would
+       still leave a commitment attached to a vehicle nobody has signed for. There is
+       therefore nothing for the replay carve-out to protect here.
+
+       Nothing has been written at this point: `_persistSub` is below. */
+    assertSpvAttestedForNewCapital({ spvId: s.id, spvName: s.name, kind: "commitment" });
     const now = nowIso();
     const existing = (subsBySpv.get(spvId) ?? []).find((x) => x.investorId === data.investorId && x.status !== "withdrawn");
     if (existing) {
@@ -2021,6 +2271,10 @@ export const spvEngineStore = {
     if (!this.getSpv(partnerId, spvId)) return [];
     const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
     const split = spvStageSplit(subs);
+    /* WAVE 193 · ITEM A.5 · R165.1 — SITE 1 of 5. `total` on the next line is the
+       denominator of every `ownershipPct` this method returns, so mixing units
+       here misstates every limited partner's share of the vehicle. */
+    assertSingleCurrencyTotal("ownership-percentage denominator", subs, this.getSpv(partnerId, spvId)?.name);
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
     return subs.map((x) => {
       const pct = spvRowOwnershipPercentages(x, split);
@@ -2079,6 +2333,10 @@ export const spvEngineStore = {
        vehicle been committed?" from one place rather than from copies kept in
        step by hand. See `committedSubscriptionsForSpv`. */
     const subs = committedSubscriptionsForSpv(spvId);
+    /* WAVE 193 · ITEM A.5 · R165.1 — SITE 2 of 5, on the COMMITTED population.
+       Asserted here in its own right and not left to a caller: this is the money
+       basis, and the two money gates below reduce over the rows it returns. */
+    assertSingleCurrencyTotal("committed-capital total", subs, this.getSpv(partnerId, spvId)?.name);
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
     return subs.map((x) => ({
       investorId: x.investorId,
@@ -2131,6 +2389,9 @@ export const spvEngineStore = {
     const s = spvById.get(spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     const subs = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn");
+    /* WAVE 193 · ITEM A.5 · R165.1 — SITE 3 of 5. Same denominator as site 1, over
+       the same capacity basis, reached through the basis-labelled read. */
+    assertSingleCurrencyTotal("ownership-percentage denominator", subs, s.name);
     const total = subs.reduce((a, x) => a + x.commitmentMinor, 0);
     /* ══════════════════════════════════════════════════════════════
        WAVE 166 · BATCH 3 ITEM D (D-4) — WHICH IDS ARE *ME*.
@@ -2237,6 +2498,16 @@ export const spvEngineStore = {
     // 3. COMMITTED LP capital MUST cover the deployment amount. Blocker 4 (4D):
     //    only terminal `committed` subscriptions count — a raw review / soft-
     //    circled / wire-funded-but-uncommitted sub can NEVER satisfy this gate.
+    /* WAVE 193 · ITEM A.5 · R165.1 — SITE 4 of 5, and a MONEY GATE: the comparison
+       below decides whether capital may be deployed out of the vehicle. Asserted
+       against the underlying subscriptions rather than relying on site 2
+       transitively, so this gate's own guard is independently disarmable and its
+       own test proves it. Fail-closed is the correct direction here. */
+    assertSingleCurrencyTotal(
+      "committed-capital total",
+      committedSubscriptionsForSpv(spvId),
+      this.getSpv(partnerId, spvId)?.name,
+    );
     const committedCapital = this.committedRegister(partnerId, spvId).reduce((a, r) => a + r.commitmentMinor, 0);
     if (committedCapital < amountMinor) throw new Error("INSUFFICIENT_COMMITTED_CAPITAL");
     // 4. Instrument SOURCED from the round profile (fail-closed if the round
@@ -2898,6 +3169,22 @@ export const spvEngineStore = {
     terms._fundsConfirmations = bag;
     this.updateSpv(partnerId, spvId, { terms }, actor);
     emit("spv.funds_confirmed", spvId, { partnerId, spvId, investorId, status: conf.status, mismatch: conf.mismatch });
+    /* WAVE 181 · ITEM B — THE HIGHEST-VALUE ROW IN THIS WAVE. This is a named
+       human asserting that money arrived off-platform. The amounts are recorded
+       exactly as `computeFundsConfirmation` produced them (no re-derivation), and
+       a mismatch is recorded as a mismatch rather than smoothed away. */
+    auditSpvFundsConfirmed({
+      partnerId,
+      spvId,
+      investorId,
+      expectedMinor,
+      receivedMinor: conf.receivedMinor,
+      deltaMinor: conf.deltaMinor,
+      status: conf.status,
+      mismatch: conf.mismatch,
+      reference: conf.reference ?? null,
+      actor,
+    });
     return conf;
   },
 
@@ -3330,6 +3617,11 @@ export const spvEngineStore = {
        it to decide what to distribute. An unloaded fee table would show a
        carry-free split that the real write would never produce. */
     if (this.feeViewUnreliable(spvId)) throw new Error("FEE_STATE_UNKNOWN");
+    /* WAVE 193 · ITEM A.5 · R165.1 — SITE 5 of 5. `contributedMinor` is the
+       contributed base a general partner reads before deciding what to
+       distribute; a mixed base misstates every LP's share of the proceeds.
+       Asserted directly, for the reason given at site 4. */
+    assertSingleCurrencyTotal("contributed-capital base", committedSubscriptionsForSpv(spvId), s.name);
     const contributedMinor = this.committedRegister(partnerId, spvId).reduce((a, r) => a + r.commitmentMinor, 0);
     const mgmt = this.effectiveFee(spvId, "management");
     const plat = this.effectiveFee(spvId, "platform");
@@ -3374,6 +3666,19 @@ export const spvEngineStore = {
     if (opts?.setTargetToRaised) patch.targetRaiseMinor = summary.suggestedTargetMinor;
     const spv = this.updateSpv(partnerId, spvId, patch, actor);
     emit("spv.closed_to_new_lps", spvId, { partnerId, spvId, underTarget: summary.underTarget, confirmedMinor: summary.confirmedMinor });
+    /* WAVE 181 · ITEM B — a terminal fundraising state. Records whether the
+       target was LOWERED to the raised amount at close time, because that is the
+       difference between "we hit our target" and "we redefined our target". */
+    auditSpvClosedToNewLps({
+      partnerId,
+      spvId,
+      closeDate: spv.closeDate ?? null,
+      underTarget: summary.underTarget,
+      confirmedMinor: summary.confirmedMinor,
+      targetRaiseMinor: spv.targetRaiseMinor ?? null,
+      targetLoweredToRaised: opts?.setTargetToRaised === true,
+      actor,
+    });
     return { spv, summary };
   },
 
@@ -3384,8 +3689,14 @@ export const spvEngineStore = {
     if (!s) throw new Error("SPV_NOT_FOUND");
     const gate = canReopenClose(s.status, s.closeDate, windowDays);
     if (!gate.allowed) throw new Error(gate.reason === "not_closed" ? "SPV_NOT_CLOSED" : "ROLLING_CLOSE_WINDOW_ELAPSED");
+    /* WAVE 181 · ITEM B — capture the close date BEFORE updateSpv, so the audit
+       row can state which terminal state was undone. */
+    const priorCloseDate = s.closeDate ?? null;
     const spv = this.updateSpv(partnerId, spvId, { status: "open" }, actor);
     emit("spv.reopened_rolling_close", spvId, { partnerId, spvId, reason: gate.reason });
+    /* WAVE 181 · ITEM B — a terminal state UNDONE. Exactly the reversal an
+       auditor looks for, and it was previously invisible on /admin/audit-log. */
+    auditSpvReopened({ partnerId, spvId, windowDays, priorCloseDate, actor });
     return spv;
   },
 
@@ -4192,6 +4503,35 @@ export function backfillLegacyChildCommitments(): { positions: number; fundCommi
             quarantined++;
             continue;
           }
+          /* WAVE 184 · ITEM A · R156.1 — NO CONVERSION ANYWHERE.
+           * The owner has REMOVED the conversion requirement: a vehicle is
+           * denominated in ONE currency and the investor delivers in that
+           * currency. So a legacy row that carries a stored FX rate can no
+           * longer be normalised into the SPV's base currency — converting it
+           * would persist a figure derived from a rate, and that figure feeds
+           * `canonicalCommittedMinorForSpv` and therefore the partner's
+           * committed-capital tiles.
+           *
+           * It is REFUSED AND NAMED, not silently dropped and not raw-summed:
+           * the row goes to the same durable, drainable quarantine the
+           * unconvertible case already used, and the log says exactly why. A
+           * fabricated zero here would understate somebody's committed capital.
+           *
+           * Rows with NO stored rate are untouched: `convertMinorUnits` below
+           * still runs for them, where it is the identity path for a
+           * same-currency row and the cross-currency REFUSAL for a mismatched
+           * one. Not one amount on a rate-free row changes. */
+          if (p.fxRateToSpvBase) {
+            log.warn?.(
+              `[spvEngineStore] backfill: position ${r.id} carries an FX rate ` +
+              `(currency=${String(p.currency)} → spvBase=${String(spvBaseCurrency)}); ` +
+              `R156.1 removed currency conversion, so this amount is NOT converted. ` +
+              `The vehicle is denominated in one currency and funds must be delivered ` +
+              `in that currency; quarantining rather than converting.`,
+            );
+            quarantined++;
+            continue;
+          }
           const conv = convertMinorUnits(
             p.positionAmountMinor,
             p.currency ?? spvBaseCurrency,
@@ -4277,6 +4617,22 @@ export function backfillLegacyChildCommitments(): { positions: number; fundCommi
               `[spvEngineStore] backfill: fund commitment ${r.id} carries an FX rate ` +
               `but currency=${String(c.currency)} / fundBase=${String(fundBaseCurrency)} — ` +
               `cannot determine the ISO-4217 exponent scale; quarantining.`,
+            );
+            quarantined++;
+            continue;
+          }
+          /* WAVE 184 · ITEM A · R156.1 — identical refusal to the position
+           * backfill above, for identical reasons. A stored rate is no longer a
+           * licence to convert; the commitment is quarantined and the reason is
+           * named. Rate-free rows are untouched and still resolve through
+           * `convertMinorUnits` (identity, or a cross-currency refusal). */
+          if (c.fxRateToFundBase) {
+            log.warn?.(
+              `[spvEngineStore] backfill: fund commitment ${r.id} carries an FX rate ` +
+              `(currency=${String(c.currency)} → fundBase=${String(fundBaseCurrency)}); ` +
+              `R156.1 removed currency conversion, so this amount is NOT converted. ` +
+              `The vehicle is denominated in one currency and funds must be delivered ` +
+              `in that currency; quarantining rather than converting.`,
             );
             quarantined++;
             continue;
@@ -4402,6 +4758,92 @@ export function engineAddCommitment(args: {
   amountMinor: number;
   commitmentDocUrl?: string | null;
 }): SpvCommitmentRow {
+  /* ═══ WAVE 182 · ITEM A · R152 — THE THIRD SINK, AND THE LEAST OBVIOUS ONE.
+
+     `POST /api/partner/me/spvs/:id/commitments` (server/spvLegacyAdapters.ts)
+     lands here and writes the LEGACY `spv_commitments` register, plus — for a
+     `signed`/`funded` row — the legacy `committedMinor` denorm on the same
+     vehicle. It is a lesser defect than the lp-commit path, and the difference is
+     worth stating rather than glossing: the canonical LP register is
+     `spv_subscription`, and `closeSummary` / `canonicalCommittedMinorForSpv` read
+     ONLY that, so a write here cannot move the close statement the owner
+     reproduced. What it CAN do is create a commitment record, and raise a
+     committed figure this platform still reports, against a vehicle whose general
+     partner has told its limited partners it is closed. Same refusal, same words.
+
+     THE BASIS IS THE CANONICAL REGISTER, NOT THE LEGACY ONE. `spvsCache` in
+     spvFundStore carries the LEGACY status vocabulary (`fundraising`/`active`/…,
+     see `shadowPersistFromLegacy`), which has no `closed` member at all — asking
+     it whether the vehicle is closed would always answer no. The canonical engine
+     row is the authority on the close, and it is keyed by the same id.
+
+     ═══ WAVE 190 · ITEM B · R152 — AND NOW IT FAILS CLOSED.
+
+     The paragraph that stood here said the fail-open was "deliberate and narrow":
+     when the canonical row could not be found for this (partner, id) pair, this
+     function fell through both gates and wrote the commitment anyway. The concern
+     behind it was real — the adapter family serves ids that may exist only in the
+     legacy mirror — but the remedy was wrong twice over. It reported SUCCESS for a
+     write nothing had checked, and it treated a lookup miss as evidence that the
+     vehicle was open, which is precisely the fact it had failed to establish. On a
+     platform recording limited-partner capital, a gate that fails open is worse
+     than no gate, because a reader cannot see it happen.
+
+     THE LEGITIMATE ABSENCE IS NAMED AND HANDLED, NOT PAPERED OVER. There is
+     exactly one: a legacy-spelled id whose canonical row is filed under the
+     derived `spv_mig_*` spelling. `resolveCanonicalSpvForCommitment` tries both
+     spellings, so every such vehicle now RESOLVES and gets genuinely gated
+     instead of slipping past. The two remaining absences — a cross-partner id
+     (`getSpv` is documented fail-closed there) and cold or failed hydration —
+     were never legitimate, and both now refuse. See
+     `@shared/spvCanonicalCommitmentResolution` for the full reasoning.
+
+     SETTLEMENT IS UNTOUCHED (wave 182's lesson). This function creates NEW
+     capacity. Confirming funds on an existing commitment runs through
+     `engineTransitionCommitment` and never reaches this code, so a vehicle whose
+     canonical row cannot be found can still settle capital committed earlier. */
+  const canonical = resolveCanonicalSpvForCommitment(args.partnerId, args.spvId);
+  if (!canonical) {
+    /* REFUSE, NAMING THE FACT THAT COULD NOT BE ESTABLISHED. No name is available
+       to print — the row that would carry it is the row that is missing — so the
+       refusal says "this vehicle" rather than exposing an internal id (R6). */
+    throw buildSpvCanonicalRowUnresolvedError({
+      spvName: null,
+      reason: "unresolved_after_legacy_id_derivation",
+    });
+  }
+  /* The block is RETAINED rather than unindented so that wave 189's attestation
+     gate below keeps its exact bytes and indentation; it is no longer conditional,
+     because the refusal above has already returned for every unresolved row. */
+  {
+    assertSpvOpenToNewCapital({
+      spvStatus: canonical.status,
+      spvName: canonical.name,
+      /* WAVE 190 · ITEM B — `canonical.id`, NOT `args.spvId`. Subscriptions are
+         filed under the CANONICAL id, so when the caller handed us a legacy
+         spelling and the row resolved via its derived id, reading with the
+         caller's id returns an empty list — and an empty list makes an EXISTING
+         limited partner look like a new one, which would refuse a legitimate
+         equal-or-lower re-post on a closed vehicle. Reading by the id the row
+         was actually found under is the only spelling that answers the question
+         wave 182's gate is asking. */
+      subs: spvEngineStore.listSubscriptions(args.partnerId, canonical.id),
+      investorId: args.lpUserId,
+      requestedMinor: args.amountMinor,
+    });
+    /* WAVE 189 · ITEM C · R159.6 — and the same vehicle must be attested. Inside the
+       `canonical` branch for the reason stated above: the sign-off record is keyed to
+       the CANONICAL engine id, so a legacy-only id has no attestation to look up and
+       refusing it would be a refusal on a lookup miss rather than on a missing
+       signature. Where the canonical row DOES exist — which is every vehicle created
+       by the route family that requires the attestation — the gate is exact. This
+       narrowing is reported in the build log, not hidden. */
+    assertSpvAttestedForNewCapital({
+      spvId: canonical.id,
+      spvName: canonical.name,
+      kind: "commitment",
+    });
+  }
   return spvFundStore.addCommitment({
     spvId: args.spvId,
     lpUserId: args.lpUserId,
@@ -4707,6 +5149,116 @@ export function spvCapSplitFiguresForSpv(args: {
   };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 193 · ITEM A.5 · R165.1 / R156.1 — THE COMMITTED-TOTAL CURRENCY GUARD.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * FIVE reductions in this store add `commitmentMinor` across a vehicle's
+ * subscriptions with NO currency check:
+ *
+ *   `investorRegister`            (site 1) the ownership-percentage denominator
+ *   `committedRegister`           (site 2) the same, on the committed population
+ *   `lpRosterForViewer`           (site 3) the same denominator again, reached by
+ *                                   an LP reading the roster, with its basis
+ *                                   labelled on screen
+ *   `_assertDeploymentReadiness`  (site 4) a MONEY GATE: does committed capital
+ *                                   cover the amount about to be deployed?
+ *   `previewDistributionSplit`    (site 5) the contributed base a GP reads before
+ *                                   deciding what to distribute
+ *
+ * `subscribe` records `currency: data.currency ?? s.currency`, so a subscription
+ * MAY carry a currency different from its own vehicle's. Where that happens, the
+ * first three reductions produce ownership percentages that are wrong for every
+ * limited partner on the vehicle, and the last two decide whether real money
+ * moves. R156.1 forbids converting, so the only honest output is a REFUSAL.
+ *
+ * THE SAME ABSENT-VS-MIXED RULE AS THE CAP-TABLE ENGINE, IMPORTED RATHER THAN
+ * RE-DECIDED (`isMixedCurrency` from `@capavate/cap-table-engine`): two or more
+ * distinct STATED codes refuse; absent is "not yet stated" and never refuses on
+ * its own. Every existing vehicle is unaffected.
+ *
+ * ASSERTED SEPARATELY AT EACH OF THE FIVE SITES, not once inside
+ * `committedRegister` and relied upon transitively. Two reasons: `investorRegister`
+ * and `lpRosterForViewer` read a DIFFERENT population
+ * (`status !== "withdrawn"`, the capacity basis of R115.4) than `committedRegister`
+ * does (`status === "committed"`, the money basis), so one guard could not cover
+ * both; and each site must be independently disarmable, so its own test proves its
+ * own guard rather than a shared one four levels away.
+ *
+ * The thrown `message` is EXACTLY the machine code, for the reason written for
+ * `SpvCapRefusalError` below: `err()` maps by exact key. The words ride on the
+ * object as `refusalHeadline` / `refusalGuidance`. NEVER an all-caps underscore
+ * code on screen (R152 item 3).
+ * ════════════════════════════════════════════════════════════════════════════ */
+export const SPV_MIXED_CURRENCY_TOTAL_CODE = "MIXED_CURRENCY_COMMITTED_TOTAL";
+
+export interface SpvMixedCurrencyTotalError extends Error {
+  mixedCurrencyTotal: true;
+  /** Which of the five totals refused, machine-readably, so a caller need not parse prose. */
+  totalName: string;
+  /** The distinct STATED codes found, sorted and joined for reading. */
+  statedCurrencies: string;
+  refusalHeadline: string;
+  refusalGuidance: string;
+}
+
+export function isSpvMixedCurrencyTotalError(e: unknown): e is SpvMixedCurrencyTotalError {
+  return (
+    e instanceof Error &&
+    e.message === SPV_MIXED_CURRENCY_TOTAL_CODE &&
+    (e as SpvMixedCurrencyTotalError).mixedCurrencyTotal === true &&
+    typeof (e as SpvMixedCurrencyTotalError).refusalHeadline === "string"
+  );
+}
+
+/**
+ * Refuses when `rows` hold two or more distinct STATED currencies. Returns
+ * nothing and throws nothing otherwise: this reads, persists nothing, emits
+ * nothing, and NAMES NO CURRENCY of its own (R156.2) — the codes in the sentence
+ * are interpolated from the rows.
+ *
+ * @param totalName the human name of the total being computed, so the sentence
+ *   says WHICH figure was refused rather than "a total".
+ */
+export function assertSingleCurrencyTotal(
+  totalName: string,
+  rows: ReadonlyArray<{ currency?: string | null }>,
+  spvName?: string | null,
+): void {
+  const codes = rows.map((r) => r.currency);
+  if (!isMixedCurrency(codes)) return;
+  const stated = describeStatedCurrencies(codes);
+  const vehicle = spvName && spvName.trim() !== "" ? `"${spvName}"` : "this vehicle";
+  const e = new Error(SPV_MIXED_CURRENCY_TOTAL_CODE) as SpvMixedCurrencyTotalError;
+  e.mixedCurrencyTotal = true;
+  e.totalName = totalName;
+  e.statedCurrencies = stated;
+  /* ── WAVE 198 · ITEM C · R166.2 ────────────────────────────────────────────────
+     Two unbounded interpolations in one sentence: a vehicle NAME the GP chose and a
+     joined list of every distinct code found. Wave 198 measured 259 characters with
+     a 120-character name and seven codes — over the client's gate, so the refusal is
+     replaced by a generic sentence and the GP is never told the vehicle is
+     multi-currency. Fixed prose alone is 78 characters, so this is comfortable in
+     ordinary use and fails exactly where the data is worst.
+     Prose byte-unchanged (R143.1); the NAME is bounded on the wide name ladder so a
+     normal vehicle name renders in full. `stated` is deliberately NOT bounded: it is
+     the substance of the refusal, it is repeated in `statedCurrencies`, and if a
+     seven-currency vehicle still runs long `fitToGate`'s last rungs drop the name
+     first and hard-truncate only as a floor. */
+  e.refusalHeadline = fitToGate(
+    (b) =>
+      `${boundedFragment(vehicle, b)} records commitments in more than one currency (${stated}), so its ${totalName} cannot be added up.`,
+    NAME_FRAGMENT_BUDGETS,
+  );
+  e.refusalGuidance =
+    `Capavate does not convert currency — if a vehicle is in one currency, each investor delivers in ` +
+    `exactly that currency — so amounts recorded in ${stated} cannot be added into a single ${totalName}. ` +
+    `A total built that way would be a number rather than a quantity, and every ownership percentage, ` +
+    `capital-coverage check and distribution figure derived from it would be wrong while still adding ` +
+    `up correctly on screen. Restate each commitment on ${vehicle} in the vehicle's own currency, or ` +
+    `hold the other currency in a separate vehicle, and this figure will compute.`;
+  throw e;
+}
+
 /** WAVE 164 · ITEM C · R77 — an `EXCEEDS_CAP` error that CARRIES its split.
  *
  *  The thrown `message` stays EXACTLY `"EXCEEDS_CAP"`. That is deliberate and is
@@ -4729,6 +5281,153 @@ export function isSpvCapRefusalError(e: unknown): e is SpvCapRefusalError {
     typeof (e as SpvCapRefusalError).refusalHeadline === "string" &&
     (e as SpvCapRefusalError).capSplit != null
   );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 182 · ITEM A · R152 / R149.2 — THE CLOSED-VEHICLE REFUSAL, IN WORDS.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * MODELLED ON `SpvCapRefusalError` DIRECTLY ABOVE, for the reason written there:
+ * the thrown `message` stays EXACTLY the machine code, because `err()` in
+ * spvEngineRoutes maps by key and appending the sentence INTO the message would
+ * fall through to a 500 carrying an internal string. The words ride on the error
+ * OBJECT, and the route serves them as `message` (short, so it survives
+ * `queryClient.ts`'s 240-char `looksHuman` gate) and `guidance` (unabridged).
+ *
+ * `reason` is carried machine-readably as well as in words so a caller can tell
+ * a refused NEW limited partner from a refused INCREASE without parsing prose.
+ * ════════════════════════════════════════════════════════════════════════════ */
+export interface SpvClosedToNewCapitalError extends Error {
+  closedToNewCapital: true;
+  closedReason: SpvClosedToNewCapitalReason;
+  refusalHeadline: string;
+  refusalGuidance: string;
+}
+
+export function isSpvClosedToNewCapitalError(e: unknown): e is SpvClosedToNewCapitalError {
+  return (
+    e instanceof Error &&
+    e.message === SPV_CLOSED_TO_NEW_CAPITAL_CODE &&
+    (e as SpvClosedToNewCapitalError).closedToNewCapital === true &&
+    typeof (e as SpvClosedToNewCapitalError).refusalHeadline === "string"
+  );
+}
+
+/** Build the refusal. Persists nothing, emits nothing, reads nothing. */
+export function buildSpvClosedToNewCapitalError(args: {
+  spvName: string | null | undefined;
+  reason: SpvClosedToNewCapitalReason;
+}): SpvClosedToNewCapitalError {
+  const e = new Error(SPV_CLOSED_TO_NEW_CAPITAL_CODE) as SpvClosedToNewCapitalError;
+  e.closedToNewCapital = true;
+  e.closedReason = args.reason;
+  e.refusalHeadline = spvClosedToNewCapitalHeadline(args.spvName);
+  e.refusalGuidance = spvClosedToNewCapitalSentence({ spvName: args.spvName, reason: args.reason });
+  return e;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 190 · ITEM B · R152 — THE UNRESOLVED-VEHICLE REFUSAL, AND THE RESOLVER
+ * THAT MAKES IT RARE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * MODELLED ON `SpvClosedToNewCapitalError` DIRECTLY ABOVE, byte-for-byte in
+ * shape and for the identical reason: the thrown `message` stays EXACTLY the
+ * machine code, because the route error mappers key on it and folding the
+ * sentence into the message would fall through to a 500 carrying an internal
+ * string. The words ride on the error OBJECT and the route serves them as
+ * `message` (short enough for `queryClient.ts`'s 240-char `looksHuman` gate) and
+ * `guidance` (unabridged). NOTHING ALL-CAPS REACHES A SCREEN.
+ * ════════════════════════════════════════════════════════════════════════════ */
+export interface SpvCanonicalRowUnresolvedError extends Error {
+  canonicalRowUnresolved: true;
+  unresolvedReason: SpvCanonicalResolutionFailure;
+  refusalHeadline: string;
+  refusalGuidance: string;
+}
+
+export function isSpvCanonicalRowUnresolvedError(
+  e: unknown,
+): e is SpvCanonicalRowUnresolvedError {
+  return (
+    e instanceof Error &&
+    e.message === SPV_CANONICAL_ROW_UNRESOLVED_CODE &&
+    (e as SpvCanonicalRowUnresolvedError).canonicalRowUnresolved === true &&
+    typeof (e as SpvCanonicalRowUnresolvedError).refusalHeadline === "string"
+  );
+}
+
+/** Build the refusal. Persists nothing, emits nothing, reads nothing. */
+export function buildSpvCanonicalRowUnresolvedError(args: {
+  spvName: string | null | undefined;
+  reason: SpvCanonicalResolutionFailure;
+}): SpvCanonicalRowUnresolvedError {
+  const e = new Error(SPV_CANONICAL_ROW_UNRESOLVED_CODE) as SpvCanonicalRowUnresolvedError;
+  e.canonicalRowUnresolved = true;
+  e.unresolvedReason = args.reason;
+  e.refusalHeadline = spvUnresolvedForCommitmentHeadline(args.spvName);
+  e.refusalGuidance = spvUnresolvedForCommitmentSentence({ spvName: args.spvName });
+  return e;
+}
+
+/**
+ * RESOLVE THE CANONICAL ROW FOR A COMMITMENT, TRYING BOTH ID SPELLINGS.
+ *
+ * The ONE reason a canonical lookup legitimately missed on this path is that the
+ * caller holds a LEGACY id while the canonical row is filed under the derived
+ * `spv_mig_${sha256(legacyId).slice(0,24)}` spelling (`_migId`, and the migration
+ * and shadow-persist paths that use it). So: try the id as given, then try the
+ * derived id, and only then conclude the row is genuinely absent.
+ *
+ * Returns the row, or `null` when both spellings miss. It deliberately does NOT
+ * throw: the caller decides what an absence means for the operation it is
+ * performing, and the two capital paths and any future reader should not have
+ * that decision made for them here.
+ *
+ * READ-ONLY. `getSpv` reads a RAM Map; nothing is written, migrated or
+ * back-filled — inventing a canonical row to satisfy a gate would be the same
+ * defect wearing a different hat.
+ */
+export function resolveCanonicalSpvForCommitment(
+  partnerId: string,
+  spvId: string,
+): SpvDTO | null {
+  const direct = spvEngineStore.getSpv(partnerId, spvId);
+  if (direct) return direct;
+  /* The derived canonical id for a legacy-spelled vehicle. `_migId` is the SAME
+     function the migration and shadow-persist paths use to CHOOSE that id, so
+     this cannot drift from where the row was actually filed. */
+  const derived = _migId(spvId);
+  if (derived === spvId) return null;
+  return spvEngineStore.getSpv(partnerId, derived);
+}
+
+/**
+ * The SHARED gate. Every capital-adding sink in this file calls exactly this, so
+ * a sixth write path added later cannot pick a different rule by accident.
+ *
+ * `subs` is the vehicle's subscription list. The investor's CURRENT non-withdrawn
+ * commitment is looked up here rather than passed in, because a caller computing
+ * it themselves is how the "increase" clause would drift.
+ *
+ * THROWS the refusal, or returns cleanly. It never returns a boolean: a sink that
+ * forgets to test the boolean is exactly the failure mode this wave is fixing.
+ */
+export function assertSpvOpenToNewCapital(args: {
+  spvStatus: string | null | undefined;
+  spvName: string | null | undefined;
+  subs: readonly { investorId: string; status: string; commitmentMinor: number }[];
+  investorId: string;
+  requestedMinor: number;
+}): void {
+  const held = args.subs.find(
+    (x) => x.investorId === args.investorId && x.status !== "withdrawn",
+  );
+  const decision = spvClosedToNewCapitalDecision({
+    status: args.spvStatus,
+    existingCommitmentMinor: held ? held.commitmentMinor : null,
+    requestedMinor: args.requestedMinor,
+  });
+  if (!decision.refused || decision.reason === null) return;
+  throw buildSpvClosedToNewCapitalError({ spvName: args.spvName, reason: decision.reason });
 }
 
 /** Build the refusal. Nothing is persisted and nothing is emitted — this only

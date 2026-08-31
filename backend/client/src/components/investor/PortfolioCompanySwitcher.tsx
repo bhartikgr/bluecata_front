@@ -22,6 +22,14 @@ import { Button } from "@/components/ui/button";
 /* WAVE 113 · FINDING 4 — the platform's ONE "a failed load is not an empty list"
  * refusal (Wave 22 · ITEM 4), reused rather than re-implemented here. */
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
+/* WAVE 183 - ITEM B FIX 1b/1c. The portfolio payload is now derived from the
+   cap-table ledger instead of `server/mockData.ts`, so the row shape and the
+   failure classification both live in one shared module. */
+import {
+  type DerivedPosition,
+  positionLogoColor,
+  portfolioFailureDetail,
+} from "@/lib/investor/portfolioPositions";
 import {
   useLpVehicleInterests,
   lpOnlyBody,
@@ -29,12 +37,12 @@ import {
   LP_INTERESTS_UNAVAILABLE_COPY,
 } from "@/lib/investor/lpVehicleInterests";
 
-type Position = {
-  id: string;
-  companyId: string;
-  company: string;
-  logoColor: string;
-};
+/* WAVE 183 - ITEM B FIX 1b. WAS a local four-field type including
+   `logoColor: string`, which existed only because `server/mockData.ts` hardcoded
+   an HSL string per demo row. The ledger holds no such column, so the colour is
+   now derived from the company id in `positionLogoColor` and the row type is the
+   real wire shape. */
+type Position = DerivedPosition;
 
 interface PortfolioCompanySwitcherProps {
   selectedCompanyId: string | null;
@@ -47,6 +55,9 @@ function CompanyThumbnail({
   size = "sm",
 }: {
   company: string;
+  /* WAVE 183 - now always supplied by `positionLogoColor(companyId)`. Kept as a
+     prop rather than derived inside so the callers stay explicit about it being
+     presentation. */
   logoColor: string;
   size?: "sm" | "md";
 }) {
@@ -131,12 +142,23 @@ export function PortfolioCompanySwitcher({
      PAUSED query (the investor is simply offline) is not read as emptiness either.
      That is the mutation the original wave missed. */
   if (positions.isError) {
+    /* WAVE 183 - ITEM B FIX 1c / ITEM C.
+       THE DEFECT: `gate("investor.hasAnyCapTable")` answers this query with a
+       DETERMINISTIC 403 `CAP_TABLE_REQUIRED`, and this branch rendered it as a
+       transient load failure with a "Try again" button. The LP was told to retry
+       a permission decision. Wave 183 found the same misclassification on three
+       other surfaces; this is one instance of one class.
+       THE FIX: `portfolioFailureDetail` returns the STATED FACT for a refusal and
+       `null` for a genuine transient failure, and the detail is passed to the
+       component's new OPTIONAL sibling slot. Both existing sentences still
+       render, byte-verbatim, in both cases (R143.1). */
     return (
       <LoadFailedRefusal
         what="your portfolio positions"
         onRetry={() => { void positions.refetch(); }}
         testId="portfolio-positions-load-failed"
         isRetrying={positions.isFetching}
+        detail={portfolioFailureDetail(positions.error)}
       />
     );
   }
@@ -293,7 +315,7 @@ export function PortfolioCompanySwitcher({
         <div className="flex items-center gap-3">
           <CompanyThumbnail
             company={activePosition.company}
-            logoColor={activePosition.logoColor}
+            logoColor={positionLogoColor(activePosition.companyId)}
             size="md"
           />
           <span
@@ -317,7 +339,7 @@ export function PortfolioCompanySwitcher({
               <div className="flex items-center gap-3 py-1">
                 <CompanyThumbnail
                   company={activePosition.company}
-                  logoColor={activePosition.logoColor}
+                  logoColor={positionLogoColor(activePosition.companyId)}
                   size="md"
                 />
                 <span className="text-base font-semibold">
@@ -336,7 +358,7 @@ export function PortfolioCompanySwitcher({
                 <div className="flex items-center gap-3 py-1">
                   <CompanyThumbnail
                     company={p.company}
-                    logoColor={p.logoColor}
+                    logoColor={positionLogoColor(p.companyId)}
                     size="sm"
                   />
                   <span className="font-medium">{p.company}</span>

@@ -57,6 +57,11 @@ import { useToast } from "@/hooks/use-toast";
  * plain English instead of opening a blank tab. */
 import { openDataroomDocument } from "@/lib/investor/dataroomOpen";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
+/* WAVE 209 · ITEM A §209.2(d) (decision B1; R187.1) — this panel issues an SES
+ * signature whose address field is now the explicit "not captured" sentinel
+ * instead of an invented RFC 5737 address. The signer is told so BEFORE signing,
+ * which is the only point at which the statement is useful to them. */
+import { SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE } from "@/lib/esign/wave209SignerMetadata";
 import {
  SUPPORTED_CURRENCIES, SOFT_CIRCLE_TYPES, YOUR_DECISION_TRANSITIONS,
  type YourDecisionState, type SupportedCurrency, type SoftCircleType,
@@ -602,7 +607,18 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
 
  // Submit soft-circle
  const [amount, setAmount] = useState("250000");
- const [currency, setCurrency] = useState<SupportedCurrency>("USD");
+ /* WAVE 184 · ITEM A · R156.1 — the picker OPENS on the round's own denomination
+  * instead of a hardcoded "USD". The round carries its currency (`inv.currency`,
+  * R5: "the round's own denomination, so a CAD round is not shown with a US $"),
+  * so a CAD round no longer defaults an investor into recording a USD figure.
+  * The currency is DERIVED from the vehicle, never named in code; "USD" survives
+  * only as the last resort for a round with no denomination on record, and in
+  * that case the panel says so rather than implying the round is in dollars.
+  * Every one of the seven options remains selectable — nothing is removed. */
+ const roundCurrency = (inv.currency ?? null) as SupportedCurrency | null;
+ const [currency, setCurrency] = useState<SupportedCurrency>(
+   roundCurrency && (SUPPORTED_CURRENCIES as readonly string[]).includes(roundCurrency) ? roundCurrency : "USD",
+ );
  const [scType, setScType] = useState<SoftCircleType>("indication");
  const [note, setNote] = useState("");
  const [signerName, setSignerName] = useState("");
@@ -783,6 +799,20 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  {SUPPORTED_CURRENCIES.map(c => <SelectItem key={c} value={c} data-testid={`option-currency-${c}`}>{c}</SelectItem>)}
  </SelectContent>
  </Select>
+ {/* WAVE 184 · ITEM A · R156.1 — THE DELIVERY RULE, STATED WHERE A CONVERSION
+     COULD PREVIOUSLY HAVE BEEN EXPECTED. The picker offers seven denominations
+     and is DELIBERATELY KEPT, with every option intact: the owner's standing
+     rules are no silent drops and "I'd rather add than delete". What changes is
+     that it no longer leaves the investor to assume the platform will convert.
+     It does not, and there is no exchange rate on this platform. The round's own
+     denomination is read from the round; it is never hardcoded, and when the
+     round has none on record this says exactly that instead of naming a
+     currency. */}
+ <p className="mt-1 text-[11px] leading-snug text-muted-foreground" data-testid="text-sc-currency-delivery-rule">
+ {roundCurrency
+   ? `This round is denominated in ${roundCurrency}. Capavate applies no exchange rate and converts nothing, so funds must be delivered in ${roundCurrency}. If you record a different currency here, the founder receives it as a figure in that currency and it is never combined with the round's own.`
+   : "This round has no denomination on record, so Capavate cannot state the currency you must deliver in — ask the founder to set the round's currency. No exchange rate exists on this platform and nothing is ever converted: funds must be delivered in the round's own currency, whatever it is recorded as."}
+ </p>
  </div>
  <div>
  <Label>Type</Label>
@@ -802,6 +832,9 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  <div><Label>Your full legal name (typed signature)</Label><Input className="mt-1" value={signerName} onChange={(e) => setSignerName(e.target.value)} data-testid="input-sc-signer" /></div>
  <div><Label>Your email</Label><Input className="mt-1" value={signerEmail} onChange={(e) => setSignerEmail(e.target.value)} data-testid="input-sc-email" /></div>
  </div>
+ {/* WAVE 209 · ITEM A §209.2(d) — APPENDED SIBLING; no existing literal in this
+     panel is altered (R143.1). */}
+ <div className="text-xs text-muted-foreground" data-testid="text-companydetail-address-not-captured">{SIGNER_ADDRESS_NOT_CAPTURED_SENTENCE}</div>
  <Button
  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white w-full h-11"
  disabled={submitMut.isPending || !amount || !signerName.trim()}

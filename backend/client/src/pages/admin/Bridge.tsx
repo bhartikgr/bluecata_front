@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
+import { Wave206BridgeDeliveryPanel } from "@/components/admin/Wave206BridgeDeliveryPanel"; /* WAVE 206 / R182.2 */
 
 type OutboxResp = {
   total: number; delivered: number; queued: number; deadLettered: number;
@@ -39,7 +40,22 @@ export default function AdminBridge() {
   const [aggregateId, setAggregateId] = useState("");
   const out = useQuery<OutboxResp>({ queryKey: ["/api/admin/bridge/outbox"] });
   const inb = useQuery<InboxResp>({ queryKey: ["/api/admin/bridge/inbox"] });
-  const verify = useQuery<{ ok: boolean; brokenAt: number; totalLinks: number }>({ queryKey: ["/api/admin/bridge/verify-chain"] });
+  /* WAVE 181 · ITEM C — the verifier now reports WHICH of four states it is in
+     (see server/bridgeStore.ts GET /api/admin/bridge/verify-chain). `ok`,
+     `brokenAt` and `totalLinks` are unchanged; the rest is added diagnosis. */
+  const verify = useQuery<{
+    ok: boolean; brokenAt: number; totalLinks: number;
+    chainState?: "empty" | "no_verifiable_start" | "intact" | "broken";
+    verifiableLinks?: number;
+    selfConsistentAtBreak?: boolean | null;
+    diagnosis?: string;
+  }>({ queryKey: ["/api/admin/bridge/verify-chain"] });
+  /* Reported state, defaulting to the pre-wave-181 reading when the server is
+     older than this client (deploys are not atomic). */
+  const chainState = verify.data
+    ? (verify.data.chainState ?? (verify.data.ok ? "intact" : "broken"))
+    : undefined;
+  const chainAlarming = chainState === "broken";
 
   const drain = async () => {
     await apiRequest("POST", "/api/admin/bridge/drain");
@@ -83,9 +99,29 @@ export default function AdminBridge() {
             { label: "Delivered", value: out.data?.delivered ?? 0, tone: "positive" },
             { label: "Queued", value: out.data?.queued ?? 0, tone: (out.data?.queued ?? 0) > 0 ? "warning" : "neutral" },
             { label: "Dead-lettered", value: out.data?.deadLettered ?? 0, tone: (out.data?.deadLettered ?? 0) > 0 ? "critical" : "neutral" },
-            { label: "Chain", value: verify.data?.ok ? "✓ unbroken" : `✗ broken @ ${verify.data?.brokenAt ?? "?"}`, tone: verify.data?.ok ? "positive" : "critical" },
+            /* WAVE 181 — R148.3 item 1. `✗ broken @ 0` was shown for a QUEUE
+               whose delivered/dead-lettered predecessors are simply no longer in
+               it. The bytes verify; the word did not. Four honest states now. */
+            {
+              label: "Chain",
+              value:
+                chainState === "intact" ? "✓ unbroken"
+                : chainState === "empty" ? "— nothing queued to verify"
+                : chainState === "no_verifiable_start" ? "✓ links verify · starts mid-chain"
+                : chainState === "broken" ? `✗ broken @ ${verify.data?.brokenAt ?? "?"}`
+                : "… verifying",
+              tone:
+                chainState === "intact" || chainState === "no_verifiable_start" ? "positive"
+                : chainState === "broken" ? "critical"
+                : "neutral",
+            },
           ]}
         />
+        {/* WAVE 206 / R182.2 — the owner-facing, database-backed bridge settings
+            and the staged drain. APPENDED AS A STATIC SIBLING: no existing
+            element, literal, loop variable or table cell above or below is
+            touched, because the guard fingerprints source text. */}
+        <Wave206BridgeDeliveryPanel />
         {/* Stats row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
           <Card className="p-4" data-testid="stat-outbound-total">
@@ -109,16 +145,45 @@ export default function AdminBridge() {
         {/* Chain integrity */}
         <Card className="p-4 mb-5" data-testid="card-chain-integrity">
           <div className="flex items-center gap-3">
-            <ShieldCheck className="h-5 w-5 text-emerald-600" />
+            {/* WAVE 181 — a green shield beside a red "BROKEN" badge is its own
+                small lie. The icon now follows the verdict. */}
+            <ShieldCheck className={chainAlarming ? "h-5 w-5 text-rose-600" : "h-5 w-5 text-emerald-600"} />
             <div className="flex-1">
               <div className="text-sm font-semibold">Audit chain verification</div>
               <div className="text-xs text-muted-foreground">priorHash → hash linkage across {verify.data?.totalLinks ?? 0} outbox entries</div>
+              {/* WAVE 181 — STATIC SIBLINGS. Nothing above is replaced (R143.1).
+                  The card previously stated a verdict without ever stating what
+                  was verified against what, which is how "BROKEN AT #0" came to
+                  be read as tampering. */}
+              <div className="text-xs text-muted-foreground" data-testid="chain-scope-note">
+                Scope: envelopes still in the outbox. Delivered and dead-letter-cleared events are
+                not in this queue, so the earliest queued envelope normally does not begin at genesis.
+              </div>
+              {verify.data?.diagnosis ? (
+                <div className="text-xs text-muted-foreground" data-testid="chain-diagnosis">{verify.data.diagnosis}</div>
+              ) : null}
             </div>
             <Badge
               data-testid="badge-chain-status"
-              className={verify.data?.ok ? "bg-emerald-100 text-emerald-800 border-0" : "bg-rose-100 text-rose-800 border-0"}
+              className={
+                chainState === "broken" ? "bg-rose-100 text-rose-800 border-0"
+                : chainState === "empty" ? "bg-slate-100 text-slate-800 border-0"
+                : chainState === "no_verifiable_start" ? "bg-amber-100 text-amber-900 border-0"
+                : "bg-emerald-100 text-emerald-800 border-0"
+              }
             >
-              {verify.data?.ok ? "INTACT" : `BROKEN AT #${verify.data?.brokenAt}`}
+              {/* The genuine-corruption wording is preserved BYTE-VERBATIM for the
+                  one case where it is true. The other three states get their own
+                  wording instead of borrowing this one. */}
+              {chainState === "broken"
+                ? `BROKEN AT #${verify.data?.brokenAt}`
+                : chainState === "empty"
+                  ? "EMPTY · NOTHING TO VERIFY"
+                  : chainState === "no_verifiable_start"
+                    ? "LINKS VERIFY · STARTS MID-CHAIN"
+                    : chainState === "intact"
+                      ? "INTACT"
+                      : "VERIFYING…"}
             </Badge>
           </div>
         </Card>

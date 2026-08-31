@@ -42,6 +42,48 @@ import { HelpTip } from "@/components/HelpTip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
+/* WAVE 180 · ITEM A SITE 4 — the client mirror of the platform's cross-currency
+ * contract. Minor units accumulate in bigint, within one ISO code only; a mixed
+ * set produces a stated refusal, never a converted number. No FX rate exists on
+ * this platform and none is invented here. */
+import {
+  newBuckets,
+  addMinor,
+  singleScalar,
+  bucketRows,
+  dividedBuckets,
+  type CurrencyBucketRow,
+} from "@/lib/money/currencyBuckets";
+
+/* WAVE 180 · ITEM A SITE 4 — the stated scope sentence for a money tile whose
+   inputs span currencies. The owner's rule: wherever a total is shown, say what
+   is included, what is excluded and in which currency; where a figure cannot be
+   derived, name why. A fabricated zero and a bare blank are both forbidden. */
+export function billingMetricScope(
+  rows: CurrencyBucketRow[],
+  excludedNoCurrency: number,
+): string {
+  const excl = excludedNoCurrency > 0
+    ? ` ${excludedNoCurrency} subscription${excludedNoCurrency === 1 ? "" : "s"} excluded: no ISO currency on record.`
+    : "";
+  if (rows.length === 0) return `No subscription amounts on record.${excl}`;
+  if (rows.length === 1) return `All figures above are in ${rows[0]!.currency}, over every subscription with an amount on record.${excl}`;
+  return `Subscriptions on this platform are recorded in ${rows.length} currencies (${rows.map(r => r.currency).join(", ")}). No combined figure is shown — this platform holds no exchange rate, so the per-currency breakdown below is the whole truth.${excl}`;
+}
+
+/* WAVE 180 · ITEM A SITE 4 — what a single money tile prints. Single currency ⇒
+   the figure, formatted in ITS OWN code rather than a hardcoded "USD". Mixed ⇒
+   a stated refusal naming the currencies. Over-range ⇒ says so. */
+export function billingMetricValue(
+  rows: CurrencyBucketRow[],
+  fmt: (minor: number, currency: string) => string,
+): string {
+  if (rows.length === 0) return "Not on record";
+  if (rows.length > 1) return `${rows.map(r => r.currency).join(" + ")} — not added`;
+  const r = rows[0]!;
+  if (r.minor === null) return `${r.currency} — exceeds exact range`;
+  return fmt(r.minor, r.currency);
+}
 
 /* ---------- Shared types ---------- */
 type Status = "draft" | "preview" | "live" | "deprecated";
@@ -329,7 +371,10 @@ function PricingModelsTab() {
 /* =========================================================================== */
 /* Tab 2 — Subscriptions                                                        */
 /* =========================================================================== */
-function SubscriptionsTab() {
+/* WAVE 201 — exported so the MRR tiles can be proven on RENDERED DOM rather
+   than by reading this file's source, as waves 193/196/197 did. Export only;
+   no behaviour, copy or markup changed by this line. */
+export function SubscriptionsTab() {
   const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState("all");
   const [historyCompanyId, setHistoryCompanyId] = useState<string | null>(null);
@@ -353,13 +398,66 @@ function SubscriptionsTab() {
     return sub.annualAmountMinor / 12;
   };
 
-  const totalMrrMinor = filtered.filter(s => s.status === "active" || s.status === "trialing")
-    .reduce((sum, s) => sum + annualMrr(s), 0);
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 184 · ITEM A · R156.1 — THE 8th CROSS-CURRENCY SITE, NAMED BY THE OWNER.
+
+     WHAT WAS WRONG. The line that used to stand here was:
+
+         const totalMrrMinor = filtered.filter(active|trialing)
+           .reduce((sum, s) => sum + annualMrr(s), 0);
+
+     and the tile below printed `fmtMoney(Math.round(totalMrrMinor), "USD")`. It
+     added `annualAmountMinor / 12` across EVERY filtered subscription regardless
+     of `s.currency` and then labelled the result "USD". The row cell further down
+     this same table formats each row with `s.currency` — which is the proof that
+     the rows are mixed. A CAD subscription was being added to a USD one and the
+     sum was called dollars.
+
+     It also did float arithmetic on money: `/ 12` on doubles over an unbounded
+     row count with a single trailing Math.round.
+
+     WHAT IT DOES NOW. Minor units accumulate in bigint, per ISO code, using the
+     same helpers wave 180 already shipped and exported in this very file. A
+     single-currency platform prints the SAME number as before, formatted in its
+     own code instead of a hardcoded "USD". A mixed-currency platform REFUSES and
+     NAMES the currencies — never a fabricated zero, never a blank, and never a
+     converted number, because this platform holds no exchange rate.
+
+     `dividedBuckets(b, 12)` reproduces `Math.round(total / 12)` exactly for a
+     non-negative total (sum-then-divide is also the more correct order; the old
+     code rounded per row before adding).
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const mrrScope = filtered.filter(s => s.status === "active" || s.status === "trialing");
+  const mrrAnnualBuckets = newBuckets();
+  let mrrExcludedNoCurrency = 0;
+  for (const s of mrrScope) {
+    if (!addMinor(mrrAnnualBuckets, s.currency, s.annualAmountMinor)) mrrExcludedNoCurrency += 1;
+  }
+  const mrrRows = bucketRows(dividedBuckets(mrrAnnualBuckets, 12));
+  const mrrValueText = billingMetricValue(mrrRows, fmtMoney);
+  const mrrScopeText = billingMetricScope(bucketRows(mrrAnnualBuckets), mrrExcludedNoCurrency);
 
   return (
     <div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        <Card><CardContent className="pt-4 pb-3"><div className="text-xs text-muted-foreground mb-1">Total MRR (shown)</div><div className="text-xl font-semibold font-mono tabular-nums">{fmtMoney(Math.round(totalMrrMinor), "USD")}</div></CardContent></Card>
+        <Card><CardContent className="pt-4 pb-3"><div className="text-xs text-muted-foreground mb-1">Total MRR (shown)</div><div className="text-xl font-semibold font-mono tabular-nums" data-testid="text-total-mrr-shown">{mrrValueText}</div><div className="text-[10px] leading-snug text-muted-foreground mt-1" data-testid="text-total-mrr-scope">{mrrScopeText}</div><div className="text-[10px] leading-snug text-muted-foreground mt-1" data-testid="text-total-mrr-population">Counts ACTIVE and TRIALING subscriptions in the list as currently filtered, annual amount divided by 12. The Billing Metrics tab counts ACTIVE only, across all subscriptions, so the two figures are not expected to agree.</div>{/* WAVE 202 · ITEM C · R178.2 — this tile is NOT the headline; the Billing
+          Metrics tab's active-only, unfiltered MRR is. The owner ruled on that this
+          wave. This tile keeps its number, its scope line and wave 201's population
+          disclosure immediately above, byte for byte — nothing is regressed and no
+          number changes. All that is added is the sentence saying which of the two
+          figures the platform quotes, so a reader landing here first is not left to
+          guess. ADDED as a new sibling <div> at the END of this CardContent, after
+          the population disclosure; no existing node, attribute or <Card> ordinal is
+          touched (R143.1). */}
+        <div className="text-[10px] leading-snug text-muted-foreground mt-1" data-testid="text-total-mrr-not-headline">This is the filtered view, not the platform's headline figure. The headline MRR is on the Billing Metrics tab: active subscriptions only, unfiltered.</div>{mrrRows.length > 1 ? (
+          <div className="mt-1 space-y-0.5" data-testid="list-total-mrr-by-currency">
+            {mrrRows.map(r => (
+              <div key={r.currency} className="flex items-center justify-between text-[11px] font-mono tabular-nums" data-testid={`row-total-mrr-${r.currency}`}>
+                <span>{r.currency}</span><span>{r.minor === null ? "exceeds exact range" : fmtMoney(r.minor, r.currency)}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}</CardContent></Card>
         <Card><CardContent className="pt-4 pb-3"><div className="text-xs text-muted-foreground mb-1">Active subscriptions</div><div className="text-xl font-semibold">{all.filter(s => s.status === "active").length}</div></CardContent></Card>
         <Card><CardContent className="pt-4 pb-3"><div className="text-xs text-muted-foreground mb-1">Trialing</div><div className="text-xl font-semibold">{all.filter(s => s.status === "trialing").length}</div></CardContent></Card>
         <Card><CardContent className="pt-4 pb-3"><div className="text-xs text-muted-foreground mb-1">Past due</div><div className="text-xl font-semibold text-rose-600">{all.filter(s => s.status === "past_due").length}</div></CardContent></Card>
@@ -617,7 +715,8 @@ function InvoicesTab() {
 /* =========================================================================== */
 /* Tab 4 — Billing Metrics                                                       */
 /* =========================================================================== */
-function BillingMetricsTab() {
+/* WAVE 201 — exported for the same reason as SubscriptionsTab above. */
+export function BillingMetricsTab() {
   /* WAVE 60 · L-6 — this tab destructured only { data, isLoading }. With no
      isError branch, a failed GET /api/admin/subscriptions left `subs = []` and
      the six tiles below printed MRR $0.00 / ARR $0.00 / Expansion MRR $0.00 /
@@ -637,10 +736,36 @@ function BillingMetricsTab() {
   const pastDue = subs.filter(s => s.status === "past_due");
   const cancelled = subs.filter(s => s.status === "cancelled");
 
-  // ARR = sum of active annual amounts
-  const arrMinor = active.reduce((sum, s) => sum + s.annualAmountMinor, 0);
-  // MRR = ARR / 12
-  const mrrMinor = Math.round(arrMinor / 12);
+  /* WAVE 180 · ITEM A SITE 4 — TWO DEFECTS IN ONE EXPRESSION, BOTH CLOSED HERE.
+
+     (a) CROSS-CURRENCY. `arrMinor` was
+         `active.reduce((sum, s) => sum + s.annualAmountMinor, 0)`. The
+         `Subscription` interface being reduced DECLARES `currency: string`, and
+         every reduce in this tab ignored it; the tiles then labelled the result
+         with a hardcoded literal. A subscription's currency is not a constant:
+         it comes from the admin-published pricing model for its plan
+         (server/subscriptionsStore.ts getPlanPriceStrict), so two plans can
+         carry two codes and `active` can span them.
+
+     (b) FLOAT ON MONEY. `Math.round(arrMinor / 12)` divided minor units in
+         floating point, and the expansion / new-revenue reduces below accumulated
+         `annualAmountMinor / 12` as doubles across an unbounded row count before
+         one trailing Math.round — losing cents at scale and hiding the loss.
+
+     Both are fixed by bucketing per ISO code in bigint and dividing ONCE, at the
+     bucket, with half-up integer rounding. Sum-then-divide also happens to be the
+     more correct order: the old code rounded each row before adding.
+     `dividedBuckets(b, 12)` reproduces `Math.round(total / 12)` exactly for a
+     non-negative total. NO EXCHANGE RATE IS APPLIED ANYWHERE. */
+  const arrBuckets = newBuckets();
+  let excludedNoCurrency = 0;
+  for (const s of active) {
+    if (!addMinor(arrBuckets, s.currency, s.annualAmountMinor)) excludedNoCurrency += 1;
+  }
+  const arrRows = bucketRows(arrBuckets);
+  const arrScalar = singleScalar(arrBuckets);
+  const mrrRows = bucketRows(dividedBuckets(arrBuckets, 12));
+  const metricScopeText = billingMetricScope(arrRows, excludedNoCurrency);
   /* WAVE 61a · R51 — THE ARITHMETIC BELOW IS UNCHANGED; ONLY THE TWO LABELS IN
      the `metrics` array MOVED, because they named quantities this code does not
      compute. `cancelled.length / subs.length` is the CANCELLED SHARE of every
@@ -665,24 +790,44 @@ function BillingMetricsTab() {
      expansion MRR needs prior-period snapshots the tree does not have (the same
      reason server/adminPlatformStore.ts honestly returns `nrr: null`).
      Arithmetic untouched; only the label moved. */
-  const expansionMinor = active.filter(s => s.plan === "founder_scale" || s.plan === "founder_enterprise").reduce((sum, s) => sum + s.annualAmountMinor / 12, 0);
+  /* WAVE 180 · ITEM A SITE 4 — the SELECTION and the MEANING of both figures are
+     unchanged (same filters, same plans, same monthly basis, and wave 61a's
+     labels are untouched). Only the arithmetic moved off floating point and into
+     per-currency bigint buckets. */
+  const expansionBuckets = newBuckets();
+  for (const s of active.filter(s => s.plan === "founder_scale" || s.plan === "founder_enterprise")) {
+    addMinor(expansionBuckets, s.currency, s.annualAmountMinor);
+  }
+  const expansionRows = bucketRows(dividedBuckets(expansionBuckets, 12));
   // New revenue this month (trialing converted)
-  const newRevMinor = trialing.reduce((sum, s) => sum + s.annualAmountMinor / 12, 0);
+  const newRevBuckets = newBuckets();
+  for (const s of trialing) addMinor(newRevBuckets, s.currency, s.annualAmountMinor);
+  const newRevRows = bucketRows(dividedBuckets(newRevBuckets, 12));
 
   const metrics = [
-    { label: "MRR", value: fmtMoney(mrrMinor, "USD"), icon: TrendingUp, color: "text-emerald-600" },
-    { label: "ARR", value: fmtMoney(arrMinor, "USD"), icon: BarChart3, color: "text-emerald-600" },
-    { label: "Scale + Enterprise MRR", value: fmtMoney(Math.round(expansionMinor), "USD"), icon: ArrowUpRight, color: "text-sky-600" },
-    { label: "New Revenue (trial)", value: fmtMoney(Math.round(newRevMinor), "USD"), icon: Sparkles, color: "text-sky-600" },
+    { label: "MRR", value: billingMetricValue(mrrRows, fmtMoney), icon: TrendingUp, color: "text-emerald-600" },
+    { label: "ARR", value: billingMetricValue(arrRows, fmtMoney), icon: BarChart3, color: "text-emerald-600" },
+    { label: "Scale + Enterprise MRR", value: billingMetricValue(expansionRows, fmtMoney), icon: ArrowUpRight, color: "text-sky-600" },
+    { label: "New Revenue (trial)", value: billingMetricValue(newRevRows, fmtMoney), icon: Sparkles, color: "text-sky-600" },
     { label: "Cancelled share (all-time)", value: `${churnRate}%`, icon: TrendingDown, color: "text-rose-600" },
     { label: "Past due", value: `${pastDue.length}`, icon: AlertTriangle, color: "text-amber-600" },
   ];
 
-  const planBreakdown = ["founder_free", "founder_pro", "founder_scale", "founder_enterprise"].map(p => ({
-    plan: p.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
-    count: active.filter(s => s.plan === p).length,
-    arrMinor: active.filter(s => s.plan === p).reduce((sum, s) => sum + s.annualAmountMinor, 0),
-  }));
+  /* WAVE 180 · ITEM A SITE 4 — the per-plan row had the same un-keyed reduce and
+     was rendered with the same hardcoded currency literal. Plans are exactly
+     where a second currency enters (each plan's code comes from its own published
+     pricing model), so this is the row most likely to be mixed in practice. */
+  const planBreakdown = ["founder_free", "founder_pro", "founder_scale", "founder_enterprise"].map(p => {
+    const inPlan = active.filter(s => s.plan === p);
+    const b = newBuckets();
+    for (const s of inPlan) addMinor(b, s.currency, s.annualAmountMinor);
+    return {
+      plan: p.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+      count: inPlan.length,
+      arrRows: bucketRows(b),
+      mrrRows: bucketRows(dividedBuckets(b, 12)),
+    };
+  });
 
   return (
     <div>
@@ -700,6 +845,78 @@ function BillingMetricsTab() {
             onRetry={() => void refetch()}
             isRetrying={isFetching}
           />
+        </div>
+      )}
+      {/* WAVE 180 · ITEM A SITE 4 — THE SCOPE STATEMENT. An unexplained total is
+          the defect, so the tiles below are preceded by a sentence naming what is
+          included, what is excluded and in which currency. Like wave 60's refusal
+          it is a PRECEDING SIBLING in its own <div>, and `div` is not a PANEL_TAG
+          (extract-inventory.ts), so no ordinal-addressed <Card> inside the grid is
+          renumbered and nothing is dropped. This is a NEW static sibling: no
+          existing text node or attribute anywhere in this file was reworded,
+          replaced or removed. */}
+      {isSuccess && (
+        <div className="mb-3">
+          <p className="text-xs text-muted-foreground" data-testid="text-billing-metrics-scope">{metricScopeText}</p>
+          {/* WAVE 201 — TWO SURFACES, TWO POPULATIONS, ONE WORD.
+
+              This tab's MRR tile and the Subscriptions tab's "Total MRR (shown)"
+              tile printed different numbers for the same platform, both labelled
+              only "MRR". The arithmetic is not in dispute and is NOT touched here:
+              this tab reduces `active` (status === "active") over every row in the
+              payload, while the Subscriptions tab reduces `filtered` restricted to
+              "active" OR "trialing". Different populations, both defensible, so
+              neither number is changed and neither is declared the right one —
+              which of the two is the platform's headline MRR is the owner's
+              choice, not this wave's. What IS a defect is presenting either as a
+              bare "MRR", because a reader comparing the two tabs cannot tell a
+              definition difference from a data fault. So each tile now states its
+              own population beside its own number.
+
+              ADDED as a new sibling <p> inside the wave 193 scope div: no existing
+              text node, attribute or ordinal-addressed <Card> is touched (R143.1;
+              wave 182 — a new cell renumbers its siblings). */}
+          <p className="text-xs text-muted-foreground" data-testid="text-billing-metrics-mrr-population">
+            MRR and ARR here count ACTIVE subscriptions only, across all subscriptions,
+            not just those matching a filter. The Subscriptions tab's "Total MRR (shown)"
+            also counts TRIALING and honours the filter on that screen, so the two
+            figures are measuring different populations and are not expected to agree.
+          </p>
+          {/* WAVE 202 · ITEM C · R178.2 — THE OWNER HAS NOW CHOSEN.
+
+              Wave 201 deliberately declined to name a headline: "which of the two is
+              the platform's headline MRR is the owner's choice, not this wave's."
+              The ruling is in — active-only, unfiltered, is the headline. This is the
+              active-only, unfiltered tile, so this is the headline.
+
+              LABELLING AND PROMINENCE ONLY. Not one number changes: no arithmetic,
+              no population, no filter and no rounding is altered anywhere in this
+              file by wave 202. Both figures stay visible on their own tabs and BOTH
+              population disclosures above and on the Subscriptions tab are kept
+              exactly as wave 201 wrote them (that work is not regressed).
+
+              ADDED as a further sibling <p> inside the same wave 193 scope div,
+              immediately after wave 201's disclosure. No existing text node,
+              attribute or ordinal-addressed <Card> is touched (R143.1; wave 182 — a
+              new cell renumbers its siblings). */}
+          <p className="text-xs font-medium text-foreground" data-testid="text-mrr-headline-designation">
+            This is the platform's headline MRR. When a single monthly recurring revenue
+            figure is quoted for Capavate, it is this one: active subscriptions only,
+            every subscription counted, no filter applied.
+          </p>
+        </div>
+      )}
+      {isSuccess && !arrScalar.available && arrScalar.reason === "needs_fx_conversion" && (
+        <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 p-3" data-testid="panel-billing-metrics-by-currency">
+          <p className="text-xs font-medium text-amber-900">Annual recurring revenue, per currency</p>
+          <ul className="mt-1 space-y-0.5">
+            {arrRows.map(r => (
+              <li key={r.currency} className="text-xs font-mono text-amber-900" data-testid={`text-arr-ccy-${r.currency}`}>
+                {r.currency}: {r.minor === null ? "exceeds exact range" : fmtMoney(r.minor, r.currency)}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-[11px] text-amber-800">These are not added together. Converting them would need an exchange rate, an as-of date and an audit trail, none of which this platform holds.</p>
         </div>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
@@ -738,8 +955,8 @@ function BillingMetricsTab() {
               <TableRow key={p.plan} data-testid={`row-plan-${p.plan}`}>
                 <TableCell>{p.plan}</TableCell>
                 <TableCell className="text-right">{p.count}</TableCell>
-                <TableCell className="text-right font-mono">{fmtMoney(p.arrMinor, "USD")}</TableCell>
-                <TableCell className="text-right font-mono">{fmtMoney(Math.round(p.arrMinor / 12), "USD")}</TableCell>
+                <TableCell className="text-right font-mono">{billingMetricValue(p.arrRows, fmtMoney)}</TableCell>
+                <TableCell className="text-right font-mono">{billingMetricValue(p.mrrRows, fmtMoney)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

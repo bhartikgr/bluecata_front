@@ -21,7 +21,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ShieldCheck, ChevronDown, ChevronUp } from "lucide-react";
-import { LEGAL_DOCS } from "@/lib/legalDocs";
+/* WAVE 210 — the 17 March 2026 corpus, RENAMED AT THE IMPORT and retained.
+ * It is no longer the served text, and it is not deleted: every consent row
+ * written before this wave attests to it, so it must stay retrievable. The
+ * adopted corpus is bound to the name `LEGAL_DOCS` inside the component below,
+ * which is why not one line of JSX in this file changed. */
+import { LEGAL_DOCS as LEGAL_DOCS_SUPERSEDED_2026_03_17 } from "@/lib/legalDocs";
+import { ADOPTED_LEGAL_DOCS } from "@/lib/legalDocsV2";
+import { useActiveLegalCorpusVersion } from "@/lib/useActiveLegalCorpusVersion";
+import { REGISTERED_PARTY_NAME } from "@shared/wave210LegalCorpusVersion";
 import type { LegalDoc } from "@/lib/legalDocs";
 import type { LegalDocId } from "@/lib/legalDrawer";
 import { _useLegalDrawerContext } from "@/lib/legalDrawer";
@@ -43,7 +51,13 @@ function renderInline(text: string): string {
   return text;
 }
 
-function MarkdownBlock({ body }: { body: string }) {
+/* WAVE 210 — exported so the PUBLIC legal pages render the adopted corpus
+ * through THIS renderer rather than a second copy of it. Handbook §8: never
+ * prove a replica. One markdown renderer means the text a user reads on
+ * /terms-of-service is rendered by the same code as the text in the drawer, so
+ * a proof against one is a proof about the other. Only the `export` keyword is
+ * added; not a character of the function body or of any literal is touched. */
+export function MarkdownBlock({ body }: { body: string }) {
   const lines = body.split(/\n/);
   const elements: JSX.Element[] = [];
   let listItems: string[] = [];
@@ -183,6 +197,15 @@ interface LegalDrawerProps {
 }
 
 export function LegalDrawer({ open, onOpenChange, focusDocId }: LegalDrawerProps) {
+  /* WAVE 210 — which corpus this drawer renders. The local binding shadows the
+   * import deliberately: every `LEGAL_DOCS` reference in the JSX below keeps its
+   * exact source text, so no rendered element identity moves. Defaults to the
+   * adopted corpus; the superseded corpus renders only on a positive read of
+   * `platform_config` saying that is what the platform serves. */
+  const { servingSupersededMarchCorpus } = useActiveLegalCorpusVersion();
+  const LEGAL_DOCS = servingSupersededMarchCorpus
+    ? LEGAL_DOCS_SUPERSEDED_2026_03_17
+    : ADOPTED_LEGAL_DOCS;
   // Track which accordion items are open
   const [openItems, setOpenItems] = useState<string[]>(
     focusDocId ? [focusDocId] : [],
@@ -204,9 +227,21 @@ export function LegalDrawer({ open, onOpenChange, focusDocId }: LegalDrawerProps
             <ShieldCheck className="h-5 w-5 text-[hsl(219_45%_35%)]" />
             Legal &amp; Privacy
           </SheetTitle>
+          {/* WAVE 210 — the misspelled party name is RETAINED, not replaced, and
+              renders only while the superseded corpus is the served text. In an
+              executed legal instrument a misspelled party name is a real defect,
+              so the registered spelling is what a user sees; the old string stays
+              in source because it is what earlier consents were shown. */}
+          {servingSupersededMarchCorpus && (
           <p className="text-xs text-[hsl(219_30%_45%)] mt-0.5">
             Blueprint Catalyst Limited · Incorporated in Hong Kong
           </p>
+          )}
+          {!servingSupersededMarchCorpus && (
+          <p className="text-xs text-[hsl(219_30%_45%)] mt-0.5" data-testid="legal-drawer-entity">
+            {REGISTERED_PARTY_NAME} · Incorporated in Hong Kong
+          </p>
+          )}
         </SheetHeader>
 
         <ScrollArea className="flex-1 px-4 py-4">

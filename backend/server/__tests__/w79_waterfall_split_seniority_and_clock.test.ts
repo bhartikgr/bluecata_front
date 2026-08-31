@@ -32,6 +32,7 @@ import { roundStoredTerms, SENIORITY_RANK_MAX } from "../lib/roundStoredTerms";
 import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { createRound } from "../roundsStore";
+import { w212Attest } from "./_w212RoundAttestation";
 
 const ROOT = path.resolve(__dirname, "../..");
 const src = (rel: string) => fs.readFileSync(path.join(ROOT, rel), "utf8");
@@ -408,13 +409,13 @@ describe("W79 · ITEM 2 — both poles, through the live HTTP route", () => {
       });
     let i = 0;
     for (const c of classes) {
-      const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send({
+      const created = await request(app).post("/api/rounds").set("x-user-id", ADMIN).send(w212Attest({
         companyId, name: `w79t ${tag} class${i}`, type: "seed", instrument: "preferred",
         openDate: "2026-01-01", closeDate: "2026-12-31", targetAmount: 10_000_000,
         pricePerShare: c.pps, sharesAuthorized: 40_000_000, preMoney: 30_000_000, fdPreMoneyShares: 13_000_000,
         ...(c.lp ? { liquidationPreference: c.lp } : {}),
         ...(c.seniority !== undefined ? { seniority: c.seniority } : {}),
-      });
+      }));
       expect(created.status).toBe(200);
       await request(app).post("/api/founder/captable/backfill-investor").set("x-user-id", ADMIN)
         .send({

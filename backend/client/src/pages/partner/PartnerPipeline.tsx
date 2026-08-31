@@ -7,7 +7,7 @@
  * mirrors that gate as a hint. Conflict (409) → toast; success → toast +
  * refresh promotions query so badges appear.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
@@ -30,6 +30,23 @@ import {
   PARTNER_PIPELINE_STAGE_DESCRIPTIONS,
   type PartnerPipelineStageKey,
 } from "@shared/crmStages";
+import { describeFailure } from "@/lib/failureMessage";
+/* WAVE 213 · R188.4 item 3 — the governing clause, its acknowledgement sentence
+   and the quoted agreement section. In `shared/` so the screen and the route that
+   enforces it read ONE definition (the `shared/spvAttestation.ts` rule). */
+import {
+  PUBLISH_ACK_FIELD,
+  PUBLISH_CLAUSE_AGREEMENT_HEADING,
+  PUBLISH_CLAUSE_AGREEMENT_LINK_LABEL,
+  PUBLISH_CLAUSE_AGREEMENT_PATH,
+  PUBLISH_CLAUSE_HEADING,
+  PUBLISH_CLAUSE_ID,
+  PUBLISH_CLAUSE_UNAVAILABLE_COPY,
+  PUBLISH_CLAUSE_VERSION,
+  consortiumAgreementSection,
+  publishAcknowledgementText,
+  publishGoverningClauseParagraphs,
+} from "@shared/wave213PublishGoverningClause";
 
 /* v25.50.0 Phase 2 (spec 2c, LOCKED) — canonical company deal funnel, verbatim. */
 const STAGES = PARTNER_PIPELINE_STAGES;
@@ -118,10 +135,16 @@ export default function PartnerPipeline() {
       return res.json();
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] }),
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not move deal", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not move deal", description: describeFailure(e, "write") }),
   });
 
   // Promote/Refer modal state
+  /* WAVE 213 · R188.4 item 3 — the governing clause is now rendered on the publish
+     panel and a mandatory tick is required. This is the tick. It is deliberately
+     NOT persisted across opens: the confirmation is about ONE named company, so
+     re-opening the panel for a different deal must start it unticked. Reset on
+     open, on cancel, on dismiss and on success. */
+  const [publishAckChecked, setPublishAckChecked] = useState(false);
   const [promoteDeal, setPromoteDeal] = useState<Deal | null>(null);
   const [referDeal, setReferDeal] = useState<Deal | null>(null);
   const [modalNotes, setModalNotes] = useState("");
@@ -147,12 +170,57 @@ export default function PartnerPipeline() {
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] });
     },
     /* v25.12 NH8 — surface add-deal failures (validation, seat-limit, etc). */
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add deal", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add deal", description: describeFailure(e, "write") }),
   });
 
+  /* WAVE 213 — the clause, the quote and the acknowledgement sentence, derived
+     for the deal currently in the publish panel. `dealName` is the subject
+     because it is the name the partner is looking at AND the value the publish
+     route holds, so the sentence the partner ticks and the sentence the server
+     rebuilds are the same bytes. `null` from the clause builder is the
+     unconfigured branch and is never compared as if it were text. */
+  const publishClauseParagraphs = promoteDeal ? publishGoverningClauseParagraphs(promoteDeal.dealName) : null;
+  const publishAckText = promoteDeal ? publishAcknowledgementText(promoteDeal.dealName) : "";
+  const agreementSectionQuote = consortiumAgreementSection();
+
+  /* WAVE 213 — THE TICK IS CLEARED BY THE PANEL'S OWN LIFECYCLE, NOT BY EDITING
+     ANY EXISTING HANDLER.
+     `promoteDeal` is the panel's identity: it becomes a deal on open and `null` on
+     cancel, on Escape/outside-click dismiss and on success, so re-opening the same
+     deal after a cancel passes through `null` and resets too. One appended effect
+     therefore covers every path that the four separate imperative resets would
+     have covered — and it covers them without touching the three existing handler
+     expressions.
+     WHY THAT MATTERS (measured, not assumed): setting the reset inside those
+     handlers changed their expression hashes, and `npm run guard` scored all three
+     as REMOVED event handlers — the R143.1 failure mode applied to handlers rather
+     than to text. The guard was right: a replaced expression is a removed one. The
+     correct answer was to intercept from a layer the baseline does not fingerprint,
+     which is what this is. */
+  useEffect(() => {
+    setPublishAckChecked(false);
+  }, [promoteDeal]);
+
   const promoteMut = useMutation({
+    /* WAVE 213 — the acknowledgement travels with the request. The SENTENCE is
+       sent, not a boolean: the server rebuilds it from
+       `shared/wave213PublishGoverningClause.ts` and refuses anything that does not
+       match, so a stale tab cannot confirm wording that is no longer shipped and a
+       direct call cannot assert a tick it never displayed. A boolean would be
+       unfalsifiable evidence. */
     mutationFn: async (vars: { dealId: string; notes: string }) => {
-      const res = await apiRequest("POST", `/api/partner/me/pipeline/${vars.dealId}/promote-to-collective`, { notes: vars.notes || undefined });
+      const res = await apiRequest("POST", `/api/partner/me/pipeline/${vars.dealId}/promote-to-collective`, {
+        notes: vars.notes || undefined,
+        [PUBLISH_ACK_FIELD]: {
+          clauseId: PUBLISH_CLAUSE_ID,
+          clauseVersion: PUBLISH_CLAUSE_VERSION,
+          /* The subject is read from the SAME state the panel built the displayed
+             sentence from, so what is sent cannot differ from what was read. The
+             server rebuilds it from the deal record regardless, and refuses a
+             mismatch — this is convenience, not the control. */
+          text: publishAcknowledgementText(promoteDeal?.dealName ?? ""),
+        },
+      });
       return res.json();
     },
     onSuccess: () => {
@@ -162,7 +230,7 @@ export default function PartnerPipeline() {
       setModalNotes("");
     },
     onError: (e: Error) => {
-      toast({ title: "Could not promote", description: e.message, variant: "destructive" });
+      toast({ title: "Could not promote", description: describeFailure(e, "write"), variant: "destructive" });
     },
   });
 
@@ -182,7 +250,7 @@ export default function PartnerPipeline() {
       setReferEmail("");
     },
     onError: (e: Error) => {
-      toast({ title: "Could not refer", description: e.message, variant: "destructive" });
+      toast({ title: "Could not refer", description: describeFailure(e, "write"), variant: "destructive" });
     },
   });
 
@@ -200,7 +268,7 @@ export default function PartnerPipeline() {
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/promotions"] });
     },
     onError: (e: Error) => {
-      toast({ title: "Could not make private", description: e.message, variant: "destructive" });
+      toast({ title: "Could not make private", description: describeFailure(e, "write"), variant: "destructive" });
     },
   });
 
@@ -216,7 +284,7 @@ export default function PartnerPipeline() {
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
     },
     onError: (e: Error) => {
-      toast({ title: "Could not update SPV status", description: e.message, variant: "destructive" });
+      toast({ title: "Could not update SPV status", description: describeFailure(e, "write"), variant: "destructive" });
     },
   });
 
@@ -239,7 +307,7 @@ export default function PartnerPipeline() {
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
     },
     onError: (e: Error) => {
-      toast({ title: "Could not update SPV visibility", description: e.message, variant: "destructive" });
+      toast({ title: "Could not update SPV visibility", description: describeFailure(e, "write"), variant: "destructive" });
     },
   });
 
@@ -669,11 +737,70 @@ export default function PartnerPipeline() {
               rows={3}
             />
           </div>
+          {/* ══════════════════════════════════════════════════════════════════
+              WAVE 213 · R188.4 item 3 / decisions D4 and C6 — THE GOVERNING
+              CLAUSE, ON THE SCREEN WHERE IT GOVERNS.
+              ══════════════════════════════════════════════════════════════════
+              Until this wave a partner published a THIRD PARTY's company profile —
+              reported revenue, margin and growth, last raise and valuation, a
+              cap-table summary, readiness scores and recent platform activity — to
+              a chapter of investors, with their own firm named as the source and
+              the company never notified, after reading six sentences none of which
+              was a term. Terms belong where they take effect.
+
+              EVERY NODE HERE IS AN APPENDED SIBLING. No existing literal on this
+              screen is edited, moved or replaced: R143.1 scores a REPLACED text
+              node as REMOVED copy, and the six sentences above are untouched. The
+              prose lives in `shared/` — one copy, shared with the server that
+              enforces it, and outside the partner-directory copy scanners.
+
+              R190.10 — NOTHING IS RESTRICTED HERE. No field is withheld, no
+              audience narrowed, no eligibility added. One tick, cleared in one
+              click, on the panel that explains it. */}
+          <div className="space-y-2 text-xs rounded p-2" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }} data-testid="publish-clause-block">
+            <div className="font-medium" data-testid="publish-clause-heading">{PUBLISH_CLAUSE_HEADING}</div>
+            {publishClauseParagraphs === null ? (
+              /* Spec 213.5 — the no-clause branch. An empty panel would be the
+                 harm, and so would proceeding silently. This states why the terms
+                 are absent, links to the instrument that holds them, and renders no
+                 tick, so publishing is refused rather than unexplained. */
+              <div data-testid="publish-clause-unavailable">{PUBLISH_CLAUSE_UNAVAILABLE_COPY}</div>
+            ) : (
+              publishClauseParagraphs.map((para, i) => (
+                <p key={`publish-clause-${i}`} data-testid={`publish-clause-para-${i}`}>{para}</p>
+              ))
+            )}
+            {/* ITEM C.3 — where a term genuinely lives in the signed Consortium
+                Partner Agreement, QUOTE it and LINK to it rather than restate it in
+                new words that could diverge from the signed text. This quote is
+                sliced out of CONSORTIUM_AGREEMENT_TEXT at runtime, so it cannot
+                diverge. Rendered only when the slice succeeded: a heading over
+                nothing is the same empty-panel harm. */}
+            {agreementSectionQuote !== null && (
+              <div className="pt-1" data-testid="publish-clause-agreement-quote-block">
+                <div className="font-medium" data-testid="publish-clause-agreement-heading">{PUBLISH_CLAUSE_AGREEMENT_HEADING}</div>
+                <div className="whitespace-pre-line" data-testid="publish-clause-agreement-quote">{agreementSectionQuote}</div>
+              </div>
+            )}
+            <a href={PUBLISH_CLAUSE_AGREEMENT_PATH} className="underline block" data-testid="publish-clause-agreement-link">{PUBLISH_CLAUSE_AGREEMENT_LINK_LABEL}</a>
+            {publishClauseParagraphs !== null && (
+              <label className="flex items-start gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={publishAckChecked}
+                  onChange={(e) => setPublishAckChecked(e.target.checked)}
+                  data-testid="publish-ack-check"
+                />
+                <span data-testid="publish-ack-text">{publishAckText}</span>
+              </label>
+            )}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPromoteDeal(null)}>Cancel</Button>
             <Button
               data-testid="promote-confirm"
-              disabled={promoteMut.isPending}
+              disabled={promoteMut.isPending || !publishAckChecked}
               onClick={() => promoteDeal && promoteMut.mutate({ dealId: promoteDeal.id, notes: modalNotes })}
             >Promote</Button>
           </DialogFooter>

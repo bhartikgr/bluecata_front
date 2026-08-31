@@ -13,7 +13,7 @@
  * Wired into the investor Collective-application flow and investor settings so
  * an individual can self-certify at apply time or re-certify later.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card } from "@/components/ui/card";
@@ -24,10 +24,26 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import type { CollectiveLegalCopy, CollectiveLegalCopySlot } from "@shared/collectiveLegalCopy";
 
+/* WAVE 215 — the criterion now carries its jurisdiction and how far the platform
+   can stand behind any figure in its label. Both are optional so a criterion
+   served under a superseded clause version still renders. */
+type ThresholdConfidence = "verified" | "counsel_ratified" | "unverified";
+
 interface AccreditationCriterion {
   id: string;
   region: string;
   label: string;
+  jurisdiction?: string;
+  confidence?: ThresholdConfidence;
+  counselNote?: string;
+  source?: string;
+}
+
+interface AccreditationJurisdictionDef {
+  code: string;
+  name: string;
+  label: string;
+  aliases?: string[];
 }
 
 interface AccreditationDeclarationRow {
@@ -47,10 +63,42 @@ interface AccreditationStatusResponse {
     ack: string;
     criteria: AccreditationCriterion[];
     validityDays: number;
+    /* WAVE 215 — served by the route so the surface cannot invent a tenth
+       jurisdiction or a criterion the server would refuse. */
+    jurisdictions?: AccreditationJurisdictionDef[];
+    criteriaByJurisdiction?: Record<string, AccreditationCriterion[]>;
+    posture?: string;
+    clauseTextSha256?: string | null;
   };
   accredited: boolean;
   signedCurrent: boolean;
   declaration: AccreditationDeclarationRow | null;
+  /* WAVE 215 — the wording the stored declaration was actually signed under. */
+  signedClause?: {
+    version: string;
+    text: string | null;
+    textSha256: string | null;
+    criteria: AccreditationCriterion[];
+    supersededByCurrentVersion: boolean;
+  } | null;
+}
+
+/**
+ * WAVE 215 — resolve typed free text to one of the SERVED jurisdiction codes.
+ * The candidate list comes from the server payload, never from a list hardcoded
+ * here, so this surface cannot offer a jurisdiction the capture route would then
+ * refuse. Returns `""` when the text resolves to nothing, which leaves the
+ * selection untouched rather than guessing.
+ */
+function resolveTypedJurisdiction(raw: string, defs: AccreditationJurisdictionDef[]): string {
+  const needle = raw.trim().toLowerCase();
+  if (!needle) return "";
+  for (const j of defs) {
+    if (needle === j.code.toLowerCase()) return j.code;
+    if (needle === j.name.toLowerCase()) return j.code;
+    if ((j.aliases ?? []).some((a) => a.toLowerCase() === needle)) return j.code;
+  }
+  return "";
 }
 
 function formatDate(value: string | null): string {
@@ -82,8 +130,16 @@ export function AccreditationDeclaration({
   const [accepted, setAccepted] = useState(false);
   const [signatureName, setSignatureName] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
+  /* WAVE 215 — the ONE jurisdiction being declared under. Empty means nothing has
+     been chosen, and nothing can be signed while it is empty. */
+  const [jurisdictionCode, setJurisdictionCode] = useState("");
   const [checked, setChecked] = useState<Record<string, boolean>>({});
 
+  /* WAVE 215 — quick-find, APPENDED rather than folded into the text box's own
+     onChange (see R143.1 note at that input). Typing a country name or code in the
+     free-text box selects the matching jurisdiction above; text that matches
+     nothing leaves the selection alone rather than guessing. This never becomes
+     the declared jurisdiction — only the selector's value is submitted. */
   const { data, isLoading, isError } = useQuery<AccreditationStatusResponse>({
     queryKey: [ENDPOINT],
     retry: false,
@@ -101,8 +157,12 @@ export function AccreditationDeclaration({
     mutationFn: async (override?: { criteria?: string[]; signatureName?: string; jurisdiction?: string }) => {
       const body = {
         signatureName: (override?.signatureName ?? signatureName).trim(),
-        criteria: override?.criteria ?? selectedCriteria,
-        jurisdiction: (override?.jurisdiction ?? jurisdiction).trim() || undefined,
+        criteria: override?.criteria ?? submittableCriteria,
+        /* WAVE 215 — the SELECTED code is what is declared under. The free-text
+           box is a quick-find for the selector (below), not a second source of
+           truth: two disagreeing jurisdiction fields is how a declaration ends
+           up recorded against a country the investor never chose. */
+        jurisdiction: (override?.jurisdiction ?? jurisdictionCode).trim() || undefined,
       };
       const j = await (await apiRequest("POST", ENDPOINT, body)).json();
       if (!j.ok) throw new Error(j.message || j.error || "sign_failed");
@@ -122,7 +182,39 @@ export function AccreditationDeclaration({
   const version = clause?.version ?? "—";
   const criteria = clause?.criteria ?? [];
   const alreadySignedCurrent = !!data?.signedCurrent;
-  const canSubmit = accepted && signatureName.trim().length >= 2 && selectedCriteria.length > 0;
+
+  /* WAVE 215 — THE CLOSURE OF THE BLANKET TICK, ON THE SURFACE.
+     Only the chosen jurisdiction's criteria are offered. Until a jurisdiction is
+     chosen the list is EMPTY, so there is no state of this form in which an
+     investor can tick an eligibility box that is not tied to a named regime.
+     `clause.criteriaByJurisdiction` is served by the route; the flat
+     `clause.criteria` is retained for callers reading the older shape and is used
+     only as a filter fallback, never as an unscoped list to render. */
+  const jurisdictionDefs = clause?.jurisdictions ?? [];
+  const scopedCriteria: AccreditationCriterion[] = jurisdictionCode
+    ? (clause?.criteriaByJurisdiction?.[jurisdictionCode] ??
+       criteria.filter((c) => c.jurisdiction === jurisdictionCode))
+    : [];
+
+  /* Ticks that belong to a jurisdiction other than the current selection are not
+     submitted, so switching jurisdiction cannot silently carry a foreign
+     criterion into the declaration. */
+  const scopedIds = new Set(scopedCriteria.map((c) => c.id));
+  const submittableCriteria = selectedCriteria.filter((id) => scopedIds.has(id));
+
+  /* The appended quick-find. Runs only when the free-text box changes and only
+     when it resolves to one of the SERVED codes. */
+  useEffect(() => {
+    const resolved = resolveTypedJurisdiction(jurisdiction, jurisdictionDefs);
+    if (resolved) setJurisdictionCode(resolved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jurisdiction, clause?.version]);
+
+  const canSubmit =
+    accepted &&
+    signatureName.trim().length >= 2 &&
+    jurisdictionCode.trim().length > 0 &&
+    submittableCriteria.length > 0;
 
   return (
     <Card
@@ -213,6 +305,33 @@ export function AccreditationDeclaration({
             </p>
           </div>
 
+          {/* WAVE 215 / ITEM C — the platform's ACTUAL posture, on screen, in the
+              same register as the KYC disclosure above rather than a weaker one.
+              Capavate records a declaration. It does not check it. Nothing in
+              this flow is described as verified, and this panel exists so the
+              investor does not have to infer that from an absence. */}
+          <div
+            data-testid="accreditation-posture-disclosure"
+            className="mb-4 rounded-md border p-3 text-[12px] leading-relaxed"
+            style={{ background: "var(--cv-warn-bg, #fffbeb)", borderColor: "var(--cv-warn-border, #fde68a)", color: "var(--cv-warn-text, #92400e)" }}
+          >
+            <p className="font-semibold">This records your declaration. It is not a check of it.</p>
+            <p className="mt-1">
+              What you sign here is your own statement about your own eligibility.
+              Capavate stores it, timestamps it and can produce it later. Capavate
+              does not confirm it, does not assess whether it is correct, and does
+              not perform any verification on your behalf. Where the law requires
+              an issuer to take reasonable steps to confirm an investor's status,
+              that obligation sits with the issuer and with you.
+            </p>
+            <p className="mt-1">
+              Some criteria are shown as awaiting confirmation by local counsel.
+              Where Capavate cannot support a threshold figure from a primary
+              source, the criterion names the test and states no figure, rather
+              than showing you a number we cannot stand behind.
+            </p>
+          </div>
+
           {/* v26.1.x AVI-ACCRED — confirm-vs-first-time. Branch on the presence
               of a declaration (valid OR lapsed), NOT only signedCurrent: an
               investor whose declaration exists always sees the signed summary
@@ -232,6 +351,20 @@ export function AccreditationDeclaration({
                 {!alreadySignedCurrent && (
                   <span data-testid="accreditation-reconfirm-needed">
                     {" "}This declaration is no longer current — please re-confirm below.
+                  </span>
+                )}
+                {/* WAVE 215 — SIBLING, not a rewrite of the sentence above. That
+                    sentence fires on a clause-VERSION difference, which is not the
+                    same thing as an expiry: the wording was corrected, the
+                    declaration was not cancelled. Saying only "no longer current"
+                    reads as "you are no longer accredited", which would be false
+                    and would push an eligible investor to think they are blocked. */}
+                {!alreadySignedCurrent && (
+                  <span data-testid="accreditation-version-not-expiry">
+                    {" "}Your declaration remains on file and continues to count for
+                    the {clause.validityDays} days from the date you signed it.
+                    Re-confirming records the corrected wording; it does not
+                    reinstate anything.
                   </span>
                 )}
               </div>
@@ -262,9 +395,64 @@ export function AccreditationDeclaration({
             </div>
           ) : (
             <div className="space-y-4">
+              {/* WAVE 215 — JURISDICTION FIRST, AND REQUIRED.
+                  Eligibility tests are not interchangeable between countries, so
+                  the regime is chosen before any criterion is offered. This is
+                  also the structural reason no blanket assertion is possible on
+                  this surface: the criteria list below renders nothing at all
+                  until one of the nine regimes is selected. */}
+              <div className="space-y-1.5 max-w-sm">
+                <Label className="text-xs">Which jurisdiction are you declaring under? (required)</Label>
+                <select
+                  value={jurisdictionCode}
+                  onChange={(e) => setJurisdictionCode(e.target.value)}
+                  className="w-full rounded-md border px-3 py-2 text-sm"
+                  style={{ background: "var(--cv-surface, #ffffff)", borderColor: "var(--cv-border, #e2e8f0)", color: "var(--cv-text, #0f172a)" }}
+                  data-testid="select-accred-jurisdiction"
+                >
+                  <option value="">Select one jurisdiction…</option>
+                  {jurisdictionDefs.map((j) => (
+                    <option key={j.code} value={j.code}>
+                      {j.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] leading-relaxed" data-testid="accreditation-one-jurisdiction-note" style={{ color: "var(--cv-text-muted, #64748b)" }}>
+                  You declare under one jurisdiction at a time. There is no single
+                  worldwide eligibility statement, because each regulator sets its
+                  own test and the tests do not recognise one another.
+                </p>
+              </div>
+
+              <div className="space-y-1.5 max-w-sm">
+                <Label className="text-xs">Jurisdiction (optional)</Label>
+                <Input
+                  value={jurisdiction}
+                  /* R143.1 — HANDLER EXPRESSION RESTORED VERBATIM. An earlier cut
+                     of this wave folded the jurisdiction quick-find into this
+                     handler, which the silent-drop guard correctly reported as a
+                     REMOVED event handler: replacing a handler expression is a
+                     drop, exactly as replacing a copy literal is. The quick-find
+                     now lives in an appended effect below instead. */
+                  onChange={(e) => setJurisdiction(e.target.value)}
+                  placeholder="e.g. United States, United Kingdom"
+                  data-testid="input-accred-jurisdiction"
+                />
+                <p className="text-[11px]" data-testid="accreditation-jurisdiction-typeahead-note" style={{ color: "var(--cv-text-muted, #64748b)" }}>
+                  Type a country to jump to it in the list above. The list is what
+                  gets recorded.
+                </p>
+              </div>
+
               <div className="space-y-2">
                 <Label className="text-xs">Select every criterion that applies to you</Label>
-                {criteria.map((c) => (
+                {!jurisdictionCode && (
+                  <p className="text-sm" data-testid="accreditation-criteria-locked" style={{ color: "var(--cv-text-muted, #64748b)" }}>
+                    Choose your jurisdiction above to see the eligibility criteria it
+                    sets. Nothing can be signed until you do.
+                  </p>
+                )}
+                {scopedCriteria.map((c) => (
                   <label key={c.id} className="flex items-start gap-2 text-sm" style={{ color: "var(--cv-text, #334155)" }}>
                     <input
                       type="checkbox"
@@ -277,20 +465,30 @@ export function AccreditationDeclaration({
                       <span className="mr-1 rounded px-1 text-[10px] font-medium uppercase" style={{ background: "var(--cv-chip-bg, #eef2ff)", color: "var(--cv-chip-text, #3730a3)" }}>
                         {c.region}
                       </span>
+                      {/* WAVE 215 — an unconfirmed threshold is LABELLED as one,
+                          rather than dressed up as settled law. Capavate's own
+                          research marks these [UNVERIFIED]; that marking is
+                          carried through to the investor instead of being
+                          quietly upgraded. */}
+                      {c.confidence === "unverified" && (
+                        <span className="mr-1 rounded px-1 text-[10px] font-semibold uppercase" data-testid={`marker-accred-unverified-${c.id}`} style={{ background: "var(--cv-warn-bg, #fffbeb)", color: "var(--cv-warn-text, #92400e)" }}>
+                          [UNVERIFIED]
+                        </span>
+                      )}
                       {c.label}
+                      {c.counselNote && (
+                        <span className="mt-1 block text-[11px] leading-relaxed" data-testid={`note-accred-counsel-${c.id}`} style={{ color: "var(--cv-warn-text, #92400e)" }}>
+                          Awaiting confirmation by local counsel: {c.counselNote}
+                        </span>
+                      )}
+                      {c.source && (
+                        <span className="mt-0.5 block text-[11px]" data-testid={`note-accred-source-${c.id}`} style={{ color: "var(--cv-text-muted, #64748b)" }}>
+                          Basis: {c.source}
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}
-              </div>
-
-              <div className="space-y-1.5 max-w-sm">
-                <Label className="text-xs">Jurisdiction (optional)</Label>
-                <Input
-                  value={jurisdiction}
-                  onChange={(e) => setJurisdiction(e.target.value)}
-                  placeholder="e.g. United States, United Kingdom"
-                  data-testid="input-accred-jurisdiction"
-                />
               </div>
 
               <label className="flex items-start gap-2 text-sm" style={{ color: "var(--cv-text, #334155)" }}>

@@ -171,7 +171,39 @@ export function registerCaptableCommitV2548Routes(app: Express): void {
       }
       const amount = e.amount === undefined || e.amount === null ? "" : String(e.amount);
       const shares = e.shares === undefined || e.shares === null ? "" : String(e.shares);
-      const currency = typeof e.currency === "string" && e.currency.length > 0 ? e.currency : "USD";
+      /* WAVE 197 / R169 Item C.2 — THE HARDCODED "USD" IS REMOVED, NOT DOCUMENTED.
+
+         Wave 195 reported this line as "starved" and left it. Reachability was
+         established rather than assumed, and the finding is narrower than
+         "unreachable":
+
+           · `registerWave195CommitCurrencyRoutes(app)` (server/routes.ts:1359)
+             registers a hook on this exact path BEFORE
+             `registerCaptableCommitV2548Routes(app)` (:1363). Express dispatches
+             in registration order, so on the wired app the hook runs first and
+             WRITES `e.currency = resolution.currency` for every entry that stated
+             none. On that path `e.currency` is always non-empty here and the
+             fallback below was indeed starved.
+           · Every early `return next()` in that hook lands on a request this
+             handler rejects before reaching this line (no companyId -> 400, not
+             entitled -> 403, no roundId -> 400, no entries -> 400).
+           · BUT the hook ends in `catch (err) { ... return next(); }` — it FAILS
+             OPEN by design. If currency resolution ever throws, the request
+             arrives here with no currency stated. That is a live route to a
+             fabricated currency, and a fail-open path is reachability.
+
+         R156.2 forbids a hardcoded currency, so the fabrication is replaced by a
+         REFUSAL for that entry: it is recorded in the existing `failed` array and
+         NO commit and NO attestation is written for it. Refusing one entry cannot
+         corrupt a cap table; guessing its currency can. The other entries in the
+         batch are unaffected, which matches this endpoint's per-entry contract. */
+      const statedCurrency =
+        typeof e.currency === "string" && e.currency.trim().length > 0 ? e.currency.trim() : null;
+      if (statedCurrency === null) {
+        failed.push({ invitationId: e.invitationId, error: "currency_not_resolved" });
+        continue;
+      }
+      const currency = statedCurrency;
 
       // B5 — write the attestation FIRST (fail-closed): if it fails, skip commit.
       const attId = recordCommitAttestation({

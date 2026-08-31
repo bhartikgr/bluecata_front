@@ -33,6 +33,12 @@ import { spvEngineStore, canonicalCommittedMinorForSpv } from "../spvEngineStore
 import fs from "node:fs";
 import path from "node:path";
 
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on the
+   money-event routes this suite drives, so these requests were refused 400 and
+   the proofs below never reached their own assertions. The fixture supplies what
+   a real operator supplies, over the same HTTP route; it is NOT a bypass. Read
+   the header of `_wave226_attestation_fixture.ts` before changing it. */
+import { W226_LP_COMMIT_ATT } from "./_wave226_attestation_fixture";
 const MANAGING = "u_avi_managing";
 const PARTNER_ID = "ac_consortium_partner_test_partner_inc";
 const REPO = path.resolve(__dirname, "..", "..");
@@ -72,6 +78,7 @@ describe("W115 F7 — the dashboard committed figure comes from the canonical en
   it("THE DEFECT: a real $10,000 LP commitment now appears on the dashboard, and the legacy denorm is provably still zero", async () => {
     const spvId = await newSpv("W115 Committed Source");
     const cm = await post(`/api/partner/me/spv/${spvId}/lp-commit`, {
+      ...W226_LP_COMMIT_ATT, /* WAVE 226 · R202 — see the fixture note */
       holderFirstName: "Dana",
       holderLastName: "Whitfield",
       investorEmail: "w115-dana@example.com",

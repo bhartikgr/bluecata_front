@@ -33,6 +33,7 @@ import {
   SPV_REGISTER_OWNERSHIP_DENOMINATOR_LABEL,
   SPV_REGISTER_ALL_STAGES_BASIS,
 } from "@shared/spvCommittedCapital";
+import { describeFailure } from "@/lib/failureMessage";
 
 /* SC-0 (WAVE 2) — RESPONSE-SHAPE CORRECTION.
  *
@@ -153,7 +154,14 @@ export default function PartnerFundDetail() {
     // v25.14 NC3 — was silently swallowed; only an inline error div that
     // reset on next mutate. Now surfaces a destructive toast.
     onError: (e: unknown) => {
-      const msg = e instanceof Error ? e.message : "Pledge failed.";
+      /* WAVE 197 #48 — CLASSIFIED (c) UNREACHABLE, NOT (a) A LEAK. Every
+         control that could call `pledge.mutate()` carries `disabled`, and this
+         file's own comment says the path is currently unreachable. It is
+         wrapped anyway on this file's own wave-135 precedent — leaving a known
+         defect in a dormant handler is how a dormant handler ships — and this
+         is recorded as precautionary, not counted as a leak closed. The
+         "Pledge failed." literal is preserved exactly. */
+      const msg = e instanceof Error ? describeFailure(e, "write") : "Pledge failed.";
       toast({ title: "Pledge failed", description: msg, variant: "destructive" });
     },
   });
@@ -313,7 +321,11 @@ export default function PartnerFundDetail() {
             </div>
             {pledge.error ? (
               <div className="text-sm text-red-600">
-                {pledge.error instanceof Error ? pledge.error.message : String(pledge.error)}
+                {/* WAVE 197 #49 — same unreachable path as #48. `describeFailure`
+                    accepts `unknown`, so both former branches collapse into one
+                    call and the `String(...)` branch that could stringify a raw
+                    object is removed. No literal and no element changes. */}
+                {describeFailure(pledge.error, "write")}
               </div>
             ) : null}
           </div>

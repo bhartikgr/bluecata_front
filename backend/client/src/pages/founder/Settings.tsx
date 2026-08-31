@@ -16,7 +16,18 @@ import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrig
 import { TIMEZONES_IANA, detectBrowserTimezone } from "@/lib/timezones";
 import { User, Building2, Users, CreditCard, Receipt, Bell, Database, Check, X, Download, Trash2, Lock, Plus, ShieldAlert, ShieldCheck, Globe, MapPin, Settings2, DollarSign, TrendingUp, Gavel, Activity, Send, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
 import { CountryPicker } from "@/components/profile/CountryPicker"; /* v25.48.3 Q-C6 — full ISO country dropdown for Region tab */
-import { LEGAL_DOCS } from "@/lib/legalDocs";
+/* WAVE 210 — see LegalDrawer.tsx. The 17 March 2026 corpus is renamed at the
+ * import and retained; the adopted corpus is bound to `LEGAL_DOCS` inside the
+ * tab so that every line of JSX below keeps its exact source text. */
+import { LEGAL_DOCS as LEGAL_DOCS_SUPERSEDED_2026_03_17 } from "@/lib/legalDocs";
+import { ADOPTED_LEGAL_DOCS } from "@/lib/legalDocsV2";
+import { useActiveLegalCorpusVersion } from "@/lib/useActiveLegalCorpusVersion";
+import { ADOPTED_LEGAL_CORPUS_VERSION, REGISTERED_PARTY_NAME } from "@shared/wave210LegalCorpusVersion";
+/* WAVE 214 · surface 2 — one literal, shared with the server that hashes it. */
+import {
+  WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
+  WAVE214_FOUNDER_TEAM_INVITE_CONSEQUENCE,
+} from "@shared/wave214ThirdPartyAuthorityCopy";
 import type { LegalDoc } from "@/lib/legalDocs";
 import { useLegalDrawer } from "@/lib/legalDrawer";
 import type { LegalDocId } from "@/lib/legalDrawer";
@@ -37,6 +48,9 @@ import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { formatMinor, toMinor as toMinorUnits, fromMinor as fromMinorUnits } from "@/lib/currency";
 import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
+/* WAVE 199 · ITEM B (R173.6) — the monthly cycle is offered, priced and selected
+   here only while the admin offers it. See client/src/lib/priceDisplayPolicy.ts. */
+import { useMonthlyDisplayAllowed } from "@/lib/priceDisplayPolicy";
 /* WAVE 41 · OWNER RULING R6 — the canonical honest-refusal placeholder, reused
    rather than re-spelled. `NOT_PROVIDED` is pinned to exactly "Not provided" by
    client/src/lib/__tests__/wave4Display.test.ts, so importing it (instead of
@@ -178,6 +192,17 @@ export default function Settings() {
 
   const [activeTier, setActiveTier] = useState("founder_pro");
   const [billingPeriod, setBillingPeriod] = useState<"monthly" | "annual">("monthly");
+  /* WAVE 199 · ITEM B · R173.6 — "The platform is annual and/or fixed only."
+
+     The state above defaults to "monthly", so this screen priced every plan card
+     monthly and posted `billingCycle: "monthly"` to /api/billing/plan on the very
+     first click — a cadence `partner_pricing_model_config.monthly_purchasable = 0`
+     says the platform does not sell. The DEFAULT IS NOT CHANGED (an admin who
+     switches monthly back on gets the old behaviour byte-for-byte); instead the
+     admin's policy decides which cadence is in EFFECT. Nothing is hardcoded: when
+     monthly is offered, `effectiveBillingPeriod` is whatever the founder picked. */
+  const monthlyDisplayAllowed = useMonthlyDisplayAllowed();
+  const effectiveBillingPeriod: "monthly" | "annual" = monthlyDisplayAllowed ? billingPeriod : "annual";
 
   // Privacy state (preserve Sprint 7)
   const [screenName, setScreenName] = useState("");
@@ -237,6 +262,10 @@ export default function Settings() {
 
   // Defect B-series — wire all buttons to real mutations instead of toast-only stubs.
   const [inviteEmail, setInviteEmail] = useState("");
+  /* WAVE 214 · surface 2 — authority tick for the team invitation on this screen.
+     Named `teamAuthorityConfirmed` because this file also hosts unrelated
+     consent state and a bare `authorityConfirmed` would read ambiguously. */
+  const [teamAuthorityConfirmed, setTeamAuthorityConfirmed] = useState(false);
 
   // B-V11-5 fix: hold the Company tab inputs in controlled state so they
   // (a) actually drive the PATCH payload and (b) re-sync when the active
@@ -591,7 +620,9 @@ export default function Settings() {
       }
       // apiRequest throws an ApiError (carrying the server's `error` code) on a
       // non-2xx response, so a 503 gateway_not_configured surfaces in onError.
-      const r = await apiRequest("POST", "/api/billing/plan", { tierId, companyId, billingCycle: billingPeriod });
+      /* WAVE 199 · ITEM B (R173.6) — post the cadence the platform actually offers,
+         which is what the cards above priced. See `effectiveBillingPeriod`. */
+      const r = await apiRequest("POST", "/api/billing/plan", { tierId, companyId, billingCycle: effectiveBillingPeriod });
       return r.json();
     },
     onSuccess: (data: any, tierId: string) => {
@@ -629,10 +660,17 @@ export default function Settings() {
   // "team/members", so the list never refreshed after invite/remove. Use the
   // correct compound key here so the UI updates without a manual page reload.
   const inviteMemberMut = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/founder/team/invitations", { companyId, email: inviteEmail })).json(),
+    mutationFn: async () => (await apiRequest("POST", "/api/founder/team/invitations", {
+      companyId, email: inviteEmail,
+      /* WAVE 214 · surface 2 — sent verbatim; the server hashes these bytes. */
+      authorityConfirmed: teamAuthorityConfirmed,
+      authorityStatementShown: WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT,
+    })).json(),
     onSuccess: () => {
       toast({ title: "Invitation sent" });
       setInviteEmail("");
+      /* WAVE 214 — per-invitee; must not carry forward. */
+      setTeamAuthorityConfirmed(false);
       queryClient.invalidateQueries({ queryKey: ["/api/founder/team/members", companyId] });
     },
     onError: () => toast({ title: "Invite failed", variant: "destructive" }),
@@ -853,7 +891,27 @@ export default function Settings() {
                     className="h-8 w-48 text-xs"
                     data-testid="input-invite-email"
                   />
-                  <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => inviteMemberMut.mutate()} disabled={inviteMemberMut.isPending || !inviteEmail} data-testid="button-invite-member"><Plus className="h-3.5 w-3.5 mr-1" /> Invite</Button>
+                  <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => inviteMemberMut.mutate()} disabled={inviteMemberMut.isPending || !inviteEmail || !teamAuthorityConfirmed} data-testid="button-invite-member"><Plus className="h-3.5 w-3.5 mr-1" /> Invite</Button>
+                </div>
+                {/* WAVE 214 · surface 2 — the SECOND founder-invite screen. Both
+                    this one and CompanyManagement.tsx POST the same route, so
+                    gating only one would leave a live ungated path (handbook §12.2:
+                    read every caller, not the first one). Appended as a new static
+                    sibling; no existing literal here is edited (R143.1). */}
+                <div className="basis-full" data-testid="settings-invite-authority-block">
+                  <label className="flex items-start gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      data-testid="settings-invite-authority-tick"
+                      checked={teamAuthorityConfirmed}
+                      onChange={(e) => setTeamAuthorityConfirmed(e.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <span data-testid="settings-invite-authority-statement">{WAVE214_FOUNDER_TEAM_INVITE_AUTHORITY_STATEMENT}</span>
+                  </label>
+                  <div className="text-[11px] text-muted-foreground pl-6 mt-1" data-testid="settings-invite-authority-consequence">
+                    {WAVE214_FOUNDER_TEAM_INVITE_CONSEQUENCE}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -898,7 +956,15 @@ export default function Settings() {
               <div className="text-xs text-muted-foreground">Live from admin pricing console — every change there reflects here.</div>
               {!singleTier && (
                 <div className="flex gap-1 rounded-md border p-1 text-xs" data-testid="toggle-billing-period">
+                  {/* WAVE 199 · ITEM B (R173.6) — the Monthly button is NOT deleted:
+                      it stays in the source, keeps its testid and its label, and
+                      returns the moment an admin switches monthly back on. It is
+                      simply not offered while the platform sells annual only. The
+                      Annual button beside it is never conditional, so this control
+                      can never be left with nothing to choose. */}
+                  {monthlyDisplayAllowed && (
                   <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "monthly" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("monthly")} data-testid="button-monthly">Monthly</button>
+                  )}
                   <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "annual" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("annual")} data-testid="button-annual">Annual (save 17%)</button>
                 </div>
               )}
@@ -906,9 +972,14 @@ export default function Settings() {
             <div className={singleTier ? "grid md:grid-cols-1 max-w-xl mx-auto gap-3" : "grid md:grid-cols-3 gap-3"} data-testid={singleTier ? "single-plan-grid" : "multi-plan-grid"}>
               {tierList.map(t => {
                 // Single-tier mode: always show annual price + displayPrice if provided.
+                /* WAVE 199 · ITEM B (R173.6) — `effectiveBillingPeriod`, not the raw
+                   toggle state, so a card cannot be priced in a cadence the admin
+                   does not offer. The single-tier branch is untouched: it follows the
+                   TIER'S OWN recorded cycle, which is a fact about that tier and not
+                   an offer this screen is making. */
                 const effectiveCycle: "monthly" | "annual" = singleTier
                   ? (t.billingCycle === "monthly" ? "monthly" : "annual")
-                  : billingPeriod;
+                  : effectiveBillingPeriod;
                 /* WAVE 35 · F2 — was `t.monthlyUsd`/`t.annualUsd` piped into
                  * fmtUSD(), so a ¥1,200,000 tier rendered "$12,000". Price now
                  * comes from integer minor units + the tier's own ISO-4217
@@ -1034,7 +1105,17 @@ export default function Settings() {
                     <Badge variant={subscription.status === "active" ? "positive" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>
                   )}
                   {typeof subscription?.amountMinor === "number" && (
-                    <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{formatMinor(subscription.amountMinor, subscription.currency || "USD")}/mo</div>
+                    /* WAVE 199 · ITEM B (R173.6) — "/mo" was printed beside this
+                       figure UNCONDITIONALLY, whatever the subscription's real cadence
+                       was, which made it both a monthly display and a potentially
+                       false one (R95: a price states only the period on record). The
+                       literal is kept in the source — not deleted, not reworded — and
+                       is shown only while monthly is offered. The amount itself is
+                       never withheld.
+                       NOTE: a JSX-comment brace form is INVALID here, for the same
+                       reason recorded a few lines above — this sits inside a `&& (`
+                       EXPRESSION, not a children list. */
+                    <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{formatMinor(subscription.amountMinor, subscription.currency || "USD")}{monthlyDisplayAllowed && (<span>/mo</span>)}</div>
                   )}
                   {subscription?.nextBillingDate && (
                     <div className="text-xs text-muted-foreground">Next billing {fmtDate(subscription.nextBillingDate)}</div>
@@ -1619,6 +1700,11 @@ interface LegalConsent {
 
 function LegalPrivacySettingsTab() {
   const { openDrawer } = useLegalDrawer();
+  /* WAVE 210 — which corpus these cards describe, and under which party name. */
+  const { servingSupersededMarchCorpus } = useActiveLegalCorpusVersion();
+  const LEGAL_DOCS = servingSupersededMarchCorpus
+    ? LEGAL_DOCS_SUPERSEDED_2026_03_17
+    : ADOPTED_LEGAL_DOCS;
   const consentsQ = useQuery<{ ok: boolean; consents: LegalConsent[] }>({
     queryKey: ["/api/legal/consent/mine"],
     queryFn: async () => {
@@ -1634,10 +1720,22 @@ function LegalPrivacySettingsTab() {
 
   return (
     <div className="space-y-4" data-testid="section-legal-privacy">
+      {/* WAVE 210 — the misspelled party name is RETAINED in source (it is what
+          earlier consents were shown) and the registered spelling is what a user
+          reads. Both strings are present; neither replaces the other. */}
       <TabIntro
         title="Legal & Privacy"
-        body="Blueprint Catalyst Limited legal documents. Review summaries or read the full text. Your consent trail is recorded below."
+        body={servingSupersededMarchCorpus
+          ? "Blueprint Catalyst Limited legal documents. Review summaries or read the full text. Your consent trail is recorded below."
+          : "BluePrint Catalyst Limited legal documents. Review summaries or read the full text. Your consent trail is recorded below."}
       />
+
+      {/* WAVE 210 — the version identity, on the surface that shows the consent
+          trail. A trail is only evidence if the reader can see which text it
+          names, so the served version is printed beside it. */}
+      <div className="text-[11px] text-muted-foreground" data-testid="legal-served-version">
+        Currently published: version {ADOPTED_LEGAL_CORPUS_VERSION}, issued by {REGISTERED_PARTY_NAME}. Consents recorded from now on name this version. Earlier consents keep the version that was shown at the time.
+      </div>
 
       {/* Document cards */}
       <div className="grid md:grid-cols-2 gap-3">

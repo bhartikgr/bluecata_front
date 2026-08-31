@@ -28,6 +28,22 @@ import {
   PARTNER_CLIENT_DEFAULT_STAGE,
   type PartnerClientStage,
 } from "@shared/crmStages";
+/* WAVE 179 · ITEM A · R151.1 — the jurisdiction vocabulary is the canonical engine's
+   own, so this panel cannot offer a jurisdiction the vehicle table cannot record. */
+import { SPV_JURISDICTIONS, SPV_JURISDICTION_LABELS } from "@shared/spvEngine";
+/* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form. Options come from the
+   wave-175 research per jurisdiction and are EMPTY for the nine jurisdictions whose
+   tax treatment does not depend on legal form. */
+import {
+  spvLegalFormOptions,
+  SPV_LEGAL_FORM_LABELS,
+  SPV_LEGAL_FORM_NOT_STATED_LABEL,
+  SPV_LEGAL_FORM_OPTIONAL_HINT,
+  SPV_LEGAL_FORM_NOT_OFFERED_NOTICE,
+  SPV_LEGAL_FORM_FIELD_LABEL,
+  SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+} from "@shared/spvLegalForm";
+import { describeFailure } from "@/lib/failureMessage";
 
 interface CrmActivity {
   id: string;
@@ -89,6 +105,46 @@ const SCOPE_PICK_NONE = "__pick__";
 const LEAD_ASSIGN_ROLES = ["managing_partner", "associate"];
 const LEAD_NONE = "__none__";
 
+/* ══ WAVE 179 · ITEM A · R151.1 — "CREATE SPV FOR THIS MANAGED CLIENT" ═══════
+   R149.4 recorded that a GP looking at a managed client had no way to start a
+   vehicle for them. Wave 178 established that the BACKEND already persists
+   `spv.target_company_id` end-to-end, so this is a missing affordance and not a
+   missing capability — and this panel is deliberately NOT a second wizard.
+
+   It posts to the SAME endpoint the existing SPV list screen posts to,
+   `POST /api/partner/me/spvs` (`PartnerSpvs.tsx:146`), which shims through the
+   canonical engine so no vehicle is ever created outside it. The one difference is
+   that `targetCompanyId` is not typed by the user: it is THIS PAGE'S company, taken
+   from the route, so the vehicle is pre-associated by construction and a GP cannot
+   fat-finger another company's identifier.
+
+   The five-step wizard (`PartnerSpvEngine.tsx`) is untouched and is still the place
+   to configure fees, mandate and terms; a link to it is offered below rather than
+   its contents being copied here.
+
+   The server route is `assertSubRole("managing_partner")`, so anyone else could only
+   ever be refused 403. Nothing is hidden: the panel renders, the submit is disabled
+   and the REASON is a plain sentence — the same treatment `PartnerSpvs.tsx` gives
+   the same gate. */
+const SPV_CREATE_ROLES = ["managing_partner"];
+
+interface ClientSpv {
+  id: string;
+  name: string;
+  spvType: string;
+  status: string;
+  jurisdiction: string;
+  currency: string;
+  targetRaiseMinor: number | null;
+  targetCompanyId: string | null;
+  createdAt: string;
+}
+
+/** The vintage the server's `isNumber(vintage)` guard expects, as a string. */
+function currentVintageYear(): string {
+  return String(new Date().getFullYear());
+}
+
 export default function PartnerClientDetail() {
   const role = useRequirePartnerRole();
   const [, params] = useRoute("/collective/partner/clients/:id");
@@ -98,6 +154,32 @@ export default function PartnerClientDetail() {
   const [note, setNote] = useState("");
   /* WAVE 30 ENGINE 1 — selection state for the "scope a contact" picker. */
   const [scopePick, setScopePick] = useState<string>(SCOPE_PICK_NONE);
+  /* WAVE 178 · ITEM B — the server answers a repeat link with `201` on a real
+     create and `200 { created: false }` when the contact was ALREADY scoped to
+     this client (partnerCrmContactClientScopeRoutes.ts:149). Before this wave
+     both looked identical on screen: the picker reset and nothing said why no new
+     row appeared. A stated outcome is the point of R141/R144, so the idempotent
+     case now says so in the panel. Cleared on the next successful create. */
+  const [scopeAlreadyLinked, setScopeAlreadyLinked] = useState(false);
+  /* WAVE 179 · ITEM A — the create-for-this-client form. `vintage` and the two
+     sign-off fields are here because the server REQUIRES them
+     (`partnerRoutes.ts` legacy create: `isNumber(vintage)`, then
+     `SIGNOFF_LEGAL_NAME_REQUIRED` / `SIGNOFF_ATTESTATION_REQUIRED`); without them
+     this panel could only ever 400. Each has a visible, editable control below —
+     no value is smuggled into the payload as a hidden constant, and the assent is
+     per-vehicle and never carried over to the next one. `targetCompanyId` is the
+     ONE exception and it is not a smuggled value: it is the company this page is
+     about, shown read-only in the panel. */
+  const [spvForm, setSpvForm] = useState({
+    spvName: "",
+    jurisdiction: "delaware",
+    currency: "USD",
+    vintage: currentVintageYear(),
+    legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+    signoffLegalName: "",
+    signoffAccepted: false,
+  });
+  const [spvFormOpen, setSpvFormOpen] = useState(false);
 
   /* v25.12 NM4 — canonical queryKey convention (`["/api/partner/me/clients", id]`). */
   const q = useQuery({
@@ -117,7 +199,7 @@ export default function PartnerClientDetail() {
     mutationFn: async (stage: PartnerClientStage) =>
       (await apiRequest("PATCH", `/api/partner/me/client-crm/${id}`, { stage })).json(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/partner/me/client-crm", id] }),
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not update stage", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not update stage", description: describeFailure(e, "write") }),
   });
 
   /* w-partner F3 — roster for the lead picker. The server rejects anyone who is
@@ -133,7 +215,7 @@ export default function PartnerClientDetail() {
     mutationFn: async (leadUserId: string | null) =>
       (await apiRequest("PATCH", `/api/partner/me/client-crm/${id}/lead`, { leadUserId })).json(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/partner/me/client-crm", id] }),
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not assign lead", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not assign lead", description: describeFailure(e, "write") }),
   });
 
   /* WAVE 30 ENGINE 1 — contacts scoped to this client, plus the DB-driven
@@ -151,12 +233,14 @@ export default function PartnerClientDetail() {
       (
         await apiRequest("POST", "/api/partner/me/crm-client-scope", { contactId, companyId: id })
       ).json(),
-    onSuccess: () => {
+    onSuccess: (result: { created?: boolean } | null) => {
       setScopePick(SCOPE_PICK_NONE);
+      /* WAVE 178 · ITEM B — see the note on `scopeAlreadyLinked`. */
+      setScopeAlreadyLinked(result?.created === false);
       qc.invalidateQueries({ queryKey: ["/api/partner/me/crm-client-scope/by-company", id] });
     },
     onError: (e: Error) =>
-      toast({ variant: "destructive", title: "Could not scope contact", description: e.message }),
+      toast({ variant: "destructive", title: "Could not scope contact", description: describeFailure(e, "write") }),
   });
 
   const removeScope = useMutation({
@@ -165,7 +249,54 @@ export default function PartnerClientDetail() {
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: ["/api/partner/me/crm-client-scope/by-company", id] }),
     onError: (e: Error) =>
-      toast({ variant: "destructive", title: "Could not remove contact", description: e.message }),
+      toast({ variant: "destructive", title: "Could not remove contact", description: describeFailure(e, "write") }),
+  });
+
+  /* ══ WAVE 179 · ITEM A · R151.1 — THE READ-BACK ════════════════════════
+     The vehicles listed below come from THIS query against persisted data, never
+     from the create mutation's response. On success the mutation invalidates this
+     key and says nothing itself, so what appears on screen has been through
+     SQLite and back — which is what "prove it survives a refetch" means. */
+  const spvsQ = useQuery<{ companyId: string; spvs: ClientSpv[] }>({
+    queryKey: ["/api/partner/me/clients", id, "spvs"],
+    enabled: role.ready && !!id,
+    queryFn: async () => (await apiRequest("GET", `/api/partner/me/clients/${id}/spvs`)).json(),
+  });
+
+  const createSpvForClient = useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest("POST", "/api/partner/me/spvs", {
+          spvName: spvForm.spvName.trim(),
+          jurisdiction: spvForm.jurisdiction,
+          vintage: parseInt(spvForm.vintage, 10) /* a four-digit calendar YEAR, not money */,
+          status: "planned",
+          currency: spvForm.currency,
+          /* THE POINT OF THE WHOLE ITEM: the client is pre-associated. */
+          targetCompanyId: id,
+          /* WAVE 179 · ITEM B — OPTIONAL. The sentinel is translated to `null`, which
+             the server stores as NOT STATED. It is never translated to a guess. */
+          legalForm: spvForm.legalForm === SPV_LEGAL_FORM_UNSTATED_SENTINEL ? null : spvForm.legalForm,
+          signoffLegalName: spvForm.signoffLegalName,
+          signoffAccepted: spvForm.signoffAccepted,
+        })
+      ).json(),
+    onSuccess: () => {
+      setSpvForm({
+        spvName: "",
+        jurisdiction: "delaware",
+        currency: "USD",
+        vintage: currentVintageYear(),
+        legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+        signoffLegalName: "",
+        signoffAccepted: false,
+      });
+      setSpvFormOpen(false);
+      /* Read back from the database. Nothing optimistic is written into the list. */
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/clients", id, "spvs"] });
+    },
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not create the vehicle", description: describeFailure(e, "write") }),
   });
 
   const addNote = useMutation({
@@ -175,7 +306,7 @@ export default function PartnerClientDetail() {
       setNote("");
       qc.invalidateQueries({ queryKey: ["/api/partner/me/client-crm", id] });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add note", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add note", description: describeFailure(e, "write") }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -190,6 +321,13 @@ export default function PartnerClientDetail() {
   const canScope = SCOPE_WRITE_ROLES.includes(role.identity.subRole);
   const scopes = scopeQ.data?.scopes ?? [];
   const scopableContacts = scopeQ.data?.availableContacts ?? [];
+  /* WAVE 179 · ITEM A — vehicles already attributed to this client, from the DB. */
+  const canCreateSpv = SPV_CREATE_ROLES.includes(role.identity.subRole);
+  const clientSpvs = spvsQ.data?.spvs ?? [];
+  /* WAVE 179 · ITEM B — which legal forms this jurisdiction actually has. Empty for
+     the nine jurisdictions wave 175 found are not legal-form dependent; the picker is
+     then not offered at all and the reason is stated. */
+  const spvLegalFormChoices = spvLegalFormOptions(spvForm.jurisdiction);
   /* v25.49 Phase-3A — honest cap-table state. The partner surface has no
      ownership ledger read scope; instead we surface the real read-only company
      financials the engine already returns (valuation / last raise), so the card
@@ -308,6 +446,179 @@ export default function PartnerClientDetail() {
               Layer-1 CRM are contacts ON this specific client engagement.
               Additive card; every card above it is unchanged. */}
 
+          {/* ══ WAVE 179 · ITEM A · R151.1 — VEHICLES FOR THIS CLIENT ══════════
+              ADDITIVE CARD. No card above or below it is altered and no existing
+              literal is reworded (R143.1). */}
+          <Card className="md:col-span-2" data-testid="client-spvs">
+            <CardHeader><CardTitle className="text-sm">Vehicles for this client</CardTitle></CardHeader>
+            <CardContent>
+              {canCreateSpv ? (
+                <div className="mb-3">
+                  <Button
+                    onClick={() => setSpvFormOpen((v) => !v)}
+                    data-testid="client-spv-create-toggle"
+                  >
+                    Create SPV for this client
+                  </Button>
+                </div>
+              ) : (
+                <div
+                  className="text-xs text-[var(--cv-color-text-muted)] mb-3"
+                  data-testid="client-spv-create-readonly"
+                >
+                  Recording a vehicle requires a managing partner. Ask a managing partner at your firm to complete the sign-off, or ask them to change your role.
+                </div>
+              )}
+
+              {canCreateSpv && spvFormOpen && (
+                <div className="mb-4 space-y-2" data-testid="client-spv-create-form">
+                  {/* The association is FIXED by this page and shown, not typed. */}
+                  <div
+                    className="text-xs text-[var(--cv-color-text-muted)]"
+                    data-testid="client-spv-create-target"
+                  >
+                    This vehicle will be recorded as investing in this client: {id}
+                  </div>
+                  <Input
+                    value={spvForm.spvName}
+                    onChange={(e) => setSpvForm((f) => ({ ...f, spvName: e.target.value }))}
+                    placeholder="Vehicle name"
+                    className="max-w-md"
+                    data-testid="client-spv-name"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      value={spvForm.jurisdiction}
+                      onChange={(e) =>
+                        setSpvForm((f) => ({
+                          ...f,
+                          jurisdiction: e.target.value,
+                          /* WAVE 179 · ITEM B — changing the jurisdiction CLEARS the legal
+                             form back to not stated. It does NOT translate it into the
+                             new jurisdiction's nearest equivalent: that would be the
+                             platform inferring a legal form, which R151.3 forbids. */
+                          legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
+                        }))
+                      }
+                      className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
+                      data-testid="client-spv-jurisdiction"
+                    >
+                      {SPV_JURISDICTIONS.map((j) => (
+                        <option key={j} value={j}>{SPV_JURISDICTION_LABELS[j]}</option>
+                      ))}
+                    </select>
+                    <Input
+                      value={spvForm.currency}
+                      onChange={(e) => setSpvForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                      placeholder="Currency, e.g. USD"
+                      className="max-w-[10rem]"
+                      data-testid="client-spv-currency"
+                    />
+                    <Input
+                      value={spvForm.vintage}
+                      onChange={(e) => setSpvForm((f) => ({ ...f, vintage: e.target.value }))}
+                      placeholder="Vintage year"
+                      className="max-w-[10rem]"
+                      data-testid="client-spv-vintage"
+                    />
+                  </div>
+
+                  {/* ══ WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form ═════ */}
+                  {spvLegalFormChoices.length > 0 ? (
+                    <div className="space-y-1" data-testid="client-spv-legal-form-field">
+                      <div className="text-xs text-[var(--cv-color-text-secondary)]">
+                        {SPV_LEGAL_FORM_FIELD_LABEL}
+                      </div>
+                      <select
+                        value={spvForm.legalForm}
+                        onChange={(e) => setSpvForm((f) => ({ ...f, legalForm: e.target.value }))}
+                        className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
+                        data-testid="client-spv-legal-form"
+                      >
+                        <option value={SPV_LEGAL_FORM_UNSTATED_SENTINEL}>{SPV_LEGAL_FORM_NOT_STATED_LABEL}</option>
+                        {spvLegalFormChoices.map((lf) => (
+                          <option key={lf} value={lf}>{SPV_LEGAL_FORM_LABELS[lf]}</option>
+                        ))}
+                      </select>
+                      <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-spv-legal-form-hint">
+                        {SPV_LEGAL_FORM_OPTIONAL_HINT}
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="text-xs text-[var(--cv-color-text-muted)]"
+                      data-testid="client-spv-legal-form-not-offered"
+                    >
+                      {SPV_LEGAL_FORM_NOT_OFFERED_NOTICE}
+                    </div>
+                  )}
+
+                  {/* The sign-off gate is SATISFIED here, never weakened: these two are
+                      what the server records as a durable authorization before the
+                      vehicle exists. */}
+                  <Input
+                    value={spvForm.signoffLegalName}
+                    onChange={(e) => setSpvForm((f) => ({ ...f, signoffLegalName: e.target.value }))}
+                    placeholder="Your full legal name"
+                    className="max-w-md"
+                    data-testid="client-spv-signoff-name"
+                  />
+                  <label className="flex items-start gap-2 text-xs" data-testid="client-spv-signoff-label">
+                    <input
+                      type="checkbox"
+                      checked={spvForm.signoffAccepted}
+                      onChange={(e) => setSpvForm((f) => ({ ...f, signoffAccepted: e.target.checked }))}
+                      data-testid="client-spv-signoff-accept"
+                    />
+                    <span>
+                      I am authorised to record this vehicle for my firm, and I accept the launch attestation.
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      disabled={
+                        !spvForm.spvName.trim() ||
+                        !spvForm.signoffLegalName.trim() ||
+                        !spvForm.signoffAccepted ||
+                        createSpvForClient.isPending
+                      }
+                      onClick={() => createSpvForClient.mutate()}
+                      data-testid="client-spv-create-submit"
+                    >
+                      Create vehicle
+                    </Button>
+                    {createSpvForClient.isPending && (
+                      <span className="text-xs text-[var(--cv-color-text-muted)]">Creating…</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-spv-create-wizard-note">
+                    This records the vehicle and links it to this client. Fees, mandate and terms are configured in the full SPV engine at Collective → Partner → SPV engine.
+                  </div>
+                </div>
+              )}
+
+              {spvsQ.isLoading && (
+                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-spvs-loading">Loading…</div>
+              )}
+              {!spvsQ.isLoading && clientSpvs.length === 0 && (
+                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-spvs-empty">
+                  No vehicles are recorded against this client yet.
+                </div>
+              )}
+              <ul className="text-xs space-y-2" data-testid="client-spvs-list">
+                {clientSpvs.map((s) => (
+                  <li key={s.id} className="border-b pb-1" data-testid={`client-spv-${s.id}`}>
+                    <span className="font-medium text-[var(--cv-color-navy)] mr-2">{s.name}</span>
+                    <span className="text-[var(--cv-color-text-secondary)] mr-2">{s.status}</span>
+                    <span className="text-[var(--cv-color-text-faint)]">
+                      {[s.jurisdiction, s.currency].filter(Boolean).join(" · ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+
           {/* v25.49 Phase-3A — activity timeline (stage changes + notes). */}
           <Card className="md:col-span-2" data-testid="client-activity">
             <CardHeader><CardTitle className="text-sm">Activity timeline</CardTitle></CardHeader>
@@ -385,6 +696,17 @@ export default function PartnerClientDetail() {
                   >
                     Add to client
                   </Button>
+                </div>
+              )}
+              {/* WAVE 178 · ITEM B — ADDITIVE. No literal above or below was
+                  reworded (R143.1); this states the one outcome the panel used to
+                  swallow silently. */}
+              {scopeAlreadyLinked && (
+                <div
+                  className="text-xs text-[var(--cv-color-text-muted)] mb-2"
+                  data-testid="client-scope-already-linked"
+                >
+                  That contact was already linked to this client, so nothing changed. It is listed below.
                 </div>
               )}
               {!canScope && (

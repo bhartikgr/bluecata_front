@@ -38,6 +38,33 @@ import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { LEGAL_VERSION } from "../client/src/lib/legalDocs";
+/* WAVE 210 — the version identity a consent row records.
+ *
+ * BEFORE THIS WAVE `recordConsent` hard-coded the imported `LEGAL_VERSION` in
+ * four places: the idempotency SELECT, the chain hash, the INSERT and the
+ * returned object. A caller could not name the version it had displayed even if
+ * it wanted to — version identity was not merely wrong, it was structurally
+ * unexpressible. Meanwhile `/terms-of-service` served a DIFFERENT document with
+ * a different date and no version at all, so a user read one text and their
+ * consent row attested to another.
+ *
+ * `resolveActiveLegalCorpusVersion` reads the served version from
+ * `platform_config` (hash-chained, undeletable history, atomically audited).
+ * `LEGAL_VERSION` is deliberately still imported and still exported below: it is
+ * the version every PRE-WAVE-210 row names, those rows are a record, and nothing
+ * here rewrites them. Added beside, never rewritten. */
+import {
+  readActiveLegalCorpusVersion as resolveActiveLegalCorpusVersion,
+  ensureLegalCorpusVersionKey,
+} from "./lib/wave210LegalCorpusVersionStore";
+import {
+  isKnownLegalCorpusVersion,
+  KNOWN_LEGAL_CORPUS_VERSIONS,
+  ADOPTED_LEGAL_CORPUS_VERSION,
+  ADOPTED_LEGAL_CORPUS_DATE_LABEL,
+  SUPERSEDED_LEGAL_CORPUS_VERSIONS,
+} from "../shared/wave210LegalCorpusVersion";
+import { fitToGate, boundedFragment } from "../shared/refusalHeadlineGate";
 import { getDb } from "./db/connection";
 import { legalConsents as legalConsentsTable } from "../shared/schema";
 import { log } from "./lib/logger";
@@ -122,6 +149,43 @@ function rowToConsent(r: any): LegalConsent {
 
 // ─── Core store operations ────────────────────────────────────────────────────
 
+/**
+ * WAVE 210 — the version a consent row will name.
+ *
+ * Precedence: an explicitly supplied version (the caller displayed it and says
+ * so) → the version `platform_config` says is served → the adopted version.
+ * There is no path that yields undefined, empty or null: `document_version` is
+ * `NOT NULL` in the schema and a consent that does not name the text it attests
+ * to is worthless as a record. An unrecognised explicit version is REFUSED
+ * rather than coerced, because silently recording a different version than the
+ * one displayed is the exact defect this wave repairs.
+ */
+export function resolveConsentDocumentVersion(explicit?: string | null): string {
+  if (explicit !== undefined && explicit !== null && explicit !== "") {
+    if (!isKnownLegalCorpusVersion(explicit)) {
+      throw new Error(`unknown_legal_corpus_version:${explicit}`);
+    }
+    return explicit;
+  }
+  return resolveActiveLegalCorpusVersion();
+}
+
+/**
+ * WAVE 210 — the refusal shown when a caller declares a version we do not know.
+ *
+ * Built through `fitToGate()` because the client's `looksHuman` gate in
+ * `client/src/lib/queryClient.ts` discards any message of 240 characters or
+ * more, and a refusal the user never sees is a silent failure. The version
+ * string is caller-supplied and therefore unbounded, so it is the fragment that
+ * gets budgeted. Measured in a wave-210 test rather than eyeballed.
+ */
+export function legalCorpusVersionRefusal(requested: string): string {
+  return fitToGate((budget) => {
+    const shown = boundedFragment(requested, budget);
+    return `We cannot record your agreement against version “${shown}” because no legal document on this platform carries that version. The versions we can record are ${KNOWN_LEGAL_CORPUS_VERSIONS.join(", ")}. Nothing was written.`;
+  });
+}
+
 /** Record consent — idempotent on (userId, documentId, documentVersion). */
 export function recordConsent(args: {
   userId: string;
@@ -130,8 +194,13 @@ export function recordConsent(args: {
   ipAddress: string | null;
   userAgent: string | null;
   tenantId?: string;
+  /* WAVE 210 — the version of the text ACTUALLY DISPLAYED to this user.
+   * Optional so that no existing caller breaks; when omitted the served version
+   * is read from `platform_config` rather than assumed from a constant. */
+  documentVersion?: string | null;
 }): { consent: LegalConsent; isNew: boolean } {
   const tenantId = args.tenantId ?? DEFAULT_TENANT_ID;
+  const documentVersion = resolveConsentDocumentVersion(args.documentVersion);
 
   let result: { consent: LegalConsent; isNew: boolean } | null = null;
 
@@ -151,7 +220,7 @@ export function recordConsent(args: {
           eq(legalConsentsTable.tenantId, tenantId),
           eq(legalConsentsTable.userId, args.userId),
           eq(legalConsentsTable.documentId, args.documentId),
-          eq(legalConsentsTable.documentVersion, LEGAL_VERSION),
+          eq(legalConsentsTable.documentVersion, documentVersion),
           isNull(legalConsentsTable.deletedAt),
         ))
         .limit(1)
@@ -183,7 +252,7 @@ export function recordConsent(args: {
       // 3. Compute id + hash
       const id = `lc_${randomBytes(8).toString("hex")}`;
       const acceptedAt = new Date().toISOString();
-      const hash = buildHash(prevHash, id, args.userId, args.documentId, LEGAL_VERSION, acceptedAt);
+      const hash = buildHash(prevHash, id, args.userId, args.documentId, documentVersion, acceptedAt);
 
       // 4. INSERT
       tx.insert(legalConsentsTable)
@@ -192,7 +261,7 @@ export function recordConsent(args: {
           tenantId,
           userId: args.userId,
           documentId: args.documentId,
-          documentVersion: LEGAL_VERSION,
+          documentVersion,
           context: args.context,
           acceptedAt,
           ipAddress: args.ipAddress,
@@ -207,7 +276,7 @@ export function recordConsent(args: {
         id,
         userId: args.userId,
         documentId: args.documentId,
-        documentVersion: LEGAL_VERSION,
+        documentVersion,
         context: args.context,
         acceptedAt,
         ipAddress: args.ipAddress,
@@ -342,6 +411,84 @@ export const _testLegalConsent = {
 // ─── Route registration ───────────────────────────────────────────────────────
 
 export function registerLegalConsentRoutes(app: Express): void {
+  /* WAVE 210 — seed `legal.corpus.active_version` once, at route registration.
+   * Idempotent: `ensurePlatformConfigKey` returns any existing row untouched, so
+   * a version an operator has deliberately moved is never overwritten by a boot.
+   * Wrapped because a config-store failure must not stop the consent routes from
+   * registering — the version read has its own fail-safe. */
+  try {
+    ensureLegalCorpusVersionKey("wave210");
+  } catch (err) {
+    log.warn("[wave210] could not seed legal.corpus.active_version:", (err as Error).message);
+  }
+
+  /**
+   * WAVE 210 — GET /api/legal/corpus/active
+   *
+   * PUBLIC and unauthenticated, deliberately: the served legal documents are
+   * public, so which version is served is public too. This is the endpoint that
+   * lets a legal page state its own version identity, and it is what closes the
+   * loop the wave exists to close — the page names a version, the consent row
+   * names the same version.
+   *
+   * It returns the superseded register as well. Nothing is deleted: a version
+   * that stops being served does not stop being a version rows attest to.
+   */
+  app.get("/api/legal/corpus/active", (_req: Request, res: Response) => {
+    const activeVersion = resolveActiveLegalCorpusVersion();
+    res.status(200).json({
+      ok: true,
+      activeVersion,
+      adoptedVersion: ADOPTED_LEGAL_CORPUS_VERSION,
+      adoptedDateLabel: ADOPTED_LEGAL_CORPUS_DATE_LABEL,
+      supersededVersions: SUPERSEDED_LEGAL_CORPUS_VERSIONS,
+      knownVersions: KNOWN_LEGAL_CORPUS_VERSIONS,
+    });
+  });
+
+  /**
+   * WAVE 210 — GET /api/legal/consent/acknowledgement
+   *
+   * THE RE-CONSENT DECISION, AS AN ENDPOINT. This route reports whether the
+   * signed-in user has ever recorded a consent naming the version now served. It
+   * is a READ. It never blocks, never refuses and never gates a route: a 500
+   * here must leave the platform fully usable, which is why every failure path
+   * returns `needsAcknowledgement: false`.
+   *
+   * WHY NOT A BLOCKING RE-CONSENT GATE. The adopted corpus IS the text the
+   * signup consent already attested to, with the party-name spelling corrected
+   * and two clauses that disclose MORE, not less. No user's rights are reduced,
+   * so the legal trigger for compelled re-consent is absent. A blocking
+   * interstitial on every existing user's next login is the most disruptive
+   * change available and the owner asked us not to break anything. The
+   * acknowledgement still records WHICH VERSION was accepted, so the trail is
+   * complete either way — that is the part that actually mattered.
+   */
+  app.get("/api/legal/consent/acknowledgement", (req: Request, res: Response) => {
+    const activeVersion = resolveActiveLegalCorpusVersion();
+    const userId = resolvePersonaId(req);
+    if (!userId) {
+      return res.status(200).json({ ok: true, activeVersion, needsAcknowledgement: false, acknowledgedVersions: [] });
+    }
+    try {
+      const mine = getConsentsForUser(userId);
+      const acknowledgedVersions = Array.from(new Set(mine.map((c) => c.documentVersion)));
+      return res.status(200).json({
+        ok: true,
+        activeVersion,
+        adoptedDateLabel: ADOPTED_LEGAL_CORPUS_DATE_LABEL,
+        acknowledgedVersions,
+        /* Only ever true for a user who HAS a consent trail and whose trail does
+         * not include the served version. A user with no trail at all is not
+         * nagged here — the signup consent owns that case. */
+        needsAcknowledgement: mine.length > 0 && !acknowledgedVersions.includes(activeVersion),
+      });
+    } catch (err) {
+      log.warn("[wave210] acknowledgement read failed:", (err as Error).message);
+      return res.status(200).json({ ok: true, activeVersion, needsAcknowledgement: false, acknowledgedVersions: [] });
+    }
+  });
+
   /**
    * POST /api/legal/consent
    * Body: { documentIds: string[], context: string }
@@ -353,7 +500,20 @@ export function registerLegalConsentRoutes(app: Express): void {
       return res.status(401).json({ ok: false, error: "unauthenticated" });
     }
 
-    const { documentIds, context } = req.body ?? {};
+    const { documentIds, context, documentVersion } = req.body ?? {};
+    /* WAVE 210 — an OPTIONAL declaration by the caller of the version it
+     * displayed. Refused when unrecognised: recording a version no document
+     * corresponds to would be worse than recording none, because it would look
+     * like evidence. When absent the served version is read from
+     * `platform_config` rather than assumed. A consent row can therefore never
+     * fail to name a version. */
+    if (documentVersion !== undefined && documentVersion !== null && !isKnownLegalCorpusVersion(documentVersion)) {
+      return res.status(400).json({
+        ok: false,
+        error: "unknown_legal_corpus_version",
+        message: legalCorpusVersionRefusal(String(documentVersion)),
+      });
+    }
     if (!Array.isArray(documentIds) || documentIds.length === 0) {
       return res.status(400).json({ ok: false, error: "documentIds must be a non-empty array" });
     }
@@ -373,6 +533,11 @@ export function registerLegalConsentRoutes(app: Express): void {
     const userAgent = req.headers["user-agent"] ?? null;
 
     const recorded: string[] = [];
+    /* WAVE 210 — seeded from the resolver so the response is correct even when
+     * `documentIds` is empty; every row in one POST names the same version. */
+    let writtenVersion: string = resolveConsentDocumentVersion(
+      typeof documentVersion === "string" ? documentVersion : null,
+    );
     for (const docId of documentIds as LegalDocId[]) {
       let outcome: { consent: LegalConsent; isNew: boolean };
       try {
@@ -382,6 +547,7 @@ export function registerLegalConsentRoutes(app: Express): void {
           context: context as ConsentContext,
           ipAddress,
           userAgent,
+          documentVersion: typeof documentVersion === "string" ? documentVersion : null,
         });
       } catch (err) {
         return res.status(500).json({ ok: false, error: "consent_ledger_unavailable", message: (err as Error).message });
@@ -394,7 +560,9 @@ export function registerLegalConsentRoutes(app: Express): void {
           consentId: consent.id,
           userId,
           documentId: docId,
-          documentVersion: LEGAL_VERSION,
+          /* WAVE 210 — the version ACTUALLY WRITTEN to the row, not a constant.
+           * The audit trail and the ledger must agree or neither is evidence. */
+          documentVersion: consent.documentVersion,
           context,
           acceptedAt: consent.acceptedAt,
         });
@@ -410,16 +578,21 @@ export function registerLegalConsentRoutes(app: Express): void {
             consentId: consent.id,
             userId,
             documentId: docId,
-            documentVersion: LEGAL_VERSION,
+            documentVersion: consent.documentVersion,
             context,
           },
         });
       }
 
       recorded.push(consent.id);
+      writtenVersion = consent.documentVersion;
     }
 
-    res.status(200).json({ ok: true, recorded });
+    /* WAVE 210 — `recorded` keeps its existing shape (an array of consent ids);
+     * other suites assert that and it is not this wave's to change. The version
+     * actually written is reported BESIDE it, as a new field, so a caller can
+     * verify that what it displayed is what the ledger now names. */
+    res.status(200).json({ ok: true, recorded, documentVersion: writtenVersion });
   });
 
   /**

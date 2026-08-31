@@ -21,7 +21,7 @@
 
 import { useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useCollectiveStream } from "@/lib/sseClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,10 +32,27 @@ import { useToast } from "@/hooks/use-toast";
 /* WAVE 17 ORP-039 — member-facing fees, charges and invoices. */
 import { MemberBillingPanel } from "@/components/collective/MemberBillingPanel";
 import { minorToMajorString } from "@/lib/moneyDisplay";
+/* WAVE 199 · ITEM B (R173.6) — the member price is stored with a MONTHLY cadence
+   (`platform_fees → collective.member_subscription.standard = 24900 USD monthly`),
+   and this page printed that cadence unconditionally. Whether a monthly cadence may
+   be displayed is the admin's decision; this hook reads it live. */
+/* WAVE 202 · ITEM A · R178.1 — the PER-PRICE hook replaces the platform-wide one
+   on this surface. `useMonthlyDisplayAllowed` is NOT removed from the library and
+   still serves the other three surfaces wave 199 gated; this page moves onto the
+   scope-aware hook because the Collective membership is the price the owner
+   specifically wants to control the period for. With no per-price choice recorded,
+   the scope-aware hook returns the SAME answer as the platform-wide one, so this
+   change is behaviour-identical until the owner chooses. */
+import {
+  useMonthlyDisplayAllowedForScope,
+  usePricePeriodOffer,
+  platformFeeScope,
+} from "@/lib/priceDisplayPolicy";
 import { MONEY_NOT_ON_RECORD } from "@/lib/currency"; /* WAVE 152 · G-C8 — one agreed absence wording (R111 Q13) */
 /* WAVE 24 · ITEM 3a — a failed price fetch must not render a buyable card. */
 import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
 import { fmtLocaleDate } from "@/lib/format"; /* WAVE 87 · ITEM 1 */
+import { describeFailure } from "@/lib/failureMessage";
 
 // ----- Types --------------------------------------------------------------
 
@@ -145,6 +162,36 @@ function periodLabel(billingPeriod: string | undefined | null): string {
   }
 }
 
+/* WAVE 199 · ITEM B · R173.6 — THE ONE PLACE THAT DECIDES WHETHER A CADENCE MAY BE
+   PRINTED BESIDE THIS PAGE'S PRICE.
+
+   THE OWNER'S WORDS: "The platform is annual and/or fixed only. Therefore there
+   really should not be a displayed as monthly."
+
+   The member price on record is `24900 USD monthly`, so the honest options are to
+   print the recorded cadence, to print no cadence, or to invent one. Inventing is out:
+   `partner_pricing_model_config.forbid_x12_derivation = 1` forbids turning a monthly
+   figure into an annual one, and R156.2 forbids a compiled-in cadence. So this returns
+   the suffix ONLY when the recorded cadence is one the admin actually offers, and the
+   empty string otherwise. It never suppresses the AMOUNT — the caller renders that
+   either way, so a member is never shown a page with no price.
+
+   It also closes a smaller defect it sits next to. `periodLabel`'s `default` branch
+   answers `"month"` for a cadence that is absent or unrecognised, which is an INVENTED
+   monthly cadence. This function can never reach that branch: an unrecognised cadence
+   is not an offered cadence, so it yields no suffix at all. `periodLabel` itself is
+   left byte-for-byte alone for the callers that handle absence their own way. */
+function cadenceSuffix(
+  billingPeriod: string | undefined | null,
+  monthlyDisplayAllowed: boolean,
+): string {
+  const raw = String(billingPeriod ?? "").trim();
+  if (!raw) return "";
+  if (raw === "monthly") return monthlyDisplayAllowed ? ` / ${periodLabel(raw)}` : "";
+  if (raw === "yearly" || raw === "annual") return ` / ${periodLabel(raw)}`;
+  return "";
+}
+
 function statusBadgeVariant(
   status: BillingDTO["status"],
 ): "positive" | "secondary" | "destructive" | "outline" {
@@ -164,6 +211,47 @@ function statusBadgeVariant(
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 183 · ITEM B FIX 2 — STATED FACTS FOR THE MEMBERSHIP PRICING SURFACE.
+
+   R154.6 is explicit that the four pricing fields are LOAD FAILURES, not unset
+   prices. The price is real: `platform_fees` holds
+   `collective.member_subscription.standard = 24900 USD monthly`. So the copy
+   below never speculates about the price. It names the one fact that was
+   actually missing on the failing request, and — the owner's distinction — it
+   only asks the reader to retry when retrying can change the answer.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The 403 from `requireCollectiveMember` on the OPTIONAL admin catalog. The
+ *  canonical price is unaffected, so this states a limitation, not a failure. */
+const MEMBERSHIP_CATALOG_UNREADABLE_COPY =
+  "The price above is the current published membership price held by Capavate. A chapter-specific package list also exists for members, and this account cannot read it yet — joining does not change the price shown here.";
+
+/** 401 on the canonical tier route: the session, not the price, is missing. */
+const MEMBERSHIP_TIER_SIGNED_OUT_COPY =
+  "The missing fact is a signed-in session: this request was not authenticated, so no price could be looked up for your account. Sign in again — retrying this page will not change it.";
+
+/** 409/404 on the canonical tier route: the platform genuinely holds no price
+ *  record. This is the "which fact is missing" case the owner asked for, and it
+ *  deliberately does NOT print a number in place of the absent one. */
+const MEMBERSHIP_TIER_NO_RECORD_COPY =
+  "The missing fact is a published price: Capavate holds no active membership price record for this chapter, so there is no figure to show. Capavate will not display a placeholder or a zero for a price it does not hold. An administrator must publish the membership price before this page can state one.";
+
+/**
+ * Turn a failed canonical-tier request into a STATED FACT, or `null` when the
+ * failure genuinely is transient and the existing copy is already right.
+ *
+ * Passed into `LoadFailedRefusal`'s optional `detail` slot, which renders as an
+ * ADDITIONAL SIBLING: both of that component's existing sentences still appear
+ * byte-verbatim in every case (R143.1).
+ */
+function membershipPricingDetail(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status === 401) return MEMBERSHIP_TIER_SIGNED_OUT_COPY;
+  if (error.status === 404 || error.status === 409) return MEMBERSHIP_TIER_NO_RECORD_COPY;
+  return null;
+}
+
 const MEMBER_ENTITLEMENTS = [
   "Full Collective member access",
   "Deal flow, soft circles, and screening events",
@@ -176,6 +264,8 @@ const MEMBER_ENTITLEMENTS = [
 export default function MembershipPage(): JSX.Element | null {
   const qc = useQueryClient();
   const { toast } = useToast();
+  /* WAVE 199 · ITEM B (R173.6). Fail-closed while unknown: the amount below is
+     rendered either way, so nothing on this page can end up priceless. */
 
   // 1) Feature flag — hide entirely when COLLECTIVE_ENABLED is off.
   const flagsQ = useQuery<FeatureFlagsResponse>({
@@ -263,7 +353,8 @@ export default function MembershipPage(): JSX.Element | null {
       toast({ title: "Membership activated", description: "You're in. Welcome." });
     },
     onError: (e: Error) =>
-      toast({ variant: "destructive", title: "Activation pending", description: e.message }),
+      /* WAVE 197 #36 — WRITE (activation). */
+      toast({ variant: "destructive", title: "Activation pending", description: describeFailure(e, "write") }),
   });
   const didVerifyRef = useRef(false);
   useEffect(() => {
@@ -314,7 +405,8 @@ export default function MembershipPage(): JSX.Element | null {
       }
     },
     onError: (e: Error) =>
-      toast({ variant: "destructive", title: "Checkout failed", description: e.message }),
+      /* WAVE 197 #37 — WRITE (checkout session). */
+      toast({ variant: "destructive", title: "Checkout failed", description: describeFailure(e, "write") }),
   });
 
   // 7) Portal mutation — POST and follow portal_url.
@@ -335,8 +427,31 @@ export default function MembershipPage(): JSX.Element | null {
       }
     },
     onError: (e: Error) =>
-      toast({ variant: "destructive", title: "Could not open billing portal", description: e.message }),
+      /* WAVE 197 #38 — WRITE (portal session creation). */
+      toast({ variant: "destructive", title: "Could not open billing portal", description: describeFailure(e, "write") }),
   });
+
+  /* WAVE 202 · ITEM A · R178.1 — THE OWNER'S PER-PRICE CHOICE FOR THIS PRICE.
+     THE OWNER'S WORDS: "the admin area pricing section should allow me to choose
+     between annual and/or monthly pricing. Whatever I choose should be dynamically
+     displayed in the frontend."
+
+     Wave 199 asked one platform-wide question here. This asks about THIS price. The
+     scope is derived from the key the server actually served (`tierQ.data.key`),
+     never spelled out in this file, so a renamed or re-pointed canonical membership
+     row cannot leave the page consulting a scope that no longer exists — and no
+     pricing identifier is compiled in to decide what a screen shows (R156.2).
+
+     Before the tier loads the scope is the empty string, which no recorded choice
+     can match, so the hook returns the platform-wide answer. That is the fail-closed
+     answer and is exactly what wave 199 rendered. These two hooks sit ABOVE the
+     `!collectiveOn` early return so their call order is unconditional.
+
+     PLACEMENT: this is an ADDED pair of statements. No existing statement, literal or
+     JSX node was moved, reworded or removed. */
+  const memberTierScopeKey = platformFeeScope(tierQ.data?.key ?? "");
+  const monthlyDisplayAllowed = useMonthlyDisplayAllowedForScope(memberTierScopeKey);
+  const memberTierPeriodOffer = usePricePeriodOffer(memberTierScopeKey);
 
   if (!collectiveOn) return null;
 
@@ -351,9 +466,21 @@ export default function MembershipPage(): JSX.Element | null {
     <div className="container mx-auto px-4 py-8 max-w-3xl" data-testid="collective-membership-page">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Collective Membership</h1>
+        {/* WAVE 199 · ITEM B (R173.6) — THE CADENCE SENTENCE IS NOT DELETED AND NOT
+            REWORDED (R143.1). It is shown while the admin offers monthly, and a
+            STATIC SIBLING below carries the part of it that is true regardless of
+            cadence. Both literals stay in the source, so neither is dropped from the
+            copy inventory. */}
+        {monthlyDisplayAllowed && (
         <p className="text-muted-foreground">
           One membership, billed monthly and renewing automatically until you cancel.
         </p>
+        )}
+        {!monthlyDisplayAllowed && (
+        <p className="text-muted-foreground" data-testid="w199-membership-renewal-note">
+          One membership, renewing automatically until you cancel. The billing period is the one an administrator has configured.
+        </p>
+        )}
       </div>
 
       {current && (
@@ -394,8 +521,14 @@ export default function MembershipPage(): JSX.Element | null {
                   {/* WAVE 152 · ITEM G · G-C8 — "Not on record / month" would be
                       nonsense, so the cadence is suppressed when there is no
                       amount to attach it to. */}
+                  {/* WAVE 199 · ITEM B (R173.6) — the AMOUNT is unconditional; only
+                      the cadence suffix is withheld when the recorded cadence is
+                      monthly and the admin does not offer monthly. Suppressing the
+                      figure as well would take a fact away from a member who is
+                      being charged it. No cadence is ever substituted and no annual
+                      equivalent is derived (forbid_x12_derivation). */}
                   {tier && tier.amountMinor !== null
-                    ? `${formatMoneyMinor(tier.amountMinor, tier.currency)} / ${periodLabel(tier.billingPeriod)}`
+                    ? `${formatMoneyMinor(tier.amountMinor, tier.currency)}${cadenceSuffix(tier.billingPeriod, monthlyDisplayAllowed)}`
                     : MONEY_NOT_ON_RECORD}
                 </dd>
               </div>
@@ -426,6 +559,32 @@ export default function MembershipPage(): JSX.Element | null {
                 </dd>
               </div>
             </dl>
+            {/* WAVE 202 · ITEM A · R178.1 + R143.4 — WHEN AN ANNUAL PRICE IS OFFERED
+                BUT NONE EXISTS, SAY SO.
+
+                The Collective membership is on record as a monthly amount with NO
+                annual price anywhere in any store. If the owner chooses to offer
+                annual for this price before he sets one, the honest answer is this
+                sentence — not $0.00 ("Capavate will not show a zero total for a
+                figure it does not hold", R143.4) and not the monthly amount times
+                twelve (`forbid_x12_derivation = 1`, R156.1/R156.2). The amount above
+                is unaffected either way, so this page can never end up priceless.
+
+                ADDED as a new sibling <p> AFTER the closing </dl>. `p` is not a
+                PANEL_TAG and no <dd>, <dt> or grid cell is added, moved or
+                renumbered (R143.1; wave 182 — a new cell renumbers its siblings). */}
+            {memberTierPeriodOffer !== null &&
+              memberTierPeriodOffer.annualOffered &&
+              memberTierPeriodOffer.annualAmountMinor === null && (
+                <p
+                  className="mt-3 text-xs leading-snug text-muted-foreground"
+                  data-testid="text-membership-annual-not-set"
+                >
+                  An annual price for Collective membership has not been set yet, so
+                  only the amount above is shown. Capavate will not work an annual
+                  figure out from the monthly one.
+                </p>
+              )}
           </CardContent>
         </Card>
       )}
@@ -483,7 +642,36 @@ export default function MembershipPage(): JSX.Element | null {
           Gated on `isSuccess` and not on `!isLoading && !isError`, because a
           PAUSED query (offline) is neither — the exact caveat in
           LoadFailedRefusal's own header. */}
-      {useAdminCatalog ? null : tierQ.isError || catalogQ.isError ? (
+      {/* WAVE 183 · ITEM B FIX 2 — WHY THE PAGE COULD NOT STATE A PRICE.
+
+          The comment above is right about the danger it was written for and the
+          conditions it produced were too wide, so it suppressed a price the
+          platform DOES hold. Two queries feed this card and they are not equals:
+
+            · `tierQ`  → GET /api/collective/member-tier — open to any
+                         authenticated user, answers 200, and resolves the real
+                         figure from `platform_fees` in the database via
+                         `resolveCanonicalMemberTier()`. This is the price.
+            · `catalogQ` → GET /api/collective/membership/tiers — sits behind
+                         `requireCollectiveMember`, so for a user who is not yet
+                         a Collective member it answers **403**, by design and
+                         permanently. It is the OPTIONAL admin-authored override.
+
+          `tierQ.isError || catalogQ.isError` therefore blanked the price for
+          exactly the population the page exists to sell to: prospective members.
+          The card that "sells a product billed monthly and renewing
+          automatically until you cancel" could not name its own price, and the
+          reason had nothing to do with the price.
+
+          THE FIX narrows the conditions to the query that actually carries the
+          figure. `catalogQ` failing no longer suppresses anything; it only means
+          no admin override was readable, which is stated as a sibling note
+          below. BOTH refusal branches and BOTH testids are kept — the first is
+          still what renders when the real price source fails, which is the case
+          the wave-24 comment was defending against, and the second still covers
+          a paused query. Nothing here fabricates: if `tierQ` cannot answer, the
+          page still refuses to show a number. */}
+      {useAdminCatalog ? null : tierQ.isError ? (
         <LoadFailedRefusal
           what="membership pricing"
           onRetry={() => {
@@ -492,10 +680,11 @@ export default function MembershipPage(): JSX.Element | null {
           }}
           isRetrying={tierQ.isFetching || catalogQ.isFetching}
           testId="membership-pricing-load-failed"
+          detail={membershipPricingDetail(tierQ.error)}
         />
-      ) : tierQ.isLoading || catalogQ.isLoading ? (
+      ) : tierQ.isLoading ? (
         <Skeleton className="h-80 w-full" />
-      ) : !tierQ.isSuccess || !catalogQ.isSuccess ? (
+      ) : !tierQ.isSuccess ? (
         <LoadFailedRefusal
           what="membership pricing"
           onRetry={() => {
@@ -522,12 +711,26 @@ export default function MembershipPage(): JSX.Element | null {
                   a conditional element, so the panel/copy shape the drop gate
                   counts is unchanged. */}
               <span className="text-sm font-normal text-muted-foreground">
-                {tier && tier.amountMinor !== null ? ` / ${periodLabel(tier.billingPeriod)}` : ""}
+                {tier && tier.amountMinor !== null ? cadenceSuffix(tier.billingPeriod, monthlyDisplayAllowed) : ""}
               </span>
             </p>
             <p className="text-sm text-muted-foreground">
               Full access to the Capavate Collective.
             </p>
+            {/* WAVE 183 · ITEM B FIX 2 — a STATIC SIBLING that names the one
+                thing the page could not read, instead of the whole card
+                disappearing because of it. The price above is the canonical
+                database figure and is correct either way; this only discloses
+                that an admin-authored package list, if one exists, was not
+                readable on this request. */}
+            {catalogQ.isError && (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="membership-catalog-unavailable-note"
+              >
+                {MEMBERSHIP_CATALOG_UNREADABLE_COPY}
+              </p>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             <ul className="space-y-2 text-sm">

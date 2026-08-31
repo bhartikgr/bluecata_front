@@ -45,7 +45,27 @@ interface PLEntry {
 interface PLResponse {
   ok: boolean;
   entries: PLEntry[];
-  totals: { pending: number; paid: number; all: number };
+  /* WAVE 180 · ITEM A SITE 1 — each total is null when the entries in scope span
+   * more than one currency. The producer no longer adds minor units across ISO
+   * codes and no longer lets this page label the result USD by default. */
+  totals: { pending: number | null; paid: number | null; all: number | null };
+  totalsCurrency?: string | null;
+  /* WAVE 180 · ITEM A SITE 1 — the label that belongs to EACH card's own figure.
+   * `totalsCurrency` describes the "all" bucket only. The three buckets are
+   * resolved independently by the producer, so on a mixed ledger "Paid" can be
+   * entirely CAD while "Total billable" spans three currencies. Reading
+   * `totalsCurrency || "USD"` for the Paid card is what would print CA$1,200.00
+   * as $1,200.00. */
+  totalsCurrencyByBucket?: { pending: string | null; paid: string | null; all: string | null };
+  totalsAvailable?: boolean;
+  totalsUnavailableReason?: "needs_fx_conversion" | "no_data" | null;
+  totalsCurrencies?: string[];
+  totalsByCurrency?: {
+    all: Array<{ currency: string; minor: number }>;
+    paid: Array<{ currency: string; minor: number }>;
+    pending: Array<{ currency: string; minor: number }>;
+  };
+  entriesWithoutRecordedCurrency?: number;
   total: number;
 }
 
@@ -78,6 +98,31 @@ function fmtMoney(minor: number | null, currency = "USD"): string {
    owner is in New York). Only the BODY changes — every call site is untouched,
    so a timestamp renders byte-identically and nothing is restyled, while a
    date-only value now renders the day that was entered. */
+/* WAVE 180 · ITEM A SITE 1 — THE SCOPE SENTENCE FOR THE THREE TOTALS CARDS.
+   Exported and pure so the rule is EXECUTED by a test rather than inferred from
+   JSX. The owner's rule: wherever a total is shown, state what is included, what
+   is excluded and in which currency; an unexplained total IS the defect. Where
+   no single figure can be derived, name why — never a fabricated zero, never a
+   bare blank. NO EXCHANGE RATE IS APPLIED; this platform holds none. */
+export function plTotalsScope(
+  entryCount: number,
+  totalsCurrency: string | null | undefined,
+  currencies: string[] | undefined,
+  defaultedCount: number | undefined,
+): string {
+  const defaulted = defaultedCount ?? 0;
+  const defaultedNote = defaulted > 0
+    ? ` ${defaulted} of them ${defaulted === 1 ? "is" : "are"} not linked to an SPV, so no currency is recorded against ${defaulted === 1 ? "it" : "them"} and ${defaulted === 1 ? "it is" : "they are"} reported in USD, this platform's default.`
+    : "";
+  if (entryCount === 0) return "No billing entries in this filter, so there is nothing to total.";
+  if (totalsCurrency) {
+    return `All three totals cover every one of the ${entryCount} entries below and are stated in ${totalsCurrency}.${defaultedNote}`;
+  }
+  const list = (currencies ?? []).filter(Boolean);
+  const named = list.length > 0 ? ` (${list.join(", ")})` : "";
+  return `No combined total is shown. These ${entryCount} entries are recorded in more than one currency${named}, and this platform holds no exchange rate, as-of date or audit trail to convert them with. The per-currency figures below are the whole truth.${defaultedNote}`;
+}
+
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
   try { return fmtLocaleDate(iso); } catch { return "—"; }
@@ -116,7 +161,25 @@ export default function PartnerPL() {
   });
 
   const entries = data?.entries ?? [];
-  const totals = data?.totals ?? { pending: 0, paid: 0, all: 0 };
+  /* WAVE 180 · ITEM A SITE 1 — the absent-data default is null, not 0. A zero
+     here was a fabricated figure standing in for "the request has not landed". */
+  const totals = data?.totals ?? { pending: null, paid: null, all: null };
+  const byCurrency = data?.totalsByCurrency;
+  const totalsMixed = data?.totalsAvailable === false && data?.totalsUnavailableReason === "needs_fx_conversion";
+  /* WAVE 180 · ITEM A SITE 1 — one card, one figure, one label, decided together.
+     A card prints a number ONLY when its OWN bucket resolved to a single currency,
+     and it prints that number in THAT currency. When its own bucket is mixed it
+     says so instead. There is no `|| "USD"` fallback anywhere in this decision:
+     an unlabelled figure would be the very defect this site was opened for. */
+  const bucketCcy = data?.totalsCurrencyByBucket;
+  const cardMoney = (minor: number | null, currency: string | null | undefined): string =>
+    minor === null || !currency ? "Not one figure" : fmtMoney(minor, currency);
+  const scopeText = plTotalsScope(
+    data?.total ?? 0,
+    data?.totalsCurrency ?? null,
+    data?.totalsCurrencies,
+    data?.entriesWithoutRecordedCurrency,
+  );
 
   return (
     <>
@@ -131,20 +194,46 @@ export default function PartnerPL() {
       />
       <PageBody>
         {/* Totals cards (DB-computed) */}
+        {/* WAVE 180 · ITEM A SITE 1 — the three cards keep their identities, their
+            titles and their positions; only the currency handed to the formatter
+            changed, from an implicit USD default to the currency the producer
+            actually derived. The scope sentence and the per-currency panel are NEW
+            SIBLINGS: no existing text node or attribute on this page was reworded,
+            replaced or removed. */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
           <Card data-testid="card-total-all">
             <CardHeader className="pb-2"><CardTitle className="text-xs text-muted-foreground">Total billable</CardTitle></CardHeader>
-            <CardContent><p className="text-2xl font-semibold text-[#041e41]">{fmtMoney(totals.all)}</p></CardContent>
+            <CardContent><p className="text-2xl font-semibold text-[#041e41]">{cardMoney(totals.all, bucketCcy ? bucketCcy.all : data?.totalsCurrency)}</p></CardContent>
           </Card>
           <Card data-testid="card-total-pending">
             <CardHeader className="pb-2"><CardTitle className="text-xs text-muted-foreground">Pending</CardTitle></CardHeader>
-            <CardContent><p className="text-2xl font-semibold text-amber-600">{fmtMoney(totals.pending)}</p></CardContent>
+            <CardContent><p className="text-2xl font-semibold text-amber-600">{cardMoney(totals.pending, bucketCcy ? bucketCcy.pending : data?.totalsCurrency)}</p></CardContent>
           </Card>
           <Card data-testid="card-total-paid">
             <CardHeader className="pb-2"><CardTitle className="text-xs text-muted-foreground">Paid</CardTitle></CardHeader>
-            <CardContent><p className="text-2xl font-semibold text-emerald-600">{fmtMoney(totals.paid)}</p></CardContent>
+            <CardContent><p className="text-2xl font-semibold text-emerald-600">{cardMoney(totals.paid, bucketCcy ? bucketCcy.paid : data?.totalsCurrency)}</p></CardContent>
           </Card>
         </div>
+        {!isLoading && !error && (
+          <p className="text-xs text-muted-foreground mb-4" data-testid="text-pl-totals-scope">{scopeText}</p>
+        )}
+        {totalsMixed && byCurrency && (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3" data-testid="panel-pl-totals-by-currency">
+            <p className="text-xs font-medium text-amber-900">Billable, pending and paid — per currency</p>
+            <ul className="mt-1 space-y-0.5">
+              {byCurrency.all.map((r) => {
+                const pend = byCurrency.pending.find((x) => x.currency === r.currency);
+                const paid = byCurrency.paid.find((x) => x.currency === r.currency);
+                return (
+                  <li key={r.currency} className="text-xs font-mono text-amber-900" data-testid={`text-pl-ccy-${r.currency}`}>
+                    {r.currency}: {fmtMoney(r.minor, r.currency)} billable · {fmtMoney(pend?.minor ?? 0, r.currency)} pending · {fmtMoney(paid?.minor ?? 0, r.currency)} paid
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-1 text-[11px] text-amber-800">These are not added together. Converting them would need an exchange rate, an as-of date and an audit trail, none of which this platform holds.</p>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <Input

@@ -318,30 +318,52 @@ export function getPayment(id: string): PaymentEntry | undefined {
   }
 }
 
-/** Soft-circle 7-currency display: convert amounts.
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 184 · ITEM A · R156.1 — THE CONVERSION REQUIREMENT IS REMOVED, NOT DEFERRED.
  *
- * v25.32 final — reads from the `fx_rates` DB table (Ozan's rule:
- * "no hardcoded values that should come from DB/admin"). Defaults are
- * seeded on first boot via INSERT OR IGNORE in server/db/connection.ts;
- * admin can override per-currency rates without code changes. If the DB
- * read fails we return the well-known USD-only fallback (USD=1) rather
- * than throwing — this preserves Avi's existing zero-config tests that
- * call this function before the seed has run.
+ * Owner, verbatim: "I would rather stay clear of any online FX rates. If an SPV
+ * or a round is in one currency, it is up to the investor to deliver exactly in
+ * that currency. I fear that if we start to play with currencies, then we will
+ * open up the platform to miscalculations."
+ *
+ * WHAT THIS FUNCTION USED TO DO. It executed `SELECT currency_code, rate FROM
+ * fx_rates` and returned a rate map, published verbatim by
+ * GET /api/payments/_meta/rates. That was the ONLY read of `fx_rates` in the
+ * tree — so deleting it ends the platform's live FX path entirely.
+ *
+ * THE TABLE AND ITS SEED ARE UNTOUCHED. `fx_rates` is created and seeded in
+ * server/db/connection.ts, which is SACRED under WAIVER-6. R156.1 keeps the
+ * table and removes the reads; R121 forbids seeking a tenth waiver. Nothing in
+ * this wave writes, drops or re-seeds that table.
+ *
+ * WHY A REFUSAL AND NOT AN EMPTY MAP. An empty rate map is a blank, and a
+ * `{ USD: 1 }` map is a fabricated fact about six other currencies. Both are
+ * forbidden. A caller that asks for a conversion rate is asking a question this
+ * platform has decided not to answer, so the answer is a named refusal that
+ * states the delivery rule.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The delivery rule, in the owner's own terms, stated wherever a reader could
+ *  previously have expected a conversion. Exported so no surface re-types it. */
+export const NO_CURRENCY_CONVERSION_RULE =
+  "Capavate applies no exchange rate and converts nothing. Each vehicle is denominated in a single currency, " +
+  "and funds must be delivered in that same currency. Amounts recorded in different currencies are reported " +
+  "separately and are never added together.";
+
+/** The refusal code every caller and test names. */
+export const E_FX_CONVERSION_REMOVED = "CURRENCY_CONVERSION_NOT_SUPPORTED";
+
+/** Soft-circle 7-currency display: NO LONGER CONVERTS ANYTHING.
+ *
+ * WAVE 184 · ITEM A · R156.1 — the `fx_rates` read that used to live here is
+ * gone. This function is retained (not deleted) so that any caller reaching for
+ * a conversion rate gets a stated refusal rather than a silently different
+ * shape, and so the removal is visible in the code rather than being a hole.
+ *
+ * @throws Error `CURRENCY_CONVERSION_NOT_SUPPORTED: …` — always.
  */
 export function softCircleRates(): Record<string, number> {
-  try {
-    const rows = rawDb()
-      .prepare(`SELECT currency_code, rate FROM fx_rates`)
-      .all() as Array<{ currency_code: string; rate: number }>;
-    if (rows.length === 0) return { USD: 1 };
-    const out: Record<string, number> = {};
-    for (const r of rows) out[r.currency_code] = r.rate;
-    if (!out.USD) out.USD = 1; // USD is the base; defensively pin it.
-    return out;
-  } catch (err) {
-    log.warn("[paymentStore.softCircleRates] DB read failed:", (err as Error).message);
-    return { USD: 1 };
-  }
+  throw new Error(`${E_FX_CONVERSION_REMOVED}: ${NO_CURRENCY_CONVERSION_RULE}`);
 }
 
 export function __clearPayments(): void {
@@ -382,8 +404,20 @@ export function registerPaymentRoutes(app: Express): void {
     }
   });
 
+  /* WAVE 184 · ITEM A · R156.1 — this route used to publish the `fx_rates` table.
+   * The route is KEPT (no silent drops) and now states the delivery rule instead
+   * of offering a conversion. `supported` is retained and still means what it
+   * always meant: the denominations a vehicle may be recorded in. It is NOT a
+   * set of convertible pairs. 409 rather than 200: the caller asked for
+   * something the platform's configuration does not provide, and a 200 with a
+   * missing key would let a reader infer "no rates today" instead of "never". */
   app.get("/api/payments/_meta/rates", (_req, res) => {
-    res.json({ rates: softCircleRates(), supported: ["USD", "CAD", "GBP", "EUR", "SGD", "HKD", "CNY"] });
+    res.status(409).json({
+      error: E_FX_CONVERSION_REMOVED,
+      conversion: "not_supported",
+      message: NO_CURRENCY_CONVERSION_RULE,
+      supported: ["USD", "CAD", "GBP", "EUR", "SGD", "HKD", "CNY"],
+    });
   });
 
   /* v25.32 final — DB-direct read from payment_ledger (+ capavate_subscriptions);

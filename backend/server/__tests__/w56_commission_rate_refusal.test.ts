@@ -82,19 +82,40 @@ describe("W56 · getCommissionRate — the five configured tiers are UNCHANGED (
     }
   });
 
-  it("still falls back to the literal MIRROR for a seeded tier whose row is missing", () => {
+  /* ══════════════════════════════════════════════════════════════════════════
+   * SUPERSEDED BY WAVE 184 · R156.2, and rewritten rather than deleted.
+   *
+   * This case used to assert the OPPOSITE: that a seeded tier whose row had been
+   * deleted still resolved to the literal MIRROR of Avi's table, with
+   * `source: "default"`. Wave 56 was right that the mirror was better than a 2%
+   * floor; owner ruling R156.2 then removed the mirror altogether — "None of the
+   * fees should be hardcoded anywhere" — because a compiled-in rate answering for
+   * a missing database row IS a fallback on a money surface.
+   *
+   * The case is kept, with its fixture intact, so the same scenario is still
+   * covered and the change in ruling is visible here instead of being a hole in
+   * the suite. What it now proves is that no number answers at all.
+   * ══════════════════════════════════════════════════════════════════════════ */
+  it("REFUSES for a seeded tier whose row is missing — the literal mirror is gone (R156.2)", () => {
     const db = rawDb();
     const saved = db.prepare(`SELECT tier, rate FROM partner_commission_rate_config WHERE tier='nexus'`).get() as { tier: string; rate: number };
     db.prepare(`DELETE FROM partner_commission_rate_config WHERE tier='nexus'`).run();
     try {
-      const r = getCommissionRate("nexus");
-      // The mirror value, not a floor: it must NOT be catalyst's rate.
-      expect(r.source).toBe("default");
-      expect(r.rate).toBe(saved.rate);
-      expect(r.rate).not.toBe(0.02);
+      expect(() => getCommissionRate("nexus")).toThrow(UnknownCommissionTierError);
+      let caught: unknown = null;
+      try { getCommissionRate("nexus"); } catch (e) { caught = e; }
+      expect((caught as Error).message).toContain("nexus");
+      /* Neither the mirror value nor the old 2% floor may be returned. */
+      expect(caught).not.toEqual({ rate: saved.rate, source: "default" });
+      expect(caught).not.toEqual({ rate: 0.02, source: "default" });
     } finally {
       db.prepare(`INSERT OR IGNORE INTO partner_commission_rate_config (tier, rate) VALUES (?,?)`).run(saved.tier, saved.rate);
     }
+    /* And the configured case is untouched: restoring the row restores the rate,
+     * byte-identical. This is the negative control that stops the refusal above
+     * from being an unconditional refusal. */
+    expect(getCommissionRate("nexus").rate).toBe(saved.rate);
+    expect(getCommissionRate("nexus").source).toBe("db");
   });
 });
 

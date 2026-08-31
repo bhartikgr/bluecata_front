@@ -80,6 +80,26 @@ export default function ClaimPositions() {
       // which is the exact complaint this feature answers.
       qc.invalidateQueries({ queryKey: ["/api/me/cashflows"] });
       qc.invalidateQueries({ queryKey: ["/api/investor/portfolio"] });
+      /* WAVE 183 - ITEM B FIX 1d. THE R137 TRAP, CAUGHT IN THE ACT.
+
+         The comment above is correct about the intent and the line above it was
+         invalidating the WRONG QUERY KEY. Every surface the LP actually opens -
+         `PortfolioCompanySwitcher`, the investor Dashboard - reads
+         `["/api/investor/portfolio2"]`. `/api/investor/portfolio` (no `2`) had no
+         client reader on the portfolio path at all. So the claim succeeded, the
+         alias row was written, this handler invalidated a cache nobody was
+         watching, and the LP sat looking at the same failure. That is the exact
+         complaint in R154.2: "Persists even after 'Check for earlier
+         investments' successfully linked ext_182fd266...6cd3."
+
+         Both keys are invalidated, not just the new one: `/api/investor/portfolio`
+         is still served and may have other readers, and an unnecessary refetch is
+         cheap while a stale portfolio is the defect. */
+      qc.invalidateQueries({ queryKey: ["/api/investor/portfolio2"] });
+      /* The entitlement gate itself is what returns 403 CAP_TABLE_REQUIRED, and it
+         is computed from the user context. If that is cached the gate keeps
+         refusing after a successful claim. */
+      qc.invalidateQueries({ queryKey: ["/api/me"] });
     },
   });
 

@@ -660,6 +660,53 @@ export const SPV_TAX_DOCUMENT_NOT_ON_RECORD = "Not on record";
 export const SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE =
   "This tells you which tax document to expect. It is information, not tax advice. Capavate does not work out your tax and does not file anything for you. Check your own position with your tax adviser.";
 
+/**
+ * WAVE 189 · ITEM A · R159.5 — THE STRONG, UNAMBIGUOUS DISCLAIMER.
+ *
+ * Owner, VERBATIM: *"Go ahead and finish all of the jurisdictions. Remember that
+ * this is high level guidance and not in any way a platform (Capavate or BluePrint
+ * Catalyst Limited) advice. There should be an explicit message to the GP/LP that
+ * they need to consult with their accounting firm, tax lawyer, etc. for advice. We
+ * need to have a strong and unambiguous disclaimer here."*
+ *
+ * WHY THIS IS A NEW CONSTANT AND NOT AN EDIT TO THE ONE ABOVE (R143.1). The
+ * existing `SPV_TAX_DOCUMENT_INFORMATIONAL_NOTICE` is CORRECT — it is simply
+ * milder than what the owner asked for. Rewording it would score as a REMOVED copy
+ * string in the silent-drop guard's inventory, because a replaced text node is one
+ * removal plus one addition. So the existing literal is kept BYTE-VERBATIM and this
+ * stronger statement is rendered as a STATIC SIBLING beside it, on both the GP and
+ * the LP surface. Nothing is allow-listed and nothing is suppressed.
+ *
+ * WHAT IT SAYS, AND WHY EACH PART IS THERE, since every clause traces to a phrase
+ * the owner used:
+ *   · "high-level guidance" — the owner's own characterisation of what this is.
+ *   · BOTH entities NAMED. The owner named two: Capavate AND BluePrint Catalyst
+ *     Limited. The existing notice names only Capavate, so an LP reading it could
+ *     reasonably think the disclaimer does not cover the other entity. Both are
+ *     named here, explicitly, and neither is described as giving advice.
+ *   · "is not tax, legal, accounting or investment advice" — "not in any way
+ *     advice" widened past tax alone, because a jurisdiction's entity treatment is
+ *     read as legal and accounting guidance as readily as tax guidance.
+ *   · "no professional relationship" — the clause that makes the disclaimer
+ *     UNAMBIGUOUS rather than merely present: it removes the reading that showing
+ *     sourced guidance creates a duty of care.
+ *   · THE EXPLICIT INSTRUCTION, naming an accounting firm and a tax lawyer, because
+ *     the owner asked for an explicit message that the reader must consult them.
+ *   · "before you file, or rely on any of it" — says WHEN, so the instruction is
+ *     actionable rather than decorative.
+ *   · "may be out of date" — honest: the underlying research is sourced and dated,
+ *     and tax law moves.
+ *   · "Your own position is your own responsibility" — the plainest available
+ *     statement of where responsibility sits.
+ *
+ * ADDRESSED TO "you", SINGULAR AND SHARED. The owner wrote "GP/LP", so one sentence
+ * is rendered to both audiences rather than two divergent ones that could drift
+ * apart. It states no jurisdiction, names no form and contains no figure, so it is
+ * safe on every one of the sixteen jurisdiction surfaces without variation.
+ */
+export const SPV_TAX_DOCUMENT_NO_ADVICE_DISCLAIMER =
+  "Important: this is high-level general information only. It is not tax, legal, accounting or investment advice, and neither Capavate nor BluePrint Catalyst Limited is giving you advice of any kind or acting as your adviser, agent or representative. Neither entity accepts any responsibility or liability for what you do with this information, and no professional relationship is created by showing it to you. Tax treatment depends on your own circumstances, your residence and your specific vehicle, and the position may be out of date or may not apply to you. You must consult your own accounting firm, your own tax lawyer or another qualified professional adviser about your own situation before you file anything or rely on any of this. Your own position is your own responsibility.";
+
 /** R77 plain language. Shown instead of a guessed form name. */
 export const SPV_TAX_DOCUMENT_NOT_ON_RECORD_NOTICE =
   "Capavate does not hold a confirmed tax document name for this jurisdiction, so it is not showing one. Naming the wrong form would be worse than naming none. Ask your general partner which document you will receive.";

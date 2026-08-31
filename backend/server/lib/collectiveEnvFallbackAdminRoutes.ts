@@ -31,6 +31,16 @@
 import type { Express, Request, Response } from "express";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
+/* WAVE 197 / R169 Item A.2 — this file returned raw exception text in a
+   response body. Admin-only is not a licence to leak: the body still crosses
+   the wire and still lands in a browser, and the owner's instruction is
+   verbatim "I don't want any exposure of our internal process." The EXISTING
+   sanitiser is wired; no second sanitiser was written. Every site keeps or
+   gains a log.error carrying the full raw message, so nothing an engineer had
+   is lost — the detail moves from the response to the log. */
+import { sanitizeErrorMessage } from "./sanitize";
+import { readFailureMessage, writeFailureMessage } from "./wave197FailureCopy";
+import { log } from "./logger";
 
 const VALID_TIERS = new Set(["basic", "standard", "premium"]);
 
@@ -53,7 +63,14 @@ export function registerCollectiveEnvFallbackAdminRoutes(app: Express): void {
         .all() as Array<{ airwallex_tier: string; use_env_fallback: number; id: string; status: string }>;
       res.json({ ok: true, rows: rows.map((r) => ({ tier: r.airwallex_tier, useEnvFallback: !!r.use_env_fallback, packageId: r.id, status: r.status })) });
     } catch (err) {
-      res.status(500).json({ ok: false, error: (err as Error).message });
+      /* WAVE 197 — READ. Raw text was in the `error` CODE field; it becomes a
+         stable code and the human sentence moves to `message`. */
+      log.error("[collectiveEnvFallbackAdmin.list] read failed:", (err as Error).message);
+      res.status(500).json({
+        ok: false,
+        error: "read_failed",
+        message: sanitizeErrorMessage(err, readFailureMessage("the Collective package settings")),
+      });
     }
   });
 
@@ -89,7 +106,16 @@ export function registerCollectiveEnvFallbackAdminRoutes(app: Express): void {
 
       res.json({ ok: true, tier, useEnvFallback: body.useEnvFallback });
     } catch (err) {
-      res.status(500).json({ ok: false, error: (err as Error).message });
+      /* WAVE 197 — WRITE. Wave 196's inventory listed only the read handler at
+         :56 and missed this one; it is recorded as a correction in W197_BUILD.md.
+         The UPDATE may have applied before the audit append threw, so the copy
+         must not claim nothing changed. */
+      log.error("[collectiveEnvFallbackAdmin.toggle] write failed:", (err as Error).message);
+      res.status(500).json({
+        ok: false,
+        error: "write_failed",
+        message: sanitizeErrorMessage(err, writeFailureMessage("saving this package setting")),
+      });
     }
   });
 }

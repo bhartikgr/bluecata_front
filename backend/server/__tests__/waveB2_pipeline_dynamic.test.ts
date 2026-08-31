@@ -17,6 +17,22 @@ import { registerSpvEngineRoutes } from "../spvEngineRoutes";
 import { registerPartnerPortfolioCompanyRoutes } from "../partnerPortfolioCompanyRoutes";
 import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { spvEngineStore } from "../spvEngineStore";
+/* WAVE 213 — the publish acknowledgement this route now enforces. */
+import {
+  PUBLISH_ACK_FIELD,
+  PUBLISH_CLAUSE_ID,
+  PUBLISH_CLAUSE_VERSION,
+  publishAcknowledgementText,
+} from "../../shared/wave213PublishGoverningClause";
+/* WAVE 214 — this route now requires the third-party authority confirmation
+   (typed name + the verbatim statement, hashed server-side). These fixtures are
+   updated to supply it because the ROUTE CONTRACT changed, not because the gate
+   was weakened for tests: the gate itself is proved over HTTP in
+   `server/__tests__/w214_third_party_authority_http.test.ts`. */
+import {
+  WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT as W214_STMT,
+} from "../../shared/wave214ThirdPartyAuthorityCopy";
+const W214_AUTH = { authorityTypedName: "Test Managing Partner", authorityStatementShown: W214_STMT };
 
 const MANAGING = "u_avi_managing";
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
@@ -135,6 +151,7 @@ describe("Wave B2 (3b) — company Publish/Make-Private + the on-Capavate invari
     const created = await post("/api/partner/me/portfolio-companies", MANAGING, {
       companyName: "On-Capavate Co",
       founderEmail: "oncap-founder@example.com",
+      ...W214_AUTH,
     });
     expect(created.status).toBe(201);
     const companyId = created.body.companyId as string;
@@ -142,11 +159,24 @@ describe("Wave B2 (3b) — company Publish/Make-Private + the on-Capavate invari
     // Find the pipeline deal the B1 path created for this company.
     const pipe = await request(app).get("/api/partner/me/pipeline").set("x-user-id", MANAGING);
     expect(pipe.status).toBe(200);
-    const deal = (pipe.body.pipeline as Array<{ id: string; companyId?: string | null }>).find((d) => d.companyId === companyId);
+    const deal = (pipe.body.pipeline as Array<{ id: string; dealName: string; companyId?: string | null }>).find((d) => d.companyId === companyId);
     expect(deal).toBeTruthy();
 
-    // Publish to Collective now succeeds (company is on Capavate).
-    const promo = await post(`/api/partner/me/pipeline/${deal!.id}/promote-to-collective`, MANAGING, {});
+    /* WAVE 213 · R98 PIN UPDATE — the pin is UPDATED, never deleted. This wave
+       made the publish-disclosure acknowledgement a server-enforced requirement on
+       this route, so a bare `{}` is now a 400 and this test would otherwise fail
+       for a reason that has nothing to do with what it exists to prove (that an
+       on-Capavate company publishes and then withdraws). The acknowledgement is
+       built from the shared module rather than retyped, so it cannot drift from
+       what the route rebuilds. Its ENFORCEMENT is proved in
+       `w213_publish_disclosure_http.test.ts`, not weakened here. */
+    const promo = await post(`/api/partner/me/pipeline/${deal!.id}/promote-to-collective`, MANAGING, {
+      [PUBLISH_ACK_FIELD]: {
+        clauseId: PUBLISH_CLAUSE_ID,
+        clauseVersion: PUBLISH_CLAUSE_VERSION,
+        text: publishAcknowledgementText(deal!.dealName),
+      },
+    });
     expect([200, 201]).toContain(promo.status);
     const promoId = promo.body.promotion?.id;
     expect(promoId).toBeTruthy();

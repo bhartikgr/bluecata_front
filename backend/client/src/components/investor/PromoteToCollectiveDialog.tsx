@@ -33,6 +33,36 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 220 · CLASS A · A4 — FOUR NAMED CHECKS AND AN SLA, NONE OF WHICH EXIST.
+ *
+ * This dialog told an investor that on submission "the Collective committee runs
+ * a streamlined diligence pass — usually within 2 business days — including M&A
+ * readiness scoring, cap-table verification, and founder readiness check."
+ *
+ * WHAT POST /api/investor/collective/promote ACTUALLY DOES, read end to end at
+ * server/sprint21PortfolioRoutes.ts:199-340: authenticate the investor; validate
+ * the body with zod; confirm the investor appears on the company's cap table;
+ * reject a duplicate nomination; write ONE hash-chained row; notify the founder;
+ * publish one bridge event; return 201. That is the whole of it. There is no
+ * committee, no diligence pass, no readiness score, no founder readiness check
+ * and no service-level commitment anywhere in the tree — no `diligencePass`, no
+ * `screeningCommittee`, no scoring job.
+ *
+ * R210.2 — a claim about work a party does not do cannot be made true, only
+ * withdrawn. R196.2 — and the "2 business days" could not be replaced by a
+ * measured figure either, because nothing measures one; saying no time is
+ * promised is the only honest form.
+ *
+ * The one real check IS retained in the corrected sentence: the cap-table
+ * membership test is genuine, so it is described rather than dropped. The
+ * NEXT paragraph ("The founder is automatically notified") was audited and is
+ * TRUE — emitNotification fires on the founder's resolved userId immediately
+ * after the insert commits — so it is untouched. One paragraph false, the next
+ * true, in the same dialog: that is why every candidate is read in place.
+ * ════════════════════════════════════════════════════════════════════════════ */
+const W220_RENDER_SUPERSEDED_COPY = false;
+
 interface PromoteToCollectiveDialogProps {
   companyId: string;
   companyName: string;
@@ -122,9 +152,11 @@ export function PromoteToCollectiveDialog({
             this company's readiness to present.
           </p>
           <p>
-            Once submitted, the Collective committee runs a streamlined diligence
-            pass — usually within 2 business days — including M&A readiness
-            scoring, cap-table verification, and founder readiness check.
+            Once submitted, your nomination is recorded and the founder is
+            notified. Capavate checks that you appear on this company's cap table
+            at that moment. No committee reviews your nomination, no M&A
+            readiness score is computed, no check is performed on the founder,
+            and no review time is promised.
           </p>
           <p>
             The founder is{" "}
@@ -217,6 +249,14 @@ export function PromoteToCollectiveDialog({
             </Tooltip>
           </TooltipProvider>
         </DialogFooter>
+        {/* WAVE 220 · A4 · R195.5 — RETIRED IN PLACE, NOT DELETED. Appended as
+            the LAST sibling inside DialogContent so nothing above it renumbers.
+            Byte-identical to the paragraph that stood above, so the guard's copy
+            identity survives. Identifier flag, not `{false && ...}`, which
+            detect.mjs folds and marks a SUPPRESSION. */}
+        {W220_RENDER_SUPERSEDED_COPY ? (
+          <div hidden aria-hidden="true" data-testid="w220-superseded-promote-diligence">Once submitted, the Collective committee runs a streamlined diligence pass — usually within 2 business days — including M&A readiness scoring, cap-table verification, and founder readiness check.</div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

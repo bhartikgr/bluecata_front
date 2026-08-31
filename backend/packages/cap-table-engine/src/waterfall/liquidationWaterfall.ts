@@ -17,6 +17,9 @@
 import { D, Decimal, ZERO } from "../primitives/bigDecimal.js";
 import { hashFormulaDef } from "../primitives/hash.js";
 import type { TraceStep, Region } from "../types.js";
+/* WAVE 193 · R165.1 — the ONE absent-vs-mixed decision, shared with the
+   conversion denominator in `captable/compute.ts`. */
+import { isMixedCurrency, describeStatedCurrencies } from "../primitives/currencySet.js";
 
 export type WaterfallClass = {
   classId: string;
@@ -27,6 +30,24 @@ export type WaterfallClass = {
   participating: boolean;
   participationCapMultiple?: number;
   seniority: number;            // 0 = most senior
+  /**
+   * WAVE 193 · R165.1 — THE UNIT OF `invested`. THIS FIELD DID NOT EXIST.
+   *
+   * The waterfall's central comparison is
+   * `max(invested × liquidationPreferenceMultiple, asConvertedShareOfExitProceeds)`,
+   * and `preferenceCashExcluding` SUMS `invested` across every class into one
+   * preference stack that is then SUBTRACTED FROM THE EXIT PROCEEDS. Both
+   * operations are arithmetic across amounts whose units were, until this wave,
+   * not recorded anywhere on the type — so the waterfall could not have refused a
+   * mixed-currency input even if it had wanted to: there was nothing to compare.
+   * R156.1 forbids converting, so recording the unit is the only way a refusal is
+   * possible at all.
+   *
+   * OPTIONAL, and absence is never mixing. Every existing caller omits it, and
+   * every existing waterfall therefore behaves exactly as it does today. See
+   * `primitives/currencySet.ts` for why absent is read as "not yet stated".
+   */
+  currency?: string;
 };
 
 export type WaterfallCommonHolder = {
@@ -57,6 +78,15 @@ export type WaterfallInput = {
    * au_cgt_50_percent_discount_eligible: true in the trace.
    */
   auCgtDiscountEligible?: boolean;
+  /**
+   * WAVE 193 · R165.1 — the unit of `exitProceeds`. Also new, and also optional.
+   * It belongs in the same commensurability check as the classes' `currency`,
+   * because the preference stack is subtracted FROM the exit proceeds and each
+   * class's preference is compared AGAINST a share of them: proceeds stated in one
+   * currency against a preference stated in another is the same corruption one
+   * level up. Omitted by every existing caller.
+   */
+  exitProceedsCurrency?: string;
 };
 
 export type WaterfallPayout = {
@@ -76,7 +106,45 @@ export type WaterfallOutput = {
   trace: TraceStep;
 };
 
+/**
+ * WAVE 193 · R165.1 — THE EXIT-WATERFALL REFUSAL.
+ *
+ * Raised when the amounts this function must add, subtract and compare are
+ * recorded in two or more DIFFERENT STATED currencies. Capavate converts no
+ * currency (R156.1), so there is no honest payout to return: every class's total
+ * would be a number derived from adding incommensurable quantities, and an exit
+ * waterfall is a document people are paid against. Refuse, with the reason.
+ *
+ * ABSENCE IS NOT MIXING — an input that states no currency at all, which is every
+ * caller in the tree today, computes exactly as it does now.
+ */
+export class MixedCurrencyWaterfallError extends Error {
+  readonly code = "mixed_currency_exit_waterfall" as const;
+  readonly field = "invested" as const;
+  constructor(readonly statedCurrencies: string) {
+    super(
+      `This exit waterfall cannot be computed: the amounts it must add and compare are recorded in more ` +
+      `than one currency (${statedCurrencies}), and Capavate does not convert currency. The waterfall ` +
+      `subtracts the TOTAL of every class's liquidation preference from the exit proceeds, and compares ` +
+      `each class's preference against its share of those same proceeds — so amounts in different ` +
+      `currencies would produce payouts that are not quantities, while still summing to the exit ` +
+      `proceeds and looking correct. Record the exit proceeds and every preferred class in a single ` +
+      `currency, and this will compute.`,
+    );
+    this.name = "MixedCurrencyWaterfallError";
+  }
+}
+
 export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
+  /* WAVE 193 · R165.1 — refuse BEFORE any amount is read, so no partial payout,
+     no trace step and no conserved-total illusion is produced from a mixed set.
+     The set is every preferred class's unit plus the exit proceeds' own unit. */
+  const waterfallCurrencies: Array<string | undefined> = input.preferred.map((p) => p.currency);
+  waterfallCurrencies.push(input.exitProceedsCurrency);
+  if (isMixedCurrency(waterfallCurrencies)) {
+    throw new MixedCurrencyWaterfallError(describeStatedCurrencies(waterfallCurrencies));
+  }
+
   const grossExit = D(input.exitProceeds);
   const whtRate = input.withholdingTaxRate ? D(input.withholdingTaxRate) : ZERO;
   const whtAmount = whtRate.gt(0) ? grossExit.mul(whtRate) : ZERO;

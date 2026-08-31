@@ -68,7 +68,23 @@ export function nonEmpty(v: string | null | undefined, fallback: string): string
 
 /* ---------------- BUG-01/02/21 identity display guards (rule #13) ---------------- */
 
-const PLACEHOLDER_NAMES = new Set(["new", "new user", "user", "investor", "—", "-"]);
+/* ═══ WAVE 190 · ITEM C — THE SET NOW LIVES IN `shared/`, AND IT INCLUDES
+   "new contact".
+
+   THE DEFECT. `"New contact"` — the literal the CRM create paths use as their
+   own no-name fallback — was NOT in this set, so a stored `"New contact"` was
+   treated as a person and `safeInitials` printed "NC" on the owner's real
+   account (`ozan@capavate.com`).
+
+   WHY IT MOVED RATHER THAN JUST GROWING. The write side has to enforce the same
+   set: a screen that stops printing "NC" while the database keeps accepting
+   `"New contact"` as somebody's name has hidden the defect, not fixed it. Two
+   copies of the literals is how they drift, and this drift is exactly what
+   happened here. The original six literals are preserved byte-for-byte in
+   `PLACEHOLDER_PERSON_NAMES`, so nothing that used to be caught stops being
+   caught, and `isPlaceholderToken` below keeps its name and signature so every
+   existing caller is untouched. */
+import { isPlaceholderPersonName } from "@shared/placeholderPersonNames";
 
 /** True when the token looks like an email address (has an "@"). */
 export function looksLikeEmail(v: string | null | undefined): boolean {
@@ -76,7 +92,7 @@ export function looksLikeEmail(v: string | null | undefined): boolean {
 }
 
 function isPlaceholderToken(v: string): boolean {
-  return PLACEHOLDER_NAMES.has(v.trim().toLowerCase());
+  return isPlaceholderPersonName(v);
 }
 
 /**

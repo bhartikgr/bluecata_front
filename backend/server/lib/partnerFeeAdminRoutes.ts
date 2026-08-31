@@ -31,6 +31,32 @@ import {
  * prices are never put on the wire. Publishing is best-effort by construction
  * (the publisher swallows its own failures) so it can never fail a repricing. */
 import { publishFeeScheduleChanged, publishFeeScheduleChangedForTier } from "./wave15FeeScheduleAggregate";
+/* WAVE 180 · ITEM A SITE 1 — the platform's cross-currency contract (WAVE 21). */
+import {
+  addToBucket,
+  singleCurrencyScalar,
+  bucketsToArray,
+  type CurrencyBuckets,
+} from "./currencyScalar";
+/* WAVE 188 · ITEMS A + C · R159.3 — the admin-surface display policy ("one tier
+ * for all consortium partners") and the billing period the platform OFFERS.
+ * Both are read/write here because /admin/fees is the only surface that owns
+ * them. Neither is on any charge path: see partnerFeeAdminDisplayPolicy.ts. */
+import {
+  readFeeAdminDisplayPolicy,
+  writeFeeAdminDisplayPolicy,
+  readBillingPeriodOffer,
+  writeBillingPeriodOffer,
+  FeeAdminDisplayPolicyRefusal,
+} from "./partnerFeeAdminDisplayPolicy";
+/* WAVE 207 · ITEM A — the fee-basis fence, installed from a NON-SACRED layer.
+ * Migration 0217 adds `basis_dimension` (CHECK: capital is not a permitted basis) and
+ * the two triggers that refuse a band on a flat basis. A database bootstrapped from the
+ * SACRED, FROZEN `server/db/connection.ts` instead of the numbered runner has neither —
+ * and this file is the write path that could otherwise create the exact row the fence
+ * exists to make unrepresentable. So the write path installs it for itself. Additive
+ * only; it cannot move an amount (see server/lib/wave207FeeBasisPolicy.ts). */
+import { ensureWave207FeeBasisDimension } from "./wave207FeeBasisPolicy";
 
 const FEE_KINDS = new Set([
   "subscription_monthly",
@@ -113,6 +139,7 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     }
     const id = `pfs_${crypto.randomBytes(6).toString("hex")}`;
     const now = nowIso();
+    ensureWave207FeeBasisDimension(rawDb()); /* WAVE 207 · ITEM A — fence present before the insert. */
     const tier = b.tier === undefined || b.tier === "" ? null : b.tier;
     const currency = (b.currency && typeof b.currency === "string") ? b.currency : "USD";
     const sizeMin = (typeof b.sizeBandMin === "number") ? b.sizeBandMin : null;
@@ -128,6 +155,14 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     } catch (err) {
       const msg = (err as Error).message || "";
       if (/UNIQUE/i.test(msg)) return res.status(409).json({ ok: false, error: "duplicate_schedule", message: "A fee schedule for this tier/fee-kind/band already exists." });
+      /* WAVE 207 · ITEM A — the fee-basis fence refused this shape. The DATABASE is the
+         authority here, so its own sentence is surfaced rather than paraphrased: it names
+         the permitted dimensions and what to do next, and it is under the 240-character
+         `looksHuman` ceiling. Without this branch the refusal arrived as a generic 500,
+         which tells an administrator nothing about how to proceed. */
+      if (/WAVE207\/0217 fee basis/.test(msg) || /basis_dimension/.test(msg)) {
+        return res.status(409).json({ ok: false, error: "fee_basis_not_permitted", message: msg });
+      }
       return res.status(500).json({ ok: false, error: "insert_failed", message: sanitizeErrorMessage(err) });
     }
     appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.created", { id, ...b });
@@ -139,6 +174,7 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
   /* ---- Update an existing fee schedule row (amount/currency/bands/window) ---- */
   app.patch("/api/admin/partner-fees/:id", (req: Request, res: Response) => {
     const id = req.params.id;
+    ensureWave207FeeBasisDimension(rawDb()); /* WAVE 207 · ITEM A — fence present before the update. */
     const existing = rawDb().prepare(`SELECT * FROM partner_fee_schedules WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
     const b = req.body as {
@@ -156,11 +192,21 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       effective_from: b.effectiveFrom !== undefined ? b.effectiveFrom : existing.effective_from,
       effective_to: b.effectiveTo !== undefined ? b.effectiveTo : existing.effective_to,
     };
-    rawDb().prepare(
-      `UPDATE partner_fee_schedules
-         SET amount_minor = ?, currency = ?, size_band_min = ?, size_band_max = ?, effective_from = ?, effective_to = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(next.amount_minor, next.currency, next.size_band_min, next.size_band_max, next.effective_from, next.effective_to, nowIso(), id);
+    try {
+      rawDb().prepare(
+        `UPDATE partner_fee_schedules
+           SET amount_minor = ?, currency = ?, size_band_min = ?, size_band_max = ?, effective_from = ?, effective_to = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(next.amount_minor, next.currency, next.size_band_min, next.size_band_max, next.effective_from, next.effective_to, nowIso(), id);
+    } catch (err) {
+      /* WAVE 207 · ITEM A — same reasoning as the create path above: the fence's own
+         sentence, not an uncaught 500. Every other failure keeps its existing behaviour. */
+      const msg = (err as Error).message || "";
+      if (/WAVE207\/0217 fee basis/.test(msg) || /basis_dimension/.test(msg)) {
+        return res.status(409).json({ ok: false, error: "fee_basis_not_permitted", message: msg });
+      }
+      throw err;
+    }
     appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.updated", { id, ...b });
     /* CP-BRG-07 — the tier is read off the EXISTING row, not the request body:
      * this route cannot move a row between tiers, so `existing.tier` is the
@@ -312,20 +358,95 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
                        pbe.commission_pct AS commissionPct, pbe.commission_minor AS commissionMinor,
                        pbe.status, pbe.paid_at AS paidAt, pbe.created_at AS createdAt,
                        pbe.spv_fund_id AS spvFundId, pbe.computed_via AS computedVia,
-                       c.display_name AS partnerName
+                       c.display_name AS partnerName,
+                       /* WAVE 180 · ITEM A SITE 1 — partner_billing_entries has no
+                          currency column of its own (migration 0054), but the
+                          currency of an SPV-fee entry IS derivable through the
+                          vehicle. This is byte-for-byte the join and COALESCE the
+                          currency-aware sibling endpoint already uses
+                          (partnerSelfServiceRoutes.ts, GET /api/partner/me/spv-fees),
+                          so the two endpoints can no longer disagree about the
+                          currency of the same row. */
+                       COALESCE(s.deployment_fee_currency, 'USD') AS currency,
+                       (s.deployment_fee_currency IS NULL) AS currencyIsDefaulted
                 FROM partner_billing_entries pbe
                 LEFT JOIN contacts c ON c.id = pbe.partner_id
+                LEFT JOIN spvs s ON s.id = pbe.spv_fund_id
                 ${where}
                 ORDER BY pbe.created_at DESC`)
       .all(...params) as any[];
-    // Totals by status (commission_minor is the billable amount for every kind).
-    const totals = { pending: 0, paid: 0, all: 0 };
+    /* WAVE 180 · ITEM A SITE 1 — THE DEFECT AND THE FIX.
+     *
+     * Totals used to be three bare `+=` accumulators over `commissionMinor`
+     * with no currency key at all, and admin/PartnerPL.tsx then printed them
+     * through a formatter whose currency argument DEFAULTS to USD. A CAD SPV fee
+     * and a USD SPV fee were added into one figure and the figure was labelled in
+     * dollars. The sibling partner-facing endpoint has keyed its totals per
+     * currency since it was written; only the admin view was wrong.
+     *
+     * Now: one bucket per ISO code, and a single scalar ONLY when exactly one
+     * code is present (server/lib/currencyScalar.ts). Mixed ⇒ the three scalars
+     * are null and `totalsByCurrency` carries the truth; the page states the
+     * scope rather than printing a converted number. NO FX RATE IS INVENTED —
+     * this platform has no rate source.
+     *
+     * `currencyIsDefaulted` is carried out honestly rather than hidden: a
+     * referral-commission entry has no `spv_fund_id`, so no currency is recorded
+     * against it anywhere and the COALESCE default applies. That is the same USD
+     * these rows have always been reported in, so nothing shifts — but the count
+     * is now stated on screen instead of being an unexamined assumption. */
+    const buckets: Record<"pending" | "paid" | "all", CurrencyBuckets> = { pending: {}, paid: {}, all: {} };
+    let entriesWithoutRecordedCurrency = 0;
     for (const e of entries) {
-      totals.all += e.commissionMinor || 0;
-      if (e.status === "paid") totals.paid += e.commissionMinor || 0;
-      else if (e.status === "pending") totals.pending += e.commissionMinor || 0;
+      const ccy = String(e.currency || "USD");
+      const minor = e.commissionMinor || 0;
+      if (e.currencyIsDefaulted) entriesWithoutRecordedCurrency += 1;
+      addToBucket(buckets.all, ccy, minor);
+      if (e.status === "paid") addToBucket(buckets.paid, ccy, minor);
+      else if (e.status === "pending") addToBucket(buckets.pending, ccy, minor);
     }
-    res.json({ ok: true, entries, totals, total: entries.length });
+    const allScalar = singleCurrencyScalar(buckets.all, "USD");
+    const paidScalar = singleCurrencyScalar(buckets.paid, "USD");
+    const pendingScalar = singleCurrencyScalar(buckets.pending, "USD");
+    const totals = {
+      pending: pendingScalar.available ? pendingScalar.minor : null,
+      paid: paidScalar.available ? paidScalar.minor : null,
+      all: allScalar.available ? allScalar.minor : null,
+    };
+    /* WAVE 180 · ITEM A SITE 1 — EACH SCALAR CARRIES ITS OWN CURRENCY, and the
+     * reason is a live trap this wave's own test surfaced. The three buckets are
+     * resolved INDEPENDENTLY, so on a genuinely mixed ledger a sub-bucket can
+     * still be single-currency: a partner with a USD entry, a CAD entry and an
+     * HKD entry where only the CAD one is settled has a `paid` bucket that is
+     * entirely CAD. `totals.paid` is then a real number — but `totalsCurrency`,
+     * which describes the `all` bucket, is null, and any consumer reaching for a
+     * `|| "USD"` default would print CA$1,200.00 as $1,200.00. That is the exact
+     * defect this site was opened for, surviving one level down.
+     * So the label travels with the figure. A null here means "that bucket has no
+     * single currency", and it is null in precisely the cases where the matching
+     * entry in `totals` is also null. */
+    const totalsCurrencyByBucket = {
+      pending: pendingScalar.available ? pendingScalar.currency : null,
+      paid: paidScalar.available ? paidScalar.currency : null,
+      all: allScalar.available ? allScalar.currency : null,
+    };
+    res.json({
+      ok: true,
+      entries,
+      totals,
+      totalsCurrency: allScalar.available ? allScalar.currency : null,
+      totalsCurrencyByBucket,
+      totalsAvailable: allScalar.available,
+      totalsUnavailableReason: allScalar.available ? null : allScalar.reason,
+      totalsCurrencies: allScalar.available ? [allScalar.currency] : allScalar.currencies,
+      totalsByCurrency: {
+        all: bucketsToArray(buckets.all),
+        paid: bucketsToArray(buckets.paid),
+        pending: bucketsToArray(buckets.pending),
+      },
+      entriesWithoutRecordedCurrency,
+      total: entries.length,
+    });
   });
 
   /* ---- Mark a partner billing entry as paid (manual reconciliation) ---- */
@@ -507,5 +628,123 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       source: seat.source,
     };
     res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct, arrangement, seats });
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   *  WAVE 188 · ITEM A · R159.3 — THE SINGLE-TIER DISPLAY POLICY
+   * ═══════════════════════════════════════════════════════════════════════════
+   *  THE OWNER'S WORDS: "How can I mute 'tiers' so that I only have one tier for
+   *  all consortium partners?"
+   *
+   *  These two routes read and write ONE row of ONE table that no charge path
+   *  opens (see server/lib/partnerFeeAdminDisplayPolicy.ts for why that
+   *  separation is the whole design). Nothing here can move a charged amount, and
+   *  nothing here deletes a tier, a tier price or a capability. It changes which
+   *  tiers the ADMIN PICKERS offer, and it is reversible with the same switch.
+   *
+   *  Both are under the router-level requireAdmin gate in routes.ts, like every
+   *  other endpoint in this file.
+   * ═══════════════════════════════════════════════════════════════════════════ */
+
+  /* ---- Read the display policy, the live tier list, and what is offered ---- */
+  app.get("/api/admin/fee-admin-display-policy", (_req: Request, res: Response) => {
+    try {
+      res.json({ ok: true, policy: readFeeAdminDisplayPolicy() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "policy_read_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  /* ---- Set the display policy. Refusals name the missing fact, in words ---- */
+  app.put("/api/admin/fee-admin-display-policy", (req: Request, res: Response) => {
+    const actor = requireActorOrRefuse(req, res);
+    if (!actor) return;
+    const b = req.body as { singleTierMode?: unknown; canonicalTierSlug?: unknown };
+    if (typeof b?.singleTierMode !== "boolean") {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_single_tier_mode",
+        message: "singleTierMode must be true or false.",
+      });
+    }
+    /* `undefined` deliberately KEEPS the previously chosen tier, so switching the
+       mode off and on again does not ask the owner to re-answer. `null` clears. */
+    const slug =
+      b.canonicalTierSlug === undefined
+        ? undefined
+        : b.canonicalTierSlug === null
+          ? null
+          : String(b.canonicalTierSlug);
+    try {
+      const policy = writeFeeAdminDisplayPolicy({
+        singleTierMode: b.singleTierMode,
+        canonicalTierSlug: slug,
+        actor,
+      });
+      appendAdminAudit(actor, "partner_tier_admin_display_policy:singleton", "partner_tier_display_policy.updated", {
+        singleTierMode: policy.singleTierMode,
+        canonicalTierSlug: policy.canonicalTierSlug,
+      });
+      res.json({ ok: true, policy });
+    } catch (err) {
+      if (err instanceof FeeAdminDisplayPolicyRefusal) {
+        /* 422: the request was understood and is being refused for a stated
+           reason the owner can act on — not a malformed request, and not a
+           server fault. The message is written for the owner, not for a log. */
+        return res.status(422).json({ ok: false, error: err.code, code: err.code, message: err.message });
+      }
+      res.status(500).json({ ok: false, error: "policy_write_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   *  WAVE 188 · ITEM C · R159.3 — WHICH BILLING PERIOD IS OFFERED
+   * ═══════════════════════════════════════════════════════════════════════════
+   *  THE OWNER'S WORDS: "Remember, I don't want to have 'monthly' at this point
+   *  (although it should be an option on the platform). I want annual fees."
+   *
+   *  The flags already existed on partner_pricing_model_config, already read
+   *  annual-only, and had NO WRITER anywhere in the tree and no surface showing
+   *  them — so the owner could not see that annual-only was already true. These
+   *  routes expose the existing setting. No default changes; monthly stays fully
+   *  implemented, priceable and one switch away.
+   * ═══════════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/admin/billing-period-offer", (_req: Request, res: Response) => {
+    try {
+      res.json({ ok: true, offer: readBillingPeriodOffer() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "offer_read_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  app.put("/api/admin/billing-period-offer", (req: Request, res: Response) => {
+    const actor = requireActorOrRefuse(req, res);
+    if (!actor) return;
+    const b = req.body as { annualOffered?: unknown; monthlyOffered?: unknown };
+    if (typeof b?.annualOffered !== "boolean" || typeof b?.monthlyOffered !== "boolean") {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_offer_flags",
+        message: "annualOffered and monthlyOffered must both be true or false.",
+      });
+    }
+    try {
+      const offer = writeBillingPeriodOffer({
+        annualOffered: b.annualOffered,
+        monthlyOffered: b.monthlyOffered,
+        actor,
+      });
+      appendAdminAudit(actor, "partner_pricing_model_config:singleton", "partner_billing_period_offer.updated", {
+        annualOffered: offer.annualOffered,
+        monthlyOffered: offer.monthlyOffered,
+      });
+      res.json({ ok: true, offer });
+    } catch (err) {
+      if (err instanceof FeeAdminDisplayPolicyRefusal) {
+        return res.status(422).json({ ok: false, error: err.code, code: err.code, message: err.message });
+      }
+      res.status(500).json({ ok: false, error: "offer_write_failed", message: sanitizeErrorMessage(err) });
+    }
   });
 }

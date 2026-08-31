@@ -32,6 +32,44 @@ import { spvEngineStore, computeCapImpact } from "../spvEngineStore";
 import { seedTestPartnerSandbox } from "../partnerWorkspaceStore";
 import { rawDb } from "../db/connection";
 import { lpInvestorIdForEmail } from "../lib/lpIdentity";
+/* WAVE 226 · R202 — wave 211 made an operator attestation MANDATORY on
+   POST /api/partner/me/spv/:spvId/lp-commit. Every proof in this file starts by
+   seating an LP through that route, so without the attestation the route was
+   refused 400 and this file fell to ZERO passing tests. C-T3 — THE K-1 PIN, the
+   assertion this file's own header calls "the one that matters most" — never
+   executed at all. It was MASKED, not failing.
+
+   This fixture supplies the attestation because the ROUTE CONTRACT changed. It is
+   NOT a bypass: no flag is set, no store is written in place of the route, and
+   nothing about the gate is relaxed or narrowed. The keys are read from the shared
+   module both sides import so this fixture cannot drift from the server's
+   spelling. The gate itself is proved over HTTP in
+   `server/__tests__/wave211_money_event_gate_http.test.ts`.
+
+   The LP-commitment slot stores no basis of determination (it is not a money
+   event in wave 211's sense) but does store the currency confirmation — see
+   `SLOTS` in `server/wave211MoneyEventAttestationStore.ts`. Ticks are the boolean
+   `true`, never `1` and never "true": wave 211 refuses a truthy-but-not-true tick
+   deliberately, and a fixture leaning on that coercion would be leaning on a
+   defect. */
+import {
+  W211_BODY_KEY_VERSION,
+  W211_BODY_KEY_SIGNED_NAME,
+  W211_BODY_KEY_TICK_1,
+  W211_BODY_KEY_TICK_2,
+  W211_BODY_KEY_TICK_3,
+  W211_BODY_KEY_CURRENCY_CONFIRMED,
+  W211_LP_COMMIT_ATTESTATION_VERSION,
+} from "../../shared/wave211MoneyEventAttestation";
+
+const W226_COMMIT_ATT = {
+  [W211_BODY_KEY_VERSION]: W211_LP_COMMIT_ATTESTATION_VERSION,
+  [W211_BODY_KEY_SIGNED_NAME]: "Avi Managing",
+  [W211_BODY_KEY_TICK_1]: true,
+  [W211_BODY_KEY_TICK_2]: true,
+  [W211_BODY_KEY_TICK_3]: true,
+  [W211_BODY_KEY_CURRENCY_CONFIRMED]: true,
+} as const;
 
 const MANAGING = "u_avi_managing";
 const PARTNER_ID = "ac_consortium_partner_test_partner_inc";
@@ -65,6 +103,7 @@ function commit(spvId: string, email: string, amountWholeUnits: string, units = 
     investorEmail: email,
     amount: amountWholeUnits,
     shares: units,
+    ...W226_COMMIT_ATT, /* WAVE 226 · R202 — see the note at the imports */
   });
 }
 
@@ -177,6 +216,11 @@ describe("C-T3 — _fundsConfirmations SURVIVES a cap-override write", () => {
     expect(over.body.cap.overCap).toBe(true);
     expect(over.body.cap.overrideRecorded).toBe(true);
 
+    /* WAVE 226 — the pin below is now REACHED. Before wave 226 the two commits
+       above were refused 400 by wave 211's gate, `expect(first.status).toBe(201)`
+       threw, and none of the following assertions ran: a regression that assigned
+       `terms` wholesale and destroyed `_fundsConfirmations` would have shipped
+       with this file merely "already red". */
     // THE PIN: the funds confirmation is still there, byte-for-byte, read through
     // the store's own reader — the one every K-1 surface uses.
     const afterBag = spvEngineStore.confirmedByInvestor(PARTNER_ID, spvId);
