@@ -28,6 +28,9 @@ import {
   PARTNER_PIPELINE_STAGES,
   PARTNER_PIPELINE_STAGE_LABELS,
   PARTNER_PIPELINE_STAGE_DESCRIPTIONS,
+  /* WAVE 229 — the same canonicaliser the server's Dashboard aggregation calls,
+     so the kanban columns and the Dashboard stage counts cannot disagree. */
+  canonicalizeStage,
   type PartnerPipelineStageKey,
 } from "@shared/crmStages";
 import { describeFailure } from "@/lib/failureMessage";
@@ -313,7 +316,22 @@ export default function PartnerPipeline() {
 
   if (!role.ready || !role.identity) return null;
   const byStage: Record<Stage, Deal[]> = { invited: [], viewed: [], soft_circle: [], signed: [], funded: [], committed: [] };
-  for (const d of q.data?.pipeline ?? []) { if (byStage[d.stage]) byStage[d.stage].push(d); }
+  /* WAVE 229 — ONE QUANTITY, ONE DERIVATION.
+     This loop used to read `if (byStage[d.stage]) byStage[d.stage].push(d)`,
+     which SILENTLY DISCARDED any deal still carrying a legacy stage value
+     (sourcing / sourced / qualifying / committee / closed_won / closed_lost).
+     The server's Dashboard aggregation has always run those values through
+     `canonicalizeStage` — its own comment requires that a legacy stage "must NOT
+     be silently dropped from dashboard/pipeline aggregations" — but the function
+     lived in a server module the client could not import, so the kanban ran the
+     other derivation. Two derivations of one count, able to disagree, with the
+     guard against exactly that failure placed where only half the platform
+     could reach it.
+
+     `canonicalizeStage` now lives in `@shared/crmStages`, beside the label map
+     this file already imports from there, and BOTH sides call it. Every deal
+     lands in a canonical column; none is dropped. */
+  for (const d of q.data?.pipeline ?? []) { byStage[canonicalizeStage(d.stage)].push(d); }
   const spvList: SpvRow[] = Array.isArray(spvQ.data) ? spvQ.data : (spvQ.data?.spvs ?? []);
   // Wave B2 (3b) — bucket each SPV into its lifecycle column BY ITS status, so an
   // SPV automatically appears under the correct box; when its status changes it

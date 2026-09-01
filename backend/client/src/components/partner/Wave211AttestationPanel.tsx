@@ -67,6 +67,7 @@ import {
   type Wave211AttestationFacts,
   type Wave211AttestationKind,
 } from "@shared/wave211MoneyEventAttestation";
+import { wave274bSplitAtxHeading } from "@shared/wave274bAtxHeading";
 
 /** The navy this platform's sign-off blocks already use. */
 const W211_NAVY = "#041E41";
@@ -171,6 +172,26 @@ export function useWave211Attestation(kind: Wave211AttestationKind) {
  */
 function Wave211AgreementQuote({ kind }: { kind: Wave211AttestationKind }) {
   const quote = wave211AgreementSection(wave211CpaMarkerFor(kind));
+  /* WAVE 274b · R221.4 — PRESENTATION ONLY.
+
+     Every slice starts at its markdown marker, so `## 5. SPV Formation &
+     Administration` used to reach the screen with the hash marks visible. The
+     split below is LOSSLESS (`shared/wave274bAtxHeading.ts`): the marker is the
+     only thing that does not render, and the invariant
+     `marker + heading + separator + body === quote` is asserted byte-for-byte,
+     with no normalising call on either side, in
+     `__tests__/w274b_legal_panel_markdown_dom.test.tsx`.
+
+     The heading, the newline and the body all stay inside the SAME `<pre>`, so a
+     single `textContent` read reconstructs the whole quote. Splitting them across
+     two elements would have made the proof reassemble bytes from two DOM nodes
+     plus a guessed newline, and a guess is not a proof. It also leaves this
+     panel's child sequence exactly as it was — nothing inserted between siblings.
+
+     `<strong>` is INLINE on purpose. The parent is `whitespace-pre-wrap`, so the
+     `{split.separator}` newline is what breaks the line; a block-level heading
+     would break it a second time. */
+  const split = quote === null ? null : wave274bSplitAtxHeading(quote);
   return (
     <div
       className="rounded border p-2 text-xs"
@@ -180,7 +201,7 @@ function Wave211AgreementQuote({ kind }: { kind: Wave211AttestationKind }) {
       <div className="font-medium" data-testid="w211-agreement-quote-heading">
         {wave211CpaQuoteHeadingFor(kind)}
       </div>
-      {quote === null ? (
+      {quote === null || split === null ? (
         <div className="mt-1 text-rose-700" data-testid="w211-agreement-quote-unavailable">
           {W211_CPA_QUOTE_UNAVAILABLE}
         </div>
@@ -189,7 +210,12 @@ function Wave211AgreementQuote({ kind }: { kind: Wave211AttestationKind }) {
           className="mt-1 whitespace-pre-wrap font-sans text-[11px] text-[var(--cv-color-text-secondary)]"
           data-testid="w211-agreement-quote-text"
         >
-          {quote}
+          {split.hasHeading ? (
+            <strong
+              className="text-[12px] font-semibold text-[var(--cv-color-text-primary)]"
+              data-testid="w211-agreement-quote-section-heading"
+            >{split.heading}</strong>
+          ) : null}{split.hasHeading ? split.separator : ""}{split.hasHeading ? split.body : quote}
         </pre>
       )}
       <a

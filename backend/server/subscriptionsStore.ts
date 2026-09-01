@@ -24,6 +24,11 @@ import {
   subscriptionsHistory as subscriptionsHistoryTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+/* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
+import {
+  wave230HiddenSubscriptionCompanyIds,
+  wave230SubscriptionVisible,
+} from "./lib/wave230DisplayExclusion";
 
 /* ---------- Schema ---------- */
 
@@ -837,7 +842,19 @@ export async function hydrateSubscriptionsStore(): Promise<void> {
 
 export function registerSubscriptionRoutes(app: Express): void {
   app.get("/api/admin/subscriptions", (_req: Request, res: Response) => {
-    res.json({ subscriptions: listSubscriptions() });
+    /* WAVE 230D · R228 — the admin subscriptions table excludes records marked
+       as test data, by the subscription's own mark UNIONED with its company's,
+       which is exactly the predicate computeKpis already applies to the reported
+       revenue. Filtering here rather than inside listSubscriptions() is
+       deliberate: listSubscriptions() is also the read path for provisioning and
+       billing logic, and hiding a row from a decision is not the same thing as
+       hiding it from a screen. With nothing marked the set is empty and the
+       response is byte-identical. */
+    const w230Hidden = wave230HiddenSubscriptionCompanyIds();
+    const subscriptions = listSubscriptions().filter((s) =>
+      wave230SubscriptionVisible(w230Hidden, s.companyId),
+    );
+    res.json({ subscriptions });
   });
 
   app.get("/api/admin/subscriptions/:companyId", (req: Request, res: Response) => {

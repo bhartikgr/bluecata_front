@@ -236,6 +236,53 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
   const layers = layersQ.data?.layers ?? [];
   const layerRows = layers.filter((l) => l.layer === tab);
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 234 — THE AUTHORITY SENTENCE, WHERE THE FIELD IT EXPLAINS IS READ.
+     ═══════════════════════════════════════════════════════════════════════════
+     THIS IS A PLACEMENT FIX AND NOTHING ELSE. The band document cited the wrong
+     constant; the preflight correction is right and I verified it against the
+     code before building:
+
+       - The six labelled fields already exist (the `<dl>` immediately below).
+       - The sentence already exists — `SPV_ON_BEHALF_GATE_COPY
+         .AUTHORITY_ARTIFACT_REQUIRED` (~:569). It is NOT
+         `MF_ERROR_COPY.AUTHORITY_ARTIFACT_REQUIRED` (:137), which is different
+         wording for a different moment (creating the engagement, not reading it).
+       - The predicate already exists — `localSpvOnBehalfBlockers` (:596).
+
+     So nothing is authored here. The gap is that the "Authority artifact" field
+     renders a bare em-dash when no artifact is on record, and the sentence that
+     explains that dash lives in `SpvOnBehalfPanel`, further down the page and
+     framed as a reason a VEHICLE cannot be created. A partner reading the
+     engagement summary sees "—" and is told nothing where they are looking.
+
+     WHAT THIS DOES NOT DO:
+       - It does not surface an authority fingerprint. It renders ONLY when the
+         artifact reference is ABSENT, so there is no populated value to leak and
+         no unproved fingerprint is displayed anywhere.
+       - It excludes Mode B (co-seat) — `e.mode === "A"`. A co-seat engagement is
+         not missing an artifact; it does not need one, and telling a Mode B
+         partner to "record one" would be false.
+       - It gates NOTHING. No control is hidden, disabled or reordered, and the
+         existing panel below is untouched. This is additive text only (R190.10).
+       - It claims no check. The sentence states what is not on record; it does
+         not say anything is verified, and it says nothing about any person.
+       - It renders no figure and no money.
+
+     WHY AN IDENTIFIER FLAG AND NOT AN INLINE `&&`: `drop:restyle` reads a literal
+     `{false && …}` as a SUPPRESSION. A named boolean cannot be mistaken for one.
+
+     WHY THE CONSTANT AND NOT THE TEXT: inlining the sentence as literal JSX would
+     create a second copy identity for wording that already has one, which later
+     reads as a DROP when either copy moves. Rendering the constant keeps one
+     source of wording, so the guard's copy count is expected UNCHANGED, not risen.
+
+     WHY A `div` AND NOT A PANEL: `div` is not in the guard's `PANEL_TAGS`, so
+     appending it inside the existing card renumbers no sibling panel. */
+  const authorityArtifactMissingModeA =
+    e.mode === "A" &&
+    localSpvOnBehalfBlockers(e).includes(SPV_ON_BEHALF_GATE_COPY.AUTHORITY_ARTIFACT_REQUIRED);
+
   return (
     <div data-testid="mf-detail">
       <Link href="/collective/partner/managed-founders" className="text-sm text-[var(--cv-color-primary)] hover:underline" data-testid="mf-detail-back">← Back to Managed Founders</Link>
@@ -254,6 +301,15 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
           <div><dt className="text-[var(--cv-color-text-muted)]">Matter</dt><dd>{e.matterId ?? "—"}</dd></div>
           <div><dt className="text-[var(--cv-color-text-muted)]">Created</dt><dd>{e.createdAt ? new Date(e.createdAt).toLocaleDateString() : "—"}</dd></div>
         </dl>
+        {/* WAVE 234 — appended AFTER the grid, as its sibling, not as a seventh
+            cell. It is a statement about the engagement, not a labelled field,
+            and putting it inside the `<dl>` would misalign the two-and-three
+            column layout at every breakpoint. See the block comment above. */}
+        {authorityArtifactMissingModeA && (
+          <div className="mt-3 text-sm text-amber-900" data-testid="mf-detail-authority-note">
+            {SPV_ON_BEHALF_GATE_COPY.AUTHORITY_ARTIFACT_REQUIRED}
+          </div>
+        )}
       </div>
 
       {/* ORP-031 — mode change (PATCH .../mode, server/managedFounderRoutes.ts:130)

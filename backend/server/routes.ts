@@ -14,7 +14,10 @@ import Decimal from "decimal.js"; // v25.51 8a — exact PPS×shares target deri
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+/* WAVE 242 — `execSync` was imported here for the inlined git-sha fallback only;
+   that fallback now lives in ./lib/buildIdentity and nothing else in this file
+   shells out, so the import is removed rather than left dangling. */
+import { resolveBuildIdentity } from "./lib/buildIdentity";
 import {
   companies,
   securities,
@@ -187,7 +190,7 @@ import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
 import { registerBridgeRoutes } from "./bridgeStore";
 import { registerNotificationsRoutes } from "./notificationsStore";
-import { registerEmailRoutes } from "./emailStore";
+import { registerEmailRoutes, countOutboxByStatus } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
 import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog, reportAuditWriteOutcome } from "./adminPlatformStore";
 /* WAVE 212 · R186.2 — the authorised sign-off a founder must give before a round
@@ -445,6 +448,9 @@ import { registerChapterAdminRoutes } from "./chapterAdminRoutes";
 import { registerChapterAdminDashboardRoutes } from "./chapterAdminDashboardStore";
 import { registerAdminDlqRoutes } from "./adminDlqRoutes";
 import { registerAuditChainRoutes } from "./auditChainRoutes"; /* v19 Phase C */
+import { registerWave230AdminRoutes } from "./wave230AdminRoutes"; /* wave 230B */
+/* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
+import { wave230CompanyVisible, wave230HiddenCompanyIds } from "./lib/wave230DisplayExclusion";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
 import { listMembersForCompany as listCapTableMembersForCompany } from "./membershipStore";
 import { emitNotification } from "./notificationsStore";
@@ -574,6 +580,10 @@ import { closedStatement as roundClosedStatement } from "../shared/roundClose";
 /* WAVE 83 · ITEM 2.2 — the ONE rule for a past target close date, shared with
    the two client writers so no screen can enforce a different rule. */
 import { pastTargetCloseNotice } from "../shared/roundTargetCloseRule";
+/* WAVE 244 — the platform's single definition of "the round name is missing".
+   Imported by this route, by server/roundsStore.ts and by the create wizard's
+   step 1, so all three agree. See shared/roundNameRequired.ts. */
+import { roundNameIsMissing } from "../shared/roundNameRequired";
 import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
@@ -1924,6 +1934,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerChapterAdminRoutes(app);
   registerChapterAdminDashboardRoutes(app);
   registerAuditChainRoutes(app); /* v19 Phase C */
+  /* WAVE 230B — admin set/unset + excluded-records filter for test-data
+     exclusion. Additive: adds endpoints under /api/admin, narrows nothing. */
+  registerWave230AdminRoutes(app);
 
   /* ------------ Patch v10 — Admin Dead-Letter Queue (BUG-17) ------------ */
   registerAdminDlqRoutes(app);
@@ -2082,19 +2095,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     log.error({ route: "health.version", errorType: "version_unresolved", message: "FAILED to resolve version — APP_VERSION env unset and package.json not found" });
     return "unknown";
   })();
-  // Server-side build marker. Prefer explicit env (deploy-injected), else derive
-  // from git at boot. Never fail boot if git is unavailable — degrade to "unknown".
-  const buildSha = (() => {
-    if (process.env.BUILD_SHA) return process.env.BUILD_SHA;
-    if (process.env.GIT_SHA) return process.env.GIT_SHA;
-    try {
-      return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
-        .toString()
-        .trim() || "unknown";
-    } catch {
-      return "unknown";
-    }
-  })();
+  /* Server-side build marker. Prefer explicit env (deploy-injected), else derive
+     from git at boot. Never fail boot if git is unavailable — degrade to "unknown".
+     WAVE 242 — the resolver above used to be inlined here, and `server/lib/sentry.ts`
+     resolved the same question from `GIT_SHA` ALONE. On a deploy that sets
+     BUILD_SHA and not GIT_SHA — the order this very function prescribes — healthz
+     reported the build while every Sentry event carried no release at all. Both now
+     call ONE resolver (`server/lib/buildIdentity.ts`), which is also where the
+     precedence order and the "unknown" degradation are documented. Behaviour of
+     this value is unchanged: same three sources, same order, same fallback string,
+     and STILL RESOLVED EXACTLY ONCE PER `registerRoutes` CALL — the resolver is
+     deliberately uncached and this line is the single call site, so nothing shells
+     out per request and a second registration with a different environment still
+     re-resolves (which `__tests__/wfix4_item7_build_marker.test.ts:83` requires). */
+  const buildIdentity = resolveBuildIdentity();
+  const buildSha = buildIdentity.sha;
   const buildTime = process.env.BUILD_TIME || new Date(SERVER_START).toISOString();
   app.get("/api/healthz", (_req, res) => {
     const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
@@ -2131,15 +2146,68 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        stays on the admin-gated `GET /api/admin/platform-truth`. */
     let bypassFields: ReturnType<typeof healthzBypassFields> | null = null;
     try { bypassFields = healthzBypassFields(); } catch { /* never let telemetry break the healthcheck */ }
+    /* WAVE 242 — the real email backlog, or `null` when it cannot be read.
+       Never a hardcoded zero. Wrapped because the rule above still holds:
+       never let telemetry break the healthcheck. */
+    let emailOutboxBacklog: number | null = null;
+    try { emailOutboxBacklog = countOutboxByStatus().queued; } catch { emailOutboxBacklog = null; }
+    /* WAVE 242 — non-fatal conditions, each pushed only from a signal measured
+       above. This exists so a monitor can alert on the bridge and the backlogs
+       WITHOUT `ok` going false on a normal live install. */
+    const degraded: string[] = [];
+    if (!dbOk) degraded.push("database_unreachable");
+    if (!bridgeEnvOk) degraded.push("bridge_env_not_ok");
+    if (!bridgeOutboundConfigured) degraded.push("bridge_outbound_not_configured");
+    if (bridgeOutboxBacklog > 0) degraded.push("bridge_outbox_backlog");
+    if (outboxOverflowCount > 0) degraded.push("comms_outbox_overflow");
+    if (emailOutboxBacklog === null) degraded.push("email_outbox_unmeasured");
+    else if (emailOutboxBacklog > 0) degraded.push("email_outbox_backlog");
+    if (bypassFields === null) degraded.push("dev_bypass_state_unmeasured");
+    else if (bypassFields.devIdentityBypassActive) degraded.push("dev_identity_bypass_active");
+    /* ══ WAVE 242 ═══════════════════════════════════════════════════════════
+       `ok` USED TO BE THE LITERAL `true`, eight lines below a comment
+       complaining that this endpoint "reported `ok: true` the whole time" while
+       the bridge pointed at a host that did not resolve. It now reflects the two
+       things this process can actually attest to: it is serving this request,
+       and `getDb()` succeeded. `dbOk` was already computed at the top of this
+       handler and already published as `dbConnected`, so nothing new is
+       measured — the literal simply stops being a literal.
+
+       WHAT `ok` DELIBERATELY DOES **NOT** INCLUDE, and why. On live,
+       `bridgeEnvOk: false` and a bridge backlog in the hundreds are the STEADY
+       STATE, and this endpoint is how the developer confirms an install and the
+       only reason a version fix is trusted. Folding those into `ok` would report
+       a healthy install as a failure and cost him a working deploy. They are
+       reported faithfully, unchanged, in their own fields, and additionally
+       collected into the APPENDED `degraded` array so a monitor can alert on
+       them without the install check going red. `okBasis` is appended for the
+       same reason: `ok: true` on its own invites the reading "everything is
+       fine", which is the reading that let a months-long misconfiguration hide.
+
+       THE HTTP STATUS STAYS 200 IN THE DEGRADED CASE. `applyRouteGuards.ts` and
+       `rateLimit.ts` both exempt this path as infrastructure, and the install
+       check and every portal footer read it; a non-200 for a normal live
+       condition would break all of them. Nothing here changes the status code.
+
+       NO FIELD IS RENAMED OR REMOVED. External monitors and the deploy runbook
+       read these names. Everything new is APPENDED. */
     res.json({
-      ok: true,
+      ok: dbOk,
       version,
       buildSha,
       buildTime,
       uptimeSec: Math.floor((Date.now() - SERVER_START) / 1000),
       dbConnected: dbOk,
       bridgeOutboxBacklog,
-      emailOutboxBacklog: 0,
+      /* WAVE 242 — was the hardcoded literal `0`: a fabricated zero on an
+         endpoint whose entire subject is a fabricated truth value, and a claim
+         that no email was waiting to go out that nothing had checked. There IS a
+         real queue — `server/emailStore.ts` keeps `status: "queued"` rows and
+         exports `countOutboxByStatus()` — so this is now measured. If the
+         measurement itself fails, the field is `null` and
+         `email_outbox_unmeasured` appears in `degraded`: an unknown backlog must
+         never be reported as an empty one. */
+      emailOutboxBacklog,
       bridgeEnvOk,
       bridgeOutboundConfigured,
       bridgeOutboxQueued: outbox.filter(e => e.status === "queued").length,
@@ -2148,6 +2216,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       disableDevBypassSet: bypassFields?.disableDevBypassSet ?? null,
       devIdentityBypassAlarm: bypassFields?.devIdentityBypassAlarm ?? null,
       timestamp: new Date().toISOString(),
+      /* WAVE 242 — APPENDED FIELDS ONLY, after every pre-existing key. */
+      okBasis: "process_is_serving_and_getDb_succeeded",
+      /* Which of the three precedence steps produced `buildSha`. "unresolved"
+         means the build is UNIDENTIFIED — the developer needs to be able to tell
+         that apart from a sha the deploy injected, because "unknown" printed in
+         a footer looks like a value. */
+      buildShaSource: buildIdentity.source,
+      emailOutboxBacklogMeasured: emailOutboxBacklog !== null,
+      /* Non-fatal conditions that are TRUE right now. Empty array = none of them,
+         which is a measurement, not a default: every entry is pushed from a real
+         signal above. A monitor alerts on this; the install check reads `ok`. */
+      degraded,
     });
   });
 
@@ -7998,8 +8078,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return Number.isFinite(t) && t > Date.now();
       };
 
-      // name non-empty
-      if (!body.name || String(body.name).trim().length === 0) {
+      /* ── WAVE 244 · ONE PREDICATE, NOT TWO ────────────────────────────────
+         The condition was `!body.name || String(body.name).trim().length === 0`.
+         It is now the shared predicate `roundNameIsMissing`, which is the SAME
+         function `server/roundsStore.ts` and the create wizard's step 1 call. The
+         semantics are unchanged — the predicate is that expression, trim and all
+         — but there is no longer a second, independently-maintained copy of the
+         rule that could drift from the client's.
+         THE SENTENCE BELOW IS DELIBERATELY NOT REPLACED with the shared constant.
+         Rewriting a live error string here is exactly what the silent-drop guard
+         exists to catch, and this wave has no business editing an error-mapping
+         layer. Alignment is held by a test that drives this route over a real
+         socket and asserts this body is byte-identical to
+         ROUND_NAME_REQUIRED_MESSAGE:
+         server/__tests__/w244_round_name_required_shared_rule.test.ts */
+      if (roundNameIsMissing(body.name)) {
         fieldErrors.name = "Round name is required.";
       }
       // targetAmount > 0 — except a COMMON priced round, which collects only
@@ -9365,7 +9458,16 @@ export function registerAdminCompaniesFullRoute(app: Express) {
       };
     });
 
-    res.json({ rows });
+    /* WAVE 230D · R228/R230.6 — the admin company list stops rendering records
+       an operator has explicitly marked as test data. PER-RECORD: the predicate
+       is this row's own company id, never its tenant. With nothing marked the
+       set is empty and `rows` is byte-identical to before. A read failure inside
+       wave230ExcludedIds returns an EMPTY set, i.e. nothing excluded, which is
+       today's behaviour — it can never blank the list. Every hidden row remains
+       listed and restorable at GET /api/admin/test-data/excluded. */
+    const w230Hidden = wave230HiddenCompanyIds();
+    const visibleRows = rows.filter((r) => wave230CompanyVisible(w230Hidden, r.id));
+    res.json({ rows: visibleRows });
   };
   app.get("/api/admin/companies/full", requireAdmin, adminCompaniesFullHandler);
   // v23.9 B7: bare alias so clients that hit /api/admin/companies (without the

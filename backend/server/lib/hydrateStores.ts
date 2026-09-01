@@ -30,6 +30,12 @@
  */
 
 import { hydrateUserCredentialsStore } from "../userCredentialsStore";
+import {
+  AUDIT_LOG_CHAIN_TABLE,
+  AUDIT_CHAIN_VERIFIER_CANONICAL,
+  AUDIT_CHAIN_HISTORY_SOURCE_BOOT,
+  AUDIT_CHAIN_HISTORY_RETENTION_PER_KEY,
+} from "../../shared/auditChainHistory";
 import { hydrateSubscriptionsStore as realHydrateSubscriptions } from "../subscriptionsStore";
 // v24.2 Airwallex wiring — Capavate checkout-subscription store (DB-backed,
 // keyed by PaymentIntent id). Sync hydrate wrapped to the async contract below.
@@ -625,7 +631,14 @@ export async function runAuditChainBootVerifier(
   for (let i = 0; i < bounded.length; i++) {
     const t = bounded[i];
     lastTenantId = t.tenant_id;
+    // WAVE 238 — the run is timed so the history row can state a real
+    // duration instead of a placeholder. Nothing about the verify call itself
+    // changes; verifyTenantAuditChain is called, never edited.
+    const vrStartedAt = new Date().toISOString();
+    const vrT0 = Date.now();
     const vr = verifyTenantAuditChain(db, t.tenant_id);
+    const vrFinishedAt = new Date().toISOString();
+    const vrDurationMs = Date.now() - vrT0;
     if (vr.ok) {
       healthy++;
       // Wave A-1 v2.3 (Opus v2.2 P3-A): write 'ok' via INSERT-ON-CONFLICT
@@ -667,6 +680,96 @@ export async function runAuditChainBootVerifier(
       } catch (err) {
         log.warn(`[audit-chain-verifier] failed to write incident for ${t.tenant_id}:`, (err as Error).message);
       }
+    }
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 238 · FIX A — RETAIN A HISTORY OF VERIFICATION RUNS.
+
+       Before this wave the platform kept a VERDICT (audit_chain_health, one
+       row per tenant, overwritten on every tick) and no HISTORY at all, so
+       /admin/audit-chain-verify said "No past verifications recorded." for a
+       chain that had in fact been verified on every single restart.
+
+       This is APPEND-ONLY and it is deliberately so:
+         • no ON CONFLICT clause — a history row is never updated;
+         • the id is unique per run, so two ticks never collide;
+         • nothing above is touched. The audit_chain_health upsert, both of its
+           detail strings and its warn-and-continue behaviour are unchanged.
+
+       R220.4: this records what the CANONICAL verifier
+       (verifyTenantAuditChain, called above) actually found. The quarterly
+       twin is not called, imported or scheduled from here.
+
+       Counts are taken from the verifier's own return value and nothing is
+       invented:
+         • verified — for a clean chain, every link. For a broken one, the
+           links BEFORE the break (vr.brokenAt is a 0-based index into the
+           post-genesis rows, so it is also the count that verified). The -2
+           and -3 sentinels mean the walk never started, so zero verified.
+         • broken   — the walker STOPS at the first bad link. It therefore
+           knows of exactly one. Writing `totalLinks - verified` here would
+           claim knowledge of every subsequent link that the verifier never
+           looked at.
+         • broken_first_id — NULL. verifyTenantAuditChain returns an index, not
+           a row id, and this wave does not edit it. A NULL that means "not
+           reported" is honest; a guessed id would not be.
+       ══════════════════════════════════════════════════════════════════════ */
+    try {
+      const verifiedLinks = vr.ok
+        ? vr.totalLinks
+        : vr.brokenAt >= 0
+          ? vr.brokenAt
+          : 0;
+      db.prepare(
+        `INSERT INTO audit_chain_verifications
+           (id, tenant_id, chapter_id, table_name, verified_count, broken_count,
+            broken_first_id, total_rows, duration_ms, started_at, finished_at, details_json)
+         VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+      ).run(
+        `acv_${AUDIT_CHAIN_HISTORY_SOURCE_BOOT}_${vrT0}_${i}_${Math.random().toString(36).slice(2, 10)}`,
+        t.tenant_id,
+        AUDIT_LOG_CHAIN_TABLE,
+        verifiedLinks,
+        vr.ok ? 0 : 1,
+        vr.preGenesisRowCount + vr.totalLinks,
+        vrDurationMs,
+        vrStartedAt,
+        vrFinishedAt,
+        JSON.stringify({
+          verifier: AUDIT_CHAIN_VERIFIER_CANONICAL,
+          source: AUDIT_CHAIN_HISTORY_SOURCE_BOOT,
+          ok: vr.ok,
+          brokenAtIndex: vr.ok ? null : vr.brokenAt,
+          brokenFirstIdReported: false,
+          walkerStopsAtFirstBreak: true,
+          genesisApplied: vr.genesisApplied,
+          preGenesisRowCount: vr.preGenesisRowCount,
+        }),
+      );
+      /* Retention — see AUDIT_CHAIN_HISTORY_RETENTION_PER_KEY in
+         shared/auditChainHistory.ts for the reasoning. Newest N CLEAN rows are
+         kept per (tenant_id, table_name); a row that recorded a break is never
+         in the prune set, so the 2026-08-10 incident record cannot be removed
+         by retention. No row is ever modified, re-hashed or re-ordered. */
+      db.prepare(
+        `DELETE FROM audit_chain_verifications
+          WHERE tenant_id = ? AND table_name = ? AND broken_count = 0
+            AND id NOT IN (
+              SELECT id FROM audit_chain_verifications
+               WHERE tenant_id = ? AND table_name = ? AND broken_count = 0
+               ORDER BY started_at DESC, id DESC
+               LIMIT ?
+            )`,
+      ).run(
+        t.tenant_id,
+        AUDIT_LOG_CHAIN_TABLE,
+        t.tenant_id,
+        AUDIT_LOG_CHAIN_TABLE,
+        AUDIT_CHAIN_HISTORY_RETENTION_PER_KEY,
+      );
+    } catch (err) {
+      // Same posture as the health writes above: a history failure must never
+      // stop the boot verifier from verifying chains.
+      log.warn(`[audit-chain-verifier] failed to record verification history for ${t.tenant_id}:`, (err as Error).message);
     }
     if ((i + 1) % 8 === 0 && i + 1 < bounded.length) {
       await new Promise((r) => setImmediate(r));

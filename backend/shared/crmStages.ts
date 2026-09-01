@@ -228,3 +228,40 @@ export const PARTNER_PIPELINE_DEFAULT_STAGE: PartnerPipelineStageKey = "invited"
 export function isPartnerPipelineStage(v: unknown): v is PartnerPipelineStageKey {
   return typeof v === "string" && (PARTNER_PIPELINE_STAGES as readonly string[]).includes(v);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 229 — ONE STAGE CANONICALISATION, SHARED BY BOTH SIDES OF THE WIRE.
+
+   `canonicalizeStage` and its legacy remap lived ONLY in
+   `server/partnerWorkspaceStore.ts`, so only the server half of the platform
+   could reach it. The partner Dashboard aggregation called it; the partner
+   Pipeline kanban could not, and instead bucketed with
+   `if (byStage[d.stage])`, which SILENTLY DISCARDS any deal whose `stage` is
+   still a legacy value. One quantity — "how many deals are in this pipeline" —
+   with two derivations that can disagree, and the guard against exactly that
+   failure was written once and placed where only half the platform could use
+   it. The definition therefore moves HERE, beside
+   `PARTNER_PIPELINE_STAGE_LABELS`, which client and server already share, and
+   `server/partnerWorkspaceStore.ts` RE-EXPORTS it so every existing import
+   site is byte-unchanged (R195.5 — nothing is deleted, nothing is moved out
+   from under a caller).
+
+   Mirrors migration 0088, which remaps rows AT REST. A row inserted before
+   that migration, or by a path that skipped canonicalisation, must NOT be
+   silently dropped from any aggregation.
+   ═══════════════════════════════════════════════════════════════════════════ */
+export const PARTNER_PIPELINE_LEGACY_STAGE_REMAP: Record<string, PartnerPipelineStageKey> = {
+  sourcing: "invited",
+  sourced: "invited",
+  qualifying: "viewed",
+  committee: "soft_circle",
+  closed_won: "funded",
+  closed_lost: "invited",
+};
+
+export function canonicalizeStage(stage: string): PartnerPipelineStageKey {
+  if ((PARTNER_PIPELINE_STAGES as readonly string[]).includes(stage)) {
+    return stage as PartnerPipelineStageKey;
+  }
+  return PARTNER_PIPELINE_LEGACY_STAGE_REMAP[stage] ?? PARTNER_PIPELINE_DEFAULT_STAGE;
+}

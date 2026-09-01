@@ -61,7 +61,7 @@ export default function PartnerTeam() {
   /* w-partner F-new3 — `seatLimit` is the EFFECTIVE cap resolved server-side
      (per-partner override, else tier default). Optional so an older/cached
      response simply falls back to the previous count-only banner. */
-  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; seatLimit?: number; activeSeats?: number; meta?: { duplicateSeatCount?: number } }>({
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; seatLimit?: number; activeSeats?: number; pendingCount?: number; meta?: { duplicateSeatCount?: number } }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
@@ -196,7 +196,26 @@ export default function PartnerTeam() {
      discarded — the surplus is what the consolidation note below reports. */
   const renderedMembers = q.data?.members ?? [];
   const activeCount = renderedMembers.filter((m) => m.status === "active").length;
-  const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;
+  /* WAVE 229 — ONE QUANTITY, ONE DERIVATION: "pending invitations".
+     This line used to read
+       (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length
+     — a SECOND derivation of a quantity the server already computes. The
+     `invitations` array is built from a process-local RAM array; the Dashboard
+     tile and the seat-limit enforcement path both use
+     `countPendingByPartner()`, which reads the durable table and takes the
+     higher of durable and RAM, because a restarted server or a second instance
+     sees an empty RAM array. The two derivations could therefore disagree, and
+     the banner was the one that under-reported — telling a partner at their cap
+     that fewer invitations were outstanding than enforcement was counting.
+
+     The banner now renders the enforcement figure. Where the server figure is
+     absent (an older or cached response, or the request still in flight) it
+     renders an em dash rather than a zero: an unmeasured pending count must not
+     be shown as "0 pending", which is a fabricated reassurance about seat
+     capacity. The identifier keeps its name so the banner's own copy is
+     byte-unchanged. */
+  const serverPendingCount = q.data?.pendingCount;
+  const pendingCount: number | string = serverPendingCount ?? "\u2014";
   /* w-partner F-new3 — 9999 is the nexus/founding_member sentinel for "no cap"
      (adminContactsStore.ts:235 TIER_SEAT_LIMITS); rendering the digits would
      read as a real limit. */

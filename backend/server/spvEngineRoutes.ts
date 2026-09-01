@@ -116,6 +116,13 @@ import { normaliseSpvTermsHurdle, PERCENT_FIELD_OUT_OF_DOMAIN, PERCENT_FIELD_UNK
    the logger that joins it to the internal code (R77 permits the code in a log). */
 import { mintRefusalIncidentCode } from "./lib/refusalIncidentCode";
 import { log } from "./lib/logger";
+/* WAVE 231 — the platform fee layer's ACTUAL state, for disclosure at the moment
+   of agreement. Pure classifier; the probe is the store's single resolver. */
+import { probeFee } from "./lib/spvFeeScheduleStore";
+import {
+  spvPlatformFeeDisclosure,
+  type SpvPlatformFeeDisclosure,
+} from "@shared/spvPlatformFeeDisclosure";
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
@@ -283,6 +290,19 @@ function err(res: Response, e: unknown): Response {
     INVALID_UNITS_PCT: 400, SPV_WOUND_DOWN: 409,
     INVESTOR_NOT_IN_PARTNER_TENANT: 403, INVESTOR_TENANT_CHECK_FAILED: 500,
     INVALID_LP_VISIBILITY: 400, NOT_AN_LP: 403,
+    /* WAVE 237 — mirrors spvTemplateStore's CAP_BELOW_TARGET. Well-formed request,
+       incoherent amounts: 400, same class as INVALID_AMOUNT (already mapped above).
+
+       THIS ONE LINE IS THE WHOLE ROUTE-SIDE CHANGE, and that is deliberate. My
+       first version ALSO added a dedicated `if (msg === "CAP_BELOW_TARGET")` branch
+       further down to attach the plain-language sentence. Disarming that branch left
+       all 36 tests GREEN, which is how I found it was DEAD CODE: the generic block
+       at ~:540 ("Every OTHER code this module can raise that HAS plain-language
+       copy") already attaches `message` and `guidance` to ANY code that has BOTH a
+       registry entry and an entry in this map. So the correct change is this line
+       plus the copy in `shared/spvSubscriptionRefusalCopy.ts` — nothing else. The
+       branch was removed. */
+    CAP_BELOW_TARGET: 400,
     INVALID_MANDATE_MODE: 400, MANDATE_DESCRIPTION_REQUIRED: 400, MANDATE_DESCRIPTION_TOO_LONG: 400,
     /* WAVE 82 · ITEM 2 — a negative GP commitment is a client error. */
     INVALID_GP_COMMIT: 400,
@@ -860,6 +880,35 @@ export function buildPartnerLpRosterPayload(
     };
 }
 
+/**
+ * WAVE 231 — resolve the platform fee layer for the wizard's disclosure.
+ *
+ * Kept out of the route body so it can be reasoned about in one piece, and so
+ * the route stays a payload assembler. It performs NO pricing: `computeFeeMinor`
+ * is deliberately not called, because there is no base amount at wizard time and
+ * pricing a fee against a base that does not exist is how a zero gets invented.
+ * Only the SCHEDULE ROW is read, and only its rate fields are looked at.
+ *
+ * `basis === "fixed"` is the schedule's own marker for "a flat amount, no rate"
+ * (`SPV_FEE_BASIS_HELP.fixed`: "A flat amount in minor units. No rate applies."),
+ * so it is the correct discriminator for `pricesARate` rather than a guess based
+ * on which column happens to be null.
+ */
+function wizardPlatformFeeDisclosure(partnerId: string): SpvPlatformFeeDisclosure {
+  const probe = probeFee("platform_carry", { partnerId });
+  return spvPlatformFeeDisclosure({
+    readable: probe.readable,
+    row:
+      probe.row === null
+        ? null
+        : {
+            rateScaled: probe.row.rateScaled,
+            scale: probe.row.scale,
+            pricesARate: probe.row.basis !== "fixed",
+          },
+  });
+}
+
 export function registerSpvEngineRoutes(app: Express): void {
   /* ── wizard bootstrap: defaults-over-inputs + carry-basis help ─────────── */
   app.get("/api/partner/me/spv-wizard/defaults", requirePartnerAuth, (req: Request, res: Response) => {
@@ -877,6 +926,32 @@ export function registerSpvEngineRoutes(app: Express): void {
       },
       carryBasisHelp: SPV_CARRY_BASIS_HELP,
       clonableSpvs: priorSpvs.map((s) => ({ id: s.id, name: s.name, jurisdiction: s.jurisdiction, carryBasis: s.carryBasis })),
+      /* ════════════════════════════════════════════════════════════════
+         WAVE 231 — DISCLOSE THE PLATFORM FEE AT THE POINT OF COMMITMENT.
+         ════════════════════════════════════════════════════════════════
+         Step 3 of this wizard told the GP the platform fee is "read-only to you"
+         and that its percentage "is shown on this SPV's Fees tab once applied" —
+         a price term withheld at the moment of agreement. It turns out there is
+         no percentage: the platform layer is seeded INACTIVE at 0. So the honest
+         disclosure is not a figure, it is a sentence.
+
+         A SEPARATE, ADDITIVE KEY. Every existing key of this payload is
+         byte-for-byte what it was, so every current reader is untouched;
+         `platformFeeDisclosure` is a new sibling a reader either uses or ignores.
+
+         SCOPE. `partnerId` only — no `spvId` exists yet on this screen. The
+         resolver's own ladder (spv → partner → platform:'*') then answers with
+         the most specific row that actually applies to THIS partner, so a
+         partner-specific rate is disclosed correctly without this route knowing
+         anything about the ladder.
+
+         NO FABRICATED ZERO CROSSES THIS BOUNDARY. `percentDisplay` is non-null
+         only when an ACTIVE row carries a NON-ZERO, exactly-representable rate.
+         An inactive row, a zero rate, an unreadable store and a flat-amount row
+         each produce a sentence and a null figure. See
+         `shared/spvPlatformFeeDisclosure.ts` for why "0%" is the one thing this
+         surface must never say. */
+      platformFeeDisclosure: wizardPlatformFeeDisclosure(ctx.partnerId),
     });
   });
 
@@ -992,6 +1067,17 @@ export function registerSpvEngineRoutes(app: Express): void {
       if (mandateDraft) {
         spvEngineStore.validateMandateDraft(mandateDraft as Parameters<typeof spvEngineStore.validateMandateDraft>[0]);
       }
+      /* WAVE 237 — MONEY VALIDATION, IN THE PRE-FLIGHT.
+         Placed here for the same reason wave 86B placed the fee/mandate checks
+         here: this is above `recordSignoff`, the first write. `createSpv` runs
+         BELOW it, so validating only in the store would leave an orphaned
+         sign-off record behind on every money refusal. Same function the store
+         calls — `validateCreateMoney` delegates to `assertValidSpvMoney` — so
+         there is one rule, not two, and it cannot drift. NEW WRITES ONLY: no
+         existing vehicle is read, re-checked, rejected or altered. */
+      spvEngineStore.validateCreateMoney(
+        createBody as Parameters<typeof spvEngineStore.validateCreateMoney>[0],
+      );
 
       /* ══ WAVE 179 · ITEM A · R151.1 — THE TARGET-COMPANY FENCE ══════════════
          "A partner must never attribute an SPV to a client they do not manage."

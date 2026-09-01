@@ -52,17 +52,63 @@ const PORTAL_META: Record<Portal, { label: string; icon: typeof Briefcase; subti
 // AuthShell left-panel tagline/subline now reflect the chosen audience.
 const PORTAL_BRAND_COPY: Record<Portal, { tagline: string; subline: string }> = {
   founder: {
+    // WAVE 274a · R221.1 — same Class A claim as AuthShell's DEFAULT_TAGLINE, and
+    // the same withdrawal. The founder portal carried its own copy of the
+    // sentence, so removing the word in one place only would have left the claim
+    // live on /auth/login?portal=founder. See AuthShell.tsx:32 for the reasoning.
     tagline:
-      "Run your cap table, structure your rounds, and turn every shareholder into a verified contact — in one place.",
+      "Run your cap table, structure your rounds, and turn every shareholder into a contact you can reach — in one place.",
     subline: "Activate the network already inside your ownership structure.",
   },
   investor: {
+    // WAVE 236 · R225/R227 — THE CLAIM WAVE 274a MISSED.
+    //
+    // Wave 274a withdrew the word "verified" from `AuthShell`'s `DEFAULT_TAGLINE`
+    // and from the FOUNDER object above, and a test fences both. It did not reach
+    // the INVESTOR object in this same file, so `/auth/login?portal=investor`
+    // — the surface an invited investor lands on before their first action — still
+    // told them two things the platform does not do:
+    //
+    //   "your invitations are verified before you act"  — no check exists. An
+    //   invitation is issued by an issuer and recorded; nobody validates it.
+    //   "Invitation-only access to verified ownership"  — the ownership is not
+    //   verified by Capavate. It is what the company recorded on its own register.
+    //
+    // Both are corrected the same way the rest of wave 236 corrects claims: not by
+    // deleting the argument, but by stating where the data comes from. That is the
+    // actual differentiator and it is stronger than the withdrawn claim — a
+    // position taken from the company's own equity register is worth more to an
+    // investor than a position somebody says they checked.
+    //
+    // This is the source of truth for the platform's posture, quoted verbatim from
+    // `shared/wave211MoneyEventAttestation.ts:645`: "Capavate does not verify this
+    // investor's identity, wealth, status, eligibility or source of funds." A login
+    // page may not contradict the attestation the same platform makes at the money
+    // event.
     tagline:
-      "Where your portfolio companies’ cap tables, rounds, and term sheets live — and your invitations are verified before you act.",
+      "Where your portfolio companies’ cap tables, rounds, and term sheets live — and every position comes from the company’s own register, not from a form.",
     subline:
-      "Invitation-only access to verified ownership. Your seat on the cap table, your view of the round.",
+      "Invitation-only access to issuer-recorded ownership. Your seat on the cap table, your view of the round.",
   },
 };
+
+/**
+ * WAVE 236 — THE SUPERSEDED INVESTOR COPY, RETIRED IN PLACE (R195.5).
+ *
+ * Nothing wave 236 corrects is deleted. These are the exact bytes that shipped
+ * before the correction above, kept here so the change is auditable and so a test
+ * can assert the new copy is NOT either of them. They are never rendered: nothing
+ * reads these constants except
+ * `client/src/pages/auth/__tests__/w236_marketing_claims_dom.test.tsx`.
+ *
+ * They live as module constants rather than as a hidden JSX sibling because the
+ * copy they supersede was itself a module constant, not JSX — so there is no JSX
+ * literal here for the guard to count and none is invented to give it one.
+ */
+export const W236_SUPERSEDED_INVESTOR_TAGLINE =
+  "Where your portfolio companies’ cap tables, rounds, and term sheets live — and your invitations are verified before you act.";
+export const W236_SUPERSEDED_INVESTOR_SUBLINE =
+  "Invitation-only access to verified ownership. Your seat on the cap table, your view of the round.";
 
 // Demo personas — ONLY compiled in dev builds with VITE_ENABLE_DEMO_SEED="1",
 // AND only rendered when ?demo=1 is present in the URL. In production builds

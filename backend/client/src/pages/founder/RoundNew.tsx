@@ -34,6 +34,7 @@ import {
   ROUND_CREATION_ATTESTATION_NAME_PLACEHOLDER,
   ROUND_CREATION_ATTESTATION_BLOCKER,
 } from "@shared/wave212RoundCreationAttestation";
+import { roundNameIsMissing, ROUND_NAME_REQUIRED_MESSAGE } from "@shared/roundNameRequired";
 /* ── WAVE 191 · ITEM A.1 (R156.2) ─────────────────────────────────────────────
    THE ALLOWED CURRENCY SET IS DATA, NOT A LIST TYPED INTO THIS COMPONENT.
    `client/src/lib/currencyOptions.ts` carries its own stated source (the full
@@ -44,6 +45,7 @@ import {
    R156.2 forbids. Compare `client/src/pages/founder/Settings.tsx:820`, which
    DOES hardcode an inline array — reported in W191_PREFLIGHT §4, not fixed here. */
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
+import { formatMoneyInputDisplay } from "@/lib/money/moneyInputFormat";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip, LabelWithTip, LearnMore } from "@/components/HelpTip";
 import RoundCarryForwardPanel from "@/components/RoundCarryForwardPanel";
@@ -380,16 +382,12 @@ const defaultForm: FormShape = {
 // commas/whitespace/$ defensively (v23.9 A2), but formatting the display here
 // makes large currency figures readable as the founder types. The stored
 // `value` stays a plain numeric string so downstream parsing is unchanged.
-function formatWithCommas(raw: string): string {
- if (raw == null || raw === "") return "";
- const negative = raw.trim().startsWith("-");
- const cleaned = raw.replace(/[^\d.]/g, "");
- if (cleaned === "") return negative ? "-" : "";
- const [intPart, ...rest] = cleaned.split(".");
- const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
- const decimal = rest.length > 0 ? "." + rest.join("") : (cleaned.endsWith(".") ? "." : "");
- return (negative ? "-" : "") + grouped + decimal;
-}
+// WAVE 245 — THE BODY MOVED, THE NAME STAYED. The implementation now lives in
+// `client/src/lib/money/moneyInputFormat.ts` so the investor decision tab renders
+// amounts through THE SAME function rather than a second copy of it. The local
+// name is kept as an alias so none of this wizard's eight money inputs, and none
+// of their call sites, change at all.
+const formatWithCommas = formatMoneyInputDisplay;
 
 function FormattedNumberInput(props: {
  value: string;
@@ -488,6 +486,12 @@ export default function RoundNew() {
  // unique suggestion so the founder is never blocked and never ships two
  // same-named rounds (which confuses investors).
  const [roundNameHint, setRoundNameHint] = useState<string | null>(null);
+ /* WAVE 244 — HAS THE FOUNDER EITHER LEFT THE ROUND-NAME FIELD OR TRIED TO
+    ADVANCE? The required-field message is shown only once this is true, so it
+    never appears on first render. That is the defect wave 274c fixed and it is
+    not being reintroduced. The flag follows the `currencyTouched` pattern that
+    already lives in this component. */
+ const [roundNameAttempted, setRoundNameAttempted] = useState(false);
  /* WAVE 73 · ITEM 3 (finishes WAVE 69 · V-1b) — THE REFUSAL HAS TO STAY ON THE
     SCREEN. Wave 69 put the server's sentence in a TOAST here, and Wave 69's own
     report measured that a default toast node is GONE ~10 SECONDS after it
@@ -2166,12 +2170,13 @@ export default function RoundNew() {
  </Select>
  </div>
  <div>
- <Label>Round name</Label>
+ <Label className="flex items-center gap-1">Round name <span className="text-rose-500" aria-hidden="true">*</span></Label>
  <Input
  className="mt-1"
  value={form.name}
  onChange={e => { update("name", e.target.value); if (roundNameHint) setRoundNameHint(null); }}
  data-testid="input-round-name"
+ onBlurCapture={() => setRoundNameAttempted(true)}
  onBlur={async () => {
  const nm = form.name.trim();
  if (!nm || !companyId) { setRoundNameHint(null); return; }
@@ -2190,6 +2195,13 @@ export default function RoundNew() {
  />
  {roundNameHint && (
  <p className="text-[11px] text-amber-600 mt-1" data-testid="round-name-uniqueness-hint">{roundNameHint}</p>
+ )}
+ {/* WAVE 244 — APPENDED LAST, so no existing sibling is renumbered. The
+     condition is driven by an identifier flag, never by a literal `false`,
+     which the restyle detector would read as a suppression. The sentence is
+     the shared constant, so it is the same words the API's own 400 body uses. */}
+ {roundNameAttempted && roundNameIsMissing(form.name) && (
+ <p className="text-[11px] text-rose-600 mt-1" data-testid="error-round-name-required">{ROUND_NAME_REQUIRED_MESSAGE}</p>
  )}
  </div>
  <div>
@@ -3578,7 +3590,7 @@ export default function RoundNew() {
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  {step < 5 ? (
- <Button onClick={() => setStep(s => s + 1)} disabled={(step === 1 && !roundCurrencyChosen) || (step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
+ <Button onClickCapture={() => setRoundNameAttempted(true)} onClick={() => setStep(s => s + 1)} disabled={(step === 1 && !roundCurrencyChosen) || (step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] border-[hsl(219_45%_20%)] hover:border-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
  <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || scheduleInvalid || !step2Valid || !roundCurrencyChosen || !w212SignoffComplete} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}

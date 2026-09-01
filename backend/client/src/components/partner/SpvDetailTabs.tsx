@@ -998,10 +998,49 @@ export function SpvDetailTabs({
           {fees.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">none</div>
           ) : (
+            /* WAVE 274b · R221.4 — the fee row printed as `management: hybrid 20%
+               $33.00`, which reads as a debug dump rather than a fee disclosure.
+
+               PRESENTATION ONLY. Every VALUE below is the SAME expression it was
+               before, character for character:
+                 · `{f.layer}` and `{f.feeType}` — the stored strings, not
+                   re-cased and not mapped through any lookup, because inventing a
+                   display name for a stored slug is inventing data.
+                 · `` ` ${(f.carryPct * 100).toFixed(0)}%` `` — untouched. No new
+                   numeric conversion, no re-rounding, no second derivation.
+                 · `` ` ${fmt(f.fixedAmountMinor, currency)}` `` — untouched. The
+                   money still goes through the one formatter, in the SPV's own
+                   currency, with no `Number()` / `parseInt` / `parseFloat` and no
+                   currency conversion.
+               What is added is LABELS and structure. What is preserved verbatim is
+               the platform-layer sentence, which is an R221-protected disclosure.
+
+               `w274b_fee_row_dom.test.tsx` asserts the row's `textContent` still
+               contains each figure's exact characters, and that a captured
+               before-string of every figure is unchanged. */
             fees.map((f, i) => (
-              <div key={i} className="text-xs">
-                {f.layer}: {f.feeType}{f.carryPct != null ? ` ${(f.carryPct * 100).toFixed(0)}%` : ""}{f.fixedAmountMinor ? ` ${fmt(f.fixedAmountMinor, currency)}` : ""}
-                {f.layer === "platform" ? " (set by Capavate — read-only to you)" : ""}
+              <div key={i} className="text-xs flex flex-wrap gap-x-3" data-testid={`spv-detail-fee-row-${i}`}>
+                <span data-testid={`spv-detail-fee-row-${i}-layer`}>
+                  <span className="text-[var(--cv-color-text-faint)]">Layer </span>
+                  <span className="font-medium">{f.layer}</span>
+                </span>
+                <span data-testid={`spv-detail-fee-row-${i}-type`}>
+                  <span className="text-[var(--cv-color-text-faint)]">Fee type </span>
+                  <span className="font-medium">{f.feeType}</span>
+                </span>
+                {f.carryPct != null ? (
+                  <span data-testid={`spv-detail-fee-row-${i}-carry`}>
+                    <span className="text-[var(--cv-color-text-faint)]">Carry</span>
+                    <span className="font-medium">{` ${(f.carryPct * 100).toFixed(0)}%`}</span>
+                  </span>
+                ) : null}
+                {f.fixedAmountMinor ? (
+                  <span data-testid={`spv-detail-fee-row-${i}-fixed`}>
+                    <span className="text-[var(--cv-color-text-faint)]">Fixed amount</span>
+                    <span className="font-medium">{` ${fmt(f.fixedAmountMinor, currency)}`}</span>
+                  </span>
+                ) : null}
+                <span data-testid={`spv-detail-fee-row-${i}-platform-note`}>{f.layer === "platform" ? " (set by Capavate — read-only to you)" : ""}</span>
               </div>
             ))
           )}

@@ -221,14 +221,35 @@ const CATALOG: ReadonlyArray<TableConfig> = [
     // for tenants known to contain malformed pre-genesis rows. This generic
     // verifier is a cross-table catalog and does not consult
     // audit_chain_genesis; callers who need the re-base must use
-    // verifyTenantAuditChain from adminPlatformStore.ts (which is what all
-    // three audit-log verifier endpoints now do post-Wave A-1 v2).
+    // verifyTenantAuditChain from adminPlatformStore.ts.
     genesisHashes: new Set([null, "GENESIS", "0".repeat(64)]),
     hasChapterId: false,
     hasTenantId: true,
     hasDeletedAt: false,
     createdAtCol: "createdAt",
   },
+  //
+  // WAVE 238 — CORRECTION. The sentence that used to end this comment said
+  // the re-base "is what all three audit-log verifier endpoints now do
+  // post-Wave A-1 v2". That was NOT TRUE when it was written and it stayed
+  // untrue for months: server/auditChainRoutes.ts called verifyChainForTable
+  // — this walker — unconditionally for every table including `audit_log`,
+  // so GET /api/admin/audit/verify-chain?table=audit_log answered from a
+  // verifier that ignores audit_chain_genesis, while the health panel, the
+  // boot verifier and resolve-incident all answered from the canonical one.
+  // A re-anchored ledger could therefore be reported clean in one place and
+  // broken in another.
+  //
+  // The accurate statement as of wave 238:
+  //   • runAuditChainBootVerifier (server/lib/hydrateStores.ts) — canonical.
+  //   • liveAuditChainOk (server/wave15Routes.ts)               — canonical.
+  //   • resolve-incident / re-anchor (adminPlatformStore.ts)     — canonical.
+  //   • GET /verify-chain?table=audit_log                        — canonical
+  //     as of wave 238 (was this walker before).
+  //   • GET /verify-all                                          — STILL this
+  //     walker for audit_log, because it sweeps the whole catalog through
+  //     verifyAllChains. Wave 238 did not change it and does not claim to
+  //     have. Treat a verify-all audit_log verdict as UNRE-BASED.
   {
     name: "dsc_votes",
     table: dscVotesTable,

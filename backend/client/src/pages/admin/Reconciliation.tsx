@@ -96,6 +96,15 @@ export default function AdminReconciliation() {
 
  const selectedRun = reconciliations.find((r) => r.runId === selectedRunId);
 
+ /* WAVE 239 — `neverRun` is a plain IDENTIFIER derived from real state, not a
+    `{false && …}` suppression: the silent-drop guard reads that form as a
+    SUPPRESSION and it would also hide the tile rather than tell the truth about
+    it. `reconciliations` is browser memory (`sprint3.ts:78`, initialised `[]`,
+    written only by `recordReconciliation`), so an empty array means "no run has
+    been recorded in THIS TAB" — it is not a statement about the server, and it
+    is certainly not a measurement of zero divergences platform-wide. */
+ const neverRun = reconciliations.length === 0;
+
  function handleRun() {
  if (!companyId) return;
  const opts = buildDemoComputeOpts(companyId);
@@ -124,14 +133,27 @@ export default function AdminReconciliation() {
  "Capavate runs every cap-table calculation through two independent engines: the primary uses decimal.js (38-digit precision) and the reference uses BigInt scaled fixed-point arithmetic. Both must produce the same SHA-256 signature for a round to close. Divergences are surfaced here with per-holder × instrument diff rows so counsel and ops can resolve the root cause before money moves.",
  warning:
  "A divergence on any active round blocks the close-gate platform-wide. Investigate immediately — typical root causes: stale formula version in cache, race on a concurrent issuance, rounding mode mismatch on a custom security.",
+ /* WAVE 239 — this bullet renders inside an emerald panel behind a tick
+                  (AdminPageIntro.tsx:92-97), so whatever it says is read as
+                  reassurance. It previously asserted a "99%+ reconciliation success
+                  rate ... platform SLA" and that every run is "permanently retained in
+                  the Audit Log for M&A diligence and SOC 2 evidence". Both are untrue in
+                  this build and neither was measured: nothing computes a reconciliation
+                  success rate anywhere, and `runReconciliation` (client/src/lib/sprint3.ts:162)
+                  records into `defaultTelemetryStore`, whose backing store is
+                  `private events: TelemetryEvent[] = []` (packages/telemetry/src/recorder.ts:57)
+                  — process memory, with no writer to any database. Replaced with the part
+                  that IS true in code, and the retention and rate facts are now stated
+                  plainly in the disclosure appended at the foot of this page rather than
+                  claimed inside a green tick. */
  positive:
- "99%+ reconciliation success rate is the platform SLA. Every run, including the hash signatures of both engines, is permanently retained in the Audit Log for M&A diligence and SOC 2 evidence.",
+ "Both engines are real and independent: the primary is decimal.js-based (packages/math-fns) and the reference is BigInt scaled fixed-point (packages/cap-table-engine-ref), and where they disagree the difference is broken out per holder and per instrument in the Drift detail tab.",
  }}
  stats={[
  { label: "Last run", value: stats.last ? new Date(stats.last.asOf).toLocaleDateString() : "—", hint: stats.last ? `${stats.last.runDurationMs}ms· ${stats.last.status}` : "Never run" },
- { label: "Runs today", value: stats.todays, hint: "Across all tenants" },
- { label: "Divergences (30d)", value: stats.divergences, hint: "Investigate immediately", tone: stats.divergences > 0 ? "critical" : "positive" },
- { label: "Total runs", value: stats.total, hint: "All-time captured" },
+ { label: "Runs today", value: stats.todays, hint: "Recorded in this browser tab only" },
+ { label: "Divergences (30d)", value: neverRun ? "—" : stats.divergences, hint: neverRun ? "No run recorded — nothing has been compared" : "Investigate immediately", tone: neverRun ? "neutral" : stats.divergences > 0 ? "critical" : "positive" },
+ { label: "Total runs", value: stats.total, hint: "Recorded in this browser tab only" },
  ]}
  />
  <Tabs defaultValue="runner" className="w-full">
@@ -236,6 +258,20 @@ export default function AdminReconciliation() {
  )}
  </TabsContent>
  </Tabs>
+ {/* WAVE 239 — APPENDED AS THE LAST CHILD OF PageBody, after </Tabs>, so no
+     existing sibling changes position (the silent-drop guard fingerprints panels
+     by sibling index, and inserting mid-page renumbers them).
+     Nothing above is removed. This states what the numbers above are and are not. */}
+ <div className="rounded-lg border border-slate-300 bg-slate-50 p-4 mt-2" data-testid="recon-scope-disclosure">
+ <div className="text-sm font-semibold text-slate-900">What the figures on this page are, and what they are not</div>
+ <ul className="mt-2 space-y-1.5 text-xs text-slate-700 list-disc pl-5">
+ <li>The run history and every count above are held in this browser tab only. They are cleared when you navigate away or reload, and another administrator signed in elsewhere sees their own separate history.</li>
+ <li>They are not a report about the server. Nothing on this page is read from a database.</li>
+ <li>There is no scheduled reconciliation job. A comparison happens only when someone presses the button on this page.</li>
+ <li>The Live runner compares two engines over a built-in example cap table that ships with the software — not over the selected company&rsquo;s own holdings. A match here says the two engines agree with each other about that example. It does not say anything about this company.</li>
+ <li>&ldquo;Divergences (30d)&rdquo; shows a dash, not a zero, until a run has actually been recorded here. A zero would claim a comparison was made and found nothing wrong.</li>
+ </ul>
+ </div>
  </PageBody>
  </>
  );

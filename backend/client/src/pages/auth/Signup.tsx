@@ -306,7 +306,9 @@ export default function Signup() {
       subtitle="Run your cap table, structure rounds, communicate with investors."
       // v25.43 F7 — signup is founder-only, so the brand panel uses the F5
       // founder copy (DRAFT for Ozan red-line).
-      tagline="Run your cap table, structure your rounds, and turn every shareholder into a verified contact — in one place."
+      // WAVE 274a · R221.1 — third and last copy of the withdrawn Class A claim
+      // ("verified contact"). See AuthShell.tsx:32.
+      tagline="Run your cap table, structure your rounds, and turn every shareholder into a contact you can reach — in one place."
       subline="Activate the network already inside your ownership structure."
       footer={
         <div>

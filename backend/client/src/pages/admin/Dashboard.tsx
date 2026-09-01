@@ -37,6 +37,9 @@ import { apiRequest } from "@/lib/queryClient";
 /* WAVE 161 · ITEM A (A3) — "Not on record", the platform's existing words for an
    absent money figure. A bare em-dash is not copy (R77). */
 import { fromMinor, MONEY_NOT_ON_RECORD } from "@/lib/currency";
+/* WAVE 230D — the admin control for test-data exclusion (R230.3: none existed).
+   Appended as the LAST child of the page body below; nothing above it moves. */
+import { AdminTestDataExclusionPanel } from "@/components/admin/AdminTestDataExclusionPanel";
 
 /* WAVE 163 - BLOCKER 3: a committed-only number was described as non-withdrawn.
  * Wave 161 corrected the SPV Committed tile's BASIS to `status = 'committed'`
@@ -566,11 +569,28 @@ export default function AdminDashboard() {
               : "Live SLO trackers for the Collective surface: reconciliation against shared cap tables, deal-room close-gate, dataroom uploads from members and partners, member message delivery, and email SLA on member comms."}</HelpTip>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <HealthTile icon={<ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />} label="Reconcile success" value={data?.health.capTableReconcile.successRatePct != null ? `${data.health.capTableReconcile.successRatePct.toFixed(2)}%` : "—"} hint={`${data?.health.capTableReconcile.runs ?? 0} runs`} tone={data?.health.capTableReconcile.successRatePct != null && data.health.capTableReconcile.successRatePct < 99 ? "warn" : "ok"} testId="card-health-reconcile" />
-            <HealthTile icon={<AlertCircle className="h-3.5 w-3.5" />} label="Close-gate fails" value={data?.health.closeGateFailures != null ? String(data.health.closeGateFailures) : "—"} tone={data?.health.closeGateFailures != null && data.health.closeGateFailures > 5 ? "warn" : "ok"} testId="card-health-closegate" />
-            <HealthTile icon={<FileText className="h-3.5 w-3.5" />} label="Dataroom errors" value={data?.health.dataroomUploadErrors != null ? String(data.health.dataroomUploadErrors) : "—"} tone={data?.health.dataroomUploadErrors != null && data.health.dataroomUploadErrors > 3 ? "warn" : "ok"} testId="card-health-dataroom" />
-            <HealthTile icon={<Send className="h-3.5 w-3.5" />} label="Message delivery" value={data?.health.messageDelivery.deliveryRatePct != null ? `${data.health.messageDelivery.deliveryRatePct.toFixed(2)}%` : "—"} tone={data?.health.messageDelivery.deliveryRatePct != null && data.health.messageDelivery.deliveryRatePct < 99.5 ? "warn" : "ok"} testId="card-health-msgs" />
-            <HealthTile icon={<Mail className="h-3.5 w-3.5" />} label="Email SLA" value={data?.health.emailSlaSec != null ? `${data.health.emailSlaSec}s` : "—"} hint="P95 send time" tone={data?.health.emailSlaSec != null && data.health.emailSlaSec > 60 ? "warn" : "ok"} testId="card-health-email" />
+            <HealthTile icon={<ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />} label="Reconcile success" value={data?.health.capTableReconcile.successRatePct != null ? `${data.health.capTableReconcile.successRatePct.toFixed(2)}%` : "—"} hint={`${data?.health.capTableReconcile.runs ?? 0} runs`} tone={data?.health.capTableReconcile.successRatePct == null ? "unknown" : data.health.capTableReconcile.successRatePct < 99 ? "warn" : "ok"} testId="card-health-reconcile" />
+            <HealthTile icon={<AlertCircle className="h-3.5 w-3.5" />} label="Close-gate fails" value={data?.health.closeGateFailures != null ? String(data.health.closeGateFailures) : "—"} tone={data?.health.closeGateFailures == null ? "unknown" : data.health.closeGateFailures > 5 ? "warn" : "ok"} testId="card-health-closegate" />
+            <HealthTile icon={<FileText className="h-3.5 w-3.5" />} label="Dataroom errors" value={data?.health.dataroomUploadErrors != null ? String(data.health.dataroomUploadErrors) : "—"} tone={data?.health.dataroomUploadErrors == null ? "unknown" : data.health.dataroomUploadErrors > 3 ? "warn" : "ok"} testId="card-health-dataroom" />
+            <HealthTile icon={<Send className="h-3.5 w-3.5" />} label="Message delivery" value={data?.health.messageDelivery.deliveryRatePct != null ? `${data.health.messageDelivery.deliveryRatePct.toFixed(2)}%` : "—"} tone={data?.health.messageDelivery.deliveryRatePct == null ? "unknown" : data.health.messageDelivery.deliveryRatePct < 99.5 ? "warn" : "ok"} testId="card-health-msgs" />
+            <HealthTile icon={<Mail className="h-3.5 w-3.5" />} label="Email SLA" value={data?.health.emailSlaSec != null ? `${data.health.emailSlaSec}s` : "—"} hint="P95 send time" tone={data?.health.emailSlaSec == null ? "unknown" : data.health.emailSlaSec > 60 ? "warn" : "ok"} testId="card-health-email" />
+          </div>
+          {/* WAVE 240 — APPENDED AS THE LAST CHILD OF THIS CARD, after the tile grid, so no
+              existing tile changes sibling index. Nothing above is removed.
+              Provenance, stated unconditionally rather than only when the number is
+              missing: the sole writer of the `recon_runs` table this figure counts is
+              POST /api/admin/reconciliation/run (server/adminPlatformStore.ts:3503),
+              which invokes neither engine and inserts a hardcoded `ok: true`
+              (`:3509`). Wave 240 stopped that write, but stopping a fabricating writer
+              does not make rows it already wrote honest — so any non-zero rate here must
+              be read as a count of those rows, not as evidence a reconciliation ran. */}
+          <div className="mt-3 rounded-md border border-slate-300 bg-slate-50 p-3" data-testid="health-row-provenance">
+            <div className="text-[11px] font-semibold text-slate-900">How to read these five figures</div>
+            <ul className="mt-1.5 space-y-1 text-[11px] text-slate-700 list-disc pl-4">
+              <li>A tile marked &ldquo;Not reported&rdquo; has received no figure at all. It is not a pass, and it is not a measurement of zero.</li>
+              <li>Close-gate failures, dataroom errors, message delivery and email SLA have no source in this build, so they report nothing rather than report a number nobody measured.</li>
+              <li>Reconcile success counts rows in the reconciliation table. The only endpoint that ever wrote to that table did not run either cap-table engine and recorded a fixed &ldquo;matched&rdquo; result, so a percentage here is not evidence that a cap table was reconciled.</li>
+            </ul>
           </div>
         </Card>
 
@@ -718,6 +738,7 @@ export default function AdminDashboard() {
         </Card>
 
         <BuildVersionMarker />
+        <AdminTestDataExclusionPanel />
       </PageBody>
     </>
   );
@@ -732,19 +753,32 @@ function prettyQueueLabel(key: string): string {
     .trim();
 }
 
+/* WAVE 240 — `tone` gains a THIRD member, "unknown". Both existing members are kept
+   and neither changes behaviour. The reason it is needed: every call site below used
+   to read `X != null && <threshold> ? "warn" : "ok"`, so when `X` was null the `&&`
+   short-circuited and the ABSENT case took the same branch as the HEALTHY case. The
+   value was already honest ("—"); the tone was not, and on the Reconcile tile a
+   hardcoded `text-emerald-600` shield sat above that dash. Four of the five figures
+   are hardcoded `null` on the server (server/adminPlatformStore.ts:165-168), so the
+   absent branch is not an edge case on this card — it is the only branch it takes.
+   "unknown" therefore renders a neutral dashed card, greys the icon it was handed so a
+   green shield cannot survive into a no-data tile, and appends an explicit line saying
+   the check has not reported. The line is the LAST child, so no existing sibling
+   changes index. */
 function HealthTile({ icon, label, value, hint, tone, testId }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   hint?: string;
-  tone: "ok" | "warn";
+  tone: "ok" | "warn" | "unknown";
   testId: string;
 }) {
   return (
-    <Card className={`p-3 ${tone === "warn" ? "bg-amber-50 border-amber-200" : ""}`} data-testid={testId}>
-      <div className="flex items-center gap-1.5">{icon}<span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span></div>
-      <div className={`text-base font-semibold mt-0.5 ${tone === "warn" ? "text-amber-900" : ""}`}>{value}</div>
+    <Card className={`p-3 ${tone === "warn" ? "bg-amber-50 border-amber-200" : tone === "unknown" ? "bg-slate-50 border-slate-200 border-dashed" : ""}`} data-testid={testId}>
+      <div className="flex items-center gap-1.5"><span className={tone === "unknown" ? "grayscale opacity-50" : ""} data-testid={`${testId}-icon`}>{icon}</span><span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span></div>
+      <div className={`text-base font-semibold mt-0.5 ${tone === "warn" ? "text-amber-900" : ""} ${tone === "unknown" ? "text-slate-500" : ""}`}>{value}</div>
       {hint && <div className="text-[10px] text-muted-foreground">{hint}</div>}
+      {tone === "unknown" && <div className="text-[10px] text-slate-600 mt-0.5" data-testid={`${testId}-nodata`}>Not reported — no figure was received for this check, so nothing here is a pass.</div>}
     </Card>
   );
 }

@@ -50,6 +50,7 @@ import {
   platformConfig as platformConfigTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+import { wave230ExcludedIds } from "./lib/wave230TestDataFlags"; /* WAVE 230 · R228.2 — test-data exclusion from reported revenue; read layer only, no import cycle */
 import { resolveRateLimitClientIp } from "./lib/rateLimit"; /* WAVE 22 · ITEM 1 — shared hardened client-IP resolver for audit stamping */
 // v25.42h round-2 (Blocker 2) — DB read failures must surface as 503, never as
 // an empty/default literal payload.
@@ -189,7 +190,33 @@ function computeKpis() {
 
   // MRR/ARR: sum of `annualAmountMinor` across active subscriptions, in dollars.
   const subs = listSubscriptions();
-  const activeSubs = subs.filter((s) => s.status === "active" || s.status === "trialing");
+  /* WAVE 230 · R228.2 — test subscriptions are excluded from reported revenue.
+   *
+   * `status` alone used to decide what counted as revenue. R230.1 found the
+   * consequence: 31 "active" subscriptions summing to $26,928.00 against a
+   * payment ledger of ten records totalling $2,530.06, on a platform where
+   * subscriptions AUTO-CREATE on company creation. So "active" was never
+   * payment-backed, and the ARR figure inherited that.
+   *
+   * This does NOT change the metric's definition, which remains status-derived
+   * and remains R230.1's open finding for the owner. It removes rows the
+   * operator has marked as test data — a strictly smaller, correct population.
+   *
+   * PER-RECORD (R230.6): the predicate is the row's own mark, unioned with its
+   * company's own mark. Nothing is scoped by tenant, so "QA Note Round" inside
+   * BluePrint Catalyst Limited is reachable without touching the operator's real
+   * company, and the orphan subscription with no company row is still reachable
+   * because the flag is on the subscription itself.
+   *
+   * WITH NOTHING MARKED THIS IS BYTE-IDENTICAL TO BEFORE: both sets are empty,
+   * so every existing figure is unchanged until an operator acts. The fall in
+   * reported revenue is reported explicitly by `wave230RevenueImpact()` and is
+   * never presented as a figure that simply changed. */
+  const w230ExcludedSubs = wave230ExcludedIds("subscriptions");
+  const w230ExcludedCompanies = wave230ExcludedIds("companies");
+  const activeSubs = subs
+    .filter((s) => s.status === "active" || s.status === "trialing")
+    .filter((s) => !w230ExcludedSubs.has(s.companyId) && !w230ExcludedCompanies.has(s.companyId));
   /* WAVE 34 · TASK 2 — was:
    *   const arrUsd = Math.round(activeSubs.reduce((sum, s) => sum + (s.annualAmountMinor ?? 0), 0) / 100);
    * TWO defects in one line. (1) It summed `annualAmountMinor` ACROSS
@@ -3507,26 +3534,40 @@ export function registerAdminPlatformRoutes(app: Express): void {
     const actorCtx = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean } }).userContext;
     if (!actorCtx?.userId) return res.status(401).json({ error: "missing_identity" });
     const e: ReconRun = { id: `rec_${randomBytes(4).toString("hex")}`, ts: new Date().toISOString(), companyId: String(companyId), roundId: String(roundId), engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: actorCtx.userId };
-    // Patch v12 Day 2 Wave 1 — write-through to recon_runs table.
-    try {
-      const db = getDb();
-      db.transaction((tx: any) => {
-        tx.insert(reconRunsTable).values({
-          id: e.id,
-          tenantId: `tenant_co_${e.companyId}`,
-          companyId: e.companyId,
-          roundId: e.roundId,
-          ts: e.ts,
-          engineMainJson: JSON.stringify(e.engineMain),
-          engineRefJson: JSON.stringify(e.engineRef),
-          diffJson: JSON.stringify(e.diff),
-          actor: e.actor,
-          deletedAt: null,
-        }).run();
-      });
-    } catch (err) {
-      log.error("[adminPlatformStore.reconciliation/run] DB write failed:", (err as Error).message);
-    }
+    /* WAVE 240 — THE DURABLE WRITE IS STOPPED. It used to be:
+     *
+     *   // Patch v12 Day 2 Wave 1 — write-through to recon_runs table.
+     *   try { const db = getDb(); db.transaction((tx: any) => {
+     *     tx.insert(reconRunsTable).values({ id: e.id, tenantId: `tenant_co_${e.companyId}`,
+     *       companyId: e.companyId, roundId: e.roundId, ts: e.ts,
+     *       engineMainJson: JSON.stringify(e.engineMain),
+     *       engineRefJson: JSON.stringify(e.engineRef),
+     *       diffJson: JSON.stringify(e.diff), actor: e.actor, deletedAt: null }).run();
+     *   }); } catch (err) { log.error("[adminPlatformStore.reconciliation/run] DB write failed:", (err as Error).message); }
+     *
+     * `e` is fabricated eight lines above: neither cap-table engine is invoked,
+     * `engineMain` and `engineRef` are the same hardcoded "12500000", `sharesDelta`
+     * is a hardcoded "0" and `ok: true` is a literal. Writing that to `recon_runs`
+     * turned a fabricated RESPONSE into a fabricated RECORD, and
+     * `computeReconHealth()` (:1862) counts exactly those rows —
+     * `INSTR(diff_json, '"ok":true')` over the same table — to produce the
+     * "Reconcile success" percentage on the admin dashboard. That is R220.4's
+     * standing finding as a closed code path: the route fabricates and feeds the
+     * service-level tile.
+     *
+     * R220.4 forbids WIRING this route to anything until it is fixed, and this wave
+     * does not wire it: no engine is connected, no scheduler is added, the route
+     * keeps its path, its method, its 400 and 401 branches, its response body and
+     * its 200 status unchanged, and no caller's contract moves. It simply stops
+     * manufacturing durable evidence. Nothing already in `recon_runs` is deleted or
+     * altered by this wave — there is no DELETE and no migration anywhere in it —
+     * and the dashboard card now states, unconditionally, that a percentage derived
+     * from that table is not evidence a reconciliation happened.
+     *
+     * The in-memory `reconRuns.push(e)` below is deliberately left alone: it is the
+     * process-local mirror that GET /api/admin/reconciliation/runs serves, removing
+     * it would change that endpoint's observable behaviour, and it is not durable
+     * and not what the tile counts. */
     reconRuns.push(e);
     res.json(e);
   });

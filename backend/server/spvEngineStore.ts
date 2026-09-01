@@ -541,6 +541,86 @@ function nodeMatches(node: MandateRuleTree | MandateLeaf, facts: CompanyEligibil
    reject fail-closed otherwise. When the key is ABSENT the field is untouched
    (partial patches and legacy/shim creates that never send it must still work).
    Called from BOTH createSpv and updateSpv so the rule cannot drift. */
+/**
+ * WAVE 237 — MONEY VALIDATION FOR NEW SPVs.
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * `createSpv` validated the name, the jurisdiction, the carry basis, the SPV type,
+ * the distribution scope, the status, the LP visibility and the mandate
+ * description — and then assigned `targetRaiseMinor`, `minCheckMinor` and
+ * `capMinor` STRAIGHT THROUGH with no check of any kind. A fractional minor unit,
+ * a negative raise, a value past MAX_SAFE_INTEGER, or a cap below the target could
+ * all be written to a vehicle.
+ *
+ * THE RULE IS NOT INVENTED HERE. It already exists, in `server/spvTemplateStore.ts`
+ * — `normaliseMinor` (:202-221) for each amount, and the `capMinor < targetRaiseMinor`
+ * check (:521 and :611) for their coherence. This mirrors both, so an SPV created
+ * directly cannot be less coherent than one created from a template.
+ *
+ * TWO DELIBERATE DEPARTURES FROM `normaliseMinor`, BOTH NARROWING:
+ *
+ *  1. NO `Number(v)` STRING COERCION. `normaliseMinor` accepts `"5000"` and
+ *     converts it. This does not: money must never be produced by a numeric
+ *     coercion, so a string is REJECTED as `INVALID_AMOUNT` rather than quietly
+ *     becoming a number. `Number()`, `parseInt` and `parseFloat` appear nowhere in
+ *     this function. Rejecting is strictly safer than coercing, and `createSpv`'s
+ *     own signature already types these three fields as `number | null`.
+ *  2. IT VALIDATES; IT DOES NOT NORMALISE. Nothing is rewritten. The values that
+ *     reach the row are the values that were sent.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NEW WRITES ONLY. THIS IS THE WHOLE SAFETY ARGUMENT.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This is called from `createSpv` and from NOWHERE ELSE — deliberately NOT from
+ * `updateSpv`, even though `assertValidMandateDescription` is called from both "so
+ * the rule cannot drift".
+ *
+ * Sixteen vehicles exist live. If one of them holds an incoherent amount pair from
+ * before this rule existed, calling this from `updateSpv` would mean a partner
+ * editing an unrelated field — a name, a close date — would be REFUSED, and would
+ * have no way to fix it, because the fix would itself be an update. That is a
+ * partner locked out of a live vehicle. An incoherent stored row is a reporting
+ * problem; a locked-out partner is an outage.
+ *
+ * So: the drift risk is accepted, consciously, and is written down here instead of
+ * being closed at that price. `updateSpv` remains exactly as it was. No existing
+ * row is read, re-checked, rejected or altered by this wave.
+ */
+function assertValidSpvMoney(data: {
+  targetRaiseMinor?: number | null;
+  minCheckMinor?: number | null;
+  capMinor?: number | null;
+}): void {
+  /** Mirrors `normaliseMinor`'s RULE. Returns the value; never converts it. */
+  const check = (v: unknown, label: string): number | null => {
+    if (v === undefined || v === null) return null;
+    // NO COERCION. A string is not an amount.
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw new Error("INVALID_AMOUNT");
+    }
+    if (!Number.isInteger(v)) throw new Error("INVALID_AMOUNT");
+    if (v < 0) throw new Error("INVALID_AMOUNT");
+    // MAX_SAFE_INTEGER gate: past this, a value cannot be trusted to be the
+    // integer it appears to be.
+    if (!Number.isSafeInteger(v)) throw new Error("INVALID_AMOUNT");
+    return v;
+  };
+
+  const targetRaiseMinor = check(data.targetRaiseMinor, "Target raise");
+  const minCheckMinor = check(data.minCheckMinor, "Minimum check");
+  const capMinor = check(data.capMinor, "Cap");
+
+  /* THE COHERENCE RULE, copied from spvTemplateStore.ts:521 verbatim in meaning,
+     including its null handling: a missing cap or a missing target is NOT a
+     violation. A cap is a ceiling; it cannot sit below the target it is a ceiling
+     for. Prefer a constraint to a prohibition: nothing is forbidden that was
+     coherent before. */
+  if (capMinor !== null && targetRaiseMinor !== null && capMinor < targetRaiseMinor) {
+    throw new Error("CAP_BELOW_TARGET");
+  }
+  void minCheckMinor; // validated above; no coherence rule exists for it upstream.
+}
+
 function assertValidMandateDescription(terms: unknown): void {
   if (!terms || typeof terms !== "object") return;
   if (!("mandateDescription" in (terms as Record<string, unknown>))) return;
@@ -551,6 +631,31 @@ function assertValidMandateDescription(terms: unknown): void {
 
 /* ── the store ──────────────────────────────────────────────────────────── */
 export const spvEngineStore = {
+  /**
+   * WAVE 237 — THE PRE-FLIGHT ENTRY POINT FOR THE MONEY RULE.
+   *
+   * `spvEngineRoutes.ts` establishes an explicit contract at its create route
+   * (WAVE 86B · ITEM 2): "Everything above this line is a read or a validation;
+   * `recordSignoff` below is the FIRST WRITE", and every payload refusal must fire
+   * above it so that a refusal leaves no sign-off, no vehicle, no mandate and no
+   * fee. `createSpv` runs BELOW that first write, so validating there alone would
+   * have left an orphaned sign-off record behind on every money refusal — a
+   * durable row recording authorization for a vehicle that was never created.
+   *
+   * So the route calls this in the pre-flight, and `createSpv` ALSO calls the same
+   * function. ONE RULE, ONE IMPLEMENTATION, called twice — so the rule cannot
+   * drift, and a direct store caller that bypasses the route cannot bypass it.
+   * Validating twice is free: it is pure, it writes nothing, and it normalises
+   * nothing.
+   */
+  validateCreateMoney(data: {
+    targetRaiseMinor?: number | null;
+    minCheckMinor?: number | null;
+    capMinor?: number | null;
+  }): void {
+    assertValidSpvMoney(data);
+  },
+
   /* ---- SPV core ---- */
   createSpv(
     partnerId: string,
@@ -578,6 +683,8 @@ export const spvEngineStore = {
     const lpVisibility = data.lpVisibility ?? SPV_DEFAULT_LP_VISIBILITY;
     if (!isSpvLpVisibility(lpVisibility)) throw new Error("INVALID_LP_VISIBILITY");
     assertValidMandateDescription(data.terms);
+    // WAVE 237 — NEW WRITES ONLY. See assertValidSpvMoney's header.
+    assertValidSpvMoney(data);
     const now = nowIso();
     const s: SpvDTO = {
       id: newId("spv"),

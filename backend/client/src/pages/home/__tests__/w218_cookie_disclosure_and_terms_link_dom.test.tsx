@@ -103,6 +103,8 @@ import {
   FROZEN_FOOTER_TERMS_LABEL,
   CORRECT_TERMS_ROUTE,
   isFrozenFooterMislabelledTermsLink,
+  /* WAVE 235 */
+  isFrozenFooterCorrectedTermsLink,
 } from "@/components/FrozenFooterTermsInterception";
 
 const REPO = path.resolve(__dirname, "../../../../..");
@@ -257,7 +259,21 @@ function clickAndReportCancelled(el: Element): { cancelled: boolean } {
  * §A — THE SUBJECT EXISTS. Proved before any claim is made about it.
  * ══════════════════════════════════════════════════════════════════════════ */
 describe("WAVE 218 §A — the real marketing page and the real frozen footer are mounted", () => {
-  it("A0: the page mounts, and the FROZEN footer with its mislabelled anchor is in the tree", () => {
+  /* ═══ RE-POINTED BY WAVE 235 (R198.6, R202.1) ═══
+   * This assertion used to read: "and it still carries the WRONG href, because
+   * the frozen file was not edited". That was a true statement about wave 218 and
+   * it is a FALSE statement about the platform now: wave 235 corrects the href
+   * attribute from the same non-sacred layer. Leaving it would make a green suite
+   * mean the opposite of the truth, and LOOSENING it — dropping the href
+   * assertion, or accepting either value — would abandon the only thing that
+   * distinguishes wave 235 from wave 218. It is therefore re-pointed to the
+   * CORRECT href and TIGHTENED: the wrong value is now asserted absent as well,
+   * so neither a reverted correction nor a correction that appends rather than
+   * replaces can pass. R202.2: it still fails for its original reason — if the
+   * footer's Terms anchor stops existing, or a second one appears, the two
+   * assertions above the href check are the ones that go red, exactly as before.
+   */
+  it("A0: the page mounts, and the frozen footer's Terms anchor carries the CORRECTED href", () => {
     const { container } = mountRealPublicSite();
     /* The wrapper the interception is attached to. */
     expect(container.querySelectorAll("div.home3-root").length).toBe(1);
@@ -268,8 +284,18 @@ describe("WAVE 218 §A — the real marketing page and the real frozen footer ar
     /* EXACTLY ONE. If a second appeared, the narrow predicate would be wrong and
      * every §B assertion would be about an anchor nobody chose. */
     expect(terms.length).toBe(1);
-    /* And it still carries the WRONG href, because the frozen file was not edited. */
-    expect(terms[0].getAttribute("href")).toBe(FROZEN_FOOTER_MISLABELLED_TERMS_HREF);
+    /* WAVE 235 — the href ATTRIBUTE itself is now correct, read with
+     * `getAttribute` and NOT with the `.href` property: jsdom's property getter
+     * resolves a relative value against the document base and would return
+     * "http://localhost:3000/terms-of-service", which would pass a `toContain`
+     * check while telling us nothing about the bytes a crawler or a screen reader
+     * receives. The raw attribute is what those consumers read. */
+    expect(terms[0].getAttribute("href")).toBe(CORRECT_TERMS_ROUTE);
+    /* TIGHTENING: the wrong value is gone, not merely joined. */
+    expect(terms[0].getAttribute("href")).not.toBe(FROZEN_FOOTER_MISLABELLED_TERMS_HREF);
+    /* And the LABEL is byte-for-byte untouched — no normalising call on either
+     * side. The correction changes one attribute and nothing else. */
+    expect(terms[0].textContent).toBe(FROZEN_FOOTER_TERMS_LABEL);
   });
 
   it("A1: Footer3.jsx is byte-identical to its sacred hash — the frozen file was NOT edited", () => {
@@ -282,10 +308,29 @@ describe("WAVE 218 §A — the real marketing page and the real frozen footer ar
     /* Wave 210's strip is still mounted — this wave did not replace it. */
     expect(home).toContain("<Footer3 />");
     expect(home).toContain("<PublicLegalStrip />");
-    /* And the interception is on the wrapper, not on `document`. */
-    expect(home).toContain('<div className="home3-root" onClickCapture={interceptFrozenFooterTermsLink}>');
+    /* ═══ RE-POINTED BY WAVE 235 (R198.6, R202.1) ═══
+     * Wave 235 adds `ref={home3RootRef}` to this same div, so the exact-string
+     * match no longer holds. Re-pointed rather than loosened: the three
+     * properties that mattered are each asserted separately and the div is
+     * located by a single pattern, so it is still IMPOSSIBLE for the class, the
+     * handler and the ref to end up on different elements. R202.2: deleting the
+     * className, the handler or the ref still turns this red for its original
+     * reason. */
+    const rootDiv = home.match(/<div className="home3-root"[^>]*>/);
+    expect(rootDiv, 'the div.home3-root wrapper is no longer in Home.tsx').not.toBeNull();
+    /* Exactly one such wrapper — two would mean two scopes. */
+    expect((home.match(/className="home3-root"/g) ?? []).length).toBe(1);
+    /* Wave 218's handler is still on it. The correction did NOT replace it. */
+    expect(rootDiv![0]).toContain("onClickCapture={interceptFrozenFooterTermsLink}");
+    /* Wave 235's scope is the SAME element. */
+    expect(rootDiv![0]).toContain("ref={home3RootRef}");
+    /* And the href correction is actually invoked, scoped to that ref. */
+    expect(home).toContain("useFrozenFooterTermsHrefCorrection(home3RootRef)");
     const mod = readText("client/src/components/FrozenFooterTermsInterception.tsx");
     expect(mod).not.toContain("document.addEventListener");
+    /* Neither mechanism reaches outside the supplied root. */
+    expect(mod).not.toContain("document.querySelectorAll");
+    expect(mod).not.toContain("document.querySelector");
   });
 });
 
@@ -355,7 +400,22 @@ describe("WAVE 218 §B — clicking Terms in the frozen footer reaches the real 
     }
     /* The control must actually contain the subject, or the comparison is empty. */
     expect(controlVerdicts.size).toBeGreaterThan(10);
+    /* The key as it appears in the CONTROL mount, which renders `<Footer3 />`
+     * alone with no correction effect anywhere near it, so it still carries the
+     * frozen file's wrong href. */
     const termsKey = `${FROZEN_FOOTER_MISLABELLED_TERMS_HREF}\u0000${FROZEN_FOOTER_TERMS_LABEL}`;
+    /* ═══ RE-POINTED BY WAVE 235 (R198.6, R202.1) — AND THE REASON MATTERS ═══
+     * This test did NOT go red when wave 235 landed. It went VACUOUS, which is
+     * worse and is why it is re-pointed even though it was green. The loop below
+     * skips any live anchor whose key is absent from the control, and after the
+     * correction the live Terms anchor's key carries the CORRECTED href, so it was
+     * skipped — `expect(verdict).toBe(true)`, the one assertion in this test that
+     * proves the deliberate change happened, stopped executing altogether while
+     * the test kept reporting a pass. The live key is therefore computed
+     * separately, and `sawTerms` below makes the execution of that assertion
+     * itself a checked fact rather than something inferred from a green tick. */
+    const liveTermsKey = `${CORRECT_TERMS_ROUTE}\u0000${FROZEN_FOOTER_TERMS_LABEL}`;
+    expect(liveTermsKey).not.toBe(termsKey);
     expect(controlVerdicts.has(termsKey)).toBe(true);
     /* Without the interception, the mislabelled anchor is NOT cancelled \u2014 i.e.
      * the browser would have followed its wrong href. That is the defect. */
@@ -365,14 +425,25 @@ describe("WAVE 218 §B — clicking Terms in the frozen footer reaches the real 
     const { container, currentPath } = mountRealPublicSite();
     const live = footerAnchors(container);
     let compared = 0;
+    let sawTerms = false;
     for (const a of live) {
       const key = `${a.getAttribute("href")}\u0000${(a.textContent ?? "").trim()}`;
-      if (!controlVerdicts.has(key)) continue;
+      /* WAVE 235 — the subject is now recognised by its corrected key, and its
+       * control counterpart is the pre-correction key. Everything else is still
+       * compared against itself. */
+      const isTerms = key === liveTermsKey;
+      if (!isTerms && !controlVerdicts.has(key)) continue;
       const verdict = clickAndReportCancelled(a).cancelled;
       compared += 1;
-      if (key === termsKey) {
-        /* The one deliberate change. */
+      if (isTerms) {
+        sawTerms = true;
+        /* The one deliberate change, in BOTH of its halves: the href attribute
+         * was corrected (the key proves it) AND the click is still cancelled by
+         * the application, so the visitor still gets a client-side route change
+         * rather than a full document navigation. The control mount, which has no
+         * correction, was not cancelled — asserted above. */
         expect(verdict).toBe(true);
+        expect(a.getAttribute("href")).toBe(CORRECT_TERMS_ROUTE);
         continue;
       }
       expect(
@@ -380,24 +451,79 @@ describe("WAVE 218 §B — clicking Terms in the frozen footer reaches the real 
         `the interception changed the behaviour of an anchor it must not touch: ${key}`,
       ).toBe(controlVerdicts.get(key));
       /* And none of them moved the visitor off the marketing page. */
-      if (key !== termsKey) expect(currentPath()).toBe("/");
+      expect(currentPath()).toBe("/");
     }
     /* A comparison over two anchors would pass for the wrong reason. */
     expect(compared).toBeGreaterThan(10);
+    /* WAVE 235 — and the deliberate-change assertion RAN. Without this the whole
+     * test degrades to "nothing changed", which is exactly how it survived the
+     * wave-235 build while proving nothing about it. */
+    expect(sawTerms, "the corrected Terms anchor was never reached — this test proved nothing").toBe(true);
   });
 
-  it("B2b: the Privacy Policy anchor SHARES the same href and is still NOT intercepted", () => {
+  /* ═══ RE-POINTED BY WAVE 235 (R198.6, R202.1) ═══
+   * In the frozen SOURCE two anchors share the privacy-policy href, and that is
+   * still true and still asserted — in B2b-source below, read off disk. What
+   * changed is the RENDERED page: after the correction exactly ONE anchor carries
+   * that href, and it is the Privacy Policy link. So the count moves from 2 to 1
+   * and the property being proved is strengthened, not relaxed: the correction
+   * had to touch one of two identically-href'd anchors and had to leave the other
+   * one completely alone — same href, same label, same behaviour.
+   */
+  it("B2b: the Privacy Policy anchor is the one left carrying that href, and is still NOT intercepted", () => {
     const { container, currentPath } = mountRealPublicSite();
     const sameHref = footerAnchors(container).filter(
       (a) => a.getAttribute("href") === FROZEN_FOOTER_MISLABELLED_TERMS_HREF,
     );
-    /* Two anchors carry the identical href; only one of them is mislabelled. A
-     * predicate keyed on href alone would have swallowed the correct link too. */
-    expect(sameHref.length).toBe(2);
-    const privacy = sameHref.find((a) => (a.textContent ?? "").trim() !== FROZEN_FOOTER_TERMS_LABEL)!;
-    expect((privacy.textContent ?? "").trim()).toBe("Privacy Policy");
+    /* EXACTLY ONE now. Two would mean the correction never ran; zero would mean it
+     * ran over the Privacy Policy link as well, which is the failure a predicate
+     * keyed on href alone would produce. */
+    expect(sameHref.length).toBe(1);
+    const privacy = sameHref[0];
+    /* Its label and its href are both byte-untouched — no normalising call. */
+    expect(privacy.textContent).toBe("Privacy Policy");
+    expect(privacy.getAttribute("href")).toBe(FROZEN_FOOTER_MISLABELLED_TERMS_HREF);
     expect(clickAndReportCancelled(privacy).cancelled).toBe(false);
     expect(currentPath()).toBe("/");
+  });
+
+  it("B2b-source: the frozen SOURCE still has both anchors on the same href — nothing was edited", () => {
+    /* The pre-correction fact wave 218 asserted is preserved here, read from the
+     * frozen file rather than from the DOM, so that re-pointing B2b to the
+     * rendered page does not lose it. */
+    const footer3 = readText("client/src/components/home3compo/Footer3.jsx");
+    expect((footer3.match(/href="https:\/\/capavate\.com\/privacy-policy"/g) ?? []).length).toBe(2);
+  });
+
+  it("B2c: the corrected predicate is as narrow as the one it succeeds", () => {
+    /* WAVE 235 — the click fence now has a second predicate, and an over-wide
+     * second predicate would undo B2b silently. Attacked directly, because a
+     * click test can only cover the anchors on the page today. */
+    const mk = (html: string) => {
+      const d = document.createElement("div");
+      d.innerHTML = html;
+      return d.firstElementChild;
+    };
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<a href="${CORRECT_TERMS_ROUTE}">Terms</a>`))).toBe(true);
+    expect(isFrozenFooterCorrectedTermsLink(null)).toBe(false);
+    /* right href, wrong label — including wave 210's legal strip, whose label is
+     * the document title and which links to the very same route. */
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<a href="${CORRECT_TERMS_ROUTE}">Terms of Service</a>`))).toBe(false);
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<a href="${CORRECT_TERMS_ROUTE}">Privacy Policy</a>`))).toBe(false);
+    /* right label, wrong href */
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<a href="/privacy-policy">Terms</a>`))).toBe(false);
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<a href="${FROZEN_FOOTER_MISLABELLED_TERMS_HREF}">Terms</a>`))).toBe(false);
+    /* not an anchor, even carrying the right href attribute */
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<div href="${CORRECT_TERMS_ROUTE}">Terms</div>`))).toBe(false);
+    expect(isFrozenFooterCorrectedTermsLink(mk(`<button href="${CORRECT_TERMS_ROUTE}">Terms</button>`))).toBe(false);
+    /* And wave 210's real strip anchor, taken from the mounted page rather than
+     * from a hand-written fixture, is not matched. */
+    const { container } = mountRealPublicSite();
+    const strip = container.querySelector('[data-testid="public-legal-link-terms"]');
+    expect(strip, "wave 210's legal strip link is missing").not.toBeNull();
+    expect(strip!.getAttribute("href")).toBe(CORRECT_TERMS_ROUTE);
+    expect(isFrozenFooterCorrectedTermsLink(strip)).toBe(false);
+    expect(clickAndReportCancelled(strip!).cancelled).toBe(false);
   });
 
   it("B3: no anchor with a real destination anywhere on the page is intercepted", () => {
@@ -457,12 +583,16 @@ describe("WAVE 218 §B — clicking Terms in the frozen footer reaches the real 
     expect(isFrozenFooterMislabelledTermsLink(mk(`<a href="${FROZEN_FOOTER_MISLABELLED_TERMS_HREF}">\n  Terms\n</a>`))).toBe(true);
   });
 
-  it("B5: the RESIDUAL defect is still present and is asserted, not assumed away", () => {
-    /* The markup still carries the wrong href. A copied link address, a
-     * middle-click, or a visitor with JavaScript disabled still reaches the
-     * Privacy Policy, and no interception from outside a frozen file can change
-     * that. This assertion exists so that a later wave reading a green suite does
-     * not conclude the anchor was corrected. */
+  it("B5: the frozen SOURCE still carries the wrong href — the residual, restated by wave 235", () => {
+    /* UNCHANGED ASSERTION, NARROWED CLAIM. Wave 218 wrote this to record that a
+     * copied link address, a middle-click and a JavaScript-disabled visitor all
+     * still reached the Privacy Policy. After wave 235 the first two are FIXED,
+     * because the attribute in the live DOM is corrected before any of them reads
+     * it. What remains is the SOURCE FILE and the no-JavaScript case: the bytes
+     * on disk are still wrong, they are frozen, and a render that never executes
+     * an effect still emits them. The assertion itself is deliberately left
+     * exactly as wave 218 wrote it — it is the proof the sacred file was not
+     * edited — and only what it is claimed to mean has changed. */
     const footer3 = readText("client/src/components/home3compo/Footer3.jsx");
     expect(footer3).toContain(`<a href="${FROZEN_FOOTER_MISLABELLED_TERMS_HREF}">Terms</a>`);
   });

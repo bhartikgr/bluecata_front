@@ -18,6 +18,8 @@ import { listRounds } from "../roundsStore";
 import { listForCompany as softCirclesForCompany, listForRound as softCirclesForRound } from "../softCircleStore";
 import { rawDb } from "../db/connection";
 import { DbUnavailableError } from "./errors";
+/* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
+import { wave230CompanyVisible, wave230HiddenCompanyIds } from "./wave230DisplayExclusion";
 /* WAVE 116 · FINDING 1 (closes Wave 114's OQ-W114-1) — `dbTotalFunded()` summed
    `Round.raisedAmount`, and Wave 114 established that `rounds.raised_amount` is a
    `NOT NULL DEFAULT 0` column with NO WRITER anywhere in the tree. The admin
@@ -42,7 +44,16 @@ import { normaliseCurrencyForComparison } from "@capavate/cap-table-engine";
 /** Distinct real companies (tenant inventory) from the DB. */
 export function dbTotalCompanies(): number {
   try {
-    return getAllCompaniesFromDb().length;
+    /* WAVE 230D · R228 — the dashboard company count stops counting records an
+       operator marked as test data. This is a COUNT OF RECORDS, not a money
+       figure and not an absence: excluding rows makes it fall, correctly, and
+       the fall is reported in the admin test-data panel. It never becomes null
+       and never fabricates a zero — with nothing marked the set is empty and the
+       count is unchanged. */
+    const w230Hidden = wave230HiddenCompanyIds();
+    return getAllCompaniesFromDb().filter((c) =>
+      wave230CompanyVisible(w230Hidden, (c as { companyId?: string }).companyId),
+    ).length;
   } catch (err) {
     throw new DbUnavailableError("admin KPI companies", err as Error);
   }
@@ -389,7 +400,14 @@ export function dbTotalActiveSpvs(): number | null {
    than a zero. */
 export function dbRegions(): Array<{ code: string; companies: number; raised: number | null }> {
   try {
-    const companies = getAllCompaniesFromDb();
+    /* WAVE 230D · R228 — same per-record exclusion as dbTotalCompanies, applied
+       to the per-region company tally so the regions table and the headline
+       count cannot disagree. `raised` keeps its `number | null` contract: a
+       region whose figure is not determined still renders a dash, never a 0. */
+    const w230HiddenRegions = wave230HiddenCompanyIds();
+    const companies = getAllCompaniesFromDb().filter((c) =>
+      wave230CompanyVisible(w230HiddenRegions, (c as { companyId?: string }).companyId),
+    );
     const rounds = listRounds();
     const acc = new Map<string, { companies: number; minor: bigint; determined: boolean; currency: string | null }>();
     for (const c of companies) {

@@ -349,10 +349,39 @@ describe("§4 FINDING 3 — the seat banner, fixed by WAVE 126 and pinned here",
     expect(payload.meta.duplicateSeatCount).toBe(payload.activeSeats - rendered);
   });
 
-  it("pending invitations are counted from UNREDEEMED invitations only", () => {
-    expect(team).toContain("const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;");
-    const invitations = [{ redeemedAt: null }, { redeemedAt: "2026-08-01" }, { redeemedAt: null }];
-    expect(invitations.filter((i) => !i.redeemedAt).length).toBe(2);
+  /* ─────────────────────────────────────────────────────────────────────────
+     RE-POINTED BY WAVE 229 (R198.6 / R202.1 — the fix and its proof move
+     together, and the proof is TIGHTENED, not loosened).
+
+     This assertion used to pin the source line
+       const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;
+     which wave 135 correctly identified as "unredeemed only". Wave 229 found
+     that this was a SECOND derivation of a quantity the server already owns.
+     `invitations` is built by `listByPartner()` from a PROCESS-LOCAL RAM array;
+     the Dashboard tile and the seat-limit ENFORCEMENT path both use
+     `countPendingByPartner()`, which reads the durable table and returns
+     `Math.max(durable, ram)` precisely because a restarted server or a second
+     instance sees an empty RAM array (WAVE 19 / SEAT-02). The two derivations
+     could therefore disagree, and the banner was the one that under-reported.
+
+     So the requirement wave 135 was expressing — the banner must not count
+     redeemed invitations — is now satisfied by the SERVER resolver, whose
+     predicate additionally excludes EXPIRED invitations. This test therefore
+     asserts the stronger property: the banner reads the server's figure, and
+     does not re-derive one. It is not relaxed to accept either shape.
+     ───────────────────────────────────────────────────────────────────────── */
+  it("the pending figure comes from the server resolver, not a second client derivation", () => {
+    /* The banner reads the server's field … */
+    expect(team).toContain("const serverPendingCount = q.data?.pendingCount;");
+    expect(team).toContain('const pendingCount: number | string = serverPendingCount ?? "\\u2014";');
+    /* … and the old client-side re-derivation is gone from the live code. */
+    expect(team).not.toContain("const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;");
+    /* An absent server figure must NOT become a fabricated 0 about seat
+       capacity. The em dash is the honest render. */
+    expect(team).not.toMatch(/serverPendingCount \?\? 0/);
+    const banner = (server: number | undefined) => (server ?? "\u2014");
+    expect(banner(3)).toBe(3);
+    expect(banner(undefined)).toBe("\u2014");
   });
 
   it("the no-cap sentinel is rendered as a word, never as the digits 9999", () => {

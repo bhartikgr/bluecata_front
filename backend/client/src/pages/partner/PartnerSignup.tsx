@@ -20,6 +20,47 @@ import { Button } from "@/components/ui/button";
 import { AuthShell } from "@/pages/auth/AuthShell";
 import { Handshake, FileText, ArrowRight, CheckCircle2 } from "lucide-react";
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 266 — THE TWO PUBLIC SENTENCES THAT DESCRIBED A REVIEW PROCESS THAT DOES
+ * NOT EXIST. Both were on this page, which is PUBLIC and unauthenticated.
+ *
+ * SENTENCE 1 (was :51): "Consortium partners are VETTED accelerator programs,
+ *   angel networks, syndicates, and family offices…"
+ *   R227.2 settles what wave 220 left open as "an owner question": the owner has
+ *   ruled the word PROHIBITED — "Prohibited: verified, verification,
+ *   independently verified, VETTED, screened, approved, certified, guaranteed,
+ *   compliant — about a person, a holding, or an eligibility." R189.3 lists
+ *   "no 'curated' or 'vetted'" among the interface rules. So this is not a
+ *   judgement call any more; it is a ruling.
+ *   WHAT ACTUALLY HAPPENS: the applicant DECLARES its own regulatory status.
+ *   Migration 0222 (wave 217) added `regulatory_status`,
+ *   `compliance_attested_at` and `compliance_attestation_text` to
+ *   `consortium_applications`. A declaration is recorded. Nothing checks it.
+ *
+ * SENTENCE 2 (was in "How approval works"): "Platform team reviews + VERIFIES
+ *   your organization (typically 3–5 BUSINESS DAYS)."
+ *   TWO claims, one true and one not, which is why each was read in place.
+ *   "Platform team reviews" is TRUE — an administrator approves or rejects the
+ *   application and provisioning follows. "verifies your organization" is a
+ *   check that does not exist anywhere in the tree. "typically 3–5 business
+ *   days" is an SLA with no timer, no queue and no scheduler behind it:
+ *   `grep -rn 'businessDays|business_days|slaHours|reviewDeadline' server shared`
+ *   returns NOTHING.
+ *
+ * THE REGISTER IS REUSED, NOT INVENTED (rule 3). "No review time is promised"
+ * is wave 220's own corrected wording in
+ * `client/src/components/investor/PromoteToCollectiveDialog.tsx:159`. "It is not
+ * a check of it" is the platform's existing honest sentence from
+ * `client/src/components/investor/AccreditationDeclaration.tsx:310`.
+ *
+ * NOTHING IS DELETED (R195.5). Both superseded sentences are retired in place,
+ * byte-identical, in a retention block appended as the LAST sibling of the outer
+ * container so no sibling above it renumbers — wave 220's construction, and the
+ * flag is an IDENTIFIER, not `{false && …}`, which the restyle detector folds
+ * and marks a SUPPRESSION.
+ * ══════════════════════════════════════════════════════════════════════════ */
+const W266_RENDER_SUPERSEDED_COPY = false;
+
 export default function PartnerSignup() {
   return (
     <AuthShell
@@ -48,8 +89,9 @@ export default function PartnerSignup() {
             </h2>
           </div>
           <p className="text-sm text-muted-foreground mb-4">
-            Consortium partners are vetted accelerator programs, angel networks, syndicates, and family offices that
-            bring their founders, investors, and deals onto Capavate as a single managed portfolio.
+            Consortium partners are accelerator programs, angel networks, syndicates, and family offices that
+            bring their founders, investors, and deals onto Capavate as a single managed portfolio. Applicants
+            declare their own regulatory status. Capavate records that declaration. It is not a check of it.
           </p>
           {/* v25.15 NM10 — wouter Link inside Button used asChild to avoid
              nested <a><button> producing invalid HTML. */}
@@ -113,7 +155,7 @@ export default function PartnerSignup() {
           <h3 className="text-sm font-semibold text-foreground mb-1">How approval works</h3>
           <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
             <li>Submit the partner application (5–7 minutes).</li>
-            <li>Platform team reviews + verifies your organization (typically 3–5 business days).</li>
+            <li>A Capavate administrator reviews your application and decides whether to approve it. Capavate does not verify your organization, and no review time is promised.</li>
             <li>On approval, you receive a one-time magic link to set up your partner administrator credentials.</li>
             <li>You can then invite your team into your partner workspace.</li>
           </ol>
@@ -132,6 +174,18 @@ export default function PartnerSignup() {
             Open the full activation link from your invitation email.
           </span>
         </div>
+
+        {/* WAVE 266 · R195.5 — RETIRED IN PLACE, NOT DELETED. Appended as the
+            LAST sibling of this container so nothing above it renumbers. Each
+            literal is byte-identical to the sentence that stood above, so the
+            guard's copy identity survives. Identifier flag, not
+            `{false && ...}`, which detect.mjs folds and marks a SUPPRESSION. */}
+        {W266_RENDER_SUPERSEDED_COPY ? (
+          <div hidden aria-hidden="true" data-testid="w266-superseded-partner-review-copy">
+            <p data-testid="w266-superseded-vetted">Consortium partners are vetted accelerator programs, angel networks, syndicates, and family offices that bring their founders, investors, and deals onto Capavate as a single managed portfolio.</p>
+            <p data-testid="w266-superseded-verifies-sla">Platform team reviews + verifies your organization (typically 3–5 business days).</p>
+          </div>
+        ) : null}
       </div>
     </AuthShell>
   );

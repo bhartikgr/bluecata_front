@@ -91,6 +91,18 @@ import FounderQABox from "@/components/investor/FounderQABox";
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — read-only interim (pro-forma) view for investors */
 import { instrumentLabel, holderTypeLabel, decisionStateLabel, displayName } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 3 (M-3) */
 import { useRealtimeSync } from "@/lib/realtimeSync";
+/* ── WAVE 245 · ONE FORMATTING BEHAVIOUR FOR AMOUNTS ─────────────────────────
+   The "Investment amount (USD)" input below showed a raw `250000` while the
+   attestation sentence and the submit button directly beneath it rendered the
+   SAME figure as `$250,000`. The founder round wizard had already solved this,
+   so its formatter is now shared rather than duplicated. See the header of
+   `@/lib/money/moneyInputFormat` for the full contract; the short version is
+   that `formatMoneyInputDisplay` is for the `value` prop ONLY and
+   `stripMoneyInputGrouping` guarantees React state stays a comma-free numeric
+   string — because `amount` is read as `Number(amount) || 0` in five places on
+   this page and `Number("250,000")` is `NaN`, which `|| 0` would turn into a
+   soft-circle of ZERO DOLLARS. Formatting must never become parsing. */
+import { formatMoneyInputDisplay, stripMoneyInputGrouping } from "@/lib/money/moneyInputFormat";
 
 type RoundTerms = {
  liquidationPref?: string;
@@ -1584,7 +1596,16 @@ export default function InvitationDetail() {
         <CardContent className="space-y-3">
          <div>
           <Label>Investment amount (USD)</Label>
-          <Input className="mt-1 font-mono" value={amount} onChange={e => { setAmount(e.target.value); setAmountTouched(true); }} data-testid="input-amount" />
+          {/* WAVE 245 — TWO additions and NOTHING ELSE. `value` is now grouped for
+              display. `onChangeCapture` runs in the capture phase, BEFORE the
+              pre-existing bubble-phase `onChange` below, and normalises the DOM
+              node's value in place, so that handler reads a clean comma-free
+              string exactly as it did before this wave and `amount` in state is
+              unchanged character-for-character. The `onChange` expression, the
+              tag, the className and the data-testid are all byte-identical to
+              their pre-wave form — deliberately, since rewriting a live money
+              handler would retire its silent-drop-guard event key. */}
+          <Input className="mt-1 font-mono" value={formatMoneyInputDisplay(amount)} onChangeCapture={e => { const el = e.target as HTMLInputElement; const clean = stripMoneyInputGrouping(el.value); if (el.value !== clean) el.value = clean; }} onChange={e => { setAmount(e.target.value); setAmountTouched(true); }} data-testid="input-amount" />
           <div className="text-xs text-muted-foreground mt-1">Min ticket {fmtUSD(i.minTicket)}. Pro-rata available at $250k+.</div>
          </div>
          <div>

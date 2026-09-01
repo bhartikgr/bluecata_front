@@ -29,8 +29,29 @@ import { CapavateLogo } from "@/components/CapavateLogo";
 // surface (investor vs founder copy) while defaulting to the historical
 // founder-leaning copy so every other auth surface (Forgot, Redeem, Admin,
 // Partner) renders unchanged.
+// WAVE 274a · R221.1 — CLASS A CLAIM WITHDRAWN FROM THE HIGHEST-TRAFFIC PAGE.
+// This constant is what /partner/login renders (PartnerLogin.tsx passes no
+// `tagline` prop), and it used to read "…turn every shareholder into a VERIFIED
+// contact…". Capavate performs no such check, and the rest of the platform says
+// so in terms: "Capavate does not describe any investor as accredited,
+// professional, sophisticated, qualified, verified or screened"
+// (shared/wave211MoneyEventAttestation.ts:508) and "Capavate does not verify this
+// investor's identity, wealth, status, eligibility or source of funds" (:645).
+// The first screen a prospective partner saw made the exact claim the attestation
+// panels exist to disclaim.
+//
+// The word is removed and the value proposition is carried by something the
+// platform DOES do — the contact becomes reachable (messaging, investor CRM,
+// campaigns) — rather than by a check it does not perform. Nothing else in the
+// sentence moved: same clauses, same order, same em dash, same closing phrase.
+//
+// This literal lives OUTSIDE JSX, so neither `npm run guard` nor
+// `npm run drop:restyle` inventories it (guard's copy classes are JSX text nodes
+// plus the COPY_ATTRS attribute set; `tagline` is in neither). It is therefore
+// fenced by w274a_auth_tagline_no_verified_claim.test.tsx, which mounts the real
+// shell and asserts the RENDERED brand panel rather than the source.
 const DEFAULT_TAGLINE =
-  "Run your cap table, structure your rounds, and turn every shareholder into a verified contact — in one place.";
+  "Run your cap table, structure your rounds, and turn every shareholder into a contact you can reach — in one place.";
 const DEFAULT_SUBLINE =
   "Activate the network already inside your ownership structure.";
 

@@ -14,6 +14,7 @@
  * (the import is wrapped in try/catch).
  */
 import { getCorrelationId } from "./correlationId";
+import { buildShaForRelease } from "./buildIdentity";
 
 let sentryClient: any = null;
 let initialized = false;
@@ -52,7 +53,16 @@ export async function initSentry(): Promise<void> {
     mod.init({
       dsn: process.env.SENTRY_DSN,
       environment: process.env.NODE_ENV ?? "development",
-      release: process.env.GIT_SHA ?? undefined,
+      /* WAVE 242 — was `process.env.GIT_SHA ?? undefined`, which read only ONE of
+         the three env vars the server's own build resolver consults. On a deploy
+         that sets BUILD_SHA (the resolver's FIRST choice) and not GIT_SHA,
+         /api/healthz reported the build correctly and every Sentry event was
+         tagged with no release at all — so the monitoring could not be joined to
+         the build it came from. Same resolver as healthz now. Still `undefined`
+         rather than the string "unknown" when the build cannot be identified: a
+         release named "unknown" would silently group every unidentifiable deploy
+         into one bucket, which is an absence rendering as a fact. */
+      release: buildShaForRelease(),
       tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? "0.0"),
     });
     sentryClient = mod;

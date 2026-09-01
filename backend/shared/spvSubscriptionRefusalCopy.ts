@@ -112,6 +112,18 @@ export const SPV_SUBSCRIPTION_REFUSAL_HEADLINE_MAX_CHARS = 240;
  * apologises, and none of them invents a cause the server did not state.
  * ════════════════════════════════════════════════════════════════════════════ */
 export const SPV_SUBSCRIPTION_REFUSAL_COPY: Readonly<Record<string, string>> = {
+  /* WAVE 237 — the refusal this wave introduces. Without an entry here the
+     platform logs `[spv.refusal.unexplained] CAP_BELOW_TARGET` and the partner is
+     shown the boundary's generic "Something went wrong on our side" sentence plus
+     an opaque incident reference — for a refusal that is entirely THEIR to fix,
+     in two seconds, by changing one number. A wave that adds a refusal owns its
+     wording. Names the two fields and the relationship between them, and says
+     that nothing was created. */
+  CAP_BELOW_TARGET:
+    "This vehicle was not created. The cap is the most the vehicle may raise, so it cannot be " +
+    "set below the target raise. Either raise the cap to at least the target, or lower the " +
+    "target to at most the cap, and create the vehicle again. Nothing has been saved and no " +
+    "sign-off has been recorded.",
   /* WAVE 166 · ITEM D (Path 2) — an unrecognised LP origin. */
   LP_INVITE_INVALID_ORIGIN:
     "This LP was not added, because the record of where they came from is not one this platform " +
@@ -185,6 +197,11 @@ export const SPV_SUBSCRIPTION_REFUSAL_COPY: Readonly<Record<string, string>> = {
  * a bug, which is worse than the code it replaced.
  */
 export const SPV_SUBSCRIPTION_REFUSAL_HEADLINE: Readonly<Record<string, string>> = {
+  /* WAVE 237 — the short form, WRITTEN not truncated, under the 240-char
+     `looksHuman` gate. The unabridged sentence travels beside it as `guidance`. */
+  CAP_BELOW_TARGET:
+    "This vehicle was not created. The cap cannot be below the target raise. Raise the cap to " +
+    "at least the target, or lower the target, and try again.",
   LP_INVITE_INVALID_ORIGIN:
     "This LP was not added, because the record of where they came from is not one this platform " +
     "recognises. Choose a founding holder, an existing holder, or a new direct add, and try again.",

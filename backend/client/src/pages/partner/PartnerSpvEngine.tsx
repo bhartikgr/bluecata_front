@@ -474,6 +474,15 @@ export default function PartnerSpvEngine() {
     enums: Record<string, readonly string[]>;
     carryBasisHelp: Record<string, string>;
     clonableSpvs: Array<{ id: string; name: string; jurisdiction: string; carryBasis: string }>;
+    /* WAVE 231 — the platform fee layer's actual state. ADDITIVE and OPTIONAL:
+       typed `?` so a server that predates this key (or a cached payload) renders
+       nothing at all rather than a fabricated figure. `percentDisplay` is
+       non-null ONLY for an active, non-zero, exactly-representable rate. */
+    platformFeeDisclosure?: {
+      state: string;
+      percentDisplay: string | null;
+      statement: string;
+    };
   }>({
     queryKey: ["/api/partner/me/spv-wizard/defaults"],
     enabled: wizardOpen && role.ready && !!role.identity,
@@ -674,6 +683,10 @@ export default function PartnerSpvEngine() {
          `SPV_LAUNCHED_TOAST_TITLES` in shared/spvEngine.ts. */
       const launchedType = typeof created?.spvType === "string" && created.spvType.trim() ? created.spvType : w.spvType;
       setWizardOpen(false); setStep(0); setW(EMPTY_WIZARD);
+      /* WAVE 274c — the wizard is reused, so the interaction flags reset with the
+         rest of its state. Without this the NEXT vehicle's wizard would open
+         already accusing an empty field, which is the defect this wave removes. */
+      setNameTouched(false); setMandateDescTouched(false);
       /* WAVE 169 · R138 — the original literal STAYS, verbatim, as the branch that
          still means what it always meant: the single-deal SPV. The per-type title
          is a SIBLING branch, not a replacement, because `drop:restyle` reads toast
@@ -707,6 +720,35 @@ export default function PartnerSpvEngine() {
 
   /* WAVE 83 · ITEM 2.5 — has the GP touched the mandate dropdown yet? */
   const [mandateModeTouched, setMandateModeTouched] = useState(false);
+
+  /* ══════════════════════════════════════════════════════════════════════
+     WAVE 274c · R221.5 item 1 — DO NOT ACCUSE THE USER BEFORE THEY ACT.
+
+     The wizard opened on step 0 with nothing typed and immediately showed a
+     rose invalid ring on "SPV name *" plus "An SPV name is required before you
+     can continue." Step 1 did the same for "Description of mandate *". Both
+     statements are true, but as an OPENING they read as "you have already made
+     a mistake".
+
+     These two flags say only ONE thing: has the GP interacted with this field
+     yet. They do NOT participate in validity. `canAdvance()` is untouched, the
+     Next button is still driven by the same predicates, and step jumping is
+     still free (R221.6 protects the non-linear tabs) — an untouched field is
+     still invalid, it is just not yet ACCUSED.
+
+     Same shape as `mandateModeTouched` above rather than a new mechanism.
+     ══════════════════════════════════════════════════════════════════════ */
+  const [nameTouched, setNameTouched] = useState(false);
+  const [mandateDescTouched, setMandateDescTouched] = useState(false);
+  /* WAVE 274c — the wizard is REUSED, so a fresh open must not inherit the
+     previous session's interaction. This is an effect rather than an addition to
+     the Create button's onClick because that handler expression is inventoried by
+     the silent-drop guard: editing it reads as a REMOVED handler (guard rule on
+     handler expressions), so the flags reset here instead and the button keeps its
+     baseline expression byte-for-byte. */
+  useEffect(() => {
+    if (wizardOpen) { setNameTouched(false); setMandateDescTouched(false); }
+  }, [wizardOpen]);
 
   /* WAVE 83 · ITEM 5.1 — ref for the field the wizard focuses first. */
   const spvNameRef = useRef<HTMLInputElement>(null);
@@ -988,7 +1030,16 @@ export default function PartnerSpvEngine() {
                   year, swallowed exactly four characters and then silently refused the
                   rest. Focus is now placed on the SPV name field explicitly. Nothing
                   moved, nothing was renamed, and Vintage keeps its own validation. */}
-              <div><Label>SPV name *</Label><Input autoFocus ref={spvNameRef} data-testid="spv-w-name" {...fieldValidityProps(w.name.trim().length > 0)} value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              {/* WAVE 274c · R221.5 — the invalid ring is now SPREAD only once the
+                  field has been interacted with. The predicate inside
+                  `fieldValidityProps` is byte-identical to wave 106's and is still
+                  the only thing that decides what "invalid" looks like
+                  (`fieldValidityClass` returns "" when valid, so a valid field can
+                  never keep a ring). `onBlur` marks interaction for a GP who tabs
+                  past, `onChangeCapture` for one who types then clears. That capture
+                  handler is an ADDED attribute: the baseline `onChange` expression is inventoried
+                  by the silent-drop guard and is left byte-identical. */}
+              <div><Label>SPV name *</Label><Input autoFocus ref={spvNameRef} data-testid="spv-w-name" {...(nameTouched ? fieldValidityProps(w.name.trim().length > 0) : {})} value={w.name} onBlur={() => setNameTouched(true)} onChangeCapture={() => setNameTouched(true)} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
               {/* WAVE 7B V-1 (DEF-085) — vintage year. The admin create form has
                   always had this field; the PARTNER-facing wizard never did, so
                   every partner-created SPV carried no vintage and the admin
@@ -1011,8 +1062,13 @@ export default function PartnerSpvEngine() {
                   </div>
                 )}
               </div>
-              {/* B1 — inline error so the GP knows WHY Next is disabled */}
-              {!w.name.trim() && (
+              {/* B1 — inline error so the GP knows WHY Next is disabled.
+                  WAVE 274c · R221.5 item 1 — gated on interaction. The sentence
+                  itself is unchanged, byte for byte; only the moment it first
+                  appears has moved, from "on open" to "after you have touched the
+                  field". Next remains disabled throughout, so nothing about what
+                  the wizard will accept has changed. */}
+              {nameTouched && !w.name.trim() && (
                 <div className="text-xs text-rose-600" data-testid="spv-w-name-error">
                   An SPV name is required before you can continue.
                 </div>
@@ -1088,16 +1144,20 @@ export default function PartnerSpvEngine() {
                 <Label>Description of mandate *</Label>
                 <Textarea
                   data-testid="spv-w-mandate-desc"
-                  {...fieldValidityProps(w.mandateDescription.trim().length > 0)}
+                  {...(mandateDescTouched ? fieldValidityProps(w.mandateDescription.trim().length > 0) : {})}
                   rows={4}
                   maxLength={MANDATE_DESCRIPTION_MAX}
                   value={w.mandateDescription}
+                  onBlur={() => setMandateDescTouched(true)}
+                  onChangeCapture={() => setMandateDescTouched(true)}
                   onChange={(e) => setW({ ...w, mandateDescription: e.target.value.slice(0, MANDATE_DESCRIPTION_MAX) })}
                   placeholder="Describe what this vehicle will invest in, the thesis, and any restrictions…"
                 />
                 <div className="text-[10px] text-[var(--cv-color-text-faint)] text-right">{w.mandateDescription.length}/{MANDATE_DESCRIPTION_MAX}</div>
-                {/* W2-E — inline error so the user knows WHY Next is disabled */}
-                {!w.mandateDescription.trim() && (
+                {/* W2-E — inline error so the user knows WHY Next is disabled.
+                    WAVE 274c — shown once the field has been interacted with; the
+                    wording is unchanged. */}
+                {mandateDescTouched && !w.mandateDescription.trim() && (
                   <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-mandate-desc-error">
                     A description of the mandate is required before you can continue.
                   </div>
@@ -1258,6 +1318,41 @@ export default function PartnerSpvEngine() {
                   {feeStepRefusal()}
                 </div>
               )}
+
+              {/* ═══════════════════════════════════════════════════════════════
+                  WAVE 231 — THE PLATFORM FEE, DISCLOSED HERE AND NOT DEFERRED.
+                  ═══════════════════════════════════════════════════════════════
+                  The `spv-w-platform-fee-note` sentence above is TRUE and is left
+                  exactly as it was (R195.5 — nothing deleted): the platform layer
+                  IS set by Capavate and IS read-only to the GP. What it did not
+                  say is what the fee currently IS, and this is the moment of
+                  agreement. This sibling supplies that.
+
+                  APPENDED LAST, after `spv-w-fee-error`, which was the final child
+                  of this container. Inserting mid-list renumbers every following
+                  sibling and the silent-drop guard reads that as a mass removal.
+
+                  IT RENDERS A SERVER-DERIVED SENTENCE AND NOTHING ELSE. There is
+                  no percentage, price, currency or exponent literal in this JSX,
+                  and no arithmetic: the figure, when there is one, is already an
+                  exact decimal string computed in integer arithmetic in
+                  `shared/spvPlatformFeeDisclosure.ts`. When `percentDisplay` is
+                  null NO NUMBER IS SHOWN — a fabricated `0%` on this screen would
+                  be a price term nobody set, which is the specific defect eleven
+                  other displayed prices on this platform were found to have.
+
+                  WHILE THE QUERY IS IN FLIGHT, OR IF THE KEY IS ABSENT, NOTHING
+                  RENDERS. Silence is the honest default here: a placeholder would
+                  be read as a statement about the price. */}
+              {wizardDefaults.data?.platformFeeDisclosure ? (
+                <p
+                  className="text-xs text-[var(--cv-color-text-muted)]"
+                  data-testid="spv-w-platform-fee-disclosure"
+                  data-fee-state={wizardDefaults.data.platformFeeDisclosure.state}
+                >
+                  {wizardDefaults.data.platformFeeDisclosure.statement}
+                </p>
+              ) : null}
             </div>
           )}
 

@@ -1,0 +1,501 @@
+{
+  "_README": [
+    "WAVE 261. Baseline for scripts/lint/schema-path-parity.mjs.",
+    "Every entry here is a KNOWN DIVERGENCE between the two schema paths, not a resolved one.",
+    "knownDivergences: schema in migrations/ that the inline bootstrap in server/db/connection.ts does not provide and that no self-heal installer reads.",
+    "knownMirrorGaps: migrations present ONLY under server/db/migrations/, which server/db/migrate.ts does not read (MIGRATIONS_DIR defaults to ./migrations), so a deploy never applies them.",
+    "Removing an entry is how a gap gets closed. Adding one requires a reason. A stale entry FAILS the check."
+  ],
+  "knownDivergences": [
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:email_campaigns",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:formulas",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:notification_campaigns",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:outbox_emails",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:pricing_models",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:region_extensions",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:sessions",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0000_numerous_roxanne_simpson.sql::table:sync_inbox",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0002_slow_medusa.sql::table:__new_company_members",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0049_founder_tier_billing_cycle.sql::column:founder_tiers.billing_cycle",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0049_founder_tier_billing_cycle.sql::column:founder_tiers.annual_price_cents",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0051_consortium_invite_payload.sql::column:consortium_applications.invite_payload_json",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0085_v25_49_spv_lp_visibility.sql::column:spv.lp_visibility",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0087_v25_49_spv_deployment_wire_payment_ref.sql::column:spv_deployment.wire_payment_ref",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0087_v25_49_spv_deployment_wire_payment_ref.sql::column:spv_deployment.closing_doc_ref",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0097_v25_52_crm_dedup_backfill.sql::table:crm_dedup_review",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0097_v25_52_crm_dedup_backfill.sql::column:founder_crm_contacts.dedup_exempt",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0097_v25_52_crm_dedup_backfill.sql::column:investor_crm_contacts.dedup_exempt",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0097_v25_52_crm_dedup_backfill.sql::column:partner_crm_contacts.dedup_exempt",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::table:_preflight_check",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::column:partner_attributions.authority_artifact_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::column:partner_attributions.client_authority_scope_json",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::column:partner_attributions.engagement_letter_effective_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::column:partner_attributions.engagement_letter_expires_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0129_wave_c2_partner_attributions_scope.sql::column:partner_attributions.engagement_letter_revoked_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0130_wave_c2_authority_artifacts.sql::column:mf_engagement.consent_scope",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0130_wave_c2_authority_artifacts.sql::column:mf_engagement.authority_artifact_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::table:mf_engagement_event_new",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.founder_revoked_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.founder_revoked_by",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.archived_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.owner_user_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.current_stage_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement.current_stage_machine_type",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement_event.actor_role",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement_event.actor_partner_user_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement_event.acting_on_behalf_of_user_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement_event.partner_attribution_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0131_wave_c2_mf_engagement_columns.sql::column:mf_engagement_event.event_data_json",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::table:_preflight_check",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::table:c2_backfill_skip_log",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::table:_c2_pipeline_backfill_lock",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.current_stage_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.current_stage_machine_type",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.probability_pct_override",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.deal_size_usd",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.mapping_note",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.deal_name",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.currency",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.sector",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.geography",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_notes",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_version",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_updated_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_updated_by",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_is_seed",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_prev_revision_hash",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0132_wave_c2_soft_circle_provenance.sql::column:partner_deal_pipeline.kv_revision_hash",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:round_invitations.sourced_from_partner_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:round_invitations.sourced_from_partner_attribution_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:round_invitations.acting_on_behalf_of_user_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:round_invitations.actor_partner_user_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:round_invitations.engagement_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:soft_circles.sourced_from_partner_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:soft_circles.sourced_from_partner_attribution_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:soft_circles.partner_crm_contact_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:soft_circles.partner_workflow_stage_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0133_wave_c2_provenance_columns.sql::column:soft_circles.current_stage_machine_type",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0136_wave_c2_partner_company_relationship_spine.sql::table:c2_backfill_skip_log",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0136_wave_c2_partner_company_relationship_spine.sql::column:mf_engagement.pcr_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0136_wave_c2_partner_company_relationship_spine.sql::column:partner_deal_pipeline.pcr_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0136_wave_c2_partner_company_relationship_spine.sql::column:partner_attributions.pcr_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0136_wave_c2_partner_company_relationship_spine.sql::column:partner_portfolio_company.pcr_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0156_wave6_spv_distribution_type.sql::column:spv_distribution.distribution_type",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0157_wave6_spv_fee_schedule.sql::table:spv_fee_schedule",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0157_wave6_spv_fee_schedule.sql::table:spv_fee_schedule_history",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0157_wave6_spv_fee_schedule.sql::table:spv_close_window_policy",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0160_wave8_orp029_engine_spv_deployment_fee.sql::column:spv.deployment_fee_minor",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0160_wave8_orp029_engine_spv_deployment_fee.sql::column:spv.deployment_fee_currency",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0160_wave8_orp029_engine_spv_deployment_fee.sql::column:spv.deployment_fee_payer",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0160_wave8_orp029_engine_spv_deployment_fee.sql::column:spv.deployment_fee_paid_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0160_wave8_orp029_engine_spv_deployment_fee.sql::column:spv.deployment_fee_schedule_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0161_wave3f_partner_tier_canon.sql::table:partner_tier_current",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0162_wave3f_deployment_fee_billing.sql::table:spv_deployment_fee_billing",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0170_wave14_money_orphan_reporting_audit.sql::table:build_policy_decision",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0170_wave14_money_orphan_reporting_audit.sql::table:orphan_surface_disposition",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0170_wave14_money_orphan_reporting_audit.sql::table:founder_notification_preference",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0170_wave14_money_orphan_reporting_audit.sql::table:spv_carry_accrual",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0170_wave14_money_orphan_reporting_audit.sql::table:platform_audit_incident",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0175_wave28_cp_crm_04_dedup_resolution.sql::column:crm_dedup_review.resolution",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0175_wave28_cp_crm_04_dedup_resolution.sql::column:crm_dedup_review.survivor_id",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0175_wave28_cp_crm_04_dedup_resolution.sql::column:crm_dedup_review.resolution_note",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0193_wave120_data_room_grant_revocation.sql::column:data_room_grants.revoked_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0193_wave120_data_room_grant_revocation.sql::column:data_room_grants.revoked_by",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0194_wave130_shareholder_register.sql::table:company_shareholder_records",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0194_wave130_shareholder_register.sql::table:company_captable_first_run",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0194_wave130_shareholder_register.sql::table:captable_visibility_grants",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0195_wave131_pricing_display_repoint_ack.sql::table:pricing_display_repoint_ack",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:platform_fees.intentional_zero",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:platform_fees.intentional_zero_reason",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:platform_fees.intentional_zero_by",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:platform_fees.intentional_zero_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:collective_payment_schedules.intentional_zero",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:collective_payment_schedules.intentional_zero_reason",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:collective_payment_schedules.intentional_zero_by",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0200_batch2_g_r110_charge_path_prices_and_zero_flags.sql::column:collective_payment_schedules.intentional_zero_at",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0203_wave154_k_spv_launch_gate_override.sql::table:spv_launch_gate_override",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0206_wave155_comped_membership_grant.sql::table:comped_membership_grant",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0207_wave160_deployment_fee_basis_columns.sql::column:spv_deployment_fee_billing.fee_basis",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0207_wave160_deployment_fee_basis_columns.sql::column:spv_deployment_fee_billing.basis_size_minor",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0209_wave166_spv_lp_invite_origin.sql::column:spv_lp_invite.origin",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0211_wave173_partner_team_members_dedupe_unique.sql::table:partner_team_members_dedupe_archive_0211",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0212_wave171_partner_crm_contact_links.sql::table:partner_crm_contact_links",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0213_wave178_client_scope_actor_fk.sql::table:partner_crm_contact_client_scope_w178_new",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0214_wave179_spv_legal_form.sql::column:spv.legal_form",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0215_wave187_collective_bridge_inbound.sql::table:collective_bridge_inbound",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    },
+    {
+      "key": "0217_wave207_fee_basis_dimension.sql::column:partner_fee_schedules.basis_dimension",
+      "reason": "Pre-existing at wave 261. The inline bootstrap in the frozen server/db/connection.ts does not provide this, and no self-heal installer reads this migration. Any test that runs against a :memory: database is NOT exercising this schema. Recorded so that NEW divergences fail; this is an enumeration of a known gap, not an approval of it."
+    }
+  ],
+  "knownMirrorGaps": [
+    {
+      "key": "deploy-invisible::0001_sprint17_sync_and_auth.sql",
+      "reason": "Pre-existing at wave 261. Present only under server/db/migrations/. server/db/migrate.ts reads ./migrations, so a deploy NEVER applies this file. Reported to the owner as an open item; not resolved by this wave, because moving or copying a migration changes what an installed database would apply and that is not a change to make unattended."
+    },
+    {
+      "key": "deploy-invisible::0002_sprint18_phase2.sql",
+      "reason": "Pre-existing at wave 261. Present only under server/db/migrations/. server/db/migrate.ts reads ./migrations, so a deploy NEVER applies this file. Reported to the owner as an open item; not resolved by this wave, because moving or copying a migration changes what an installed database would apply and that is not a change to make unattended."
+    },
+    {
+      "key": "deploy-invisible::0092_v25_51_founder_crm_first_last_company.sql",
+      "reason": "Pre-existing at wave 261. Present only under server/db/migrations/. server/db/migrate.ts reads ./migrations, so a deploy NEVER applies this file. Reported to the owner as an open item; not resolved by this wave, because moving or copying a migration changes what an installed database would apply and that is not a change to make unattended."
+    },
+    {
+      "key": "deploy-invisible::0093_v25_51_name_split_phase1.sql",
+      "reason": "Pre-existing at wave 261. Present only under server/db/migrations/. server/db/migrate.ts reads ./migrations, so a deploy NEVER applies this file. Reported to the owner as an open item; not resolved by this wave, because moving or copying a migration changes what an installed database would apply and that is not a change to make unattended."
+    },
+    {
+      "key": "deploy-invisible::0095_v25_51_name_split_phase4.sql",
+      "reason": "Pre-existing at wave 261. Present only under server/db/migrations/. server/db/migrate.ts reads ./migrations, so a deploy NEVER applies this file. Reported to the owner as an open item; not resolved by this wave, because moving or copying a migration changes what an installed database would apply and that is not a change to make unattended."
+    }
+  ]
+}

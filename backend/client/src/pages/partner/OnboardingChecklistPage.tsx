@@ -143,6 +143,71 @@ type State = Record<string, boolean>;
 const AGREEMENT_KEY = "signed_partner_agreement";
 const AGREEMENT_SIGN_PATH = "/collective/partner/agreement";
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 232 — ONE PERCENTAGE, THREE PROVENANCES.
+ *
+ * THE DEFECT, precisely. `progress` below divides `done` by `CHECKLIST.length`
+ * and renders one number. Those ten items are not the same kind of thing:
+ *
+ *   1. ONE is recorded by Capavate. `isItemDone(AGREEMENT_KEY)` reads
+ *      `agreementSigned`, which comes from GET /api/partner/me/agreement and
+ *      therefore from the durable contacts column. Nothing on this screen can
+ *      set it.
+ *   2. EIGHT are ticked by the partner. `isItemDone` reads `state[key]`, a
+ *      persisted JSON toggle. NOTHING TICKS ITSELF — no server process writes
+ *      any of these keys. Two of them say "Upload …" while this screen offers
+ *      no upload control; the tick is the partner's own note that the thing was
+ *      done off-platform. Capavate does not check any of them.
+ *   3. ONE cannot be done on the platform at all. Capavate has no SSO
+ *      integration, so `sso_configured` describes a configuration that does not
+ *      exist to perform.
+ *
+ * Averaging the three into "7 / 10 complete · 70%" tells a partner — and a
+ * chapter admin reading over their shoulder — that Capavate established seven
+ * things. It established at most one.
+ *
+ * WHY THE DERIVATION IS BY MECHANISM AND NOT BY `support`.
+ * The obvious shortcut is "items carrying `support` are the ones the platform
+ * cannot do". THAT IS A DIFFERENT LIE. FOUR items carry `support`; three of
+ * those four open "Manual step" and are ordinary self-attestations that the
+ * partner absolutely can complete off-platform and record here. Counting them
+ * as impossible would produce 1 / 6 / 3 — wrong in the other direction, and it
+ * would tell a partner that a step they had genuinely completed was one the
+ * platform could never accept.
+ *
+ * So each bucket is keyed to the MECHANISM that decides the tick, read straight
+ * out of `isItemDone`:
+ *   `key === AGREEMENT_KEY`                  → durable record   (bucket 1)
+ *   support says it cannot be completed      → not supported    (bucket 3)
+ *   otherwise `state[key]`                   → self-attested    (bucket 2)
+ *
+ * AND THE STATE NAMES ARE HONEST. An earlier approach on this defect was
+ * rejected for deriving a `platform_verified` bucket: eight of these are user
+ * toggles, and calling their provenance "verified" would have FABRICATED a
+ * check that no code performs. Nothing here is called verified. Bucket 1 is
+ * "recorded", which is what a stored signature is.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/* The marker is read from the item's own `support` prose rather than from a
+   second parallel list of keys, so a future item that says it cannot be
+   completed is classified correctly without anyone remembering to update a
+   registry here. `sso_configured`'s support string contains this substring
+   verbatim; a test asserts that, which doubles as the R221.6 proof that the
+   protected sentence still reads as written. */
+export const PROGRESS_NOT_SUPPORTED_MARKER = "cannot be completed on the platform";
+
+export type ProgressProvenance = "recorded_by_capavate" | "self_attested" | "not_supported";
+
+/** The mechanism that decides this item's tick. Mirrors `isItemDone`. */
+export function progressProvenanceOf(item: {
+  key: string;
+  support?: string;
+}): ProgressProvenance {
+  if (item.key === AGREEMENT_KEY) return "recorded_by_capavate";
+  if (item.support?.includes(PROGRESS_NOT_SUPPORTED_MARKER)) return "not_supported";
+  return "self_attested";
+}
+
 /* ── WAVE 219 · ITEM 3 — THE RETENTION LINK, AND A CORRECTION TO THE SPEC ──────
  * The build document says the retention acknowledgement links to `/settings/privacy`
  * "which does not exist", and `spec/OWNER_RULINGS_2026_08_13.md:9652` says the same.
@@ -286,6 +351,32 @@ export default function PartnerOnboardingChecklistPage() {
     return { done, total, pct: total === 0 ? 0 : Math.round((done / total) * 100) };
   }, [isItemDone]);
 
+  /* WAVE 232 — the same ten items, split by the mechanism that decides each
+     tick. `progress` above is deliberately left exactly as it was: the bar and
+     the badge are not the defect, the absence of a statement about what they mix
+     is. Derived from CHECKLIST itself, never from a hardcoded 1 / 8 / 1, so
+     appending, reordering or reclassifying an item moves these numbers with it. */
+  const provenance = useMemo(() => {
+    const buckets: Record<ProgressProvenance, { done: number; total: number }> = {
+      recorded_by_capavate: { done: 0, total: 0 },
+      self_attested: { done: 0, total: 0 },
+      not_supported: { done: 0, total: 0 },
+    };
+    for (const item of CHECKLIST) {
+      const bucket = buckets[progressProvenanceOf(item)];
+      bucket.total += 1;
+      if (isItemDone(item.key)) bucket.done += 1;
+    }
+    return buckets;
+  }, [isItemDone]);
+
+  /* The agreement read can fail (`setAgreementSigned(null)` in the catch above),
+     and `isItemDone` maps null to false through `!!`. So the percentage counts an
+     UNREADABLE signature record as an incomplete step. Saying "0 of 1 recorded"
+     in that state would put a fabricated zero where the truth is "not known", so
+     the recorded line says which of the two it is. */
+  const agreementRecordKnown = agreementSigned !== null;
+
   /* v25.15 NM12 — wait for partner role gate before rendering the checklist. */
   if (!role.ready || !role.identity) return null;
 
@@ -342,6 +433,44 @@ export default function PartnerOnboardingChecklistPage() {
             <div className="text-xs text-muted-foreground mt-2">
               Your progress is saved against your organisation. Checkboxes are
               optimistic; any failure rolls back and surfaces the error.
+            </div>
+            {/* WAVE 232 — APPENDED AS THE LAST SIBLING inside this CardContent,
+                after the existing muted note. Inserting it above the bar would
+                renumber this card's existing children for the positional panel
+                guard, which is the trap wave 221 hit; last-sibling placement is
+                the fix that wave found. Nothing above is touched — the badge, the
+                bar, its width style and the muted note are byte-identical, and
+                `progress` still computes exactly what it computed before. These
+                are plain divs, so no panel is added either. */}
+            <div
+              className="text-xs text-muted-foreground mt-2"
+              data-testid="text-progress-provenance"
+            >
+              <div data-testid="text-progress-provenance-lead">
+                What that percentage is made of. It mixes three kinds of evidence,
+                so it counts steps recorded — not steps Capavate has checked.
+              </div>
+              <div data-testid="text-progress-provenance-recorded">
+                Recorded by Capavate — {provenance.recorded_by_capavate.total}{" "}
+                {provenance.recorded_by_capavate.total === 1 ? "step" : "steps"}: read
+                from the durable signature on record, not a checkbox here.{" "}
+                {agreementRecordKnown
+                  ? `${provenance.recorded_by_capavate.done} of ${provenance.recorded_by_capavate.total} on record.`
+                  : "Not established \u2014 the record could not be read, so the percentage counts it as incomplete."}
+              </div>
+              <div data-testid="text-progress-provenance-self">
+                Ticked by you — {provenance.self_attested.total}{" "}
+                {provenance.self_attested.total === 1 ? "step" : "steps"}:{" "}
+                {provenance.self_attested.done} ticked. Your own record that the work
+                was done, usually off this screen. Capavate does not check them.
+              </div>
+              <div data-testid="text-progress-provenance-unsupported">
+                Capavate cannot do at all — {provenance.not_supported.total}{" "}
+                {provenance.not_supported.total === 1 ? "step" : "steps"}:{" "}
+                {provenance.not_supported.done} ticked. There is nothing on the
+                platform to perform, so a tick records only your own note. It still
+                counts toward the percentage.
+              </div>
             </div>
           </CardContent>
         </Card>

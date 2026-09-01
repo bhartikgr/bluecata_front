@@ -1,10 +1,11 @@
 {
   "include": ["client/src/**/*", "shared/**/*", "server/**/*", "packages/cap-table-engine/src/**/*", "packages/cap-table-engine-ref/src/**/*", "packages/telemetry/src/**/*", "packages/math-fns/src/**/*", "packages/math-fns-ref/src/**/*"],
-  "exclude": ["node_modules", "build", "dist", "**/*.test.ts", "packages/cap-table-engine/test/**", "packages/cap-table-engine-ref/test/**", "packages/telemetry/test/**", "packages/math-fns/test/**", "packages/math-fns-ref/test/**"],
+  "exclude": ["node_modules", "build", "dist", "client/**/*.test.ts", "shared/**/*.test.ts", "packages/**/*.test.ts", "packages/cap-table-engine/test/**", "packages/cap-table-engine-ref/test/**", "packages/telemetry/test/**", "packages/math-fns/test/**", "packages/math-fns-ref/test/**"],
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
     "noEmit": true,
+    "target": "es2022",
     "module": "ESNext",
     "strict": true,
     "lib": ["esnext", "dom", "dom.iterable"],

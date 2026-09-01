@@ -9,6 +9,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthShell } from "@/pages/auth/AuthShell";
 import { apiRequest } from "@/lib/queryClient";
+/* WAVE 246 — THE SCREEN WAS THE LIAR, NOT THE EMAIL.
+
+   This page said "Magic links expire in 15 minutes". The token that
+   POST /api/auth/forgot actually mints lives for 24 hours
+   (server/lib/authRoutes.ts), and the reset email says 24 hours. QA asked for
+   the EMAIL to be changed to 15 minutes; owner ruling R218.1 established the
+   opposite. There is no 15-minute link mechanism on this platform — every other
+   magic link is 7, 14, 24 or 30 days — so the sentence was not misplaced copy
+   about some other token, it was simply false about this one.
+
+   The duration is no longer prose here. It is DERIVED from the same module the
+   minting route imports, so the two can never diverge again, and no second
+   literal for the number exists in this file. */
+import { passwordResetLinkExpiryPhrase } from "@shared/passwordResetLinkExpiry";
 
 export default function Forgot() {
   const [email, setEmail] = useState("");
@@ -41,7 +55,7 @@ export default function Forgot() {
       {done ? (
         <div className="text-sm text-muted-foreground" data-testid="text-forgot-done">
           If an account exists for <span className="font-medium text-foreground">{email}</span>, a reset link is on its way.
-          <p className="mt-3 text-xs">Magic links expire in 15 minutes. If your link expires you can <Link href="/auth/forgot" className="text-[#cc0001] underline">request a new one</Link>.</p>
+          <p className="mt-3 text-xs">Password reset links stay valid for {passwordResetLinkExpiryPhrase()} — the same window the email states. If your link expires you can <Link href="/auth/forgot" className="text-[#cc0001] underline">request a new one</Link>.</p>
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="form-forgot">

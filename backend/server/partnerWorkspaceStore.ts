@@ -63,6 +63,11 @@ import { getDb, rawDb } from "./db/connection";
 import { assessAdmission, type ProvenanceIncumbent } from "./lib/attributionProvenance";
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
+/* WAVE 229 — the pipeline-stage canonicaliser now lives in shared/ so client and
+   server derive the same buckets from the same remap. Imported here for this
+   file's own aggregation call site, and re-exported below so existing importers
+   of `canonicalizeStage` from this module are byte-unchanged. */
+import { canonicalizeStage } from "@shared/crmStages";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
 import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver"; /* W-V44 FIX R3 */
@@ -232,18 +237,18 @@ export const ALL_PIPELINE_STAGES: PipelineStage[] = [
  * must NOT be silently dropped from dashboard/pipeline aggregations. This
  * read-time normalizer guarantees every deal lands in a canonical bucket.
  */
-const LEGACY_STAGE_REMAP: Record<string, PipelineStage> = {
-  sourcing: "invited",
-  sourced: "invited",
-  qualifying: "viewed",
-  committee: "soft_circle",
-  closed_won: "funded",
-  closed_lost: "invited",
-};
-export function canonicalizeStage(stage: string): PipelineStage {
-  if ((ALL_PIPELINE_STAGES as string[]).includes(stage)) return stage as PipelineStage;
-  return LEGACY_STAGE_REMAP[stage] ?? "invited";
-}
+/* WAVE 229 — the definition MOVED to `shared/crmStages.ts` so the partner
+   Pipeline kanban (client) can reach the same remap the Dashboard aggregation
+   (server) already used. Previously the client could not import it and bucketed
+   with `if (byStage[d.stage])`, silently discarding legacy-stage deals: one
+   quantity, two derivations, able to disagree.
+
+   This is a RE-EXPORT, not a relocation from the caller's point of view. Every
+   existing `import { canonicalizeStage } from "./partnerWorkspaceStore"` and
+   every in-file call site is byte-unchanged, and the exported identity survives
+   (R195.5). `PARTNER_PIPELINE_LEGACY_STAGE_REMAP` is re-exported beside it so
+   nothing has to re-type the map to inspect it. */
+export { canonicalizeStage, PARTNER_PIPELINE_LEGACY_STAGE_REMAP } from "@shared/crmStages";
 
 export interface PartnerPipelineDeal {
   id: string;

@@ -643,6 +643,28 @@ export default function RoundDetail() {
    <span className="block text-amber-700 dark:text-amber-500 mt-1" data-testid="text-round-money-disagreement">{moneyView.money.ledgerFunded.note}</span>
    )}
  </div>
+ {/* WAVE 247 · R218.2 — DISCLOSURE ONLY. NOT ONE NUMBER CHANGED.
+
+     The arithmetic was already right: server/lib/roundRaisedTotals.ts holds
+     `subscribed = totals.committed + totals.funded` and keeps soft circles in a
+     separate `onBook` total. What the page never said was that the omission is
+     DELIBERATE, or why — a founder saw a real figure on the Soft-circled card
+     directly beneath a headline that excluded it and had to infer the reason.
+
+     This is a NEW STATIC SIBLING appended LAST inside `slot-round-money-states`.
+     Nothing above it moved: the sentence in the previous div, the three bucket
+     cards, the progress bar and the R221.6-protected target sentence in
+     `slot-round-money-figure` are all byte-identical. No field, no total, no
+     bucket and no percentage is read or written here, and
+     `server/lib/roundRaisedTotals.ts` and `shared/roundMoneyOnRecordView.ts`
+     were not opened at all.
+
+     The copy is written as JSX TEXT on purpose: the silent-drop guard
+     inventories JSX text as copy but cannot see a module constant, so a literal
+     here is what puts this sentence permanently under the gate. */}
+ <div className="text-xs text-muted-foreground mt-2" data-testid="text-round-soft-circle-excluded">
+   Soft circles are deliberately excluded from subscribed — an indication of interest, not a signed subscription. They keep their own figure above and are never added into subscribed, so the headline total only ever counts amounts an investor has signed for or funded.
+ </div>
  </>
  )}
  </div>
@@ -1307,12 +1329,38 @@ export default function RoundDetail() {
  </Dialog>
 
  {/* Invite dialog */}
+ {/* WAVE 243 — THE MODAL MUST SCROLL. CLASSNAMES ONLY; NO FIELD, LABEL, HELPER
+     TEXT, HANDLER OR THE Expires-in DEFAULT IS TOUCHED.
+
+     DEFECT: DialogContent is `grid gap-4 p-6` with NO height bound, so on a
+     short viewport the dialog grew past the window and the Expires-in select,
+     Cancel and Send invitation all fell off the bottom with nothing to scroll.
+
+     FIX, in two halves that only work together:
+       · `max-h-[85vh]` bounds the dialog, and
+         `grid-rows-[auto_minmax(0,1fr)_auto]` makes its three children
+         (header / fields / footer) a fixed-flexible-fixed grid. `minmax(0,...)`
+         is the load-bearing part: without the 0 minimum a grid row refuses to
+         shrink below its content, which is exactly why a plain `overflow-y-auto`
+         on the middle child would do nothing.
+       · the field group below gets `overflow-y-auto min-h-0` so it is the ONLY
+         thing that scrolls. The footer stays OUTSIDE it, so Cancel and Send
+         invitation are always on screen rather than scrolled to.
+
+     `pr-1` keeps the scrollbar off the inputs' focus rings.
+
+     Gate note: neither detector can see this. The silent-drop guard's
+     containerIdentity uses data-testid|id|name|value|aria-label|title or a
+     structural path — className never participates — and the restyle detector
+     records className only for PALETTE colour tokens, which these layout
+     utilities are not. No data-testid was added for the same reason: adding one
+     would REPLACE this div's structural identity key, which reads as a drop. */}
  <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
- <DialogContent className="max-w-lg">
+ <DialogContent className="max-w-lg max-h-[85vh] grid-rows-[auto_minmax(0,1fr)_auto]">
  <DialogHeader>
  <DialogTitle>Invite an investor</DialogTitle>
  </DialogHeader>
- <div className="space-y-3">
+ <div className="space-y-3 overflow-y-auto min-h-0 pr-1">
  {/* v24.4 BUG 044 — CRM picker. Choose an existing contact or add new. */}
  <div>
  <Label>Investor</Label>

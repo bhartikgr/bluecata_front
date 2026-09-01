@@ -43,7 +43,10 @@
  * both narrower and the thing the tests can actually pin.
  *
  * WHY THE MATCH IS THIS NARROW, AND WHAT IT MUST NOT CATCH. `Footer3.jsx`
- * contains NINETEEN anchors, including `/partner/login`, `/admin/login`,
+ * contains SEVENTEEN anchors -- wave 218's header said NINETEEN and wave 235
+ * recounted them: `grep -c '<a\\b'` and `grep -c 'href='` both return 17, and the
+ * two figures agree because every anchor in the file carries an href. The claim
+ * is corrected here rather than repeated. They include `/partner/login`, `/admin/login`,
  * `/apply/consortium`, the investor and founder login links, the education link
  * and six in-page `#` anchors. Swallowing any of them would be far worse than the
  * defect being fixed: it would break navigation on the public front door. So the
@@ -64,19 +67,24 @@
  * equality assertion erases the difference the assertion exists to detect. This
  * is not that comparison.
  *
- * WHAT IS NOT FIXED, STATED PLAINLY. The frozen anchor still carries the wrong
- * `href` in its markup. A visitor who copies the link address, opens it in a new
- * tab from the context menu, or has JavaScript disabled still reaches the Privacy
- * Policy. Those paths never reach a React handler and cannot be corrected from
- * outside the frozen file. They are reported as unfixed rather than counted as
- * done, and closing them needs an owner-ratified change to a sacred file.
+ * WHAT WAVE 218 DID NOT FIX, AND WHAT WAVE 235 DID. Wave 218 corrected only the
+ * CLICK. The frozen anchor still carried the wrong `href` in the DOM, so it
+ * worked for a human with a mouse and JavaScript and failed for right-click
+ * "copy link address", open-in-new-tab from the context menu, a crawler reading
+ * the markup, and a screen reader announcing the target. Wave 235 corrects the
+ * `href` ITSELF, from this same non-sacred layer, in
+ * `useFrozenFooterTermsHrefCorrection` below. The SOURCE FILE is still wrong and
+ * still frozen: a render with JavaScript disabled emits no DOM mutation and
+ * therefore still ships the privacy-policy href. That single residual is the only
+ * one left, it is stated rather than counted as done, and closing it needs an
+ * owner-ratified change to a sacred file.
  *
  * NOTHING IS DELETED (R195.5) AND NO LITERAL IS REPLACED (R143.1). The frozen
  * anchor keeps its text and its href. No JSX literal is added to or removed from
  * any file by this interception, no element is inserted mid-parent, and no
  * existing copy is hoisted out of JSX into a constant.
  */
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useLocation } from "wouter";
 
 /**
@@ -106,6 +114,70 @@ export function isFrozenFooterMislabelledTermsLink(el: Element | null): boolean 
 }
 
 /**
+ * WAVE 235 -- true only for the frozen footer's "Terms" anchor AFTER
+ * `useFrozenFooterTermsHrefCorrection` has corrected its `href`.
+ *
+ * WHY THIS PREDICATE HAS TO EXIST. Once the `href` is correct the wave-218
+ * predicate above stops matching, because it is keyed on the WRONG href. Without
+ * this second predicate the click would no longer be cancelled and the browser
+ * would perform a FULL DOCUMENT NAVIGATION to `/terms-of-service` -- the visitor
+ * still reads the Terms of Service, so the defect is not reintroduced, but the
+ * single-page application is torn down and rebuilt on the way. Matching the
+ * corrected anchor as well keeps the client-side route change wave 218 built.
+ *
+ * It is exactly as narrow as its predecessor: anchor, exact href, exact label.
+ * Nothing else in the marketing tree satisfies all three -- wave 210's legal
+ * strip also links to `/terms-of-service`, but its label is the document title
+ * ("Terms of Service"), not "Terms", so it is not matched and its own default
+ * behaviour is left alone.
+ */
+export function isFrozenFooterCorrectedTermsLink(el: Element | null): boolean {
+  if (!el) return false;
+  if (el.tagName !== "A") return false;
+  if (el.getAttribute("href") !== CORRECT_TERMS_ROUTE) return false;
+  return (el.textContent ?? "").trim() === FROZEN_FOOTER_TERMS_LABEL;
+}
+
+/**
+ * WAVE 235 -- corrects the `href` ATTRIBUTE of the frozen footer's mislabelled
+ * "Terms" anchor, in the DOM, from the non-sacred parent that mounts it.
+ *
+ * WHY A DOM MUTATION AND NOT A SOURCE EDIT. `Footer3.jsx` is a BASE entry in the
+ * enforced 48-entry sacred list and a tenth waiver is not available to be sought,
+ * so the attribute cannot be corrected where it is written. This is the same
+ * interception layer, the same mounting parent and the same exported predicate
+ * wave 218 used; no second mechanism is introduced (R171.1).
+ *
+ * WHY IT IS SCOPED TO A SUPPLIED ROOT. The query runs inside `rootRef.current`
+ * only -- the `div.home3-root` the marketing page already renders. A
+ * `document`-wide query would be the unscoped-DOM-query inert-proof mechanism and
+ * could reach an identically-labelled anchor on some other route; scoping it to
+ * the mounting parent is both narrower and the thing a test can pin, by placing a
+ * decoy with the same href and label OUTSIDE the root and requiring it to be left
+ * alone.
+ *
+ * WHY THERE IS NO DEPENDENCY ARRAY. The effect must re-apply after any render
+ * that could have produced a fresh anchor -- React writes the JSX `href` when it
+ * creates the element, and it does not know about a mutation made behind it. The
+ * effect is idempotent by construction: after the first pass the wave-218
+ * predicate no longer matches, so every later pass finds nothing and does
+ * nothing. It never removes an element, never removes an attribute and never
+ * touches the anchor's text.
+ */
+export function useFrozenFooterTermsHrefCorrection(
+  rootRef: { current: HTMLElement | null },
+): void {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    for (const anchor of Array.from(root.querySelectorAll("a"))) {
+      if (!isFrozenFooterMislabelledTermsLink(anchor)) continue;
+      anchor.setAttribute("href", CORRECT_TERMS_ROUTE);
+    }
+  });
+}
+
+/**
  * Returns the `onClickCapture` handler for the element that mounts the frozen
  * footer. Requires a wouter `Router` ancestor, which the real application
  * provides at `client/src/App.tsx`.
@@ -117,7 +189,11 @@ export function useFrozenFooterTermsInterception(): (event: React.MouseEvent<HTM
       const target = event.target as Element | null;
       /* `closest` because the click may land on a text node inside the anchor. */
       const anchor = target && typeof target.closest === "function" ? target.closest("a") : null;
-      if (!isFrozenFooterMislabelledTermsLink(anchor)) return;
+      /* WAVE 235 -- either shape of the SAME anchor: the frozen markup's wrong
+       * href before the correction effect has run, or the corrected href after
+       * it has. Both resolve to the one destination; neither widens the match to
+       * a second anchor. */
+      if (!isFrozenFooterMislabelledTermsLink(anchor) && !isFrozenFooterCorrectedTermsLink(anchor)) return;
       event.preventDefault();
       navigate(CORRECT_TERMS_ROUTE);
     },

@@ -374,13 +374,50 @@ export function resolveFee(feeCode: string, scope: SpvFeeScope = {}): SpvFeeSche
   throw new Error(SPV_FEE_SCHEDULE_MISSING);
 }
 
+/**
+ * WAVE 231 — the probe, WITH THE REASON RETAINED.
+ *
+ * `tryResolveFee` below collapses two very different outcomes into the same
+ * `null`: "no active row applies" and "the store could not be read at all". For
+ * a UI that renders "not priced yet" that collapse is harmless. For a UI that
+ * DISCLOSES A PRICE TERM it is not: telling a general partner "no platform fee
+ * applies" because a database read failed turns an outage into a price
+ * representation at the moment of agreement.
+ *
+ * THIS IS NOT A SECOND RESOLVER. There is exactly one scope ladder and one SQL
+ * path in this file, `resolveFee`, and this function calls it — it adds no
+ * lookup, no fallback and no default. `tryResolveFee` is now a thin view over
+ * this probe rather than a parallel implementation, so the two can never drift.
+ * That is the extension the wave was asked for, in place of a new resolver.
+ *
+ * `readable: false` means the store itself is unavailable. `readable: true` with
+ * `row: null` means the store answered and no active, in-window row applies —
+ * a real, trustworthy "nobody has set this".
+ *
+ * `SPV_FEE_SCHEDULE_INVALID` (a row that exists but fails shape validation) is
+ * deliberately treated as NOT READABLE: a corrupt row is not evidence that no
+ * fee applies, and this is the one place where guessing would produce a false
+ * price.
+ */
+export interface SpvFeeProbe {
+  row: SpvFeeScheduleRow | null;
+  readable: boolean;
+}
+
+export function probeFee(feeCode: string, scope: SpvFeeScope = {}): SpvFeeProbe {
+  try {
+    return { row: resolveFee(feeCode, scope), readable: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === SPV_FEE_SCHEDULE_MISSING) return { row: null, readable: true };
+    // UNAVAILABLE, INVALID, or anything unforeseen: we do not know, and we say so.
+    return { row: null, readable: false };
+  }
+}
+
 /** Non-throwing probe, for UI that must render "not priced yet" rather than error. */
 export function tryResolveFee(feeCode: string, scope: SpvFeeScope = {}): SpvFeeScheduleRow | null {
-  try {
-    return resolveFee(feeCode, scope);
-  } catch {
-    return null;
-  }
+  return probeFee(feeCode, scope).row;
 }
 
 /** Every row, for the /admin/fees editor (CP-SPV-14). Includes inactive rows. */

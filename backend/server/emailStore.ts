@@ -27,6 +27,10 @@ import { rawDb } from "./db/connection";
  * 24h) went to disk in plaintext and `GET /api/admin/email/outbox` handed them
  * out. See `server/lib/emailTokenRedaction.ts` for the full argument. */
 import { redactTokenMaterial, redactOutboxRow } from "./lib/emailTokenRedaction";
+/* WAVE 230C · R227.2/R233.3 — the honest-register correction for the one Class A
+ * template, plus the predicated DB remediation that reaches an already-seeded
+ * database. See server/lib/wave230cEmailTemplateHonesty.ts for the argument. */
+import { wave230cApplyEmailTemplateCorrections } from "./lib/wave230cEmailTemplateHonesty";
 
 const PERSIST_STORE = "emailStoreOutbox";
 
@@ -100,7 +104,12 @@ const templates: EmailTemplate[] = [
   { id: "tpl_membership_review", slug: "membership_review", subject: "Your Capavate Collective application is under review", bodyHtml: "<p>{{recipient_name}}, your application is under review. Timeline: {{timeline}}. <a href=\"{{edit_link}}\">Edit application</a>.</p>", bodyText: "Under review.", variables: ["recipient_name","timeline","edit_link"], category: "membership" },
   { id: "tpl_membership_approved", slug: "membership_approved", subject: "Your Collective membership is approved", bodyHtml: "<p>{{recipient_name}}, your membership is approved. Next steps: {{next_steps}}.</p>", bodyText: "Approved.", variables: ["recipient_name","next_steps"], category: "membership" },
   { id: "tpl_membership_rejected", slug: "membership_rejected", subject: "Your Collective application", bodyHtml: "<p>{{recipient_name}}, application not approved at this time. Notes: {{next_steps}}.</p>", bodyText: "Rejected.", variables: ["recipient_name","next_steps"], category: "membership" },
-  { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your KYC status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, your KYC status is now {{new_status}}. {{action_required}}</p>", bodyText: "KYC update.", variables: ["recipient_name","new_status","action_required"], category: "compliance" },
+  // WAVE 230C · R227.2/R233.3 — was: subject "Your KYC status: {{new_status}}", body "your KYC status is now
+  // {{new_status}}". Capavate's own Terms and Privacy Policy state it does not conduct KYC or AML verification,
+  // so an email asserting a KYC status about a person claimed a check the platform does not perform (Class A).
+  // The superseded bytes are retained as the UPDATE predicate in server/lib/wave230cEmailTemplateHonesty.ts,
+  // which also corrects an already-seeded database (INSERT OR IGNORE would otherwise keep the stale row).
+  { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your Capavate document status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, the status recorded against the document you uploaded is now {{new_status}}. {{action_required}}</p><p>This records your declaration. It is not a check of it. Capavate does not conduct KYC or AML verification and does not perform it on your behalf.</p>", bodyText: "Document status update. This records your declaration. It is not a check of it. Capavate does not conduct KYC or AML verification and does not perform it on your behalf.", variables: ["recipient_name","new_status","action_required"], category: "compliance" },
   { id: "tpl_form_d_reminder", slug: "form_d_reminder", subject: "Form D filing deadline: {{filing_deadline}}", bodyHtml: "<p>{{recipient_name}}, your Form D 15-day deadline is {{filing_deadline}}. <a href=\"{{edgar_link}}\">EDGAR portal</a>.</p>", bodyText: "Form D reminder.", variables: ["recipient_name","filing_deadline","edgar_link"], category: "compliance" },
   { id: "tpl_emi_notification_reminder", slug: "emi_notification_reminder", subject: "EMI grant: HMRC 92-day deadline", bodyHtml: "<p>{{recipient_name}}, EMI grant {{grant_date}} requires HMRC notification by {{hmrc_deadline}}. <a href=\"{{ers_url}}\">ERS online service</a>.</p>", bodyText: "EMI reminder.", variables: ["recipient_name","grant_date","hmrc_deadline","ers_url"], category: "compliance" },
   { id: "tpl_83b_election", slug: "83b_election", subject: "83(b) election due in 30 days", bodyHtml: "<p>{{recipient_name}}, an early option exercise occurred {{exercise_date}}; the 83(b) election deadline is {{deadline_date}}.</p>", bodyText: "83(b) reminder.", variables: ["recipient_name","exercise_date","deadline_date"], category: "compliance" },
@@ -152,6 +161,12 @@ function seedAndLoadTemplatesFromDb(): void {
     }
   });
   seedTx();
+  /* WAVE 230C · R227.2 — the seed above is INSERT OR IGNORE, so on a database
+   * that has already booted once the stale row wins and a corrected literal
+   * ships nothing. Run the predicated remediation before the cache is loaded,
+   * so the very first read after boot is the corrected text. It never clobbers
+   * an admin edit and never throws. */
+  wave230cApplyEmailTemplateCorrections();
   const rows = db.prepare(`SELECT * FROM email_templates`).all() as any[];
   templateCache.clear();
   for (const r of rows) templateCache.set(String(r.slug), rowToTemplate(r));
@@ -612,7 +627,11 @@ function seedDemo() {
   enqueueEmail({ templateSlug: "soft_circle_submitted", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { investor_name: "Aisha Patel", committed_amount: "$250,000", currency: "USD", round_name: "Seed Extension" }});
   enqueueEmail({ templateSlug: "round_closed", recipient: "team@hydra.vc", recipientUserId: "u_aisha_patel", variables: { company_name: "NovaPay AI", round_name: "Seed Extension", amount_closed: "$4.0M", security_type: "SAFE", cap_table_cta: "https://app.capavate.com/cap" }});
   enqueueEmail({ templateSlug: "collective_welcome", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", deal_room_cta: "/collective/#/deals", profile_cta: "/collective/#/profile", receipt_link: "/billing/receipts/r123" }});
-  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "verified", action_required: "" }});
+  // WAVE 230C · R227.2 — was new_status: "verified". Correcting the template body is necessary but not
+  // sufficient: {{new_status}} is caller-supplied, so the RENDERED subject still carried the prohibited
+  // word about a named individual and sat in the demo outbox, forwardable. The demo fixture now supplies a
+  // status the platform can actually support — the document is on file; nobody checked the person.
+  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "on file", action_required: "" }});
   enqueueEmail({ templateSlug: "form_d_reminder", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { recipient_name: "Maya", filing_deadline: "2026-05-23", edgar_link: "https://efts.sec.gov" }});
   // Walk a couple forward to populate stats
   tickQueue();

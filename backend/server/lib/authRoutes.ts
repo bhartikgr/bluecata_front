@@ -35,6 +35,11 @@ import { setSessionCookie, extractUserIdFromCookie } from "./sessionCookie";
 /* WAVE 214 · D5 — the terms acceptance this route already enforces with a 400
    was never recorded. One helper, called from BOTH redeem implementations. */
 import { recordRedeemTermsConsent } from "./wave214RedeemConsentRecord";
+/* Wave 246 — the reset link's lifetime is written down once, in @shared, and
+   both this minting site and client/src/pages/auth/Forgot.tsx read it from
+   there. The page used to carry its own prose duration and had drifted to a
+   false "15 minutes" (owner ruling R218.1). */
+import { PASSWORD_RESET_TOKEN_TTL_MS } from "@shared/passwordResetLinkExpiry";
 /* v25.25.1 emergency fix — static import of JWT_SECRET_MISSING. The v25.25
    shipped version used `await import("./auth")` inside the login handler;
    esbuild emits that as a require(...) call in the CJS bundle, which fails
@@ -456,10 +461,13 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         | { email: string } | undefined;
       const userExists = !!authRow || !!personaEmail || !!credRow;
       if (userExists) {
-        // Mint a 24-hour reset token.
+        // Mint a 24-hour reset token. Wave 246: the 24 hours is no longer written
+        // here — PASSWORD_RESET_TOKEN_TTL_MS is the single source of truth that the
+        // Forgot page also prints, so the screen cannot disagree with the token.
+        // The VALUE is unchanged: PASSWORD_RESET_TOKEN_TTL_MS === 24 * 60 * 60 * 1_000.
         const tokenRaw  = crypto.randomBytes(32).toString("hex");
         const tokenHash = crypto.createHash("sha256").update(tokenRaw).digest("hex");
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+        const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
         const tokenId   = `tk_${crypto.randomBytes(6).toString("hex")}`;
         db.prepare(
           `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)

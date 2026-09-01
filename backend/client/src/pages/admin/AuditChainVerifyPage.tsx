@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ShieldCheck, AlertTriangle, Download, RefreshCw } from "lucide-react";
+import { AUDIT_CHAIN_VERIFIER_LABELS } from "@shared/auditChainHistory";
 import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
 
 interface ChainVerifyResult {
@@ -56,6 +57,29 @@ interface HistoryRow {
   durationMs: number;
   startedAt: string;
   finishedAt: string;
+  /* WAVE 238 — which verifier produced this row. The column already existed in
+     the table; the screen simply never read it. */
+  detailsJson?: string | null;
+}
+
+/* WAVE 238 · FIX B — name the verifier that produced a history row.
+   Two different verifiers write this table and they do not agree with each
+   other, so a row that does not say which one ran is not evidence of anything.
+   Rows written before wave 238 (and any row written by the quarterly twin,
+   which has zero callers) carry no verifier field; those are labelled
+   "not recorded" rather than being assumed to be the canonical one. */
+function verifierLabelFor(row: HistoryRow): string {
+  let name: string | null = null;
+  try {
+    const parsed = row.detailsJson ? JSON.parse(row.detailsJson) : null;
+    const v = parsed && typeof parsed.verifier === "string" ? parsed.verifier : null;
+    name = v && v.length > 0 ? v : null;
+  } catch {
+    name = null;
+  }
+  if (name === null) return "not recorded";
+  const label = AUDIT_CHAIN_VERIFIER_LABELS[name];
+  return label ? `${name} — ${label}` : name;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -519,6 +543,18 @@ export default function AuditChainVerifyPage(): JSX.Element {
               {resolveMsg && (
                 <div className="text-sm rounded border border-border bg-muted/40 p-2" data-testid="resolve-msg">{resolveMsg}</div>
               )}
+              {/* WAVE 238 · FIX D — appended as this card's LAST child, so no
+                  existing sibling is renumbered and the heading above is
+                  byte-untouched. The heading says "all clear" when the incident
+                  register is empty, which is not the same statement as "the
+                  chain was verified just now". */}
+              <p className="text-xs text-muted-foreground" data-testid="w238-health-scope-note">
+                What &ldquo;all clear&rdquo; means here: the incident register has no open
+                rows. It is a report on this register, not a verification performed as
+                you loaded this page. The register is written by the boot verifier on
+                every process start; the runs it performed are listed under Verification
+                history below, with the verifier that produced each one named.
+              </p>
             </CardContent>
           </Card>
         )}
@@ -705,6 +741,8 @@ export default function AuditChainVerifyPage(): JSX.Element {
                       <th className="p-1">Verified</th>
                       <th className="p-1">Broken</th>
                       <th className="p-1">Duration ms</th>
+                      {/* WAVE 238 - FIX B: appended as the LAST header cell. */}
+                      <th className="p-1">Verifier</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -722,12 +760,25 @@ export default function AuditChainVerifyPage(): JSX.Element {
                           )}
                         </td>
                         <td className="p-1">{h.durationMs}</td>
+                        <td className="p-1 text-xs" data-testid={`w238-history-verifier-${h.id}`}>{verifierLabelFor(h)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
+            {/* WAVE 238 · FIX B — appended as this card's LAST child. */}
+            <p className="mt-3 text-xs text-muted-foreground" data-testid="w238-history-provenance-note">
+              Each row records one run of one verifier and is never edited afterwards:
+              rows are appended, never rewritten, re-hashed or re-ordered, and a row that
+              recorded a break is kept indefinitely. The platform contains two chain
+              verifiers and they do not agree — the canonical audit-log verifier applies
+              the chain_genesis re-base, the generic catalog walker does not — so the
+              Verifier column states which one ran. A row reading &ldquo;not recorded&rdquo;
+              predates this and its provenance is unknown; it is not assumed to be the
+              canonical one. An empty list means no run has been recorded here, not that
+              nothing has ever been verified.
+            </p>
           </CardContent>
         </Card>
       </PageBody>

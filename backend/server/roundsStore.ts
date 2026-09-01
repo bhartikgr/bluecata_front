@@ -33,6 +33,7 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 import { emitMutation } from "./lib/eventBus";
 import { emitBridgeEvent } from "./bridgeStore";
+import { roundNameIsMissing, ROUND_NAME_REQUIRED_CODE } from "../shared/roundNameRequired";
 /* v25.20 Lane 4 — round-close chain-head freeze (v25.18 NH4 preserved).
    NOTE: roundCarryForwardRoutes imports getRoundById from this module, so this
    is a deliberate cycle. Both sides only export functions (no top-level call),
@@ -258,7 +259,12 @@ export function createRound(input: {
   // direct API call. Typed error → route maps to 409.
   {
     const trimmedName = (input.name ?? "").trim();
-    if (!trimmedName) throw new Error("ROUND_NAME_REQUIRED");
+    /* WAVE 244 — the emptiness test now comes from `shared/roundNameRequired.ts`,
+       which the founder wizard's step 1 imports too. Same predicate, same code,
+       one file: the client cannot drift from this refusal. The behaviour is
+       byte-for-byte what it was — `roundNameIsMissing()` is `(raw ?? "").trim()`
+       length zero, exactly the condition this line expressed inline. */
+    if (roundNameIsMissing(input.name)) throw new Error(ROUND_NAME_REQUIRED_CODE);
     // W3 Shadie 4a — scope the duplicate check to company + STAGE (input.type).
     if (roundNameExistsForCompany(input.companyId, trimmedName, input.type)) {
       throw new Error("ROUND_NAME_DUPLICATE");

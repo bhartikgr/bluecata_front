@@ -214,6 +214,8 @@ import {
 } from "./lib/partnerCompanyLinkGate"; /* WAVE 179 · ITEM A · R151.1 — one partner↔company predicate, shared with spvEngineRoutes */
 import { setSpvLegalForm } from "./spvLegalFormStore"; /* WAVE 179 · ITEM B · R151.3 — OPTIONAL legal-form annotation on the legacy create path */
 import { resolveSpvJurisdiction } from "../shared/spvEngine"; /* WAVE 4A follow-up 2 */
+/* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
+import { wave230CompanyVisible, wave230HiddenCompanyIds } from "./lib/wave230DisplayExclusion";
 /* WAVE 198 · ITEM D — the four partner PATCH routes stop reporting success for a
    write their store would discard. See the module header for why three of the four
    refuse only provably-forced keys rather than an interface-derived accept-list. */
@@ -1761,7 +1763,16 @@ export function registerPartnerRoutes(app: Express): void {
   // List all private-portfolio company profiles for this partner.
   app.get("/api/partner/me/portfolio", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
-    const items = listPortfolioCompanies(ctx.partnerId).map((p) => {
+    /* WAVE 230D · R230.2 — the partner portfolio is the surface on which "Test
+       f", "SD-TEST Wave X Co", "Kestrel Holdings Ltd" and "Live Audit Client
+       Ltd" are rendered side by side with real holdings. Marked records drop out
+       here PER RECORD; the partner's relationship rows, the profiles and the
+       companies themselves are untouched, and unmarking restores them. With
+       nothing marked the set is empty and the list is byte-identical. */
+    const w230Hidden = wave230HiddenCompanyIds();
+    const items = listPortfolioCompanies(ctx.partnerId)
+      .filter((p) => wave230CompanyVisible(w230Hidden, p.companyId))
+      .map((p) => {
       const rec = getCompanyRecordById(p.companyId);
       return {
         companyId: p.companyId,
@@ -2447,9 +2458,34 @@ export function registerPartnerRoutes(app: Express): void {
     // email-based display collapse remains intact (and still reports its cleanup
     // warning), but must not become the source of truth for the seat-limit banner.
     const activeSeats = partnerTeamStore.seatReport(pid).activeSeats;
+    /* WAVE 229 — ONE QUANTITY, ONE DERIVATION: "pending invitations".
+
+       The Team page derived its own pending count from the `invitations` array
+       above. That array comes from `partnerInvitationStore.listByPartner()`,
+       which filters a PROCESS-LOCAL RAM array. The Dashboard tile and the
+       seat-limit enforcement path both use
+       `partnerInvitationStore.countPendingByPartner()`, which reads the DURABLE
+       table and takes `Math.max(durable, ram)` precisely because "that array is
+       per-process: a freshly restarted server, or a second instance behind a
+       load balancer, sees zero pending invitations and hands the partner a full
+       tier's worth of extra seats" (WAVE 19 / SEAT-02, partnerWorkspaceStore.ts).
+
+       WAVE 19 fixed the COUNT and never fixed the LIST. So one quantity had two
+       derivations that can disagree, and the direction is the harmful one: the
+       Team banner UNDER-reports, so a partner at their seat cap is told fewer
+       invitations are outstanding than enforcement is counting, and the invite
+       403 arrives unexplained.
+
+       This exposes the enforcement figure so the banner can render it instead of
+       re-deriving one. `countPendingByPartner` is CALLED, never modified — its
+       predicate and signature are on the paid-seat-limit enforcement path
+       (requirePartnerAuth.ts, and re-run inside the write lock) and moving
+       either would move the paid limit for every partner. */
+    const pendingCount = partnerInvitationStore.countPendingByPartner(pid);
     res.json({
       members,
       invitations,
+      pendingCount,
       seatLimit,
       /* WAVE 45 — the banner must be able to say "Unlimited" or "Not
          configured" instead of rendering a null as 0. */
