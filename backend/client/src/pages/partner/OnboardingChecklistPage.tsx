@@ -225,7 +225,20 @@ export function progressProvenanceOf(item: {
  * anchor is added as the LAST sibling inside the item body, after the existing
  * agreement link. Inserting it mid-block is what tripped the positional panel guard in
  * wave 221; the last-sibling placement is the fix that wave found. */
-const PRIVACY_SETTINGS_PATH = "/settings/privacy";
+/* WAVE A · ITEM 3b — the retention link now stays inside the partner's own shell.
+   `/settings/privacy` is registered in App.tsx WITHOUT CollectiveShell, so following
+   it was a full page load that dropped the partner out of their rail and topbar.
+   `/collective/partner/privacy` is a SECOND DOOR onto the SAME `PrivacyPage`
+   component, registered in-shell next to the `/collective/notifications` precedent.
+   The bare route is untouched and still serves the founder and investor personas.
+   The description literal below — "…See /settings/privacy." — is NOT edited: the
+   server-side copy fingerprint reads replaced literals as removals, and the bare
+   path remains a valid copy-and-paste fallback for anyone who prints the page. */
+const PRIVACY_SETTINGS_PATH = "/collective/partner/privacy";
+/* Retained so the previous destination stays readable at the call site and so a
+   test can prove the old door was not closed. */
+const LEGACY_BARE_PRIVACY_PATH = "/settings/privacy";
+void LEGACY_BARE_PRIVACY_PATH;
 const RETENTION_ITEM_KEY = "data_retention_acked";
 const RETENTION_LINK_LABEL = "Open Settings → Privacy to read the retention policy →";
 

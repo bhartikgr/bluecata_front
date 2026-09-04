@@ -132,7 +132,7 @@ import {
 import { PORTFOLIO_PROFILE_WRITE_ROLES } from "../shared/partnerRoles"; /* w-partner F-new2 — shared server/client write-role constant */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
-import { spvEngineStore, isSpvClosedToNewCapitalError } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
+import { spvEngineStore, isSpvClosedToNewCapitalError, isSpvMixedCurrencyTotalError } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
 /* ═════════════════════════════════════════════════════════════════════════════
  * WAVE 182 · ITEM A · R152 — THE TWO SPV WRITE ROUTES IN THIS FILE ANSWER A CODE.
  * ═════════════════════════════════════════════════════════════════════════════
@@ -196,6 +196,49 @@ function respondSpvWriteRefusal(res: Response, e: unknown): Response {
       attestation: { required: true, attaching: e.attachKind, unreadable: true },
     });
   }
+  /* WAVE 277 · R224.1 · R77 — THE MIXED-CURRENCY REFUSAL, HERE TOO, AND A PREFIX.
+
+     A FOURTH typed branch, for the reason the owner accepted the third: there are
+     TWO refusal responders in this tree, and one refusal cannot be reported two
+     ways. `assertSingleCurrencyTotal` throws from FIVE read paths in the engine
+     store, and the read routes in THIS file that call them answered a bare HTTP 500
+     with no body — so one accepted foreign-currency subscription made a vehicle's
+     pages look destroyed instead of saying what had happened. Body shape is
+     identical to `err()`'s branch in `spvEngineRoutes.ts`: 409, machine code in
+     `error`, the short sentence in `message`, the unabridged one in `guidance`, and
+     the structured `mixedCurrency` field so a caller can name the two conflicting
+     currencies without parsing prose. 409, not 400: the request is well-formed and
+     the vehicle's own recorded state is what cannot be stated as one number.
+
+     THE PREFIX FALL-THROUGH BELOW is the second half. The store's newer refusals
+     carry their diagnosis in the message (`CODE:detail:detail`) — wave 277's own
+     `SUBSCRIPTION_CURRENCY_MISMATCH:<stated>:<vehicle>` among them — and the last
+     line of this function answered them as a BARE CODE with no sentence, which is
+     exactly the R77 violation `err()` fixed on its own side in wave 161.
+     `POST /api/partner/me/spvs/:id/positions`, a second door onto the very same
+     `spvEngineStore.subscribe` sink, answers through here. The status and the `error`
+     string are UNCHANGED for every code, and a code with no registry sentence still
+     falls to the line below untouched, so no shipped assertion moves. */
+  if (isSpvMixedCurrencyTotalError(e)) {
+    return res.status(409).json({
+      error: e.message,
+      message: e.refusalHeadline,
+      guidance: e.refusalGuidance,
+      mixedCurrency: { total: e.totalName, statedCurrencies: e.statedCurrencies },
+    });
+  }
+  {
+    const msg = String((e as Error)?.message ?? "");
+    const head = msg.split(":")[0] ?? "";
+    const headline = head !== msg ? spvSubscriptionRefusalHeadline(head) : null;
+    if (headline) {
+      return res.status(400).json({
+        error: msg,
+        message: headline,
+        guidance: spvSubscriptionRefusalCopy(head) ?? undefined,
+      });
+    }
+  }
   return res.status(400).json({ error: (e as Error).message });
 }
 /* WAVE 189 · ITEM C · R159.6 — imported from the same module the store sinks and
@@ -206,6 +249,13 @@ import {
   isSpvUnattestedDraftError,
   isSpvAttestationUnreadableError,
 } from "./lib/spvAttestationGate";
+/* WAVE 277 — the ONE copy authority for subscription refusals, already read by
+   `err()` in spvEngineRoutes.ts. Imported here so the second responder cannot
+   drift from the first. */
+import {
+  spvSubscriptionRefusalHeadline,
+  spvSubscriptionRefusalCopy,
+} from "@shared/spvSubscriptionRefusalCopy";
 import {
   partnerHasCompanyRelationship,
   partnerMayAttributeSpvToCompany,
@@ -2942,7 +2992,18 @@ export function registerPartnerRoutes(app: Express): void {
       }
     },
   );
+  /* ═══ WAVE 277 · R224.1 — AN UNGUARDED READ THAT ANSWERED A BARE 500. ══════
+     `spvEngineStore.investorRegister` is called INSIDE the argument to `res.json`
+     and this handler had no `try`/`catch`, so the MIXED_CURRENCY_COMMITTED_TOTAL
+     refusal it raises by design — a total made of two currencies is not a number —
+     escaped to Express and answered HTTP 500 with no body, on every load, for as
+     long as the vehicle held one foreign-currency subscription. Reported now by
+     this file's own responder in the same shape `err()` uses. Success path
+     unchanged: same keys, same order, same values, one `res.json` call.
+     THIS IS THE ROUTE THE SPV DETAIL PAGE ACTUALLY CALLS —
+     `client/src/pages/partner/PartnerSpvDetail.tsx:232`. */
   app.get("/api/partner/me/spvs/:id", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
     const ctx = req.partnerContext!;
     const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
@@ -2954,6 +3015,9 @@ export function registerPartnerRoutes(app: Express): void {
          how much of it is confirmed capital. See shared/spvCommittedCapital.ts. */
       positionsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
     });
+    } catch (e) {
+      return respondSpvWriteRefusal(res, e);
+    }
   });
   app.patch(
     "/api/partner/me/spvs/:id",
@@ -3030,7 +3094,16 @@ export function registerPartnerRoutes(app: Express): void {
       }
     },
   );
+  /* ═══ WAVE 277 · R224.1 — AN UNGUARDED READ THAT ANSWERED A BARE 500. ══════
+     `spvEngineStore.investorRegister` is called INSIDE the argument to `res.json`
+     and this handler had no `try`/`catch`, so the MIXED_CURRENCY_COMMITTED_TOTAL
+     refusal it raises by design — a total made of two currencies is not a number —
+     escaped to Express and answered HTTP 500 with no body, on every load, for as
+     long as the vehicle held one foreign-currency subscription. Reported now by
+     this file's own responder in the same shape `err()` uses. Success path
+     unchanged: same keys, same order, same values, one `res.json` call. */
   app.get("/api/partner/me/spvs/:id/positions", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
     const ctx = req.partnerContext!;
     const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
@@ -3040,6 +3113,9 @@ export function registerPartnerRoutes(app: Express): void {
       /* WAVE 161 · ITEM A (A23) — additive split; the rows are untouched. */
       positionsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
     });
+    } catch (e) {
+      return respondSpvWriteRefusal(res, e);
+    }
   });
   app.post(
     "/api/partner/me/spvs/:id/positions",
@@ -3191,7 +3267,16 @@ export function registerPartnerRoutes(app: Express): void {
       } catch (e) { return badRequest(res, (e as Error).message); }
     },
   );
+  /* ═══ WAVE 277 · R224.1 — AN UNGUARDED READ THAT ANSWERED A BARE 500. ══════
+     `spvEngineStore.investorRegister` is called INSIDE the argument to `res.json`
+     and this handler had no `try`/`catch`, so the MIXED_CURRENCY_COMMITTED_TOTAL
+     refusal it raises by design — a total made of two currencies is not a number —
+     escaped to Express and answered HTTP 500 with no body, on every load, for as
+     long as the vehicle held one foreign-currency subscription. Reported now by
+     this file's own responder in the same shape `err()` uses. Success path
+     unchanged: same keys, same order, same values, one `res.json` call. */
   app.get("/api/partner/me/funds/:id", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
     const ctx = req.partnerContext!;
     const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
@@ -3203,6 +3288,9 @@ export function registerPartnerRoutes(app: Express): void {
          rows include stages that are NOT commitments. */
       commitmentsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
     });
+    } catch (e) {
+      return respondSpvWriteRefusal(res, e);
+    }
   });
   app.patch(
     "/api/partner/me/funds/:id",
@@ -3250,7 +3338,16 @@ export function registerPartnerRoutes(app: Express): void {
       }
     },
   );
+  /* ═══ WAVE 277 · R224.1 — AN UNGUARDED READ THAT ANSWERED A BARE 500. ══════
+     `spvEngineStore.investorRegister` is called INSIDE the argument to `res.json`
+     and this handler had no `try`/`catch`, so the MIXED_CURRENCY_COMMITTED_TOTAL
+     refusal it raises by design — a total made of two currencies is not a number —
+     escaped to Express and answered HTTP 500 with no body, on every load, for as
+     long as the vehicle held one foreign-currency subscription. Reported now by
+     this file's own responder in the same shape `err()` uses. Success path
+     unchanged: same keys, same order, same values, one `res.json` call. */
   app.get("/api/partner/me/funds/:id/commitments", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
     const ctx = req.partnerContext!;
     const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
@@ -3259,6 +3356,9 @@ export function registerPartnerRoutes(app: Express): void {
       /* WAVE 161 · ITEM A (A25) — additive split; the rows are untouched. */
       commitmentsSplit: spvEngineStore.investorRegisterWithSplit(ctx.partnerId, String(req.params.id)),
     });
+    } catch (e) {
+      return respondSpvWriteRefusal(res, e);
+    }
   });
   app.post(
     "/api/partner/me/funds/:id/commitments",

@@ -32,6 +32,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useRole } from "@/lib/role";
 import type { UserContext } from "@/lib/entitlement";
 import { Lock, Mail, ShieldCheck, AlertTriangle, Zap } from "lucide-react";
+/* WAVE 305 · R251 — the second-factor step. Only runs when the server answers the
+   password check with `mfaRequired`, which it does ONLY for an account that has a
+   CONFIRMED opt-in enrolment. Nothing below this line changes for anyone else, and
+   the post-login continuation is untouched. */
+import { completeMfaLogin, useMfaChallenge } from "@/lib/useMfaChallenge";
 
 // Demo admin persona — only visible with ?demo=1.
 const DEMO_ADMIN = { email: "admin@capavate.io", password: "adminpass", label: "Admin (demo)" };
@@ -70,6 +75,8 @@ export default function AdminLogin() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /* WAVE 305 · R251 */
+  const { requestCode, panel: mfaPanel } = useMfaChallenge();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const previewMode = useMemo(isPreviewEnvironment, []);
 
@@ -112,6 +119,17 @@ export default function AdminLogin() {
       const res = await apiRequest("POST", "/api/auth/login", { email: email.trim(), password });
       const json = (await res.json()) as { ok: true; ctx: UserContext };
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      /* WAVE 305 · R251 — SECOND FACTOR. `mfaRequired` is returned INSTEAD of a
+         session; no cookie has been set yet. We collect a code in place and
+         exchange it, then fall through to the SAME continuation as always. */
+      const maybeMfa = json as unknown as { mfaRequired?: boolean; mfaToken?: string };
+      if (maybeMfa.mfaRequired && maybeMfa.mfaToken) {
+        const enteredCode = await requestCode();
+        await completeMfaLogin(maybeMfa.mfaToken, enteredCode);
+        Object.assign(json, await (await apiRequest("GET", "/api/auth/me")).json());
+        await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      }
+
       if (!json.ctx.isAdmin) {
         // Non-admin credentials succeeded but the account doesn't have admin rights.
         // Reject explicitly — do NOT route them anywhere from this page.
@@ -282,6 +300,8 @@ export default function AdminLogin() {
           </button>
         </div>
       )}
+      {/* WAVE 305 · R251 — appended LAST (guard rule: panels append last) */}
+      {mfaPanel}
     </AuthShell>
   );
 }

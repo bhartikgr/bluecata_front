@@ -60,11 +60,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-/* `currencyExponent` is imported alongside `formatMinor` so the write side
- * (major → minor) and the read side (minor → display) use the SAME ISO
- * exponent table and cannot disagree. */
-import { formatMinor, currencyExponent as currencyExponentFor } from "@/lib/currency";
-import { formatMinorOrUnavailable } from "@/lib/moneyDisplay"; /* WAVE 147 · R111 Q13 */
+/* `currencyExponent` is imported so the write side (major → minor) and the read
+ * side (minor → display, via `formatMinorOrUnavailable` → `formatMinor`) use the
+ * SAME ISO exponent table and cannot disagree. */
+/* WAVE 284 — `formatMinor` is no longer imported here: every money value on this
+   page now renders through `formatMinorOrUnavailable`, which calls `formatMinor`
+   itself for a KNOWN amount and refuses for an unknown one. One entry point, so
+   a subtotal cannot bypass the unknown check the way it used to. */
+import { currencyExponent as currencyExponentFor } from "@/lib/currency";
+/* WAVE 147 · R111 Q13 — `formatMinorOrUnavailable`. WAVE 284 — `isUnknownNumber`
+   is the SAME predicate that helper uses internally, imported here so the
+   subtotal and the row cell agree on what "no amount on record" means. Two
+   different definitions of unknown is how the row and its total disagreed. */
+import { formatMinorOrUnavailable, isUnknownNumber } from "@/lib/moneyDisplay";
 import { formatPercentValue } from "@/lib/percentDisplay";
 /* WAVE 124 · FINDING 1 — Reviewer C (C-25) measured server field names rendered
    as human content in a partner-facing CRM: a raw `company_id` under a column
@@ -428,20 +436,64 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
   /**
    * Pending rebill totals, GROUPED BY CURRENCY. Summing 5000 JPY and 5000 USD
    * into "10000" is meaningless, so nothing is added across currency codes.
-   * Each subtotal renders through `formatMinor`, which applies that currency's
-   * ISO exponent — JPY (0) prints ¥5,000, USD (2) prints $50.00 for the SAME
-   * integer, which is exactly the case a hardcoded `/100` gets wrong.
+   * Each subtotal renders through `formatMinorOrUnavailable`, which applies that
+   * currency's ISO exponent for a known amount — JPY (0) prints ¥5,000, USD (2)
+   * prints $50.00 for the SAME integer, which is exactly the case a hardcoded
+   * `/100` gets wrong — and refuses to print anything for an unknown one.
    */
+  /* ══════════════════════════════════════════════════════════════════════════════
+     WAVE 284 · R231 — THE PER-CURRENCY SUBTOTAL NO LONGER COUNTS AN UNKNOWN
+     AMOUNT AS ZERO.
+     ══════════════════════════════════════════════════════════════════════════════
+     WHAT WAS HERE: `(acc.get(code) ?? 0) + (Number(r.amount_minor) || 0)`.
+
+     Wave 147 already fixed the PER-ROW cell below: a pending expense with no
+     amount on record prints "Not on record" there. This subtotal, three lines
+     up the same card, added the same row in as a ZERO. So the table said the
+     amount was not on record and the total underneath it confidently stated a
+     figure that had silently left that expense out — and when the unknown row
+     was the ONLY pending one in its currency, the total read as a real,
+     formatted zero. A partner reading it would conclude nothing was owed.
+
+     NOW: a currency's subtotal is a number only when EVERY pending row in that
+     currency has an amount we actually hold. Otherwise `minor` is `null`, the
+     span renders the platform's one wording for unknown money — the same words
+     as the row cell — and the note appended below the list says how many rows
+     caused it. Nothing is summed partially and presented as a total.
+
+     THIS MUST NOT EAT A REAL ZERO, AND DOES NOT. `isUnknownNumber(0)` is
+     `false`, so a genuinely zero-cost expense is a known amount and still
+     totals and formats as one. A row stored as the string "5000" is likewise
+     still known: the integer test runs on the coerced value, so widening the
+     column type later cannot turn working rows into refusals. What is treated
+     as unknown is absent/empty/NaN, and a value that is not a whole count of
+     minor units — which cannot be added without silently adjusting it. */
   const pendingByCurrency = useMemo(() => {
     const rows = rebillsQ.data?.rebills ?? [];
-    const acc = new Map<string, number>();
+    const acc = new Map<string, { minor: number; known: number; unknown: number }>();
     for (const r of rows) {
       if (r.status !== "pending") continue;
       const code = (r.currency || "USD").toUpperCase();
-      acc.set(code, (acc.get(code) ?? 0) + (Number(r.amount_minor) || 0));
+      const cell = acc.get(code) ?? { minor: 0, known: 0, unknown: 0 };
+      const n = Number(r.amount_minor);
+      if (isUnknownNumber(r.amount_minor) || !Number.isSafeInteger(n)) {
+        cell.unknown += 1;
+      } else {
+        cell.minor += n;
+        cell.known += 1;
+      }
+      acc.set(code, cell);
     }
     /* Array.from, never [...iterator] — TS2802 under this tsconfig (rule 9). */
-    return Array.from(acc.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return Array.from(acc.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([code, c]) => ({
+        code,
+        /* `null` — not 0 — whenever any row in this currency is unknown. */
+        minor: c.unknown > 0 ? null : c.minor,
+        knownRows: c.known,
+        unknownRows: c.unknown,
+      }));
   }, [rebillsQ.data]);
 
   const forM = useMutation({
@@ -531,9 +583,10 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
               <span className="text-xs text-[var(--cv-color-text-muted)]">Pending, by currency: </span>
               {pendingByCurrency.length === 0
                 ? <span data-testid="mfcrm-acct-rebill-pending-none">none pending</span>
-                : pendingByCurrency.map(([code, minor]) => (
-                    <span key={code} className="mr-3 font-medium" data-testid={`mfcrm-acct-rebill-pending-${code}`}>{formatMinor(minor, code)}</span>
+                : pendingByCurrency.map(({ code, minor }) => (
+                    <span key={code} className="mr-3 font-medium" data-testid={`mfcrm-acct-rebill-pending-${code}`}>{formatMinorOrUnavailable(minor, code)}</span>
                   ))}
+              <span className="ml-1 block text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-acct-rebill-pending-unknown-note">{pendingUnknownNote(pendingByCurrency)}</span>
             </div>
           </>
         )}
@@ -598,6 +651,37 @@ function Figure({ label, value, testId }: { label: string; value: string; testId
       <div className="text-xl font-semibold">{value}</div>
     </div>
   );
+}
+
+/**
+ * WAVE 284 · R231 — THE SENTENCE THAT EXPLAINS A SUBTOTAL WE DO NOT HAVE.
+ *
+ * Returns the empty string when every pending rebill in every currency has an
+ * amount on record — there is then nothing to explain, and the card reads
+ * exactly as it did before this wave. Otherwise it names HOW MANY rows and
+ * WHICH currencies, so a partner reading "Not on record" where a total used to
+ * be can tell why and how much is missing from the picture.
+ *
+ * It states a count and currency codes only. No row identifier is ever put on
+ * screen (w124).
+ *
+ * Exported so the proof can drive every branch directly as well as through the
+ * rendered DOM.
+ */
+export function pendingUnknownNote(
+  entries: Array<{ code: string; minor: number | null; knownRows: number; unknownRows: number }>,
+): string {
+  const affected = entries.filter((e) => e.unknownRows > 0);
+  if (affected.length === 0) return "";
+  const rows = affected.reduce((n, e) => n + e.unknownRows, 0);
+  const codes = affected.map((e) => e.code);
+  const codeList =
+    codes.length === 1
+      ? codes[0]
+      : `${codes.slice(0, -1).join(", ")} and ${codes[codes.length - 1]}`;
+  const subject = rows === 1 ? "1 pending expense has" : `${rows} pending expenses have`;
+  const object = codes.length === 1 ? `the ${codeList} total is` : `the ${codeList} totals are`;
+  return `${subject} no amount on record, so ${object} not shown. Nothing has been assumed or added up in part.`;
 }
 
 /**

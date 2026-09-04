@@ -58,6 +58,9 @@ interface CrmData {
   /** w-partner F3 — designated partner-team member owning this client. */
   leadUserId: string | null;
   activity: CrmActivity[];
+  /** WAVE 282 — whether `stage` above was READ or DEFAULTED. Optional so a
+   *  server that predates this field is treated as "read", not as failed. */
+  stagesAvailable?: boolean;
 }
 interface TeamMember {
   userId: string;
@@ -312,6 +315,17 @@ export default function PartnerClientDetail() {
   if (!role.ready || !role.identity) return null;
   const canWrite = role.identity.subRole !== "viewer";
   const canAssignLead = LEAD_ASSIGN_ROLES.includes(role.identity.subRole);
+  /* ════════════════════════════════════════════════════════════════════════
+     WAVE 282 — THE SECOND SURFACE. Same defect, same page family.
+     ════════════════════════════════════════════════════════════════════════
+     `crmQ.data?.stage ?? DEFAULT` put "Prospect" into the SELECT'S VALUE on a
+     failed or pending read — worse than the badge on the list page, because a
+     select showing a value invites a save of a stage nobody chose. The select
+     keeps every option and is DISABLED rather than unmounted (removing it
+     would be a silent drop of a real control), and the reason is stated as a
+     sibling beneath it. */
+  const stageReadFailed = crmQ.isError || crmQ.data?.stagesAvailable === false;
+  const stageReady = !stageReadFailed && crmQ.data != null;
   const stage = crmQ.data?.stage ?? PARTNER_CLIENT_DEFAULT_STAGE;
   const leadUserId = crmQ.data?.leadUserId ?? null;
   const teamMembers = teamQ.data?.members ?? [];
@@ -370,8 +384,8 @@ export default function PartnerClientDetail() {
             <CardContent>
               <div className="flex items-center gap-2">
                 <select
-                  value={stage}
-                  disabled={!canWrite || setStage.isPending}
+                  value={stageReady ? stage : ""}
+                  disabled={!canWrite || setStage.isPending || !stageReady}
                   onChange={(e) => setStage.mutate(e.target.value as PartnerClientStage)}
                   className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm disabled:opacity-60"
                   data-testid="client-crm-stage-select"
@@ -379,11 +393,28 @@ export default function PartnerClientDetail() {
                   {PARTNER_CLIENT_STAGES.map((s) => (
                     <option key={s} value={s}>{PARTNER_CLIENT_STAGE_LABELS[s]}</option>
                   ))}
+                  {/* WAVE 282 — appended LAST inside the list, so no existing
+                      option's position moves. A controlled <select> whose value
+                      matches no option would otherwise silently snap to the
+                      first one, which is the fabrication all over again. */}
+                  {!stageReady && <option value="">{stageReadFailed ? "stage could not be read" : "stage not read yet"}</option>}
                 </select>
                 {setStage.isPending && <span className="text-xs text-[var(--cv-color-text-muted)]">Saving…</span>}
               </div>
               {!canWrite && (
                 <div className="text-xs text-[var(--cv-color-text-muted)] mt-2">Your role has read-only access to the CRM stage.</div>
+              )}
+              {/* WAVE 282 — appended after the existing read-only note, never
+                  in place of it; the two can be true at the same time. */}
+              {stageReadFailed && (
+                <div className="text-xs text-amber-900 mt-2" data-testid="client-crm-stage-unavailable">
+                  This client's CRM stage could not be read, so none is shown and the stage cannot be changed here until it can be read again. No stage has been lost: whatever was last saved is still in the database, and this page is refusing to guess at it rather than showing you the first stage in the list.
+                </div>
+              )}
+              {!stageReadFailed && !stageReady && (
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="client-crm-stage-pending">
+                  This client's CRM stage has not been read yet.
+                </div>
               )}
             </CardContent>
           </Card>

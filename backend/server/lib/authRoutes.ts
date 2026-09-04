@@ -50,6 +50,17 @@ import { PASSWORD_RESET_TOKEN_TTL_MS } from "@shared/passwordResetLinkExpiry";
    start. */
 import { JWT_SECRET_MISSING } from "./auth";
 import { evaluateLoginGateForIdentity } from "./accountStatus"; /* v25.48.2 Q5/MF2 + MF-A — refuse suspended/inactive/archived logins by RESOLVED identity; fail-closed on lookup error */
+/* WAVE 305 · R251 — THE SECOND FACTOR IS DECIDED HERE, at the real login route
+   the three login pages actually post to, immediately before setSessionCookie.
+   There are TWO such sites in this handler (canonical persona and
+   runtime-registered), not one, so the check is inserted at BOTH.
+
+   `mfaChallengeRequired` reads `mfa_policy.mode` and `mfa_enrolment.state` and
+   NOTHING ELSE. It never reads `auth_users.totp_secret`, and it FAILS OPEN on
+   any read failure. See server/lib/mfaStore.ts for why that direction is the
+   correct one here and the opposite one is correct for account status. */
+import { mfaChallengeRequired } from "./mfaStore";
+import { mintStepUpToken } from "./mfaRoutes";
 import { rawDb } from "../db/connection";
 import { sendEmail } from "./emailSender";
 import { log } from "./logger";
@@ -280,6 +291,19 @@ export function registerAuthShellRoutes(app: Express, redemption: {
             message: "Unable to verify account status right now. Please try again.",
           });
         }
+        /* WAVE 305 · R251 — SITE 1 OF 2. The password is correct and the account
+           is active; before any session exists, ask for the second factor if and
+           only if this account has a CONFIRMED enrolment. No session cookie is
+           set on this branch. */
+        const mfa1 = mfaChallengeRequired(canonicalId);
+        if (mfa1.required) {
+          return res.status(200).json({
+            ok: false,
+            mfaRequired: true,
+            mfaToken: mintStepUpToken(canonicalId, Date.now()),
+            message: "Enter the six-digit code from your authenticator app, or one of your backup codes.",
+          });
+        }
         clearRevocation(canonicalId); // Wave C FIX C1
         setSessionCookie(res, canonicalId);
         const ctx = getUserContextForId(canonicalId);
@@ -315,6 +339,19 @@ export function registerAuthShellRoutes(app: Express, redemption: {
             ok: false,
             error: "ACCOUNT_STATUS_UNAVAILABLE",
             message: "Unable to verify account status right now. Please try again.",
+          });
+        }
+        /* WAVE 305 · R251 — SITE 2 OF 2. Same check, same place in the sequence.
+           The BAND16 preflight doc described this handler as having a single gate
+           convergence; it does not, and a fix installed at only one of the two
+           would have left the other unprotected. */
+        const mfa2 = mfaChallengeRequired(runtimeId);
+        if (mfa2.required) {
+          return res.status(200).json({
+            ok: false,
+            mfaRequired: true,
+            mfaToken: mintStepUpToken(runtimeId, Date.now()),
+            message: "Enter the six-digit code from your authenticator app, or one of your backup codes.",
           });
         }
         clearRevocation(runtimeId); // Wave C FIX C1

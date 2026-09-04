@@ -267,9 +267,45 @@ export default function PartnerDashboard() {
                     could not read this" is a false statement about money on the
                     owner's front page. When the figure is unavailable this tile
                     says so, in words, and does not format a number.
+
+                    WAVE 283 — THE GUARD AND THE PRINTED NUMBER WERE TWO
+                    DIFFERENT FIELDS. The condition below tested
+                    `totalSpvCommittedMinor`, but the number actually reaching
+                    the screen came from `usdRow`, derived from the SEPARATE
+                    `capitalByCurrency` rollup. The server computes the two in
+                    two independent try/catch blocks, so the rollup can fail
+                    while the totals read fine — and then `usdRow` was `null`
+                    and `: 0` printed "$0.00 USD" directly above the sibling at
+                    `kpi-by-currency-unavailable` which says, in the platform's
+                    own words, that a zero would be a stated failure and not an
+                    amount. The guard is therefore widened to cover EVERY state
+                    in which the US-dollar figure cannot be read:
+
+                      · totals null            — the engine read failed
+                      · capital == null        — the payload carries no rollup
+                                                 at all (older server, or a
+                                                 stale cached payload)
+                      · capital.unavailable    — the rollup itself refused
+
+                    `capital.unavailable === true` is an EXPLICIT sentinel
+                    comparison, never falsiness (R257.4): the client ships
+                    before or after the server, never with it.
+
+                    `usdRow == null` is DELIBERATELY NOT folded in. When the
+                    rollup reads fine and simply holds no US-dollar vehicle, the
+                    zero is TRUE, and the sibling at `kpi-no-usd-vehicles` says
+                    exactly why. Withholding a truthful figure is the same
+                    defect pointing the other way.
+
+                    The existing sentence below is true in all three widened
+                    branches, and PENDING cannot reach it: this whole card is
+                    inside `{data && !data.empty}`, so while the query is
+                    pending `dashboard-loading` renders instead and the tile is
+                    not mounted at all (R257.1 — absent, failed and pending are
+                    three different facts).
                     ═══════════════════════════════════════════════════════════ */}
                 SPVs committed:{" "}
-                {data.portfolio.totalSpvCommittedMinor == null ? (
+                {data.portfolio.totalSpvCommittedMinor == null || capital == null || capital.unavailable === true ? (
                   <span data-testid="kpi-spv-unavailable">not available right now — we could not read the committed total</span>
                 ) : (
                   <>
@@ -280,7 +316,11 @@ export default function PartnerDashboard() {
               </div>
               <div className="text-xs text-[var(--cv-color-text-secondary)]" data-testid="kpi-fund">
                 Funds committed:{" "}
-                {data.portfolio.totalFundCommittedMinor == null ? (
+                {/* WAVE 283 — same widening, same reasons, as the SPV tile
+                    above. Both tiles read the SAME `usdRow`, so a fix applied to
+                    only one of them would have left the other printing a
+                    fabricated $0.00 from the identical failure. */}
+                {data.portfolio.totalFundCommittedMinor == null || capital == null || capital.unavailable === true ? (
                   <span data-testid="kpi-fund-unavailable">not available right now — we could not read the committed total</span>
                 ) : (
                   <>

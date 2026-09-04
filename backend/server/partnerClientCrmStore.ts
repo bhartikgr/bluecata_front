@@ -72,6 +72,31 @@ export interface PartnerClientActivity {
 const crmByKey = new Map<string, PartnerClientCrmRow>(); // `${partnerId}::${companyId}`
 const activityById = new Map<string, PartnerClientActivity>();
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 282 — WHETHER THE PROJECTION WAS ACTUALLY READ, RECORDED.
+   ═══════════════════════════════════════════════════════════════════════════
+   `getStage` and `listStages` answer from `crmByKey`, and `crmByKey` is EMPTY
+   in exactly two different worlds: nobody has staged anybody yet, and the boot
+   hydrate below failed and left the cache untouched. Those two worlds are
+   indistinguishable from the map, so every reader silently resolved the second
+   one to `PARTNER_CLIENT_DEFAULT_STAGE` — a failed read printing "Prospect"
+   for every managed client as though that were the recorded fact (R231: never
+   let a failure render as a fact).
+
+   THIS FLAG IS NOT A GATE. `getStage`/`listStages` are deliberately NOT made
+   to throw: their existing behaviour and their existing tests are unchanged,
+   and turning a display read into an exception would convert one wrong badge
+   into a dead page. What is added is the ability to ASK, so the routes can
+   tell the client which of the two worlds it is in and the client can say so
+   in words instead of picking a default that looks like data. */
+export type CrmProjectionState = "ok" | "failed" | "not_run";
+let hydrateOutcome: CrmProjectionState = "not_run";
+
+/** WAVE 282 — "ok" only after a hydrate that completed its reads. */
+export function crmProjectionState(): CrmProjectionState {
+  return hydrateOutcome;
+}
+
 function key(partnerId: string, companyId: string): string {
   return `${partnerId}::${companyId}`;
 }
@@ -375,7 +400,14 @@ export async function hydratePartnerClientCrmStore(): Promise<void> {
     activityById.clear(); // only reached once the read above succeeded
     for (const [k, v] of Array.from(nextActivity)) activityById.set(k, v);
     log.info?.(`[partnerClientCrmStore] hydrated ${crmByKey.size} stage row(s), ${activityById.size} activity row(s)`);
+    /* WAVE 282 — set LAST, after both SELECTs returned and both swaps landed.
+       An empty cache reached from here genuinely means "nothing staged yet". */
+    hydrateOutcome = "ok";
   } catch (err) {
     log.warn("[partnerClientCrmStore] hydrate failed (non-fatal):", (err as Error).message);
+    /* WAVE 282 — recorded BESIDE the warn above, which is unchanged. The warn
+       goes to a log nobody on the client can see; this flag is what lets the
+       Clients surfaces say "we could not read this" instead of "Prospect". */
+    hydrateOutcome = "failed";
   }
 }

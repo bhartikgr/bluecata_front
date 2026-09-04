@@ -17,7 +17,28 @@ interface ClientRow { id: string; companyId: string; companyName?: string | null
 
 /* v25.49 Phase-3A — small brand-navy stage badge. Uses the capavate.com scoped
  * tokens (navy text on a faint navy tint) applied by the partner subtree. */
-function StageBadge({ stage }: { stage: PartnerClientStage }) {
+function StageBadge({ stage, unreadReason }: { stage: PartnerClientStage | null; unreadReason: "failed" | "pending" | null }) {
+  /* ════════════════════════════════════════════════════════════════════
+     WAVE 282 — A STAGE THAT WAS NOT READ IS NOT A STAGE.
+     ════════════════════════════════════════════════════════════════════
+     Every row on this page printed "Prospect" whenever the stage query failed
+     or had not answered yet, because the caller defaulted an absent value.
+     The badge now REFUSES to render a label it was not given, and the two
+     unread cases carry DIFFERENT sentences: "could not be read" is false while
+     a request is still in flight, so the pending case says so instead. Handled
+     here, as an early return inside this component, so the table cell keeps
+     exactly one child of exactly this element type and no sibling position on
+     the page moves. */
+  if (stage === null) {
+    return (
+      <span
+        className="inline-block rounded px-2 py-0.5 text-xs font-medium border border-amber-300 bg-amber-50 text-amber-900"
+        data-testid={unreadReason === "failed" ? "client-stage-unavailable" : "client-stage-pending"}
+      >
+        {unreadReason === "failed" ? "stage could not be read" : "stage not read yet"}
+      </span>
+    );
+  }
   return (
     <span
       className="inline-block rounded px-2 py-0.5 text-xs font-medium border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] text-[var(--cv-color-navy)]"
@@ -39,15 +60,33 @@ export default function PartnerClients() {
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/clients")).json(),
   });
   /* v25.49 Phase-3A — per-client CRM stage index (separate partner-clients
-   * engine). Best-effort: if it fails, rows fall back to the default stage. */
-  const crmQ = useQuery<{ stages: Record<string, PartnerClientStage> }>({
+   * engine). Best-effort: if it fails, rows fall back to the default stage.
+   * WAVE 282 — THE SENTENCE ABOVE DESCRIBES THE DEFECT, NOT THE BEHAVIOUR. It
+   * is kept because it records what this page did for four waves. Falling back
+   * to the default stage is exactly what printed "Prospect" for every managed
+   * client on a failed read. Rows now fall back to NOTHING and say so. */
+  const crmQ = useQuery<{ stages: Record<string, PartnerClientStage>; stagesAvailable?: boolean }>({
     queryKey: ["/api/partner/me/client-crm-index"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/client-crm-index")).json(),
   });
 
+  /* WAVE 282 — THREE STATES, NOT TWO. `crmQ.data` is `undefined` both when the
+     request FAILED and while it is still PENDING, and the old `?? DEFAULT`
+     collapsed both into a confident "Prospect". The server now states
+     availability explicitly; the comparison is `=== false` and never a
+     falsiness test, so a server that predates this field (deploy skew, the
+     key simply absent) renders exactly as it does today rather than showing
+     every client as unreadable. */
+  const stageReadFailed = crmQ.isError || crmQ.data?.stagesAvailable === false;
+  const stagesReady = !stageReadFailed && crmQ.data != null;
+  const stageUnreadReason: "failed" | "pending" | null = stageReadFailed ? "failed" : stagesReady ? null : "pending";
   const stages = crmQ.data?.stages ?? {};
-  const stageOf = (companyId: string): PartnerClientStage => stages[companyId] ?? PARTNER_CLIENT_DEFAULT_STAGE;
+  /* Returns `null` — never a default — when the index was not read. The
+     default stage constant is still imported and still used by the server as
+     the durable default for a company that HAS been read and has no row. */
+  const stageOf = (companyId: string): PartnerClientStage | null =>
+    stagesReady ? (stages[companyId] ?? PARTNER_CLIENT_DEFAULT_STAGE) : null;
 
   const filtered = useMemo(() => {
     const rows = q.data?.clients ?? [];
@@ -58,11 +97,14 @@ export default function PartnerClients() {
         c.companyId.toLowerCase().includes(needle) ||
         (c.companyName ?? "").toLowerCase().includes(needle) ||
         (c.attributionSource ?? "").toLowerCase().includes(needle);
-      const matchesStage = stageFilter === "all" || stageOf(c.companyId) === stageFilter;
+      /* WAVE 282 — when no stage was read the filter cannot honestly include or
+         exclude a row on stage, so it does not try: the control is disabled
+         below and `stageFilter` stays "all". */
+      const matchesStage = stageFilter === "all" || (stagesReady && stageOf(c.companyId) === stageFilter);
       return matchesSearch && matchesStage;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q.data, search, stageFilter, stages]);
+  }, [q.data, search, stageFilter, stages, stagesReady]);
 
   if (!role.ready || !role.identity) return null;
   const data = q.data;
@@ -105,6 +147,10 @@ export default function PartnerClients() {
             onChange={(e) => setStageFilter(e.target.value as "all" | PartnerClientStage)}
             className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
             data-testid="clients-stage-filter"
+            /* WAVE 282 — disabled, never unmounted: removing the control would
+               be a silent drop, and offering it while no stage is known would
+               let a filter silently empty the table on data nobody has. */
+            disabled={!stagesReady}
           >
             <option value="all">All stages</option>
             {PARTNER_CLIENT_STAGES.map((s) => (
@@ -140,7 +186,7 @@ export default function PartnerClients() {
                       now LABELLED as a reference rather than printed bare as if
                       it were the company's name. */}
                   <td className="p-3 font-medium">{c.companyName || `Company reference ${c.companyId}`}</td>
-                  <td className="p-3"><StageBadge stage={stageOf(c.companyId)} /></td>
+                  <td className="p-3"><StageBadge stage={stageOf(c.companyId)} unreadReason={stageUnreadReason} /></td>
                   {/* WAVE 106 - FINDING 4.5: this printed the storage code for
                       the attribution source (e.g. `partner_claim`). */}
                   <td className="p-3 text-[var(--cv-color-text-muted)]">{attributionSourceLabel(c.attributionSource)}</td>
@@ -160,6 +206,27 @@ export default function PartnerClients() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {/* ═══════════════════════════════════════════════════════════════════
+          WAVE 282 — PLACED HERE, NOT AT THE END, AND THE REASON IS A TEST.
+          ═══════════════════════════════════════════════════════════════════
+          Guard rule 5 says append a new panel LAST. This one is not last, and
+          that is deliberate: `wave33_pipe06_provenance.test.ts:463` (U6) reads
+          this file and asserts that NOTHING follows `<AttributionProvenancePanel />`
+          before `</PartnerShell>`. That test was written to stop the provenance
+          panel being inserted mid-list, and it is not weakened here to make room
+          for this wave. So this block goes immediately ABOVE the provenance
+          panel — still after every element it explains, still an append to the
+          table region, and it costs the provenance panel one position in the
+          sibling order rather than costing that test its meaning. The drop
+          detector and the guard were both re-run on this exact placement.
+
+          It explains, once and in one place, what the badges in the Stage
+          column are saying when they are not stages. */}
+      {stageReadFailed && (
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" data-testid="clients-stage-read-failed">
+          The client pipeline stages could not be read, so no stage is shown for any company on this page and the stage filter is switched off. This is a stated failure, not a pipeline in which every company is at the first stage. Everything else on this page — the companies, their sources and their attribution dates — was read normally and is unaffected.
         </div>
       )}
       {/* WAVE 33 / CP-PIPE-06 — APPENDED as the LAST sibling inside the shell,

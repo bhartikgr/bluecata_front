@@ -11,7 +11,7 @@
  *   7. Transporter is cached but invalidated when SMTP_HOST changes
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 
 // Capture createTransport calls so we can assert exact options. Each test resets.
 const createdConfigs: Array<Record<string, unknown>> = [];
@@ -54,6 +54,36 @@ function setEnv(vars: Record<string, string | undefined>) {
   }
 }
 
+/* WAVE 281 · R245.2 — THE OTHER TRANSPORT DOOR, KEPT OUT OF THE MEASURING WINDOW.
+ *
+ * `sendEmail` lazily `import()`s `server/emailStore.ts` for its outbox row, and
+ * that module runs a demo seed AT IMPORT which sends through a SECOND, entirely
+ * separate transport module (`server/emailTransport.ts:121`, reached via
+ * `emailStore.ts:637 seedDemo → :454 tickQueue → emailTransport.sendMail`). I
+ * confirmed that path by stack trace, not by reading.
+ *
+ * So the very first `sendEmail` in this file has always created TWO nodemailer
+ * transports — its own, plus the seed's — whenever the seed's mode resolved to
+ * `smtp`. It used to resolve to `console` here only because SMTP_MODE was left
+ * unset, which made `expect(createdConfigs).toHaveLength(1)` at :100 depend on the
+ * AMBIENT ENVIRONMENT of a module this file does not test.
+ *
+ * Importing the store once, up front, with a non-sending mode and no host, moves
+ * that one-time seed send out of every test's `createdConfigs` window for good.
+ * NO ASSERTION IS TOUCHED and nothing is loosened: :100 still demands exactly one
+ * transport, and it now demands it of `emailSender` alone. */
+beforeAll(async () => {
+  const savedMode = process.env.SMTP_MODE;
+  const savedHost = process.env.SMTP_HOST;
+  process.env.SMTP_MODE = "dry_run";
+  delete process.env.SMTP_HOST;
+  await import("../emailStore");
+  if (savedMode === undefined) delete process.env.SMTP_MODE;
+  else process.env.SMTP_MODE = savedMode;
+  if (savedHost === undefined) delete process.env.SMTP_HOST;
+  else process.env.SMTP_HOST = savedHost;
+});
+
 beforeEach(() => {
   createdConfigs.length = 0;
   sendMailMock.mockReset();
@@ -68,7 +98,13 @@ beforeEach(() => {
     SMTP_PASS: undefined,
     SMTP_FROM: undefined,
     SMTP_REPLY_TO: undefined,
-    SMTP_MODE: undefined,
+    /* WAVE 281 · R243.1 — SETUP ONLY. Every case in this file exercises the SMTP
+       TRANSPORT and relied on the old unsafe default to get there; it now says so
+       explicitly. Not one assertion below is changed, and the cases that set their
+       own mode still override this. The genuinely-unset case is covered at BOTH
+       poles by server/__tests__/w281_mail_default_is_inert.test.ts, which this
+       file never covered. */
+    SMTP_MODE: "smtp",
   });
 });
 

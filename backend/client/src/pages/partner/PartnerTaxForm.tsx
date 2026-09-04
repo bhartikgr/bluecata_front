@@ -188,6 +188,31 @@ export default function PartnerTaxForm() {
           We collect the appropriate tax form before remitting any commission or SPV-fee payout. Your tax
           identification number is hashed on submission and never stored in clear text.
         </p>
+        {/* WAVE 288 · R250 / §8.4 — APPENDED AS THE LAST CHILD OF THIS BLOCK, NOT AS A
+            NEW SIBLING OF IT.
+
+            This page names four specific forms (`FORM_TYPES` above) and the paragraph
+            immediately above says the platform collects "the appropriate" one. Read
+            together those two facts come close to telling a partner which form applies
+            to them, which is exactly what Capavate must not do. The first sentence is
+            the wording ALREADY IN USE at `components/partner/SpvK1Panel.tsx:309`,
+            reused BYTE-VERBATIM so the platform speaks with one voice; the second
+            states plainly that Capavate does not make the determination.
+
+            WHY LAST CHILD OF THE EXISTING `<div>` RATHER THAN A SIBLING AFTER IT. The
+            silent-drop guard fingerprints panel bodies by child membership plus a
+            `childorder=` subsequence. A new sibling inserted after this block would sit
+            mid-page among `PartnerShell`'s children; appended here it is the LAST child
+            of a container that is a plain `div` (not in `PANEL_TAGS`), so no existing
+            child ordinal in any tracked container moves. The paragraph above is NOT
+            reworded — a replaced text node scores as one removal plus one addition
+            (R143.1) — and the sentence is NOT hoisted into a shared constant, because
+            hoisting a literal out of JSX is scored as a drop. */}
+        <p className="mt-1" data-testid="partner-taxform-no-advice">
+          These statements are a reporting aid, not tax advice. Capavate does not determine which tax
+          form applies to you — that depends on your own residence and circumstances — so confirm the
+          right form with your own tax adviser before you submit one.
+        </p>
       </div>
 
       {isForbidden && (

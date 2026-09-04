@@ -88,6 +88,8 @@ export const SPV_SUBSCRIPTION_REFUSAL_CODES = [
      code, and a second copy authority for the same route's refusals is how the
      server and the screen end up saying different things. */
   "LP_INVITE_INVALID_ORIGIN",
+  /* WAVE 277 — a subscription stated in a currency the vehicle does not use. */
+  "SUBSCRIPTION_CURRENCY_MISMATCH",
 ] as const;
 
 export type SpvSubscriptionRefusalCode = (typeof SPV_SUBSCRIPTION_REFUSAL_CODES)[number];
@@ -183,6 +185,20 @@ export const SPV_SUBSCRIPTION_REFUSAL_COPY: Readonly<Record<string, string>> = {
     "indications, which are interest rather than capital. Reduce this subscription, withdraw or " +
     "reduce a pre-commitment indication to free capacity, or raise the cap on the vehicle before " +
     "subscribing again. Nothing was saved.",
+  /* WAVE 277 — names BOTH codes and BOTH available actions, plus the escape for a
+     subscription that was already accepted before this guard existed. */
+  SUBSCRIPTION_CURRENCY_MISMATCH:
+    "This subscription was not accepted, and nothing was saved. It states its amount in a " +
+    "different currency from the one this vehicle records, and a vehicle records exactly one " +
+    "currency: a total made of two currencies is not a number, which is why the vehicle's own " +
+    "pages refuse to show one (MIXED_CURRENCY_COMMITTED_TOTAL). This platform never converts " +
+    "money and holds no exchange rate, so it will not guess what the amount is worth in the " +
+    "vehicle's currency. You have two ways forward. Either re-enter this subscription in the " +
+    "vehicle's own currency, using a figure you have decided yourself. Or launch a separate " +
+    "vehicle that records the other currency and place the subscription there. If a subscription " +
+    "in the wrong currency was already accepted before this check existed, it has NOT been " +
+    "deleted or altered: set its status to withdrawn, which is a recorded transition that keeps " +
+    "the row and its history, and the vehicle's pages become readable again.",
 };
 
 /**
@@ -232,6 +248,11 @@ export const SPV_SUBSCRIPTION_REFUSAL_HEADLINE: Readonly<Record<string, string>>
   EXCEEDS_CAP:
     "Not accepted: this would take the vehicle past its cap, which counts confirmed capital and " +
     "soft-circled interest alike. Reduce the amount or free capacity, then try again.",
+  /* WAVE 277 — written short, not truncated; the unabridged sentence travels
+     beside it as `guidance`. */
+  SUBSCRIPTION_CURRENCY_MISMATCH:
+    "This subscription is stated in a different currency from the vehicle, so it was not " +
+    "accepted. A vehicle records one currency only, and this platform never converts money.",
 };
 
 /** Look a code up in a map, tolerating the `CODE:detail:detail` form the server

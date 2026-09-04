@@ -157,7 +157,10 @@ describe("v23.4.2 — admin SMTP diagnostic endpoints", () => {
 
     it("returns mode=not_configured when SMTP_HOST is unset", async () => {
       delete process.env.SMTP_HOST;
-      delete process.env.SMTP_MODE;
+      /* WAVE 281 · R243.1 — SETUP ONLY. This case means "smtp is wanted but the
+         host is missing"; it used to say that by DELETING the mode and leaning on
+         the old unsafe default. It now says it. No assertion below is changed. */
+      process.env.SMTP_MODE = "smtp";
       const r = await asAdmin(request(app).post("/api/admin/email/test"));
       expect(r.status).toBe(200);
       expect(r.body.ok).toBe(false);
@@ -222,5 +225,40 @@ describe("v23.4.2 — admin SMTP diagnostic endpoints", () => {
       expect(r.body.transportAccepted).toBe(true);
       expect(r.body.mode).toBe("dry_run");
     });
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════ *
+ *  WAVE 281 · R243.1 — THE ADMIN CONFIG CARD MUST REPORT THE **EFFECTIVE** MODE.
+ *
+ *  `getSanitizedConfig` used to compute `mode: process.env.SMTP_MODE ?? "smtp"`
+ *  — its own private copy of the very expression this wave replaced. Left alone,
+ *  it would have told an operator "mode: smtp" on a staging box whose sender is
+ *  now inert: an absence rendering as reassurance, which is the defect class this
+ *  programme rejects. It now calls the same `resolveSmtpMode()` the sender does.
+ * ════════════════════════════════════════════════════════════════════════════ */
+describe("WAVE 281 — GET /api/admin/email/config reports the effective mode", () => {
+  it("SMTP_MODE unset outside production is reported as dry_run, not smtp", async () => {
+    delete process.env.SMTP_MODE;
+    /* ASSERTED, NOT SET. `NODE_ENV` is not in this file's captureEnv list, so
+       writing it here would leak into every later file in the worker. The suite
+       already runs non-production (`npm test` sets NODE_ENV=test), and if that ever
+       stops being true this line fails loudly instead of the case below passing for
+       the wrong reason. */
+    expect(process.env.NODE_ENV).not.toBe("production");
+    process.env.SMTP_HOST = "smtp.gmail.com";
+    const r = await asAdmin(request(app).get("/api/admin/email/config"));
+    expect(r.status).toBe(200);
+    /* The load-bearing assertion: the card agrees with the sender. */
+    expect(r.body.mode).toBe("dry_run");
+    /* And it still reports the configured host, so nothing is hidden. */
+    expect(r.body.host).toBe("smtp.gmail.com");
+  });
+
+  it("an explicit SMTP_MODE is still reported verbatim", async () => {
+    process.env.SMTP_MODE = "console";
+    const r = await asAdmin(request(app).get("/api/admin/email/config"));
+    expect(r.status).toBe(200);
+    expect(r.body.mode).toBe("console");
   });
 });

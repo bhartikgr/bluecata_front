@@ -103,6 +103,12 @@ import {
   auditSpvFundsConfirmed,
   auditSpvClosedToNewLps,
   auditSpvReopened,
+  auditSpvMandateSet,
+  auditSpvFeeSet,
+  /* WAVE 306 · PART 1 — settling and waiving a fee obligation were the two
+     money decisions in this file that emitted and audited nothing. */
+  auditSpvFeeObligationSettled,
+  auditSpvFeeObligationWaived,
 } from "./lib/spvLifecycleAudit";
 /* WAVE 10 / EN-1 — project distributions into the ILPA cash-flow ledger. */
 import { projectDistribution, tryProject } from "./lib/ilpaCashflowLedger";
@@ -1097,6 +1103,22 @@ export const spvEngineStore = {
     );
     mandateBySpv.set(spvId, m);
     emit("spv.mandate_set", spvId, { partnerId, spvId, mode });
+    /* WAVE 278b — the emit above is a bridge envelope, not a forensic row, and
+       `emit` swallows its own failure. The remit is now AUDITED, off `m`. */
+    auditSpvMandateSet({
+      partnerId,
+      spvId,
+      mandateId: m.id,
+      mode: m.mode,
+      sector: m.sector,
+      geography: m.geography,
+      stage: m.stage,
+      companyIds: m.companyIds,
+      checkMinMinor: m.checkMinMinor ?? null,
+      checkMaxMinor: m.checkMaxMinor ?? null,
+      revisionHash: m.revisionHash,
+      actor: actor ?? null,
+    });
     return m;
   },
 
@@ -1322,6 +1344,22 @@ export const spvEngineStore = {
     // P-8 — the cross-layer verdict rides on the existing event so the
     // misconfiguration is observable by every consumer, not just the log.
     emit("spv.fee_set", spvId, { partnerId, spvId, layer: f.layer, feeType: f.feeType, effectiveDate: f.effectiveDate, combinedCarryOverCap });
+    /* WAVE 278b — same reasoning as `setMandate`: an economic term that binds
+       the LPs now leaves a durable row, read off `f`, never off `data`. */
+    auditSpvFeeSet({
+      partnerId,
+      spvId,
+      feeId: f.id,
+      layer: f.layer,
+      feeType: f.feeType,
+      fixedAmountMinor: f.fixedAmountMinor ?? null,
+      carryPct: f.carryPct ?? null,
+      currency: f.currency ?? null,
+      effectiveDate: f.effectiveDate,
+      combinedCarryOverCap,
+      revisionHash: f.revisionHash,
+      actor: actor ?? null,
+    });
     return f;
   },
 
@@ -1578,6 +1616,20 @@ export const spvEngineStore = {
     // of it.
     const priorProjection = { state: o.state, paymentRef: o.paymentRef, updatedAt: o.updatedAt, revisionHash: o.revisionHash };
     let settled: { ok: boolean };
+    /* WAVE 306 · PART 1 — the DURABLE authorization facts, hoisted out of the
+       transaction closure so the audit row below can name who was authorised to
+       settle and under what authority. These are the values
+       `consumeSettlementAuthorization` read back out of
+       `fee_settlement_authorization` (its `actorId` is `String(row.issued_by)`),
+       NOT fields off the in-process object the caller handed in — same reason
+       the obligation fields are read off the persisted row. Plain `string |
+       null` rather than the return type, so no call signature changes and
+       nothing here can invent an actor: a null actor reaches the writer as null
+       and is recorded as the explicit `u_unresolved` sentinel. */
+    let authorizationActorId: string | null = null;
+    let authorizationSource: string | null = null;
+    let authorizationId: string | null = null;
+    let authorizationReason: string | null = null;
     try {
       settled = withSettlementTransaction((): { ok: boolean } => {
         // WAVE 1A / S-2 — the derivation. Verifies provenance (in-process brand,
@@ -1586,13 +1638,21 @@ export const spvEngineStore = {
         // conditional UPDATE whose affected-row count must be exactly 1. Throws on
         // anything a partner could have constructed. Nothing below this line can
         // reach `paid` without it.
-        const { outcome } = consumeSettlementAuthorization(settlement, {
+        const consumed = consumeSettlementAuthorization(settlement, {
           purpose: o.portion === "carry" ? "distribution_carry" : "fee_obligation",
           spvId,
           obligationId,
           amountMinor: o.amountMinor,
           currency: o.currency,
         });
+        const { outcome } = consumed;
+        /* WAVE 306 · PART 1 — captured here and read after the commit. If the
+           transaction rolls back these are never read, because the throw below
+           skips the audit call entirely. */
+        authorizationActorId = consumed.actorId;
+        authorizationSource = consumed.source;
+        authorizationId = consumed.authorizationId;
+        authorizationReason = consumed.reason;
         let entryState: string;
         let entryId: string;
         try {
@@ -1643,6 +1703,31 @@ export const spvEngineStore = {
     }
     if (!settled.ok) throw new Error("FEE_COLLECTION_FAILED");
     emit("spv.fee_obligation_paid", spvId, { partnerId, spvId, obligationId: o.id, paymentRef: o.paymentRef });
+    /* WAVE 306 · PART 1 — BESIDE the emit above. This function has THREE call
+       sites (`spvEngineRoutes.ts:1461` partner charge, `:1487` admin settle, and
+       `_collectCarryObligation` in this file, reached from `recordDistribution`),
+       which is why the write is here and not on the routes: a route-level audit
+       would have recorded two settlements out of three and missed the carry
+       collection, which has no route at all. Every field is read off `o` AFTER
+       `_persistFeeObligation` (R253.1). */
+    auditSpvFeeObligationSettled({
+      partnerId,
+      spvId,
+      obligationId: o.id,
+      layer: o.layer,
+      portion: o.portion,
+      timing: o.timing,
+      state: o.state,
+      amountMinor: o.amountMinor,
+      currency: o.currency,
+      paymentRef: o.paymentRef,
+      distributionId: o.distributionId,
+      authorizationSource,
+      authorizationId,
+      authorizationReason,
+      revisionHash: o.revisionHash,
+      actor: authorizationActorId,
+    });
     return o;
   },
 
@@ -1655,6 +1740,29 @@ export const spvEngineStore = {
     o.state = "waived"; o.waivedBy = adminUserId ?? null; o.waivedReason = reason ?? null; o.updatedAt = nowIso();
     this._persistFeeObligation(o);
     emit("spv.fee_obligation_waived", spvId, { partnerId, spvId, obligationId: o.id, waivedBy: o.waivedBy });
+    /* WAVE 306 · PART 1 — BESIDE the emit above, never instead of it. The emit
+       is a queue message whose failures this file swallows (`function emit`,
+       bare `catch` at :410); this is the durable, chained, database-dated
+       record of an administrator forgiving money the vehicle owed.
+
+       READ OFF `o` AFTER `_persistFeeObligation` (R253.1), so every field is
+       what was STORED — including `revisionHash`, which only exists after the
+       chain write — and not what the request asked for. */
+    auditSpvFeeObligationWaived({
+      partnerId,
+      spvId,
+      obligationId: o.id,
+      layer: o.layer,
+      portion: o.portion,
+      timing: o.timing,
+      state: o.state,
+      amountMinor: o.amountMinor,
+      currency: o.currency,
+      waivedBy: o.waivedBy,
+      waivedReason: o.waivedReason,
+      revisionHash: o.revisionHash,
+      actor: adminUserId,
+    });
     return o;
   },
 
@@ -1750,6 +1858,39 @@ export const spvEngineStore = {
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
     if (!Number.isFinite(data.commitmentMinor) || data.commitmentMinor <= 0) throw new Error("INVALID_COMMITMENT");
+    /* ═══ WAVE 277 · R224.1 · R77 — THE WRITE-TIME CURRENCY GUARD. ═══════════
+       A subscription STATED in a currency other than the vehicle's own was
+       ACCEPTED here with a 201 and then made that vehicle's detail page answer
+       500 on every load, forever, because `assertSingleCurrencyTotal` is
+       asserted on FIVE READ paths and on NONE of the write paths. The vehicle
+       was not damaged; it was rendered unreadable, and the GP was told nothing.
+       Refused HERE, above the first write (`this._persistSub` below), so
+       nothing is persisted and no partial row survives the refusal.
+
+       WHY IT SITS WITH THE INPUT GUARDS AND ABOVE THE MONEY GATES. Every gate
+       below this line compares this commitment against one of the vehicle's own
+       figures — the minimum check, and the cap. Comparing an amount stated in
+       one currency against a limit stated in another is itself the arithmetic
+       error this wave exists to prevent, so the currency must be agreed before
+       any of those comparisons is meaningful. THE DECLARED CONSEQUENCE: on a
+       CLOSED vehicle with a mismatched currency the caller now reads the
+       currency refusal rather than the closed-vehicle refusal. Both are true;
+       this is the one the caller can act on.
+
+       ABSENT STAYS ALLOWED, DELIBERATELY. `data.currency ?? s.currency` below
+       already means "the vehicle's currency", and one currency is not a mixed
+       state — `assertSingleCurrencyTotal` refuses on >= 2 distinct STATED
+       codes. Only a STATED, NON-EMPTY, case-insensitively DIFFERENT code is
+       refused; `usd` against a `USD` vehicle is the same currency and is
+       accepted unchanged.
+
+       NO CONVERSION. There is no exchange-rate source on this platform and this
+       wave adds none. Nothing existing is read, rewritten, converted or
+       deleted: subscriptions already accepted in a foreign currency stay
+       exactly as they are, and the escape from one is the recorded
+       `withdrawn` ladder transition, never a silent restatement.
+       ══════════════════════════════════════════════════════════════════════ */
+    assertSubscriptionCurrencyMatchesVehicle(data.currency, s.currency);
     /* ═══ WAVE 182 · ITEM A · R152 — A CLOSED VEHICLE DOES NOT TAKE NEW CAPITAL.
 
        THE GAP THIS CLOSES. Every guard in this method asked about the REQUEST
@@ -2030,10 +2171,51 @@ export const spvEngineStore = {
           `Permitted and RECORDED under SPV_SUBSCRIPTION_FORWARD_SKIP_POLICY="record" (R136.2).`,
       );
     }
-    if (data.kycRef !== undefined) sub.kycRef = data.kycRef;
-    if (data.accreditationRef !== undefined) sub.accreditationRef = data.accreditationRef;
-    if (data.subscriptionDocRef !== undefined) sub.subscriptionDocRef = data.subscriptionDocRef;
-    if (data.wiredMinor !== undefined) sub.wiredMinor = data.wiredMinor;
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 284 · R231 · R258 — THE DURABLE WRITE WINS. THE FOUR FIELD
+       ASSIGNMENTS AND THE STATUS ASSIGNMENT NOW LAND ON A CANDIDATE COPY.
+       ═══════════════════════════════════════════════════════════════════════
+       WHAT WAS WRONG. `kycRef`, `accreditationRef`, `subscriptionDocRef`,
+       `wiredMinor`, `status` and `updatedAt` were assigned DIRECTLY onto `sub`,
+       which is the object held in `subsBySpv` — the object every reader in this
+       store returns. `_persistSub` ran AFTERWARDS and is fail-closed: it throws
+       `STRICT_PERSIST_FAILED` when the row does not reach SQLite. There was no
+       rollback. So a PATCH whose write failed left RAM holding a status and a
+       wired amount the database did not have, the caller saw a 500, and every
+       subsequent read — `listSubscriptions`, the committed-total bases, the
+       vehicle detail payload, the GP's screen — agreed with the version that was
+       never stored, for the life of the process.
+
+       WHAT HAPPENS NOW. Every mutation is applied to `next`, a shallow copy.
+       Every gate below reads `next`, so a gate that depends on a value supplied
+       in THIS call (`subscriptionDocRef`, for the e-sign gate) still sees it.
+       `_persistSub(next)` runs while `sub` is still untouched. Only when the
+       durable write has returned is `next` published into `sub` with
+       `Object.assign`, in one step, so RAM can never lead the database.
+
+       WHY `Object.assign` AND NOT A MAP REPLACEMENT. Callers hold the object:
+       this method returns it, and `subsBySpv` is read by twenty-odd call sites
+       that keep references. Replacing the array entry would leave those
+       references pointing at the pre-write object. Assigning in place keeps the
+       single identity every reader already shares.
+
+       WHY THE ASSIGN MUST BE AFTER `_persistSub` AND NOT BEFORE IT.
+       `_persistSub` WRITES `revisionHash` BACK INTO ITS ARGUMENT (`sub.revisionHash = curr;`
+       inside `_persistSub` below — search for it rather than trusting a line number).
+       That is a mutation of the caller's object, and it is why the copy is
+       published after the call and not before: the hash chain value computed
+       during the write is carried into RAM by the same `Object.assign`. Reversing
+       the two lines would store the row and then leave RAM without its hash.
+
+       A SHALLOW COPY IS SUFFICIENT AND IS NOT AN ACCIDENT. Every field this
+       method assigns is a primitive. Nothing here mutates a nested object, so
+       there is no shared-substructure path by which `next` could alter `sub`
+       before the write succeeds. */
+    const next: SpvSubscriptionDTO = { ...sub };
+    if (data.kycRef !== undefined) next.kycRef = data.kycRef;
+    if (data.accreditationRef !== undefined) next.accreditationRef = data.accreditationRef;
+    if (data.subscriptionDocRef !== undefined) next.subscriptionDocRef = data.subscriptionDocRef;
+    if (data.wiredMinor !== undefined) next.wiredMinor = data.wiredMinor;
     // Blocker 3 — at FUNDING, accrue the FIXED portions of fixed/hybrid fees as
     // money-movement obligations (idempotent) so they can be collected before
     // the SPV is allowed to commit or deploy.
@@ -2067,21 +2249,56 @@ export const spvEngineStore = {
          This is a REFUSAL, not a warning: the whole point is that the transition
          does not happen. Its sentence was written first, in
          `shared/spvSubscriptionRefusalCopy.ts`. */
-      if (GP_OFFLINE_CONFIRMATION_REQUIRED_FROM.has(sub.status) && !this.gpOfflineConfirmationFor(partnerId, spvId, sub.id)) {
+      /* W284: these read `next`, not `sub`. `next.status` is still the FROM
+         status at this point (the status assignment is below the write), so the
+         ladder gate is unchanged; `next.subscriptionDocRef` is the one that
+         matters, because `gp-confirm` supplies it in THIS call and the e-sign
+         gate must see it. Reading `sub` here would refuse that path. */
+      if (GP_OFFLINE_CONFIRMATION_REQUIRED_FROM.has(next.status) && !this.gpOfflineConfirmationFor(partnerId, spvId, next.id)) {
         throw new Error("GP_OFFLINE_CONFIRMATION_REQUIRED");
       }
       // Gate 1 KYC (reusable), Gate 2 accreditation, Gate 3 e-sign — all required.
-      const gates = this.gateStatus(sub.investorId);
+      const gates = this.gateStatus(next.investorId);
       if (!gates.kyc) throw new Error("GATE_KYC_REQUIRED");
       if (!gates.accreditation) throw new Error("GATE_ACCREDITATION_REQUIRED");
-      if (!sub.subscriptionDocRef) throw new Error("GATE_SUBSCRIPTION_ESIGN_REQUIRED");
+      if (!next.subscriptionDocRef) throw new Error("GATE_SUBSCRIPTION_ESIGN_REQUIRED");
+      /* WAVE 276 · R224.1 — ACCRUE, THEN CHECK. THE MISSING HALF OF THE PAIR.
+
+         The accrual above fires only on `to === "wire_funded"`, but the ladder
+         permits a RECORDED forward skip (R136.2) and `gp-confirm` advances
+         `review → committed` directly. On that path the gate below read a bill
+         nothing had written: `hasUnsettledFixedFees` is fail-closed on the fee
+         CONFIG, so it answered `true` forever while `listFeeObligations`
+         returned an EMPTY list. A blocking obligation rendered as nothing —
+         every commitment on a fixed or hybrid vehicle refused, with no row to
+         pay, waive or even see, and an admin waiver the only escape.
+
+         This is the same accrue-then-check pair already standing at
+         `createDeployment` and `advanceDeployment`, and the accrual is the
+         store's own idempotent one, so a vehicle that DID pass `wire_funded`
+         finds its existing row rather than a second copy.
+
+         IT ADDS AN ACCRUAL, NOT A PERMISSION. The refusal below is unchanged
+         and still fires; what changes is that the bill now exists, with its own
+         figure in its own currency, and can be discharged. It sits AFTER the
+         KYC, accreditation and e-sign gates deliberately: a subscription that
+         cannot legally commit must not be billed. */
+      this.accrueFundingFeeObligations(partnerId, spvId);
       // Blocker 3 — FAIL CLOSED: no commitment while a fixed fee is unpaid AND
       // not admin-waived.
       if (this.hasUnsettledFixedFees(partnerId, spvId)) throw new Error("FEES_UNPAID");
     }
-    sub.status = to;
-    sub.updatedAt = nowIso();
-    this._persistSub(sub);
+    next.status = to;
+    next.updatedAt = nowIso();
+    /* THE DURABLE WRITE. Fail-closed: if the row does not reach SQLite this
+       throws and `sub` — the object every reader in this store holds — is still
+       exactly what the database still holds. Nothing below runs. */
+    this._persistSub(next);
+    /* THE WRITE SUCCEEDED. Publish it to RAM in one step, carrying the
+       `revisionHash` `_persistSub` wrote into `next`. After this line RAM and the
+       stored row agree; before it, RAM agreed with the stored row too. There is
+       no instant at which they do not. */
+    Object.assign(sub, next);
     /* WAVE 164 · R130 — COMMITTED-WRITER 1 OF 4. AFTER the write, never before,
        and never able to fail it (R135.3): the target raise is a GOAL, so passing
        it is recorded and warned about and NOTHING is blocked. */
@@ -2116,6 +2333,23 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    /* ═══ WAVE 277 · R224.1 — THE SECOND DOOR, WHICH THE SPECIFICATION MISSED. ══
+       The engineering document specified the write-time currency guard for
+       `subscribe` alone. THIS method is the store side of
+       `POST /api/partner/me/spv/:spvId/lp-commit` — the "Commit an LP to the cap
+       table" form a GP actually uses — and it deliberately skips `subscribe`'s
+       gates, sets `currency: data.currency ?? s.currency` on its new row exactly
+       as `subscribe` does, and had no currency comparison either. MEASURED, NOT
+       REASONED: with the guard in `subscribe` only, an EUR commitment through this
+       route was still accepted with a 201 and still bricked the vehicle. A guard
+       on one of two doors is not a guard.
+
+       Same precedent, spelled twice above this line: the close gate and the
+       attestation gate were BOTH duplicated into this method for this reason.
+       One spelling of the rule (`assertSubscriptionCurrencyMatchesVehicle`), two
+       call sites, each independently suppressible so each has its own test.
+       Nothing has been written at this point: `_persistSub` is below. */
+    assertSubscriptionCurrencyMatchesVehicle(data.currency, s.currency);
     /* ═══ WAVE 182 · ITEM A · R152 — THE SINK THE OWNER'S REPRODUCTION WENT THROUGH.
 
        This is the store side of `POST /api/partner/me/spv/:spvId/lp-commit`, the
@@ -3227,6 +3461,13 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    /* WAVE 275 — SECOND LINE OF DEFENCE, matching the `wiredMinor` twin at :2008.
+       The route guard is the user-facing refusal; this one exists so no future caller can
+       reach the audit writer with a non-money value. `isSpvMoneyMinor` is integer,
+       non-negative and MAX_SAFE_INTEGER-gated; an explicit 0 still passes. */
+    if (!isSpvMoneyMinor(receivedMinor)) {
+      throw new Error(`INVALID_WIRED_MINOR:receivedMinor:${typeof receivedMinor}`);
+    }
     /* ════════════════════════════════════════════════════════════════ *
      *  WAVE 161 · BATCH 3 ITEM A (A-5) — THE EXPECTED AMOUNT WAS AN INDICATION.
      *  ════════════════════════════════════════════════════════════════ *
@@ -5297,6 +5538,60 @@ export function spvCapSplitFiguresForSpv(args: {
  * code on screen (R152 item 3).
  * ════════════════════════════════════════════════════════════════════════════ */
 export const SPV_MIXED_CURRENCY_TOTAL_CODE = "MIXED_CURRENCY_COMMITTED_TOTAL";
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 277 · R224.1 · R77 — THE WRITE-TIME COUNTERPART OF THE ASSERTION BELOW.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * `assertSingleCurrencyTotal` is asserted on FIVE READ paths and on NONE of the
+ * write paths, so a subscription STATED in a currency other than the vehicle's
+ * was ACCEPTED with a 201 and then made every one of those five reads throw —
+ * which, on routes that had no `try`/`catch`, answered a bare HTTP 500 with no
+ * body on every load, indefinitely. The vehicle was not damaged; it was rendered
+ * unreadable, and the GP was told nothing.
+ *
+ * ONE SPELLING, TWO CALL SITES. `subscribe` and `projectLpCommitted` are the only
+ * two writers that take a caller-supplied currency (`advanceSubscription` takes
+ * none, and `shadowCommitmentToEngine` inherits `parent.currency`), and both are
+ * reachable from routes a GP uses. The rule is written once here so the two
+ * cannot drift, and CALLED at each site so each site stays independently
+ * suppressible and therefore independently testable.
+ *
+ * ABSENT STAYS ALLOWED, DELIBERATELY. Both writers store `data.currency ??
+ * s.currency`, so an absent currency already means "the vehicle's own", and one
+ * currency is not a mixed state — `isMixedCurrency` refuses on >= 2 distinct
+ * STATED codes. Only a STATED, NON-EMPTY, case-insensitively DIFFERENT code is
+ * refused; `usd` or `" USD "` against a `USD` vehicle is the same currency and is
+ * accepted unchanged. Refusing an absence here would break a working money
+ * action on every route that omits the field.
+ *
+ * NO CONVERSION, AND NO ARITHMETIC AT ALL. This is a comparison of two currency
+ * CODES as strings. There is no exchange-rate source on this platform and this
+ * wave adds none. No `Number()`, `parseInt` or `parseFloat`; no figure is read,
+ * adjusted or rewritten; rows already accepted in a foreign currency are left
+ * exactly as they are, and the escape from one is the recorded `withdrawn`
+ * ladder transition, never a silent restatement.
+ *
+ * THE MESSAGE CARRIES BOTH CODES, so an operator reading a log can see which
+ * currency was asked for and which the vehicle records. That is why the status is
+ * registered in `SPV_SUBSCRIPTION_PREFIX_STATUS` in `spvEngineRoutes.ts` and NOT
+ * in `err()`'s exact-key map, where the appended detail would make the lookup
+ * miss and fall through to a 500. The sentences live in
+ * `shared/spvSubscriptionRefusalCopy.ts`.
+ * ════════════════════════════════════════════════════════════════════════════ */
+export const SPV_SUBSCRIPTION_CURRENCY_MISMATCH_CODE = "SUBSCRIPTION_CURRENCY_MISMATCH";
+
+export function assertSubscriptionCurrencyMatchesVehicle(
+  stated: string | null | undefined,
+  vehicleCurrency: string | null | undefined,
+): void {
+  if (typeof stated !== "string") return;
+  const asked = stated.trim();
+  if (asked === "") return;
+  if (asked.toUpperCase() === String(vehicleCurrency ?? "").trim().toUpperCase()) return;
+  throw new Error(
+    `${SPV_SUBSCRIPTION_CURRENCY_MISMATCH_CODE}:${asked}:${String(vehicleCurrency ?? "")}`,
+  );
+}
 
 export interface SpvMixedCurrencyTotalError extends Error {
   mixedCurrencyTotal: true;

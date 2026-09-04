@@ -22,6 +22,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeFailure } from "@/lib/failureMessage";
+/* WAVE A2 · ITEMS 5a + 5b — the dropdowns bind to lists that ALREADY EXIST.
+   Sector -> `COLLECTIVE_SECTORS_45` (45 members, shared/schema.ts), Stage ->
+   `COLLECTIVE_STAGES` (7 members, same file), HQ country -> `COUNTRIES` (250
+   members, client/src/lib/profile/data/countries.ts). No list is created here and
+   none is hardcoded. Each existing free-text `<Input>` is KEPT beside its
+   dropdown: it is the entry path for anything the standard list does not cover,
+   and `canonicalSelectOptions` guarantees the select can always represent whatever
+   is in the box, so nothing is ever coerced to a neighbouring option (R195.5,
+   R242). */
+import { COLLECTIVE_SECTORS_45, COLLECTIVE_STAGES } from "@shared/schema";
+import { COUNTRIES } from "@/lib/profile/data/countries";
+import {
+  CANONICAL_FREE_TEXT_HINT,
+  CANONICAL_SELECT_CLASS,
+  canonicalSelectOptions,
+  composeHq,
+  hqCityPart,
+  hqCountryPart,
+} from "@/lib/canonicalFieldOptions";
 /* WAVE 214 · surface 1 — the statement below is the SAME literal the server
    hashes (`shared/wave214ThirdPartyAuthorityCopy.ts`). One literal, two
    importers: if the screen owned its own copy, the recorded sha256 would attest
@@ -32,6 +51,11 @@ import {
   WAVE214_PORTFOLIO_COMPANY_CONSEQUENCE,
   WAVE214_TYPED_NAME_LABEL,
 } from "@shared/wave214ThirdPartyAuthorityCopy";
+
+/* WAVE A2 · ITEM 5b — the country NAMES, derived from the same 250-member
+   `COUNTRIES` record the profile pickers use. Module scope: one derivation, not
+   one per render. */
+const COUNTRY_NAMES: readonly string[] = COUNTRIES.map((c) => c.name);
 
 interface CreateResult {
   ok: boolean;
@@ -168,14 +192,66 @@ export default function PartnerAddPortfolioCompany() {
             </div>
             <div>
               <Label>Sector (optional)</Label>
+              {/* WAVE A2 · ITEM 5a — 45 sectors from `COLLECTIVE_SECTORS_45`. */}
+              <select
+                data-testid="apc-sector-select"
+                aria-label="Sector"
+                className={CANONICAL_SELECT_CLASS}
+                value={sector}
+                onChange={(e) => setSector(e.target.value)}
+              >
+                {canonicalSelectOptions(sector, COLLECTIVE_SECTORS_45).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <div className="text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="apc-sector-hint">
+                {CANONICAL_FREE_TEXT_HINT}
+              </div>
               <Input data-testid="apc-sector" value={sector} onChange={(e) => setSector(e.target.value)} placeholder="Robotics" />
             </div>
             <div>
               <Label>Stage (optional)</Label>
+              {/* WAVE A2 · ITEM 5a — 7 stages from `COLLECTIVE_STAGES`. */}
+              <select
+                data-testid="apc-stage-select"
+                aria-label="Stage"
+                className={CANONICAL_SELECT_CLASS}
+                value={stage}
+                onChange={(e) => setStage(e.target.value)}
+              >
+                {canonicalSelectOptions(stage, COLLECTIVE_STAGES).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <div className="text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="apc-stage-hint">
+                {CANONICAL_FREE_TEXT_HINT}
+              </div>
               <Input data-testid="apc-stage" value={stage} onChange={(e) => setStage(e.target.value)} placeholder="Seed" />
             </div>
             <div>
               <Label>HQ (optional)</Label>
+              {/* WAVE A2 · ITEM 5b — 250 countries from `COUNTRIES`. This edits only
+                  the TRAILING country segment of the single `hq` string and writes
+                  the country's FULL NAME; the city text the partner typed is
+                  preserved verbatim. See the long note in
+                  `client/src/lib/canonicalFieldOptions.ts` for why a full name and
+                  not an ISO code. */}
+              <select
+                data-testid="apc-hq-country-select"
+                aria-label="HQ country"
+                className={CANONICAL_SELECT_CLASS}
+                value={hqCountryPart(hq, COUNTRY_NAMES)}
+                onChange={(e) => setHq(composeHq(hqCityPart(hq, COUNTRY_NAMES), e.target.value))}
+              >
+                {canonicalSelectOptions(hqCountryPart(hq, COUNTRY_NAMES), COUNTRY_NAMES, {
+                  notSpecifiedLabel: "Country not specified",
+                }).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <div className="text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="apc-hq-hint">
+                {CANONICAL_FREE_TEXT_HINT}
+              </div>
               <Input data-testid="apc-hq" value={hq} onChange={(e) => setHq(e.target.value)} placeholder="Toronto, CA" />
             </div>
           </div>

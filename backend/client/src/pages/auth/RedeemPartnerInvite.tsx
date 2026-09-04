@@ -143,6 +143,9 @@ export default function RedeemPartnerInvite() {
           <div data-testid="partner-redeem-success">
             <h1 className="text-xl font-semibold text-emerald-700 mb-2">Welcome</h1>
             <p className="text-sm text-slate-600">Redirecting to your workspace…</p>
+            <p className="text-sm text-slate-600 mt-3" data-testid="partner-redeem-set-password-hint">
+              You're signed in now. This invite link was your key and it can only be used once, so it will not work again. If you have not set a password yet, use the Forgot password? link on the partner login page to set one before you sign in next time.
+            </p>
           </div>
         )}
         {status === "error" && (
