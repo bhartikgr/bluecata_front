@@ -111,7 +111,44 @@ export const mfcrmAcctStore = {
     if (!data.description || !data.description.trim()) throw new Error("DESCRIPTION_REQUIRED");
     const now = new Date().toISOString();
     const id = `mfrb_${randomUUID()}`;
-    const amt = Number.isFinite(data.amountMinor) ? Math.trunc(data.amountMinor) : 0;
+    /* ═════════════════════════════════════════════════════════════════════════
+       WAVE 284 · R231 — A REBILLABLE EXPENSE OF AN UNKNOWN AMOUNT IS REFUSED,
+       NOT RECORDED AS ZERO.
+       ═════════════════════════════════════════════════════════════════════════
+       WHAT WAS HERE:
+           const amt = Number.isFinite(data.amountMinor) ? Math.trunc(data.amountMinor) : 0;
+       Two separate fabrications in one line.
+         · A NON-FINITE amount (absent, NaN, a string, null) became the integer
+           ZERO and was INSERTed as a real, pending, rebillable amount. A partner
+           who paid a filing fee on a founder's behalf and whose amount did not
+           arrive got a permanent accounts-receivable row saying the expense cost
+           nothing. Nothing on any screen distinguished that from an expense that
+           genuinely was zero.
+         · `Math.trunc` SILENTLY ADJUSTED a fractional amount downwards — 1250.7
+           minor units stored as 1250 — which is the forbidden silent adjustment
+           of a figure (R231), on the write side, into a hash-free money column.
+
+       NOW: an amount that is not already a whole, non-negative, safe-integer
+       count of minor units is REFUSED. Nothing is converted, nothing is
+       truncated, nothing is defaulted. The code carries the field name, the type
+       and the value so an operator can see WHAT arrived — the same shape
+       `_persistSub` uses in `server/spvEngineStore.ts`, deliberately, so the two
+       money refusals read alike. `managedFounderPersonaRoutes.ts` maps this code
+       to HTTP 400.
+
+       ZERO IS STILL ACCEPTED. A genuine zero-cost expense is a real thing a
+       partner may record, and this guard must not eat it: `0` is a safe integer
+       and passes. What is refused is an amount that was never stated. */
+    if (
+      typeof data.amountMinor !== "number" ||
+      !Number.isSafeInteger(data.amountMinor) ||
+      data.amountMinor < 0
+    ) {
+      throw new Error(
+        `REBILL_MONEY_NOT_INTEGER_MINOR:amountMinor:${typeof data.amountMinor}:${String(data.amountMinor).slice(0, 40)}`,
+      );
+    }
+    const amt = data.amountMinor;
     rawDb().prepare(
       `INSERT INTO mf_acct_rebill (id, partner_id, engagement_id, company_id, description, amount_minor, currency, status, incurred_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,

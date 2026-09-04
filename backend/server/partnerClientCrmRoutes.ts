@@ -16,7 +16,7 @@ import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { partnerAttributionStore, partnerTeamStore } from "./partnerWorkspaceStore";
-import { partnerClientCrmStore } from "./partnerClientCrmStore";
+import { partnerClientCrmStore, crmProjectionState } from "./partnerClientCrmStore";
 import { PARTNER_CLIENT_STAGES, isPartnerClientStage } from "../shared/crmStages";
 
 /** Returns true iff companyId is attributed to this partner (partner-scoped). */
@@ -33,6 +33,13 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
       stages: partnerClientCrmStore.listStages(pid),
       leads: partnerClientCrmStore.listLeads(pid),
       vocabulary: PARTNER_CLIENT_STAGES,
+      /* WAVE 282 — ADDITIVE. `stages` is a projection of an in-memory cache; an
+         empty map means "nothing staged yet" only when the boot hydrate
+         succeeded. When it did not, the map is empty for a completely
+         different reason and the client must not resolve that to a default
+         stage. Stated as a boolean rather than inferred from `stages` being
+         empty, because both worlds produce the same empty map. */
+      stagesAvailable: crmProjectionState() === "ok",
     });
   });
 
@@ -49,6 +56,10 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
       leadUserId: partnerClientCrmStore.getLead(pid, companyId),
       vocabulary: PARTNER_CLIENT_STAGES,
       activity: partnerClientCrmStore.listActivity(pid, companyId),
+      /* WAVE 282 — ADDITIVE, same reason as the index route above. `stage` is
+         still returned unchanged so every existing caller keeps working; this
+         says whether that value was READ or DEFAULTED. */
+      stagesAvailable: crmProjectionState() === "ok",
     });
   });
 

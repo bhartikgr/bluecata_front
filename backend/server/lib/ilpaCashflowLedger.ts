@@ -453,7 +453,15 @@ export interface ChainVerification {
  * says OK about rows it did not check is worse than no verifier, because it
  * is quoted in an audit.
  */
-export function verifyVehicleChain(vehicleKind: string, vehicleId: string): ChainVerification {
+/* W303 (R247) — TENANT PARAMETER ADDED.
+ * `verifyVehicleChain` reported a foreign tenant's chain length and hash
+ * breaks to any authenticated caller, because the WHERE clause named only
+ * vehicle_kind and vehicle_id while every row carries a NOT NULL tenant_id.
+ * The parameter is OPTIONAL so the wave-10 chain-integrity tests, which
+ * legitimately verify a chain irrespective of tenant, keep working — but the
+ * HTTP read routes now always pass it, and a route that omits it is caught by
+ * the W303 fence test rather than silently widening. */
+export function verifyVehicleChain(vehicleKind: string, vehicleId: string, tenantId?: string): ChainVerification {
   const out: ChainVerification = {
     vehicleKind,
     vehicleId,
@@ -468,9 +476,10 @@ export function verifyVehicleChain(vehicleKind: string, vehicleId: string): Chai
       .prepare(
         `SELECT * FROM vehicle_cashflow
           WHERE vehicle_kind = ? AND vehicle_id = ?
+            AND (? IS NULL OR tenant_id = ?)
           ORDER BY chain_seq IS NULL, chain_seq, id`,
       )
-      .all(vehicleKind, vehicleId) as any[];
+      .all(vehicleKind, vehicleId, tenantId ?? null, tenantId ?? null) as any[];
   } catch (err) {
     return {
       ...out,

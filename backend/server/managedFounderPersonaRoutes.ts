@@ -34,6 +34,28 @@ function sendError(res: Response, e: unknown): Response {
   const message = (e as Error)?.message ?? String(e);
   if (code.endsWith("_NOT_FOUND")) return res.status(404).json({ error: code });
   if (VALIDATION_CODES.has(code)) return res.status(400).json({ error: code, message });
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WAVE 284 — A REFUSAL MUST NOT TELL THE USER THE WRONG REASON.
+     ═══════════════════════════════════════════════════════════════════════════
+     `VALIDATION_CODES` is matched by EXACT EQUALITY, and wave 284's new money
+     refusal deliberately carries operator detail on the end of the code:
+     `REBILL_MONEY_NOT_INTEGER_MINOR:amountMinor:string:abc`. So it can never be
+     an entry in that set, and without this branch it fell through to the 403
+     default — which means a partner who mistyped an expense amount would have
+     been told they lacked the AUTHORITY to record expenses. That is a false
+     explanation of a true refusal, and it is the exact defect class this band
+     exists to remove. It is `startsWith`, not `has`, for that reason.
+
+     It sits ABOVE the `STRICT_PERSIST_FAILED` branch and BELOW `_NOT_FOUND`;
+     the code neither ends with `_NOT_FOUND` nor starts with
+     `STRICT_PERSIST_FAILED`, so no existing mapping changes. */
+  if (code.startsWith("REBILL_MONEY_NOT_INTEGER_MINOR")) {
+    return res.status(400).json({
+      error: code,
+      message:
+        "Enter the expense amount before recording it. Amounts are recorded as a whole number of the currency's smallest denomination and are never rounded or assumed.",
+    });
+  }
   if (code.startsWith("STRICT_PERSIST_FAILED")) return res.status(500).json({ error: "STRICT_PERSIST_FAILED", message });
   // Capability / authority / spine denials → 403 (fail-closed).
   return res.status(403).json({ error: code, message });
@@ -104,7 +126,20 @@ export function registerMfcrmPersonaRoutes(app: Express): void {
     if (!companyId) return res.status(400).json({ error: "COMPANY_ID_REQUIRED" });
     if (!isAttributed(pid, companyId)) return res.status(404).json({ error: "COMPANY_NOT_FOUND_OR_NOT_ATTRIBUTED" });
     try {
-      const r = mfcrmAcctStore.recordRebill(pid, { companyId, engagementId: body.engagementId ?? null, description: String(body.description ?? ""), amountMinor: Number(body.amountMinor), currency: body.currency, incurredAt: body.incurredAt ?? null }, actor);
+      /* WAVE 284 — `amountMinor` IS FORWARDED UNCOERCED.
+
+         This read `Number(body.amountMinor)`. That coercion is what made the
+         store's guard unreachable from the wire and fabricated amounts of its
+         own: `Number(null)`, `Number("")`, `Number([])` and `Number(false)` are
+         all the integer ZERO, so four different "no amount was stated" bodies
+         each arrived at the store as a perfectly valid zero-cost expense and
+         were recorded as one. Passing the value through unchanged lets the
+         store refuse what it is, and `sendError` maps that refusal to 400.
+
+         The client already sends a number (`majorToMinor` in
+         `client/src/pages/partner/PartnerMfcrmPersonas.tsx`), so no working
+         write loses its coercion here. */
+      const r = mfcrmAcctStore.recordRebill(pid, { companyId, engagementId: body.engagementId ?? null, description: String(body.description ?? ""), amountMinor: body.amountMinor, currency: body.currency, incurredAt: body.incurredAt ?? null }, actor);
       res.status(201).json({ rebill: r });
     } catch (e) { sendError(res, e); }
   });

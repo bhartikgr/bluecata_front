@@ -55,8 +55,48 @@ import { formatMinor, toMinor } from "@/lib/currency";
 /* WAVE 115 · FINDING 1 (L9) — the jurisdiction key (`cayman`), the SPV type and
    the carry basis all reached this table raw. */
 import { jurisdictionDisplayLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
+/* WAVE A2 · ITEM 7a — the two free-text fields become dropdowns bound to the
+   lists the platform ALREADY SHIPS. Jurisdiction -> `SPV_JURISDICTIONS` (16
+   members) with `SPV_JURISDICTION_LABELS`, which is the SAME pair
+   `pages/partner/PartnerClientDetail.tsx` already renders as a select and which
+   `server/spvEngineRoutes.ts` serves over HTTP. Currency ->
+   `buildCurrencyOptions()` (156 ISO-4217 entries, preferred codes pinned first),
+   which `pages/partner/PartnerSpvEngine.tsx` already uses for the SPV wizard's
+   own currency select and which `wave199_itemA_currency_choice_dom.test.tsx`
+   calls "the shipped authority". No list is created or hardcoded here.
+   The existing free-text inputs are KEPT beside the dropdowns so a stored value
+   the list does not contain can still be read and edited character-for-character
+   (R195.5, R242). */
+import { SPV_JURISDICTIONS, SPV_JURISDICTION_LABELS } from "@shared/spvEngine";
+import { buildCurrencyOptions } from "@/lib/currencyOptions";
+import {
+  CANONICAL_FREE_TEXT_HINT,
+  CANONICAL_SELECT_CLASS,
+  canonicalSelectOptions,
+} from "@/lib/canonicalFieldOptions";
 /** Must match `CARRY_FRACTION_SCALE` in server/lib/money.ts. */
 const CARRY_SCALE = 1000000000;
+
+/* WAVE A2 · ITEM 7a — derived once at module scope, not per render. */
+const TEMPLATE_CURRENCY_OPTIONS = buildCurrencyOptions();
+const TEMPLATE_CURRENCY_CODES: readonly string[] = TEMPLATE_CURRENCY_OPTIONS.map((c) => c.code);
+const TEMPLATE_CURRENCY_NAME_BY_CODE: Record<string, string> = Object.fromEntries(
+  TEMPLATE_CURRENCY_OPTIONS.map((c) => [c.code, c.name]),
+);
+
+/* WAVE A2 · ITEM 7a — WHERE THE PRE-SELECTED CURRENCY CAME FROM, SAID OUT LOUD.
+
+   This form has always initialised `currency` to "USD". The dropdown does not
+   change that and does not introduce a new one — R262 forbids ADDING a silent US
+   dollar default, and this wave adds none. What it does is stop the default being
+   silent, using the pattern the owner already ratified for the SPV wizard
+   (`currencyOriginStatement`, pages/partner/PartnerSpvEngine.tsx): a partner is
+   told plainly that USD is a starting value nobody asserted about their vehicle.
+   Removing the initial value outright is a behaviour change on a money field — it
+   would make the form refuse a submit it accepts today — and is referred to the
+   owner rather than decided here. */
+const TEMPLATE_CURRENCY_ORIGIN_NOTE =
+  "USD is only this form's starting value. Capavate has not derived it from anything about this template — set it to the currency the amounts below are actually in.";
 
 interface TemplateRow {
   id: string;
@@ -413,6 +453,27 @@ export default function PartnerSpvTemplates() {
               </label>
               <label className="text-sm">
                 Currency
+                {/* WAVE A2 · ITEM 7a — 156 ISO-4217 codes from `buildCurrencyOptions()`. */}
+                <select
+                  className={CANONICAL_SELECT_CLASS}
+                  aria-label="Currency"
+                  value={form.currency}
+                  onChange={(e) => setForm({ ...form, currency: e.target.value.toUpperCase() })}
+                  data-testid="select-template-currency"
+                >
+                  {canonicalSelectOptions(form.currency, TEMPLATE_CURRENCY_CODES, {
+                    omitNotSpecified: true,
+                    labelFor: (code) => `${code} — ${TEMPLATE_CURRENCY_NAME_BY_CODE[code] ?? code}`,
+                  }).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <span className="block text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="template-currency-origin-note">
+                  {TEMPLATE_CURRENCY_ORIGIN_NOTE}
+                </span>
+                <span className="block text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="template-currency-hint">
+                  {CANONICAL_FREE_TEXT_HINT}
+                </span>
                 <input
                   className="mt-1 w-full rounded border px-2 py-1"
                   value={form.currency}
@@ -422,6 +483,24 @@ export default function PartnerSpvTemplates() {
               </label>
               <label className="text-sm">
                 Jurisdiction
+                {/* WAVE A2 · ITEM 7a — 16 jurisdictions from `SPV_JURISDICTIONS`. */}
+                <select
+                  className={CANONICAL_SELECT_CLASS}
+                  aria-label="Jurisdiction"
+                  value={form.jurisdiction}
+                  onChange={(e) => setForm({ ...form, jurisdiction: e.target.value })}
+                  data-testid="select-template-jurisdiction"
+                >
+                  {canonicalSelectOptions(form.jurisdiction, SPV_JURISDICTIONS, {
+                    omitNotSpecified: true,
+                    labelFor: (key) => SPV_JURISDICTION_LABELS[key as keyof typeof SPV_JURISDICTION_LABELS] ?? key,
+                  }).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <span className="block text-xs text-[var(--cv-color-text-muted)] mt-1" data-testid="template-jurisdiction-hint">
+                  {CANONICAL_FREE_TEXT_HINT}
+                </span>
                 <input
                   className="mt-1 w-full rounded border px-2 py-1"
                   value={form.jurisdiction}

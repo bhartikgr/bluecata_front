@@ -71,12 +71,44 @@ describe("W-FIX2d D2 — optional mandate fields + no-allocation target link + D
     expect(wizard).toContain('data-testid="spv-w-target-company"');
     expect(wizard).toContain("targetCompanyId: w.targetCompanyId.trim() || null");
   });
-  it("mandate PUT sends the optional refinements (additive, blank => null/[])", () => {
-    const put = wizard.slice(wizard.indexOf("/mandate`"), wizard.indexOf("/mandate`") + 500);
-    expect(put).toContain("geography: splitList(w.geography)");
-    expect(put).toContain("stage: splitList(w.stage)");
-    expect(put).toContain("checkMinMinor:");
-    expect(put).toContain("checkMaxMinor:");
+  /* ═══════════════════════════════════════════════════════════════════════════
+     UPDATED BY WAVE 278a — THE REQUIREMENT IS UNCHANGED; THE REQUEST THAT
+     CARRIES IT MOVED. Same shape as WAVE 82 · ITEM 2 and WAVE 133 · R98 above.
+     ═══════════════════════════════════════════════════════════════════════════
+     This assertion sliced 500 characters after the literal "/mandate`" and
+     pinned the four optional refinements inside the wizard's SEPARATE
+     `PUT …/spv/:id/mandate` request. WAVE 278a deleted that request: the
+     mandate now rides on the SAME atomic `POST /api/partner/me/spv` that
+     creates the vehicle, so that every payload-level refusal is raised above
+     the route's first write and a refused mandate can no longer leave a
+     signed, attested, half-built vehicle behind a red "Launch failed" toast.
+     The four refinements are sent by the SAME EXPRESSIONS as before.
+
+     THE PIN IS STALE, NOT THE BEHAVIOUR. Re-pinned onto the `mandate:` block of
+     the atomic create call, with the authority recorded here and in
+     build_log/wave278a/W278a_TESTS.md.
+
+     NOT WEAKENED: 1 pin out, 6 in. All four original assertions survive
+     verbatim, and two PROPERTIES are added that the old pin could not express —
+     that the refinements ride on the atomic create body, and that no separate
+     mandate request remains anywhere in the wizard. Following R89's lesson,
+     prefer a property over a positional slice: the second new assertion is what
+     actually encodes wave 278a, and it cannot be satisfied by a slice landing
+     in the wrong place. ══════════════════════════════════════════════════════ */
+  it("the optional refinements ride on the ATOMIC create call (additive, blank => null/[])", () => {
+    const anchor = wizard.indexOf("mandate: {");
+    expect(anchor, "the atomic create call must carry a `mandate` object").toBeGreaterThan(-1);
+    const mandateBlock = wizard.slice(anchor, anchor + 500);
+    expect(mandateBlock).toContain("geography: splitList(w.geography)");
+    expect(mandateBlock).toContain("stage: splitList(w.stage)");
+    expect(mandateBlock).toContain("checkMinMinor:");
+    expect(mandateBlock).toContain("checkMaxMinor:");
+    // NEW PROPERTY 1 — the block is inside the atomic POST, not a follow-up call.
+    const post = wizard.indexOf('apiRequest("POST", "/api/partner/me/spv"');
+    expect(post, "the atomic create call must exist").toBeGreaterThan(-1);
+    expect(anchor).toBeGreaterThan(post);
+    // NEW PROPERTY 2 — no separate mandate request survives anywhere in the wizard.
+    expect(wizard, "wave 278a removed the follow-up mandate request").not.toContain("/mandate`");
   });
   it("detail Deployments tab surfaces the linked target company + a Deploy affordance", () => {
     expect(tabs).toContain('data-testid="spv-detail-target-company"');

@@ -2,10 +2,14 @@
  * server/lib/emailSender.ts — v23.4.2 (hardened for Gmail STARTTLS)
  *
  * SMTP send helper with smart fallback. Modes (controlled by SMTP_MODE env var):
- *   smtp      (default) — send via nodemailer; falls back gracefully if SMTP_HOST unset
+ *   smtp      — send via nodemailer; falls back gracefully if SMTP_HOST unset
  *   dry_run   — log headers only, do not send; returns transportAccepted:true (CI/staging)
  *   console   — log headers + body to stdout; returns transportAccepted:true (local dev)
  *   disabled  — silent no-op; returns transportAccepted:false (feature-flag off)
+ *
+ * WAVE 281 · R243.1 — THE DEFAULT IS NO LONGER `smtp`. When SMTP_MODE is unset the
+ * mode is `smtp` ONLY under NODE_ENV=production; everywhere else it is `dry_run`.
+ * See `resolveSmtpMode` below for the whole rule and the reason.
  *
  * Transport policy:
  *   - SMTP_SECURE=true  → implicit TLS from socket open (port 465 idiomatic)
@@ -259,8 +263,72 @@ export interface VerifyTransportResult {
   hint?: string;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════ *
+ *  WAVE 281 · R243.1 — THE SEND DEFAULT IS SAFE; PRODUCTION OPTS IN.
+ * ══════════════════════════════════════════════════════════════════════════ *
+ *
+ *  THE DEFECT THIS CLOSES, in the owner's own words: a local instance loaded the
+ *  live Gmail credentials that sit in `work/.env` and made REAL SEND ATTEMPTS
+ *  from his business address. The mechanism was exactly one expression, written
+ *  twice — `(process.env.SMTP_MODE ?? "smtp")` in `verifyTransport` and in
+ *  `sendEmail`. The three non-sending modes (`dry_run`, `console`, `disabled`)
+ *  already existed; the DEFAULT was the sending one. So the distance between a
+ *  test run and a real outbound message was one unset environment variable that
+ *  somebody had to remember.
+ *
+ *  THE RULE, and it is deliberately dull:
+ *    1. An EXPLICIT SMTP_MODE always wins, verbatim. Nothing about the existing
+ *       four modes changes, and an unrecognised value still falls through to the
+ *       smtp branch exactly as it did before — this wave adds NO new refusal and
+ *       NO validation, because rejecting a value nobody asked me to reject is a
+ *       different change with a different risk.
+ *    2. With SMTP_MODE unset: `production` → "smtp" (BYTE-IDENTICAL to today),
+ *       anything else → "dry_run".
+ *
+ *  WHY IT IS KEYED TO `production` AND NOT TO `test`. The incident was a LOCAL
+ *  INSTANCE, not a test runner. A guard that only protected NODE_ENV=test would
+ *  have left the exact machine that caused the incident still sending.
+ *
+ *  THE RISK THIS CARRIES, STATED PLAINLY. An over-tight version of this change
+ *  would silently disable every invitation, reset and notification on the live
+ *  platform — far worse than the problem it solves. That is why production
+ *  parity is asserted by test at both entry points
+ *  (`server/__tests__/w281_mail_default_is_inert.test.ts`, S2/S3/S4) and why the
+ *  disarm that inverts this predicate MUST turn S2 red.
+ *
+ *  READ AT CALL TIME, never captured at module load, so a test can set NODE_ENV
+ *  inside the test and both call sites see it. ONE function, so the two sites
+ *  cannot drift — which is how the second site came to be missed for so long. */
+export function resolveSmtpMode(): "smtp" | "dry_run" | "console" | "disabled" {
+  const explicit = process.env.SMTP_MODE;
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    const named = explicit.trim() as "smtp" | "dry_run" | "console" | "disabled";
+    /* THE RESIDUAL HOLE, SAID OUT LOUD RATHER THAN LEFT SILENT.
+     *
+     * `work/.env:22` contains `SMTP_MODE=smtp` next to the live Gmail credentials.
+     * An explicit mode WINS — that is rule 1 above, and it has to be, because it is
+     * also how `dry_run`, `console` and `disabled` work at all. So on the machine
+     * that caused the incident THIS WAVE ALONE DOES NOT STOP THE SEND: the file
+     * opts in by name. The remedy is one line in that operator's `.env`, and a
+     * warning is the only honest way for the platform to say so, because the
+     * alternative — quietly overriding an explicit instruction — would make a
+     * staging box that legitimately sends go silent with no way to tell why.
+     *
+     * Deliberately NOT one-shot: it is emitted per resolve so it appears next to
+     * the send it describes, in the same log an operator is already reading when
+     * they wonder where the mail went. Sends are not a hot path. */
+    if (named === "smtp" && process.env.NODE_ENV !== "production") {
+      log.warn(
+        `[email] SMTP_MODE=smtp is set explicitly while NODE_ENV=${process.env.NODE_ENV ?? "(unset)"} — REAL MAIL WILL BE SENT from a non-production instance. Unset SMTP_MODE (or set it to dry_run) to make this instance inert.`,
+      );
+    }
+    return named;
+  }
+  return process.env.NODE_ENV === "production" ? "smtp" : "dry_run";
+}
+
 export async function verifyTransport(): Promise<VerifyTransportResult> {
-  const mode = (process.env.SMTP_MODE ?? "smtp") as VerifyTransportResult["mode"];
+  const mode = resolveSmtpMode() as VerifyTransportResult["mode"];
   if (mode === "disabled") {
     return { ok: false, mode: "disabled", hint: "SMTP_MODE=disabled; set to 'smtp' to enable" };
   }
@@ -312,11 +380,9 @@ export function _resetTransporterCacheForTests(): void {
  * sendEmail — primary entry point
  * ============================================================ */
 export async function sendEmail(msg: EmailMessage): Promise<EmailSendResult> {
-  const mode = (process.env.SMTP_MODE ?? "smtp") as
-    | "smtp"
-    | "dry_run"
-    | "console"
-    | "disabled";
+  // WAVE 281 · R243.1 — the SECOND of the two read sites. Same resolver, so the
+  // send path and the diagnostic path can never disagree about the mode.
+  const mode: "smtp" | "dry_run" | "console" | "disabled" = resolveSmtpMode();
 
   /* ---- disabled ----
    * WAVE 47 · R19: the suppression IS recorded (an admin must be able to see

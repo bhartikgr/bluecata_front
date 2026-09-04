@@ -37,6 +37,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useRole } from "@/lib/role";
 import type { UserContext } from "@/lib/entitlement";
 import { Lock, Mail, ArrowRight, Briefcase, Users } from "lucide-react";
+/* WAVE 305 · R251 — the second-factor step. Only runs when the server answers the
+   password check with `mfaRequired`, which it does ONLY for an account that has a
+   CONFIRMED opt-in enrolment. Nothing below this line changes for anyone else, and
+   the post-login continuation is untouched. */
+import { completeMfaLogin, useMfaChallenge } from "@/lib/useMfaChallenge";
 
 // Public login is FOUNDER + INVESTOR only. Admin login lives at
 // /admin/login on a separate page so the public portal does not advertise the
@@ -255,6 +260,8 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /* WAVE 305 · R251 */
+  const { requestCode, panel: mfaPanel } = useMfaChallenge();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // After a successful auth that landed on the wrong portal, we offer to switch
   // rather than silently bouncing. This holds the suggested portal.
@@ -299,6 +306,17 @@ export default function Login() {
       const json = (await res.json()) as { ok: true; ctx: UserContext };
       // Refresh entitlement context BEFORE routing so consumers see fresh data.
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      /* WAVE 305 · R251 — SECOND FACTOR. `mfaRequired` is returned INSTEAD of a
+         session; no cookie has been set yet. We collect a code in place and
+         exchange it, then fall through to the SAME continuation as always. */
+      const maybeMfa = json as unknown as { mfaRequired?: boolean; mfaToken?: string };
+      if (maybeMfa.mfaRequired && maybeMfa.mfaToken) {
+        const enteredCode = await requestCode();
+        await completeMfaLogin(maybeMfa.mfaToken, enteredCode);
+        Object.assign(json, await (await apiRequest("GET", "/api/auth/me")).json());
+        await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      }
+
 
       /* v25.52 Track 0.3 (Ozan decision: Option 1) — compute the FULL qualifying
        * workspace SET for this account, then:
@@ -784,6 +802,8 @@ export default function Login() {
       )}
       </>
       )}
+      {/* WAVE 305 · R251 — appended LAST (guard rule: panels append last) */}
+      {mfaPanel}
     </AuthShell>
   );
 }

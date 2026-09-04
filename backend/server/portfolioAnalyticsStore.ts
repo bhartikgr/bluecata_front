@@ -214,10 +214,18 @@ export function commitsForUser(userId: string): Array<{
  * is gone — the marks service (M-2) is now wired, and where it has nothing to
  * say the position is reported as unmarked rather than as valued-at-cost.
  */
-export function realPositionsForUser(userId: string, asOf?: string): RealPosition[] {
+export function realPositionsForUser(userId: string, asOf?: string, tenantId?: string): RealPosition[] {
   const commits = commitsForUser(userId);
   if (commits.length === 0) return [];
-  const bundle = buildInvestorMetrics(commits, { asOf, lpId: userId });
+  /* W313 — `tenantId` threaded through so the MARK lookup inside
+   * `buildInvestorMetrics` (site 5) and the cash-flow read (site 4) are scoped.
+   * `commitsForUser` above is deliberately NOT scoped: `listCommitsForUser` is
+   * documented CROSS-TENANT (entitlements) in server/captableCommitStore.ts:444
+   * because an investor's own holdings legitimately span the tenants of the
+   * companies they invested in. Scoping it would hide an investor's own
+   * positions from themselves. That distinction is the reason A's own data is
+   * still complete after this wave. */
+  const bundle = buildInvestorMetrics(commits, { asOf, lpId: userId, tenantId });
   return bundle.positions.map((p) => {
     const tsYear = Number.parseInt((p.ts || "").slice(0, 4), 10);
     return {
@@ -301,7 +309,7 @@ function worstBadgeOf(b: InvestorMetricBundle): MarkBadge {
 
 export function computePortfolioAnalyticsFor(
   positions: RealPosition[],
-  opts?: { userId?: string; asOf?: string },
+  opts?: { userId?: string; asOf?: string; tenantId?: string },
 ): PortfolioAnalytics {
   const asOf = (opts?.asOf ?? new Date().toISOString()).slice(0, 10);
   if (positions.length === 0) return emptyAnalytics(asOf);
@@ -311,7 +319,11 @@ export function computePortfolioAnalyticsFor(
     amount: String(p.invested), shares: String(p.shares),
     currency: p.currency, ts: p.ts,
   }));
-  const bundle = buildInvestorMetrics(commits, { asOf, lpId: opts?.userId });
+  /* W313 — sites 4 and 5, second path. This is the SECOND caller of
+   * `buildInvestorMetrics` in this file; the W287 handoff's trace named only
+   * one. Fixing one and not the other would have left the leak open on the
+   * figures the dashboard actually prints. */
+  const bundle = buildInvestorMetrics(commits, { asOf, lpId: opts?.userId, tenantId: opts?.tenantId });
   const m = bundle.metrics;
 
   /* WAVE 180 · ITEM A SITE 3 (surface) — `totalInvested` was
@@ -363,7 +375,11 @@ export function computePortfolioAnalyticsFor(
   let series: PortfolioAnalytics["series"];
   let yoyDelta: PortfolioAnalytics["yoyDelta"] = { moic: null, irr: null, paperValue: null };
   try {
-    const sr = getChartSeries("investor", opts?.userId ?? "");
+    /* W313 — SITE 3. `getChartSeries` took no tenant and called `listSnapshots`
+     * with two arguments, so W303's `AND (? IS NULL OR tenant_id = ?)` fence
+     * was unconditionally true and one tenant's monthly series was charted to
+     * another. The tenant is now passed. */
+    const sr = getChartSeries("investor", opts?.userId ?? "", opts?.tenantId);
     const pick = (fn: (p: (typeof sr.points)[number]) => number | null): PortfolioSeries =>
       seriesFrom(
         sr.points.map((p) => ({ periodStart: p.periodStart, value: fn(p) })),
@@ -402,6 +418,19 @@ export function computePortfolioAnalyticsFor(
   let cohortStatus: PortfolioAnalytics["cohortStatus"] = "NO_DATA";
   let cohortReason: string | undefined;
   try {
+    /* W313 — DELIBERATELY UNSCOPED AND LEFT THAT WAY. Owner ruling Q10:
+     * "benchmarks are computed FROM PLATFORM DATA". The cohort is the whole
+     * platform's snapshots for the period; adding a tenant filter here would
+     * silently reduce every cohort to one tenant, usually below
+     * `benchmark.min_cohort_n`, and the benchmark would quietly stop rendering
+     * with no error anywhere. It sits three lines from this wave's site-3 fix
+     * and is NOT changed. Proved still cross-tenant by consequence in
+     * build_log/wave313/probes (cohort n = 8 across 8 distinct tenants).
+     * NOTE FOR THE OWNER: this aggregation also crosses JURISDICTION
+     * boundaries, not only tenant boundaries. It publishes p25/p50/p75 only,
+     * never a subject id, and only at or above the minimum cohort size — but
+     * whether cross-border aggregation is acceptable is a disclosure decision,
+     * not an engineering one. Reported, not changed. */
     const cb = computeCohortBenchmark({
       metric: "tvpi",
       periodStart: asOf,
@@ -503,6 +532,31 @@ export function computePortfolioAnalytics(): PortfolioAnalytics {
   return computePortfolioAnalyticsFor([]);
 }
 
+/* W313 — THE TENANT RESOLVER FOR THIS ROUTE.
+ *
+ * Deliberately the SAME shape as the write-side `tenantOf` in
+ * server/lib/reportingEngineRoutes.ts:169, so reads and writes resolve a tenant
+ * identically. That symmetry is what makes the fix safe on a live install:
+ * every write on this platform is stamped through that resolver, and on a
+ * single-tenant installation both sides yield "default", so scoping the read
+ * returns exactly the rows the same install wrote.
+ *
+ * MEASURED, NOT ASSUMED — and the owner must be told this plainly: the shipped
+ * `UserContext` (server/lib/userContext.ts:184-200) has NO `tenantId` field, so
+ * on today's build this resolves to "default" for every real authenticated
+ * request. The consequence is that on a single-tenant install the leak is
+ * LATENT rather than active, and that after this fix the scope is real but
+ * coarse. It becomes a true per-tenant fence the moment a tenant id is carried
+ * on the session — which this wave does NOT do, because `userContext.ts` is
+ * frozen. A blank string is not trusted: it is normalised to "default" rather
+ * than passed down, because `filter.tenantId !== undefined` would otherwise
+ * push `tenant_id = ''` and match nothing, hiding a user's own rows. */
+function analyticsTenantOf(req: Request): string {
+  const c = (req as any).userContext ?? {};
+  const raw = String(c?.tenantId ?? c?.partner?.tenantId ?? "default").trim();
+  return raw === "" ? "default" : raw;
+}
+
 export function registerPortfolioAnalyticsRoutes(app: Express): void {
   app.get("/api/investor/portfolio/analytics", (req: Request, res: Response) => {
     /* Derive analytics from the caller's REAL cap-table commits. A fresh
@@ -512,7 +566,8 @@ export function registerPortfolioAnalyticsRoutes(app: Express): void {
     if (!ctx?.isAuthed || !ctx.userId) {
       return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     }
-    const positions = realPositionsForUser(ctx.userId);
-    res.json(computePortfolioAnalyticsFor(positions, { userId: ctx.userId }));
+    const tenantId = analyticsTenantOf(req);
+    const positions = realPositionsForUser(ctx.userId, undefined, tenantId);
+    res.json(computePortfolioAnalyticsFor(positions, { userId: ctx.userId, tenantId }));
   });
 }

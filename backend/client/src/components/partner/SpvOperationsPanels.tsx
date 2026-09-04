@@ -58,6 +58,13 @@ import { Label } from "@/components/ui/label";
    that still asked a paying client for the currency's smallest unit. */
 import { parseWholeUnits, toWireMinor, wholeUnitsLabel, wholeUnitsPlaceholder } from "./partnerMoneyInput";
 import { PartnerMoneyEntryNotice } from "./PartnerMoneyEntryNotice";
+/* WAVE 306 · PART 3 — the gate's own blocking condition and the sentences that
+   describe it, read from the one module that states them. */
+import {
+  spvFeeObligationIsBlocking,
+  SPV_FEE_OBLIGATION_BLOCKING_MARKER,
+  SPV_FEE_OBLIGATION_BLOCKING_EXPLANATION,
+} from "@shared/spvFeeObligationRules";
 
 function money(minor: number | null | undefined, currency: string): string {
   /* WAVE 147 · R111 Q13 — this local helper already refused an absent amount, but
@@ -390,6 +397,22 @@ export function SpvFeeLedgerPanel({
   });
 
   const rows = obligations.data?.obligations ?? [];
+  /* WAVE 306 · PART 3 — WHICH ROWS ARE ACTUALLY STOPPING THIS VEHICLE.
+
+     The amount and the currency on each row below already render honestly and an
+     empty list already renders "None", so nothing here is a fabricated zero and
+     none of that is touched. The gap was narrower and worse: a pending funding
+     obligation SILENTLY BLOCKS every commitment on the vehicle, and this panel —
+     the GP's own fee panel, the one screen he would look at — said nothing about
+     it. He could see a fee he could not pay (the charge route answers 503 by
+     design) with no indication that it was the reason his commitments were being
+     refused.
+
+     The predicate is the STORE GATE'S OWN condition, read from
+     `@shared/spvFeeObligationRules` and proved against the real gate by test —
+     NOT the admin screen's `state === "pending" && timing === "funding"`, which
+     misses a `failed` obligation that does still block. */
+  const blockingObligations = rows.filter((o) => spvFeeObligationIsBlocking(o));
   /* WAVE 127 · FINDING 2 — hoisted, so the render below keeps its static sibling
      shape (build_log/wave116/W116_TESTS.md §3.1) instead of a conditional
      swapping siblings in and out. While the box is empty this is null even if a
@@ -505,6 +528,18 @@ export function SpvFeeLedgerPanel({
           No fee was charged — nothing was written. {chargeFailure}
         </div>
       )}
+      {/* WAVE 306 · PART 3 — a SIBLING above the list, never inside a row, for
+          the same reason the WAVE 32 refusal above is a sibling: the row it
+          describes can be re-rendered or gone, and the explanation has to
+          outlive it. Rendered only when the gate's own condition is met by at
+          least one row, which is what makes every clause of the sentence true.
+          It states what is REFUSED rather than promising that nothing can
+          happen — `projectLpCommitted` is deliberately not gated. */}
+      {blockingObligations.length > 0 ? (
+        <div className="text-xs mb-1 text-amber-600" role="alert" data-testid="spv-fee-obligation-blocking-notice">
+          {SPV_FEE_OBLIGATION_BLOCKING_EXPLANATION}
+        </div>
+      ) : null}
       <div data-testid="spv-fee-obligations">
         {rows.map((o) => {
           const id = String(o.id ?? "");
@@ -520,6 +555,15 @@ export function SpvFeeLedgerPanel({
               <div className="truncate">
                 <span className="font-medium">{String(o.kind ?? o.feeType ?? "fee")}</span>
                 <span className="text-[var(--cv-color-text-faint)]"> · {state || "pending"}</span>
+                {/* WAVE 306 · PART 3 — APPENDED beside the state that is already
+                    rendered. The existing `kind` and `state` spans are untouched;
+                    this is a third static sibling, shown only for a row the gate
+                    itself would refuse on. */}
+                {spvFeeObligationIsBlocking(o) ? (
+                  <span className="text-amber-600" data-testid={`spv-fee-obligation-blocking-${id}`}>
+                    {" · "}{SPV_FEE_OBLIGATION_BLOCKING_MARKER}
+                  </span>
+                ) : null}
               </div>
               <div className="font-mono">{money(amt, cur)}</div>
               {canWrite && state !== "paid" && state !== "waived" ? (
