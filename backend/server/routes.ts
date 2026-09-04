@@ -140,12 +140,7 @@ import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForComp
 // base64 data URLs in form state.
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes, listAllReportsFromDb as reportsStoreGetAll } from "./reportsStore"; // v25.48 DATA-2 (V-5, strict) — DB-direct all-reports reader (not the in-memory cache)
-// W302 (R246.3) — `resolveFounderCompanyIdForCaller` is the SHARED ownership check
-// from founderCrmStore (a thin delegation to its private `resolveCompanyId`). It is
-// imported here so the retired duplicate founder-CRM handler below resolves its
-// company through the SAME rule as the live scoped handler instead of its own
-// unchecked, caller-supplied version. Do not reimplement that resolution.
-import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered, resolveFounderCompanyIdForCaller } from "./founderCrmStore";
+import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered } from "./founderCrmStore";
 // WAVE 28 ITEM 2 / CP-CRM-04 — admin queue for the crm_dedup_review table that
 // migration 0097 has been filling since v25.52 with no reader anywhere.
 import { registerCrmDedupReviewRoutes } from "./crmDedupReviewStore";
@@ -511,9 +506,6 @@ import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
  * is not shipped. See server/lib/reportingEngineRoutes.ts for the full list. */
 import { registerReportingEngineRoutes } from "./lib/reportingEngineRoutes";
 import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
-/* WAVE 305 · R251 — real RFC 6238 TOTP, replacing the retired scaffold inside
-   secureAuthRoutes.ts (which is now a 501 that names this module). */
-import { registerMfaRoutes } from "./lib/mfaRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 /* v25.33 — Consortium Partner Payment Model admin fee/agreement/tax routes. */
 import { registerPartnerFeeAdminRoutes } from "./lib/partnerFeeAdminRoutes";
@@ -2035,16 +2027,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 17 D6: secure JWT auth (alongside Sprint 15 persona shell) ------------ */
   registerSecureAuthRoutes(app);
-
-  /* ------------ WAVE 305 · R251: REAL multi-factor authentication ------------
-   * Registered immediately after the retired 2FA scaffold above so the two sit
-   * next to each other in the route table and the replacement is discoverable
-   * from the thing it replaces.
-   *
-   * Enforcement itself is NOT here — it is at the two sites in
-   * `server/lib/authRoutes.ts` where /api/auth/login issues a session. These are
-   * the enrolment, challenge-completion and admin-reset endpoints. */
-  registerMfaRoutes(app);
 
   /* ------------ Sprint 17 D7: admin user management ------------ */
   registerAdminUsersRoutes(app);
@@ -9097,89 +9079,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found or has no founder on record.` });
   });
 
-  /* ==================================================================
-   * W302 (R246.3) — RETIRED IN PLACE. NOT REGISTERED. NOT DELETED.
-   * ==================================================================
-   *
-   * WHAT THIS WAS
-   * -------------
-   * A SECOND registration of `GET /api/founder/crm/contacts`. Its original
-   * banner follows, unedited, for the record:
-   *
-   *   | Task 3 — NEW: GET /api/founder/crm/contacts
-   *   | The client investor CRM page was crashing because this endpoint
-   *   | did not exist. Returns contacts scoped to the authenticated
-   *   | founder's active company.
-   *
-   * The last sentence of that banner was not true. It resolved the company as
-   *
-   *     ctx.founder?.activeCompanyId
-   *       ?? (typeof req.query.companyId === "string" ? req.query.companyId : null)
-   *
-   * — a CALLER-SUPPLIED company id with NO ownership check — and then handed it
-   * to `listContactsForCompany()`, which filters by whatever id it is given and
-   * checks nothing. (The old comment below claiming that accessor "handles
-   * scoping" was also wrong; see `founderCrmStore.ts:877`.)
-   *
-   * WHY IT NEVER LEAKED, AND WHY THAT IS NOT GOOD ENOUGH
-   * ----------------------------------------------------
-   * The correctly scoped registration is installed earlier, by
-   * `registerFounderCrmRoutes(app)` (see the call above in this file), whose
-   * handler at `server/founderCrmStore.ts:349` runs `ensureCompanyId` →
-   * `resolveCompanyId`, and THAT one requires the caller to own the company it
-   * names. Express serves the FIRST matching registration, so the safe handler
-   * won every request. Verified over HTTP before this change: an authenticated
-   * caller with no company of their own, asking for another company by
-   * `?companyId=`, received `400 {"ok":false,"error":"missing_active_company"}` —
-   * a refusal string this block cannot emit. Router introspection on the real
-   * app reported TWO GET registrations of this path.
-   *
-   * R246.3: "shadowed by the accident of registration order" is NOT a security
-   * control. Any reordering, rename or refactor that moved this block ahead of
-   * `registerFounderCrmRoutes` would have turned it into a cross-tenant read of
-   * ANY company's founder CRM by ANY authenticated user. The platform holds
-   * cap-table and investor data for 730 tenants; this is not a risk to leave
-   * standing on a coincidence.
-   *
-   * WHAT WAS DONE
-   * -------------
-   * 1. The `app.get(...)` registration was REMOVED, so this path now has
-   *    exactly ONE registration — the scoped one. Nothing else changed about
-   *    what any caller receives, because nothing ever reached this handler.
-   * 2. Per R195.5 (nothing deleted) the handler body is PRESERVED VERBATIM
-   *    below as an unregistered function. Every original line and comment is
-   *    kept, including the two inaccurate ones, so the record of what shipped
-   *    is not laundered.
-   * 3. Belt and braces: the preserved body's unsafe resolution has been
-   *    replaced with `resolveFounderCompanyIdForCaller` — the SAME ownership
-   *    check the scoped handler uses, exported from `founderCrmStore.ts` rather
-   *    than reimplemented. So if anyone ever re-registers this block, it is safe
-   *    BY CONSTRUCTION rather than safe because nobody calls it. Both the
-   *    original unsafe expression (as a comment, above) and the corrected one
-   *    (as code, below) are on the record.
-   * 4. A regression fence now asserts, against the real router after the real
-   *    `registerRoutes`, that this path has exactly ONE registration and that
-   *    the survivor is the scoped one. See
-   *    `server/__tests__/w302_route_registration_uniqueness.test.ts`. Without
-   *    that test this fix could regress silently, which is the whole reason the
-   *    defect existed in the first place.
-   *
-   * DO NOT RE-REGISTER THIS. The scoped handler in `founderCrmStore.ts` is the
-   * only one that should serve this path, and the fence will fail the build if
-   * a second registration reappears.
-   * ================================================================== */
-  const w302RetiredDuplicateFounderCrmContacts = (
-    req: import("express").Request,
-    res: import("express").Response,
-  ) => {
+  /* ------------------------------------------------------------------
+   * Task 3 — NEW: GET /api/founder/crm/contacts
+   * The client investor CRM page was crashing because this endpoint
+   * did not exist. Returns contacts scoped to the authenticated
+   * founder's active company.
+   * ------------------------------------------------------------------ */
+  app.get("/api/founder/crm/contacts", requireAuth, (req, res) => {
     const ctx = req.userContext;
     if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     // Resolve active company from context; fall back to query param
-    /* W302: the fall-back to `req.query.companyId` WITHOUT an ownership check was
-     * the defect. It is replaced by the shared, ownership-checking resolver from
-     * founderCrmStore (the same one the live scoped handler uses). Callers the
-     * resolver refuses get null here, exactly as they would on the live route. */
-    const activeCompanyId = resolveFounderCompanyIdForCaller(req);
+    const activeCompanyId = ctx.founder?.activeCompanyId
+      ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
     if (!activeCompanyId) {
       // No active company — return empty array (not an error)
       return res.json([]);
@@ -9189,10 +9100,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { listContactsForCompany } = require("./founderCrmStore");
     const scoped = listContactsForCompany(activeCompanyId);
     res.json(scoped);
-  };
-  /* Retired: referenced but never registered, so the symbol stays live for the
-     record without adding a second route. */
-  void w302RetiredDuplicateFounderCrmContacts;
+  });
 
   // v23.9 C4 — founder dashboard aggregate. Stitches together the active
   // company record, its KPI block, the company's rounds, a derived recent

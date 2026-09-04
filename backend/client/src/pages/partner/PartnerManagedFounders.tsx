@@ -720,19 +720,6 @@ export function SpvOnBehalfPanel({ engagement, subRole }: { engagement: Engageme
       <h3 className="text-sm font-semibold">SPV on behalf of this founder</h3>
       <p className="mt-0.5 text-xs text-[var(--cv-color-text-muted)]">
         Creates the vehicle, records an audit entry in the on-behalf chain, and queues the Collective push — in one transaction.
-        {/* WAVE 285 — SECOND CONSUMER of the same unbuilt promise. The sentence
-            above is TRUE about queueing and silent about delivery, and a partner
-            reading "queues the Collective push" reasonably concludes the deal
-            reaches the Collective. It does not: nothing drains
-            mf_collective_push (see the block comment at the "Queued pushes"
-            tile). Appended as a static sibling, LAST INSIDE THE EXISTING <p>,
-            so the existing literal is neither reworded nor hoisted and no panel
-            sibling index is renumbered (guard rules 1, 3, 5). Unconditional, so
-            it is not a suppression (rule 4). */}
-        <span className="block mt-1" data-testid="mf-sob-push-not-delivered">
-          The queued push is not delivered to the Collective. Capavate has no automated delivery step yet, so the
-          vehicle and the audit entry are created, but this deal does not reach the Collective.
-        </span>
       </p>
 
       {/* Existing on-behalf vehicles. Loading, refusal and genuinely-empty are
@@ -1085,57 +1072,6 @@ export default function PartnerManagedFounders() {
               <div className="rounded-lg border border-[var(--cv-color-border)] bg-white p-3">
                 <div className="text-xs text-[var(--cv-color-text-muted)]">Queued pushes</div>
                 <div className="text-xl font-semibold">{dashQ.data.queuedPushes}</div>
-              </div>
-              {/* WAVE 285 — the "Queued pushes" tile counts `mf_collective_push`
-                  rows whose status is still 'queued'
-                  (server/managedFounderStore.ts, dashboard(): queuedPushes).
-
-                  MEASURED, not inherited. The Band 15 preflight (§5.2) states
-                  that `createSpvOnBehalf` has "no callers anywhere" and that the
-                  figure is therefore "permanently zero". THAT IS WRONG, in both
-                  halves:
-                    · ENQUEUE IS REACHABLE FROM THIS PRODUCT. Wave 20 wired it:
-                      SpvOnBehalfPanel's createM mutation POSTs
-                      /api/partner/me/mfcrm/spv-on-behalf, the route calls
-                      managedFounderStore.createSpvOnBehalf, and that INSERTs a
-                      mf_collective_push row with status 'queued' inside the same
-                      transaction. Driven over HTTP by
-                      server/__tests__/w285_collective_push_disclosure_http.test.ts,
-                      which asserts the stored row via rawDb() and the counter
-                      moving 0 -> 1.
-                    · NOTHING DRAINS IT. `processCollectivePush` exists only as a
-                      word in a comment; there is no scheduler and no worker. The
-                      one route that can move a push out of 'queued'
-                      (POST .../collective-push/:pushId/mark) has ZERO client
-                      callers, asserted === 0 by
-                      client/src/pages/partner/__tests__/w285_queued_pushes_disclosure_dom.test.tsx.
-
-                  So the number is not a dead zero — it is a counter that can only
-                  RISE, in front of a delivery step this platform does not have.
-                  A GP reading "Queued pushes: 3" would reasonably believe three
-                  deals are on their way to the Collective. None of them are.
-
-                  APPENDED, LAST IN THE GRID, AS A STATIC SIBLING (guard rules 1,
-                  3, 4, 5): the tile's own label and value are untouched, the
-                  sentence is a literal inside JSX and is not hoisted to a
-                  constant, and it is rendered unconditionally so it is never a
-                  suppression. It sits inside `{dashQ.data && …}`, which is the
-                  ONLY branch that can reach the tile at all — while the dashboard
-                  query is loading or has errored there is no widget and no tile,
-                  so there is no state in which the tile renders without this
-                  sentence, and no state in which this sentence renders without
-                  the tile. Building the delivery pipeline is NOT authorised
-                  (preflight §5.5: a caller, a worker with idempotency and a
-                  dead-letter state, a receiving contract, disclosure at both ends,
-                  and a legal review — a programme, not a wave). */}
-              <div
-                className="col-span-2 sm:col-span-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
-                data-testid="mf-queued-pushes-no-delivery"
-              >
-                Delivery of queued pushes to the Collective is not available yet. Creating a vehicle on a founder&apos;s
-                behalf adds one to this count, and no screen on Capavate can move a push out of the queue, so this
-                figure can rise but never fall. A push counted here has not reached the Collective, and a zero here
-                means nothing is waiting — not that a deal was delivered.
               </div>
             </div>
           )}

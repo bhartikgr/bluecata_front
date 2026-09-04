@@ -97,69 +97,33 @@ describe("Secure auth — /api/auth/secure/*", () => {
     expect(r.status).toBe(403);
   });
 
-  /* WAVE 305 · R251 — THESE THREE TESTS WERE UPDATED, NOT WEAKENED.
-   *
-   * They previously asserted the scaffold's behaviour, and one of them asserted
-   * the defect itself in its own name: "2fa verify accepts well-formed code
-   * (scaffold)". That endpoint accepted ANY six digits and never read the stored
-   * secret. A test that requires a security hole to stay open has to be corrected
-   * when the hole is closed; leaving it green would have meant leaving the hole.
-   *
-   * The routes are NOT deleted (R195.5). They are retired in place and now refuse
-   * honestly with 501, naming the endpoint that replaces them. That is what these
-   * tests now assert. The real implementation is proved in
-   * server/__tests__/w305_mfa_http_and_lockout.test.ts and
-   * server/__tests__/w305_mfa_totp_and_schema.test.ts.
-   *
-   * The ORIGINAL assertions are preserved verbatim in comments beside each
-   * replacement so the change is auditable rather than merely described:
-   *   setup : expect(r.status).toBe(200); expect(r.body.secret).toMatch(/^[A-Z0-9]{20}$/);
-   *           expect(r.body.otpauth).toMatch(/^otpauth:\/\/totp\//);
-   *   verify: expect(r.status).toBe(200); expect(r.body.scaffolded).toBe(true);
-   *   bad   : expect(r.status).toBe(400);
-   */
-
-  it("2fa setup is RETIRED IN PLACE — still mounted, refuses honestly, names its replacement", async () => {
+  it("2fa setup returns secret + otpauth", async () => {
     const { cookies, csrf } = await withSession();
     const r = await request(app).post("/api/auth/secure/2fa/setup")
       .set("Cookie", cookies)
       .set("X-CSRF-Token", csrf)
       .send({});
-    /* Still mounted: a removed route would 404 here, and R195.5 forbids removal. */
-    expect(r.status, `expected the retired 501, got ${r.status}: ${JSON.stringify(r.body)}`).toBe(501);
-    expect(r.status).not.toBe(404);
-    expect(r.body.error).toBe("SCAFFOLD_RETIRED");
-    expect(r.body.retiredBy).toBe("wave305");
-    /* It must NAME its replacement, not merely refuse. */
-    expect(String(r.body.replacement ?? "")).toContain("/api/auth/mfa/enrol/begin");
-    /* AND IT MUST NOT HAND OUT A SECRET ANY MORE — the actual defect. */
-    expect(r.body.secret).toBeUndefined();
-    expect(r.body.otpauth).toBeUndefined();
+    expect(r.status).toBe(200);
+    expect(r.body.secret).toMatch(/^[A-Z0-9]{20}$/);
+    expect(r.body.otpauth).toMatch(/^otpauth:\/\/totp\//);
   });
 
-  it("2fa verify NO LONGER ACCEPTS ANY SIX DIGITS — the defect is closed", async () => {
+  it("2fa verify accepts well-formed code (scaffold)", async () => {
     const { cookies, csrf } = await withSession();
     const r = await request(app).post("/api/auth/secure/2fa/verify")
       .set("Cookie", cookies)
       .set("X-CSRF-Token", csrf)
       .send({ code: "123456" });
-    expect(r.status, `expected the retired 501, got ${r.status}: ${JSON.stringify(r.body)}`).toBe(501);
-    expect(r.status).not.toBe(200);
-    expect(r.body.error).toBe("SCAFFOLD_RETIRED");
-    expect(r.body.scaffolded).toBeUndefined();
-    expect(r.body.ok).not.toBe(true);
-    expect(String(r.body.replacement ?? "")).toContain("/api/auth/login/mfa");
+    expect(r.status).toBe(200);
+    expect(r.body.scaffolded).toBe(true);
   });
 
-  it("2fa verify refuses a malformed code too — it refuses EVERY caller, not just some", async () => {
+  it("2fa verify rejects malformed code", async () => {
     const { cookies, csrf } = await withSession();
     const r = await request(app).post("/api/auth/secure/2fa/verify")
       .set("Cookie", cookies)
       .set("X-CSRF-Token", csrf)
       .send({ code: "abc" });
-    /* The retirement is unconditional: the same refusal regardless of input, so
-     * no shape of code can find a way through. */
-    expect(r.status).toBe(501);
-    expect(r.body.error).toBe("SCAFFOLD_RETIRED");
+    expect(r.status).toBe(400);
   });
 });

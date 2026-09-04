@@ -229,61 +229,27 @@ export function registerSecureAuthRoutes(app: Express): void {
     res.json({ id: userId, email: row.email, role, csrfToken: sess.csrfToken });
   });
 
-  /* ---------- 2FA scaffold — RETIRED IN PLACE BY WAVE 305 (R251, R195.5) -----
-   *
-   * THE ROUTES ARE NOT REMOVED. R195.5 forbids deletion, and removing a mounted
-   * route would turn any caller into a 404 that says nothing. They now REFUSE
-   * HONESTLY and NAME THEIR REPLACEMENT.
-   *
-   * WHAT THEY USED TO DO, AND WHY IT COULD NOT BE LEFT MOUNTED
-   *   /2fa/setup  generated a "secret" from the alphabet
-   *               "ABCDEFGHJKMNPQRSTUVWXYZ23456789", labelled in its own comment
-   *               as "RFC 4648 base32". Base32 contains no 8 and no 9. That
-   *               string is a Crockford-style human-friendly alphabet, so NO
-   *               authenticator app could decode any secret this route ever
-   *               issued. It then wrote that secret straight into
-   *               `auth_users.totp_secret` with nothing verified.
-   *   /2fa/verify accepted ANY six digits and never read the stored secret. Its
-   *               own comment said so.
-   *
-   * Together they rendered as reassurance while being a security control that
-   * could not refuse anybody. The replacement is REAL RFC 6238 TOTP:
-   *
-   *   POST /api/auth/mfa/enrol/begin      (server/lib/mfaRoutes.ts)
-   *   POST /api/auth/mfa/enrol/confirm
-   *   POST /api/auth/login/mfa
-   *   the user-facing screen at /settings/two-factor
-   *
-   * The 501 is deliberate: 404 would be untrue (the route exists), 400 would
-   * blame the caller, and 200 is what caused the problem. Nothing here writes to
-   * `auth_users.totp_secret` any more, so the pollution stops at this wave. */
-
-  /** The replacement named in one place so both refusals cannot drift apart. */
-  const RETIRED_2FA_REPLACEMENT =
-    "POST /api/auth/mfa/enrol/begin then POST /api/auth/mfa/enrol/confirm (screen: /settings/two-factor)";
-
-  app.post("/api/auth/secure/2fa/setup", (_req, res) => {
-    res.status(501).json({
-      ok: false,
-      error: "SCAFFOLD_RETIRED",
-      retiredBy: "wave305",
-      replacement: RETIRED_2FA_REPLACEMENT,
-      message:
-        "This endpoint never worked and has been retired. It issued secrets using an alphabet no authenticator app can read, and its verify endpoint accepted any six digits without checking them. Use " +
-        RETIRED_2FA_REPLACEMENT +
-        " instead.",
-    });
+  // ---------- 2FA scaffold ----------
+  app.post("/api/auth/secure/2fa/setup", (req, res) => {
+    const jwt = parseCookie(req.headers.cookie || "", "cap_jwt");
+    const claims = jwt ? verifyJwt(jwt) : null;
+    if (!claims) return res.status(401).json({ error: "no_token" });
+    // RFC 4648 base32 secret (no I/L/0/1 to avoid OCR confusion)
+    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let secret = "";
+    const buf = crypto.randomBytes(20);
+    for (let i = 0; i < buf.length; i++) secret += alphabet[buf[i] % alphabet.length];
+    rawDb().prepare(`UPDATE auth_users SET totp_secret = ? WHERE id = ?`).run(secret, claims.sub);
+    const issuer = "Capavate";
+    const otpauth = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(claims.sub)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+    res.json({ secret, otpauth, enforced: false });
   });
 
-  app.post("/api/auth/secure/2fa/verify", (_req, res) => {
-    res.status(501).json({
-      ok: false,
-      error: "SCAFFOLD_RETIRED",
-      retiredBy: "wave305",
-      replacement: "POST /api/auth/login/mfa",
-      message:
-        "This endpoint never verified anything \u2014 it accepted any six digits and never read the stored secret. It has been retired. Real code verification is POST /api/auth/login/mfa.",
-    });
+  app.post("/api/auth/secure/2fa/verify", (req, res) => {
+    const code = (req.body as { code?: string } | null)?.code;
+    if (!code || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "bad_code" });
+    // Scaffold: any well-formed code accepted in preview; production uses RFC 6238 TOTP.
+    res.json({ ok: true, scaffolded: true });
   });
 }
 

@@ -68,10 +68,6 @@ import {
   type SpvDTO,
   type SpvJurisdiction,
 } from "@shared/spvEngine";
-/* WAVE 306 · PART 4 — ONE sentence, rendered at TWO sites in this wizard,
-   because the wizard is non-linear. Read from the module that states it so the
-   two sites cannot drift apart. */
-import { SPV_FEE_SETTLEMENT_DISCLOSURE } from "@shared/spvFeeObligationRules";
 
 /**
  * WAVE 3C / J-4 — the SPV accordion row never rendered the vehicle's
@@ -650,54 +646,29 @@ export default function PartnerSpvEngine() {
         // 1c — launch sign-off recorded server-side before the SPV is created.
         signoffLegalName: w.signoffLegalName.trim(),
         signoffAccepted: w.signoffAccepted,
-        /* WAVE 278a — ONE CALL, NOT THREE. The mandate and the fee ride on the
-           SAME request that creates the vehicle. Wave 86B built the atomic form
-           of this route (`server/spvEngineRoutes.ts:999`): `mandate` and `fees`
-           are OPTIONAL keys, and every payload-level refusal —
-           `validateLaunchFeeDrafts`, `validateMandateDraft`,
-           `validateCreateMoney`, the target-company fence — runs ABOVE
-           `recordSignoff` (`:1126`), the first write. Sending them here moves
-           every refusal the GP can provoke from the payload to a point where
-           NOTHING has been created, which is what closes the partial launch:
-           until this wave a refused mandate or fee left a signed, attested
-           vehicle behind a red "Launch failed" toast.
-           THE SEVEN MANDATE KEYS AND THE FIVE FEE KEYS ARE THE EXACT KEYS,
-           IN THE EXACT ORDER, COMPUTED BY THE EXACT EXPRESSIONS the two deleted
-           requests used. Nothing the wizard collects stopped being sent.
-           `companyIds` was never sent by the PUT and stays unsent. */
-        mandate: {
-          mode: w.mandateMode,
-          sector: w.sectors,
-          // D2 — optional mandate refinements; empty arrays / nulls when blank.
-          geography: splitList(w.geography),
-          stage: splitList(w.stage),
-          checkMinMinor: checkMinWire,
-          checkMaxMinor: checkMaxWire,
-          ruleTree: w.sectors.length
-            ? { op: "and", rules: [{ field: "sector", op: "in", value: w.sectors }] }
-            : { op: "and", rules: [{ field: "company_id", op: "in", value: [] }] },
-        },
-        /* SPREAD-CONDITIONAL, deliberately: when no management fee was chosen the
-           request must carry NO `fees` KEY AT ALL. The route reads
-           `Array.isArray(body.fees)`, so an absent key is `feeDrafts === null`
-           and `launchComplete: false` — the same state the old conditional third
-           request produced by simply not being sent. An empty array would NOT be
-           the same state. */
-        ...(w.mgmtFeeType
-          ? {
-              fees: [
-                {
-                  layer: "management", feeType: w.mgmtFeeType,
-                  fixedAmountMinor: mgmtFixedWire,
-                  carryPct: w.mgmtFeeType !== "fixed" ? Number(w.mgmtCarryPct) / 100 : undefined,
-                  // 3g — fixed/hybrid fees carry their own currency selection.
-                  currency: w.mgmtFeeType !== "carry" ? w.feeCurrency : undefined,
-                },
-              ],
-            }
-          : {}),
       });
       const { spv } = await spvRes.json();
+      await apiRequest("PUT", `/api/partner/me/spv/${spv.id}/mandate`, {
+        mode: w.mandateMode,
+        sector: w.sectors,
+        // D2 — optional mandate refinements; empty arrays / nulls when blank.
+        geography: splitList(w.geography),
+        stage: splitList(w.stage),
+        checkMinMinor: checkMinWire,
+        checkMaxMinor: checkMaxWire,
+        ruleTree: w.sectors.length
+          ? { op: "and", rules: [{ field: "sector", op: "in", value: w.sectors }] }
+          : { op: "and", rules: [{ field: "company_id", op: "in", value: [] }] },
+      });
+      if (w.mgmtFeeType) {
+        await apiRequest("POST", `/api/partner/me/spv/${spv.id}/fees`, {
+          layer: "management", feeType: w.mgmtFeeType,
+          fixedAmountMinor: mgmtFixedWire,
+          carryPct: w.mgmtFeeType !== "fixed" ? Number(w.mgmtCarryPct) / 100 : undefined,
+          // 3g — fixed/hybrid fees carry their own currency selection.
+          currency: w.mgmtFeeType !== "carry" ? w.feeCurrency : undefined,
+        });
+      }
       return spv as SpvDTO;
     },
     onSuccess: (created: SpvDTO) => {
@@ -724,27 +695,7 @@ export default function PartnerSpvEngine() {
          label a few lines below. */
       toast({ title: launchedType === "spv" ? "SPV launched" : spvLaunchedToastTitle(launchedType) });
     },
-    /* WAVE 278a — AN HONEST FAILURE. Two changes, both additive.
-       (1) The list is REFRESHED on failure. A launch that is refused AFTER the
-           vehicle row exists (the SPV-scoped combined-carry cap and the
-           fee-exceeds-raise guard read the vehicle, so they still run below the
-           first write) used to leave the GP looking at a stale list that did not
-           show it. Invalidating here means the list the GP is looking at is the
-           list the server actually has.
-       (2) The refusal sentence is UNCHANGED and stays the LEADING operand; a
-           static sibling sentence is APPENDED to it. It is a conditional
-           instruction to the reader — "if a vehicle now appears" — never a claim
-           that one was created, and never a fabricated zero or a blank state. */
-    onError: (e: Error) => {
-      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
-      toast({
-        variant: "destructive",
-        title: "Launch failed",
-        description:
-          partnerActionRefusalText(e) +
-          " If a vehicle now appears in your list, it was created before the refusal — review it before launching again.",
-      });
-    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Launch failed", description: partnerActionRefusalText(e) }),
   });
 
   /* ══════════════════════════════════════════════════════════════════════
@@ -1274,34 +1225,6 @@ export default function PartnerSpvEngine() {
                   <option value="carry">Carry only</option><option value="fixed">Fixed only</option><option value="hybrid">Hybrid</option>
                 </select>
               </div>
-              {/* ═══════════════════════════════════════════════════════════════════
-                  WAVE 306 · PART 4 · SITE 1 OF 2 — DISCLOSURE AT THE SELECT.
-                  ═══════════════════════════════════════════════════════════════════
-                  Choosing "Fixed only" or "Hybrid" here decides that an
-                  administrator will have to act before this vehicle can take an
-                  LP's commitment, and the screen has never said so. It is
-                  disclosed at the moment of the choice AND again at review
-                  (site 2), because a GP can set the fee type here and never
-                  return, or arrive at review having skipped this step.
-
-                  The condition is POSITIVE (`=== "fixed" || === "hybrid"`) and
-                  not `!== "carry"`, deliberately. `mgmtFeeType` is typed `string`
-                  and the shipped code already treats the EMPTY value as a real
-                  state — `feeStepRefusal` opens with
-                  `if (!w.mgmtFeeType) return "Choose a management fee type…"`,
-                  and the launch payload builder guards `...(w.mgmtFeeType ? …)`.
-                  `"" !== "carry"` is TRUE, so the negative form would show this
-                  settlement sentence to a GP who has chosen nothing. The select's
-                  initial value is "carry", so the empty state is not reachable
-                  through this control today; the positive form is what keeps that
-                  true after the next edit.
-                  An APPENDED static sibling; no existing element or literal on
-                  this step is replaced, re-ordered or re-worded. */}
-              {(w.mgmtFeeType === "fixed" || w.mgmtFeeType === "hybrid") && (
-                <div className="text-xs text-[var(--cv-color-text-muted)] rounded p-2" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }} data-testid="spv-w-fee-settlement-disclosure">
-                  {SPV_FEE_SETTLEMENT_DISCLOSURE}
-                </div>
-              )}
               {w.mgmtFeeType !== "carry" && (
                 <div className="grid grid-cols-2 gap-3">
                   {/* 3h/3i — clear currency-unit label instead of raw "minor" */}
@@ -1629,20 +1552,6 @@ export default function PartnerSpvEngine() {
                   The existing "Management fee" row is untouched. */}
               {w.mgmtFeeType !== "carry" && (
                 <ReviewRow label="Fee currency" value={w.feeCurrency} onEdit={() => setStep(2)} />
-              )}
-              {/* WAVE 306 · PART 4 · SITE 2 OF 2 — THE SAME SENTENCE AT REVIEW.
-                  The review step is the last thing a GP reads before the vehicle
-                  exists, and the wizard is non-linear, so the disclosure made at
-                  the fee-type select cannot be assumed to have been read. Same
-                  string, same module, same positive condition as site 1 — not
-                  the `!== "carry"` used by the Fee currency row above it, which
-                  would also fire on an unset fee type. Its own sibling element:
-                  the existing "Management fee" and "Fee currency" rows are
-                  untouched and nothing is folded into a ReviewRow value. */}
-              {(w.mgmtFeeType === "fixed" || w.mgmtFeeType === "hybrid") && (
-                <div className="text-xs text-[var(--cv-color-text-muted)] rounded p-2" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }} data-testid="spv-w-review-fee-settlement-disclosure">
-                  {SPV_FEE_SETTLEMENT_DISCLOSURE}
-                </div>
               )}
               {/* The one wizard key that is NOT user-entered: the strict engine
                   jurisdiction enum is DERIVED from the country chosen in step 0

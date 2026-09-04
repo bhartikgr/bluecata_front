@@ -737,34 +737,7 @@ export default function PartnerPipeline() {
       {/* v25.16 NM2 — also clear modal notes on Escape/outside-click dismiss
          so a half-typed note doesn't bleed into the next modal opened. */}
       <Dialog open={!!promoteDeal} onOpenChange={(o) => { if (!o) { setPromoteDeal(null); setModalNotes(""); } }}>
-        {/* WAVE A · ITEM 4b — THE ACKNOWLEDGEMENT AND THE CONFIRM BUTTON WERE
-            UNREACHABLE, AND THIS ONE className IS THE WHOLE FIX.
-
-            Measured in a real browser at 390x740 BEFORE this change: the box
-            rendered 1921px tall with `overflow-y: visible` and `max-height: none`
-            (the bare class from the shared primitive, which this call site passed
-            no className to). Its top sat at -555px and its bottom at 1366px, so it
-            was cut off in BOTH directions; the dialog library locks body scroll and
-            the box was not a scroll container of its own, so twenty wheel events
-            moved its scrollTop by 0. `publish-ack-check` sat at y=1091 and
-            `promote-confirm` at y=1272 — off-screen, and the click timed out.
-
-            SCOPE. The class is added HERE and nowhere else. `<DialogContent` has
-            === 65 render sites in client/src outside __tests__ and only === 9 carry
-            their own max-h/overflow class, so ~56 other surfaces share this latent
-            defect — but editing the primitive changes the rendered class of all 65
-            at once. That is its own reviewed wave, not a blocker fix.
-
-            NOT DONE, DELIBERATELY: the `grid-rows-[auto_minmax(0,1fr)_auto]`
-            pinning used by `founder/RoundDetail.tsx`. That template assumes THREE
-            children; this box has four plus the primitive close button, so the
-            flexible row would land on the notes field rather than the legal text.
-            Making it fit would mean restructuring children, which the silent-drop
-            guard reads as removals. Scrolling the whole box is the smaller change.
-
-            NOT TOUCHED: the disclosure text. The server rebuilds and compares the
-            acknowledgement sentence, so it is scrolled, never shortened. */}
-        <DialogContent data-testid="promote-modal" className="max-h-[85vh] overflow-y-auto">
+        <DialogContent data-testid="promote-modal">
           <DialogHeader>
             <DialogTitle>Promote to Collective Deal Room</DialogTitle>
             <DialogDescription>

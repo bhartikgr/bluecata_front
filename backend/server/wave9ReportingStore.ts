@@ -193,28 +193,10 @@ export function recordCashflow(input: {
   return id;
 }
 
-/* W313 (R261, R250) — SITE 4. TENANT FILTER ADDED.
- *
- * `vehicle_cashflow.tenant_id` is NOT NULL, but this read named only the
- * vehicle and the LP. W303 scoped `listFlows` in server/lib/ilpaCashflowLedger.ts
- * — a DIFFERENT, near-identical function over the SAME TABLE — and this older
- * sibling was never revisited. Its one non-test caller is `buildInvestorMetrics`
- * (:1058 before this wave), so every `vehicle_cashflow` row carrying an LP's id
- * ON ANY TENANT was summed into that LP's DPI, PIC, TVPI and net IRR, and
- * through `snapshotInvestor` into a DURABLE snapshot row stamped with a single
- * tenant id. Captured over HTTP before the fix — see
- * build_log/wave313/artefacts/analytics_site4a_same_currency.before.json.
- *
- * The predicate is built on the key being PRESENT, not on it being truthy, for
- * the same reason `listOverrides` is: `if (filter.tenantId)` would let a blank
- * string silently widen the read. It is deliberately NOT written
- * `AND (? IS NULL OR tenant_id = ?)` — that shape is the unconditionally-true
- * predicate this wave exists to remove (site 3, below). */
 export function listCashflows(filter: {
   vehicleKind?: CashflowRow["vehicleKind"];
   vehicleId?: string;
   lpId?: string;
-  tenantId?: string;
 }): CashflowRow[] {
   if (!tableExists("vehicle_cashflow")) return [];
   const where: string[] = [];
@@ -222,9 +204,6 @@ export function listCashflows(filter: {
   if (filter.vehicleKind) { where.push("vehicle_kind = ?"); args.push(filter.vehicleKind); }
   if (filter.vehicleId) { where.push("vehicle_id = ?"); args.push(filter.vehicleId); }
   if (filter.lpId) { where.push("lp_id = ?"); args.push(filter.lpId); }
-  if (filter.tenantId !== undefined && filter.tenantId !== null) {
-    where.push("tenant_id = ?"); args.push(filter.tenantId);
-  }
   const sql =
     `SELECT * FROM vehicle_cashflow` +
     (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
@@ -351,20 +330,7 @@ export function effectiveMarkForCompany(
   opts?: { tenantId?: string; asOf?: string },
 ): DerivedMark | null {
   const derived = deriveMarkForCompany(companyId, opts?.asOf);
-  /* W303 (R247) — THE INERT FENCE. `opts.tenantId` has been in this signature
-   * since the function was written and was NEVER READ: the body referenced
-   * only `opts?.asOf`, twice. Passing a tenant here compiled, type-checked,
-   * read like a fix in review, and did nothing. It is now forwarded to
-   * `latestOverride`, which is the only tenant-owned row this function reads
-   * (`valuation_mark_override.tenant_id`).
-   *
-   * `deriveMarkForCompany` is deliberately NOT tenant-scoped. It derives from
-   * the company's own priced rounds via `getRoundsForCompany`, which is
-   * company-scoped data, not tenant-scoped data; narrowing it by tenant would
-   * be a different boundary enforced from the wrong authority and could hide a
-   * company's own mark from the people entitled to it. That is called out
-   * rather than done. */
-  const ov = latestOverride("company", companyId, opts?.tenantId);
+  const ov = latestOverride("company", companyId);
   // WAVE 23 · ITEM 5: this used to test only `rejected`, which meant a PENDING
   // override moved the computed mark even when the mode was "required" — the
   // approval gate existed in `overrideIsEffective()` but this call site walked
@@ -431,14 +397,10 @@ export function persistValuationEvent(input: {
   return id;
 }
 
-/* W303 (R247) — TENANT PARAMETER ADDED. The mark that feeds RVPI/TVPI was
- * readable for any vehicle id by any authenticated caller. Optional so the
- * existing internal callers compile; the HTTP read route always passes it. */
 export function latestValuationEvent(
   vehicleKind: string,
   vehicleId: string,
   holdingId?: string | null,
-  tenantId?: string,
 ): {
   id: string; valuationDate: string; fairValueMinor: number; currency: string;
   method: string; source: string; preparer: string; isExternal: boolean;
@@ -449,10 +411,9 @@ export function latestValuationEvent(
       `SELECT * FROM valuation_event
         WHERE vehicle_kind = ? AND vehicle_id = ? AND superseded_at IS NULL
           AND (? IS NULL OR holding_id = ?)
-          AND (? IS NULL OR tenant_id = ?)
         ORDER BY valuation_date DESC, created_at DESC LIMIT 1`,
     )
-    .get(vehicleKind, vehicleId, holdingId ?? null, holdingId ?? null, tenantId ?? null, tenantId ?? null) as any;
+    .get(vehicleKind, vehicleId, holdingId ?? null, holdingId ?? null) as any;
   if (!row) return null;
   return {
     id: row.id,
@@ -647,39 +608,28 @@ export function getOverrideById(id: string): MarkOverride | null {
   return r ? rowToOverride(r) : null;
 }
 
-/* W303 (R247) — TENANT PARAMETER ADDED. This is the override that SUPERSEDES a
- * derived mark, so an unscoped read let one tenant's GP override change the
- * number another tenant is shown. */
-export function latestOverride(vehicleKind: string, vehicleId: string, tenantId?: string): MarkOverride | null {
+export function latestOverride(vehicleKind: string, vehicleId: string): MarkOverride | null {
   if (!tableExists("valuation_mark_override")) return null;
   const r = db()
     .prepare(
       `SELECT * FROM valuation_mark_override
         WHERE vehicle_kind = ? AND vehicle_id = ? AND approval_state <> 'rejected'
-          AND (? IS NULL OR tenant_id = ?)
         ORDER BY overridden_at DESC LIMIT 1`,
     )
-    .get(vehicleKind, vehicleId, tenantId ?? null, tenantId ?? null);
+    .get(vehicleKind, vehicleId);
   if (!r) return null;
   const o = rowToOverride(r);
   return overrideIsEffective(o) ? o : null;
 }
 
-/* W303 (R247) — TENANT FILTER ADDED. Before this, `GET /api/reporting/mark-overrides`
- * returned EVERY tenant's valuation overrides — reason text included — to any
- * authenticated caller. The predicate is built unconditionally on the tenant
- * argument being present rather than truthy-tested inline, so a blank tenant
- * cannot silently widen the read the way `if (filter.tenantId)` would. */
-export function listOverrides(filter?: { approvalState?: string; tenantId?: string }): MarkOverride[] {
+export function listOverrides(filter?: { approvalState?: string }): MarkOverride[] {
   if (!tableExists("valuation_mark_override")) return [];
-  const where: string[] = [];
-  const args: unknown[] = [];
-  if (filter?.approvalState) { where.push("approval_state = ?"); args.push(filter.approvalState); }
-  if (filter?.tenantId !== undefined && filter.tenantId !== null) {
-    where.push("tenant_id = ?"); args.push(filter.tenantId);
-  }
-  const sql = `SELECT * FROM valuation_mark_override${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY overridden_at DESC`;
-  const rows = db().prepare(sql).all(...(args as any[]));
+  const sql = filter?.approvalState
+    ? `SELECT * FROM valuation_mark_override WHERE approval_state = ? ORDER BY overridden_at DESC`
+    : `SELECT * FROM valuation_mark_override ORDER BY overridden_at DESC`;
+  const rows = filter?.approvalState
+    ? db().prepare(sql).all(filter.approvalState)
+    : db().prepare(sql).all();
   return (rows as any[]).map(rowToOverride);
 }
 
@@ -774,25 +724,19 @@ export interface SnapshotPoint {
   unmarkedPositions: number;
 }
 
-/* W303 (R247) — TENANT PARAMETER ADDED. `portfolio_metric_snapshot.tenant_id`
- * is NOT NULL and is part of the table's UNIQUE key, but this read named only
- * the subject, so one tenant's monthly DPI/TVPI series was readable by any
- * authenticated caller who knew a subject id. */
 export function listSnapshots(
   subjectKind: string,
   subjectId: string,
   limit = 60,
-  tenantId?: string,
 ): SnapshotPoint[] {
   if (!tableExists("portfolio_metric_snapshot")) return [];
   const rows = db()
     .prepare(
       `SELECT * FROM portfolio_metric_snapshot
         WHERE subject_kind=? AND subject_id=? AND period='monthly'
-          AND (? IS NULL OR tenant_id = ?)
         ORDER BY period_start ASC LIMIT ?`,
     )
-    .all(subjectKind, subjectId, tenantId ?? null, tenantId ?? null, limit) as any[];
+    .all(subjectKind, subjectId, limit) as any[];
   return rows.map((r) => ({
     periodStart: r.period_start,
     dpi: r.dpi, rvpi: r.rvpi, tvpi: r.tvpi,
@@ -817,25 +761,9 @@ export interface SeriesResult {
  * history yet — 1 of 3 monthly points" instead of drawing a two-point line that
  * looks like a trend.
  */
-/* W313 (R261, R250.2) — SITE 3. THE FENCE THAT WAS PRESENT AND NEVER PASSED.
- *
- * `listSnapshots` grew a `tenantId` parameter in W303 and guards it with
- * `AND (? IS NULL OR tenant_id = ?)`. This function — the ONLY function a chart
- * should call — took no tenant and called it with TWO arguments, so the
- * predicate evaluated to TRUE for every row and the fence, though installed,
- * never bit. One tenant's monthly DPI/TVPI/IRR series was charted to another.
- * Captured over HTTP before the fix — see
- * build_log/wave313/artefacts/analytics_site3_series.before.json, where tenant
- * B's months 2026-07/08/09 appear in tenant A's response.
- *
- * The parameter stays OPTIONAL so the wave-9 chart tests, which legitimately
- * read a series irrespective of tenant, keep working. Its INSTALLATION is
- * therefore proved by consequence over real HTTP rather than by its presence in
- * this signature — the presence of a parameter proves nothing, which is the
- * whole lesson of this defect. */
-export function getChartSeries(subjectKind: string, subjectId: string, tenantId?: string): SeriesResult {
+export function getChartSeries(subjectKind: string, subjectId: string): SeriesResult {
   const minPoints = getW9Config<number>("snapshot.min_points_for_chart");
-  const points = listSnapshots(subjectKind, subjectId, 60, tenantId);
+  const points = listSnapshots(subjectKind, subjectId);
   if (points.length < minPoints) {
     return {
       points,
@@ -1055,8 +983,7 @@ function toMinorUnits(major: number, currency: string): number {
  */
 export function buildInvestorMetrics(
   commits: Array<{ companyId: string; roundId: string; amount: string; shares: string; currency: string; ts: string }>,
-  /* W313 — `tenantId` added. See SITE 4 and SITE 5 below. */
-  opts?: { asOf?: string; lpId?: string; tenantId?: string },
+  opts?: { asOf?: string; lpId?: string },
 ): InvestorMetricBundle {
   const asOf = (opts?.asOf ?? new Date().toISOString()).slice(0, 10);
   const t = (() => {
@@ -1067,15 +994,7 @@ export function buildInvestorMetrics(
     const invested = Number.parseFloat(c.amount || "0");
     const shares = Number.parseFloat(c.shares || "0");
     let mark: DerivedMark | null = null;
-    /* W313 — SITE 5. `effectiveMarkForCompany` forwards its tenant to
-     * `latestOverride`, which reads `valuation_mark_override.tenant_id`. This
-     * call omitted it, so ANOTHER TENANT'S private GP valuation restatement —
-     * its replacement price per share AND its mandatory free-text reason —
-     * decided the mark on this investor's position. Reached over real HTTP:
-     * build_log/wave313/artefacts/analytics_site5_marks.before.json shows
-     * `valuation.worstBadge === "gp_override"` on tenant A's own response after
-     * tenant B wrote an override tenant A can never see. */
-    try { mark = effectiveMarkForCompany(c.companyId, { asOf, tenantId: opts?.tenantId }); } catch { mark = null; }
+    try { mark = effectiveMarkForCompany(c.companyId, { asOf }); } catch { mark = null; }
     // An EXPIRED mark (>= 365 days, owner ruling Q5) stops counting as a mark.
     const usable = mark && mark.badge !== "expired" ? mark : null;
     const currentValue =
@@ -1101,10 +1020,7 @@ export function buildInvestorMetrics(
 
   // Real recorded distributions (and any explicitly ledgered extra calls).
   if (opts?.lpId) {
-    /* W313 — SITE 4. `tenantId` forwarded. Before this, every ledgered cash
-     * flow carrying this LP's id, on ANY tenant and in ANY currency, was pushed
-     * into `flows` and reached `computeFundMetrics` below. */
-    for (const row of listCashflows({ lpId: opts.lpId, tenantId: opts.tenantId })) {
+    for (const row of listCashflows({ lpId: opts.lpId })) {
       flows.push({
         valueDate: row.valueDate,
         amountMinor: row.amountMinor,
@@ -1228,13 +1144,7 @@ export function snapshotInvestor(
   asOf?: string,
 ): string | null {
   try {
-    /* W313 — the DURABLE half of site 4. This function already knows its
-     * tenant; it just never told the metrics builder. A snapshot row carries
-     * ONE `tenant_id` and is written by `writeMonthlySnapshot` keyed on it, so
-     * an unscoped read here persisted one tenant's distributions inside another
-     * tenant's financial record. That is the sharpest harm in this wave: a
-     * stored, auditable figure, not just a screen. */
-    const b = buildInvestorMetrics(commits, { asOf, lpId: investorId, tenantId });
+    const b = buildInvestorMetrics(commits, { asOf, lpId: investorId });
     /* WAVE 180 · ITEM A SITE 3 — REFUSE THE DURABLE WRITE, mirroring the HTTP 409
      * CROSS_CURRENCY_SNAPSHOT_BLOCKED that wave 21 put on the vehicle snapshot
      * route. A snapshot row carries ONE currency column; this path used to write

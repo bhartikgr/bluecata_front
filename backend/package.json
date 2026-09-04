@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "26.41.0",
+  "version": "26.40.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -36,8 +36,6 @@
     "lint:destructive-store-fence": "tsx scripts/lint/destructiveStoreFence.ts",
     "lint:raise-literal-fence": "node scripts/lint/raise_literal_fence.mjs",
     "lint:schema-path-parity": "node scripts/lint/schema-path-parity.mjs",
-    "audit:snapshot-contamination": "node scripts/audit/snapshot_contamination_audit.mjs",
-    "audit:snapshot-contamination:selftest": "node scripts/audit/snapshot_contamination_audit.mjs --selftest",
     "lint:schema-path-parity:selftest": "node scripts/lint/schema-path-parity.mjs --selftest",
     "lint:internal-language-fence": "tsx scripts/lint/internalLanguageFence.ts",
     "guard:test": "vitest run --config scripts/silent-drop-guard/vitest.guard.config.ts",

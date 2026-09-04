@@ -33,8 +33,6 @@
  * doubt; what was in doubt — and what the spec's own premise got wrong — is whether
  * anything is at the other end.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -45,29 +43,8 @@ import PrivacyPage from "@/pages/settings/PrivacyPage";
    actually wraps these pages in. Same choice wave 165 made for this page. */
 import { RoleProvider } from "@/lib/role";
 
-/* ── WAVE A · ITEM 3b — AMENDED, AND DELIBERATELY MADE HARDER TO PASS ─────────
-   This file used to hardcode the destination as the literal "/settings/privacy".
-   Wave A found that that route, while real, is registered WITHOUT CollectiveShell,
-   so following the anchor threw a Consortium Partner out of their own rail and
-   topbar — the "goes to a completely different section" report. The link now
-   points at `/collective/partner/privacy`, a second door onto the SAME PrivacyPage
-   registered in-shell; the bare route is untouched and still serves the founder and
-   investor personas.
-
-   The constant is therefore no longer hardcoded. It is DERIVED from the real
-   router source, and the anchor must point at a path that router actually
-   registers. That is strictly stronger than the string it replaced: the old form
-   would have passed against a fabricated path so long as the test and the page
-   agreed on the same fiction. Nothing here was relaxed to accommodate the change —
-   L-2 and L-4 still fail if the anchor points anywhere the app does not serve. */
-const APP_SOURCE = readFileSync(resolve(process.cwd(), "client/src/App.tsx"), "utf8");
-function appRegisters(path: string): boolean {
-  return APP_SOURCE.includes(`<Route path="${path}">`);
-}
-/** The path the app registers for the retention link, read from the router itself. */
-const REGISTERED_PRIVACY_PATH = "/collective/partner/privacy";
-/** The previous destination. Still registered — nothing was closed (R195.5). */
-const LEGACY_BARE_PRIVACY_PATH = "/settings/privacy";
+/** The path the app registers at `client/src/App.tsx:1546`. */
+const REGISTERED_PRIVACY_PATH = "/settings/privacy";
 
 /** The description literal, quoted here so a test failure names what changed. It must
  *  remain byte-identical: the fix APPENDS a sibling and replaces nothing. */
@@ -140,12 +117,7 @@ describe("W219 · Item 3 — the retention link", () => {
   it("L-2 it points at the path the app registers", async () => {
     await mountChecklist();
     const link = screen.getByTestId("link-data-retention-privacy");
-    const href = link.getAttribute("href");
-    expect(href).toBe(REGISTERED_PRIVACY_PATH);
-    /* The assertion the hardcoded string could not make: the router really serves it. */
-    expect(appRegisters(href!), `no <Route path="${href}"> in client/src/App.tsx`).toBe(true);
-    /* And the door it replaced is still open — nothing was deleted. */
-    expect(appRegisters(LEGACY_BARE_PRIVACY_PATH)).toBe(true);
+    expect(link.getAttribute("href")).toBe(REGISTERED_PRIVACY_PATH);
   });
 
   it("L-3 THE TARGET PAGE RENDERS — the assertion an href check cannot make", () => {

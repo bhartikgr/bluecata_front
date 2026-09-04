@@ -90,9 +90,6 @@ import {
   /* WAVE 193 · ITEM A.5 · R165.1 — the mixed-currency committed-total refusal, so
      the five guarded totals reach a GP as a stated fact rather than a 500. */
   isSpvMixedCurrencyTotalError,
-  /* WAVE 277 · R224.1 — the write-time counterpart of that read-time refusal, run
-     by the lp-commit route BEFORE it writes the sacred ledger line. */
-  assertSubscriptionCurrencyMatchesVehicle,
 } from "./spvEngineStore";
 /* WAVE 189 · ITEM C · R159.6 — the attestation gate and its refusal, imported from
    the same module the store sinks use so the route boundary and the store cannot
@@ -126,13 +123,6 @@ import {
   spvPlatformFeeDisclosure,
   type SpvPlatformFeeDisclosure,
 } from "@shared/spvPlatformFeeDisclosure";
-/* WAVE 306 · PART 2 — the waive-reason rule, read from the one module that
-   states it, so the server and the admin screen cannot drift apart. */
-import {
-  spvFeeWaiveReasonIsAcceptable,
-  SPV_FEE_WAIVE_REASON_REFUSAL_CODE,
-  SPV_FEE_WAIVE_REASON_REFUSAL_MESSAGE,
-} from "@shared/spvFeeObligationRules";
 // CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
 import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
@@ -406,14 +396,6 @@ function err(res: Response, e: unknown): Response {
        the SUBSCRIPTION'S CURRENT STATE is what forbids the move. Same reasoning
        as FUNDS_CONFIRMATION_REQUIRES_COMMITMENT above. */
     ILLEGAL_SUBSCRIPTION_TRANSITION: 409,
-    /* WAVE 277 — the write-time currency guard in `spvEngineStore.subscribe`
-       throws `SUBSCRIPTION_CURRENCY_MISMATCH:<stated>:<vehicle>`, so it can only
-       ever be matched HERE, on the prefix. It is deliberately NOT added to the
-       exact-key `map` above, where the two currency codes in the message would
-       make the lookup miss and fall through to the 500 tail. 400, not 409: the
-       vehicle's state is fine and the REQUEST states a currency the vehicle does
-       not record — the caller re-enters the figure and the request succeeds. */
-    SUBSCRIPTION_CURRENCY_MISMATCH: 400,
   };
   {
     const head = msg.split(":")[0] ?? "";
@@ -1210,24 +1192,7 @@ export function registerSpvEngineRoutes(app: Express): void {
     res.json({ signoffs: listSignoffsForSpv(pid, spv.id) });
   });
 
-  /* ═══ WAVE 277 · R224.1 · R77 — THIS READ HAD NO ERROR HANDLING AT ALL. ════
-     Every store call in the object literal below is made INSIDE the argument to
-     `res.json`, and this handler had no `try`/`catch` and never reached `err()`.
-     So one accepted foreign-currency subscription — which makes
-     `investorRegister` and four sibling reads throw MIXED_CURRENCY_COMMITTED_TOTAL
-     by design, because a total in two currencies is not a number — escaped to
-     Express's default handler and answered a BARE HTTP 500 with no body, on every
-     load, indefinitely. The vehicle looked destroyed.
-
-     `err()` ALREADY knows this refusal: its typed branch answers 409 with the
-     headline and guidance that were written in `spvEngineStore.ts` and, until this
-     wave, had never once reached a screen. The engineering document diagnosed the
-     500 as a missing entry in `err()`'s status map; that entry would have been
-     dead code, because the typed branch returns first. The defect was the missing
-     `try`/`catch`, and this is it. Behaviour on the success path is unchanged:
-     same keys, same order, same values, one `res.json` call. */
   app.get("/api/partner/me/spv/:spvId", requirePartnerAuth, (req: Request, res: Response) => {
-    try {
     const pid = req.partnerContext!.partnerId;
     const spv = spvEngineStore.getSpv(pid, String(req.params.spvId));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
@@ -1261,9 +1226,6 @@ export function registerSpvEngineRoutes(app: Express): void {
          than as a tax position. No existing key above changes shape. */
       legalForm: getSpvLegalForm(spv.id),
     });
-    } catch (e) {
-      return err(res, e);
-    }
   });
 
   /* ══ WAVE 179 · ITEM B · R151.3 — STATE THE LEGAL FORM LATER ══════════════
@@ -1504,31 +1466,6 @@ export function registerSpvEngineRoutes(app: Express): void {
       const spvId = String(req.params.spvId);
       const spv = spvEngineStore.adminListAll().find((s) => s.id === spvId);
       if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-      /* ═══════════════════════════════════════════════════════════════════════
-         WAVE 306 · PART 2 — THE SERVER USED TO ACCEPT AN EMPTY WAIVE REASON.
-         ═══════════════════════════════════════════════════════════════════════
-         The line below read `String((req.body ?? {}).reason ?? "")` and passed
-         whatever came back straight into the store. The ONLY thing enforcing a
-         reason was the admin screen's disabled button, and a disabled button is
-         cosmetic: `curl -X POST … -d '{}'` permanently forgave money the vehicle
-         owed and recorded the reason as an empty string.
-
-         The rule is the SCREEN'S OWN RULE, not a stricter one invented here:
-         trimmed length at least `SPV_FEE_WAIVE_REASON_MIN_LENGTH`, which is the
-         same ten characters the button has always required. An over-tight server
-         rule that refuses a waiver an administrator is entitled to make would be
-         worse than the hole, because a blocked vehicle cannot be unblocked from
-         any other screen in the product.
-
-         IT SITS AFTER THE ADMIN CHECK ABOVE, DELIBERATELY. A non-admin caller
-         must still be told they are not allowed to do this at all (403), not
-         handed a hint about the body shape they would need. */
-      if (!spvFeeWaiveReasonIsAcceptable((req.body ?? {}).reason)) {
-        return res.status(400).json({
-          error: SPV_FEE_WAIVE_REASON_REFUSAL_CODE,
-          message: SPV_FEE_WAIVE_REASON_REFUSAL_MESSAGE,
-        });
-      }
       const ob = spvEngineStore.waiveFeeObligation(spv.sponsorPartnerId, spvId, String(req.params.obId), ctx.userId, String((req.body ?? {}).reason ?? ""));
       res.json({ obligation: ob });
     } catch (e) { err(res, e); }
@@ -1953,26 +1890,11 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.post("/api/partner/me/spv/:spvId/subscriptions/:investorId/confirm-funds", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const b = req.body ?? {};
-      /* WAVE 275 · R224.1 — THE FUNDS-RECEIVED AMOUNT IS REFUSED, NEVER COERCED.
-         `Number(b.receivedMinor)` turned an absent, blank or non-numeric body into a
-         confident 0, returned 201, and wrote a hash-chained `spv.lp_funds_confirmed`
-         audit row — and the LP roster reads "Funds confirmed" off the PRESENCE of that
-         row, not its amount (:745-788). Same gate, same code and the SAME already-written
-         copy as the `wiredMinor` refusal at :1640; nothing new is worded here. An honest
-         explicit 0 is still accepted — `isSpvMoneyMinor(0)` is true. */
-      if (!isSpvMoneyMinor(b.receivedMinor)) {
-        return res.status(400).json({
-          error: `INVALID_WIRED_MINOR:receivedMinor:${typeof b.receivedMinor}`,
-          message: spvSubscriptionRefusalHeadline("INVALID_WIRED_MINOR") ?? undefined,
-          guidance: spvSubscriptionRefusalCopy("INVALID_WIRED_MINOR") ?? undefined,
-          fieldError: "receivedMinor",
-        });
-      }
       const conf = spvEngineStore.confirmFundsReceived(
         req.partnerContext!.partnerId,
         String(req.params.spvId),
         String(req.params.investorId),
-        b.receivedMinor,
+        Number(b.receivedMinor),
         typeof b.reference === "string" ? b.reference : null,
         req.partnerContext!.userId,
       );
@@ -2421,26 +2343,6 @@ export function registerSpvEngineRoutes(app: Express): void {
           spvName: spv.name,
           kind: "limited_partner",
         });
-        /* WAVE 277 · R224.1 — AND THE CURRENCY MUST AGREE, BEFORE THE LEDGER WRITE.
-
-           Here for exactly the reason the two gates above are here rather than in
-           the store alone, and the block comment above states it: everything above
-           this line is a pure read or a pure parse, and everything below it WRITES —
-           `recordLpCommitIdentity` puts a row in the LP identity register and
-           `commitFunded` writes the SACRED cap-table ledger line. `projectLpCommitted`
-           is called AFTER both, so a store-only refusal would leave an identity and a
-           sacred ledger entry for a commitment that was rejected: the half-state this
-           handler already fights. The store IS gated too, with the same one spelling
-           of the rule, and that is the floor a future direct caller cannot walk
-           around. `currency` on the line it validates was resolved further up as
-           `body.currency` or, when absent, the vehicle's own — so an absent currency
-           can never refuse here, which is the point.
-
-           A subscription stated in a currency the vehicle does not record made every
-           one of five read paths refuse, and this vehicle's pages answered a bare 500
-           for as long as the row existed. No conversion: the platform holds no
-           exchange rate and will not guess. */
-        assertSubscriptionCurrencyMatchesVehicle(currency, spv.currency);
       } catch (e) {
         return err(res, e);
       }

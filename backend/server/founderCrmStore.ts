@@ -318,45 +318,6 @@ function ensureCompanyId(req: Request, res: Response): string | null {
 }
 
 /**
- * W302 (R246.3) — THE OWNERSHIP CHECK, EXPORTED FOR REUSE. DO NOT REINVENT IT.
- *
- * `resolveCompanyId` above is the ONLY correct answer to the question "which
- * company may this caller read?" on the founder CRM surface. It is private, so
- * a second implementation of GET /api/founder/crm/contacts in `server/routes.ts`
- * grew its own version:
- *
- *     ctx.founder?.activeCompanyId
- *       ?? (typeof req.query.companyId === "string" ? req.query.companyId : null)
- *
- * — which is `resolveCompanyId` with the ownership clause (`:305-306`) missing,
- * i.e. a caller-supplied company id with no check at all. That handler was held
- * back only by Express serving the first of two registrations of the same path.
- * R246.3: "shadowed by the accident of registration order" is not a security
- * control.
- *
- * These two exports exist so that no caller ever needs to write that resolution
- * by hand again. They are thin delegations — NOT a copy. If the rule changes,
- * it changes in ONE place (`resolveCompanyId`) and every caller follows.
- *
- * Authority: `resolveCompanyId` reads `ctx.founder.companies` /
- * `ctx.founder.activeCompanyId`, which `server/lib/userContext.ts` builds from
- * `multiCompanyStore`, which is a boot-time projection of the `company_members`
- * table. The company_members row IS the ownership fact.
- */
-export function resolveFounderCompanyIdForCaller(req: Request): string | null {
-  return resolveCompanyId(req);
-}
-
-/**
- * W302 — resolve-or-refuse. Returns the company id the caller is entitled to
- * read, or writes the canonical `400 missing_active_company` refusal and
- * returns null. Callers MUST return immediately on null.
- */
-export function ensureFounderCompanyIdForCaller(req: Request, res: Response): string | null {
-  return ensureCompanyId(req, res);
-}
-
-/**
  * B10 (v24.0 LOCKDOWN) — tenant guard for per-id CRM mutations.
  *
  * Before v24.0, PATCH/DELETE /api/founder/investor-crm/:id loaded the contact
@@ -1054,54 +1015,9 @@ export function listByFounder(ownedCompanyIds: Iterable<string>): FounderCrmCont
  * investorId or its primary id. Used by the comms DM-start route to provision
  * a real comms identity for CRM-only contacts. Returns undefined if not found.
  */
-/**
- * W304 (R244.1) — RETIRED FOR AUTHORISATION USE. NOT REGISTERED AS AN
- * AUTHORISATION SOURCE. NOT DELETED (R195.5).
- *
- * This searches EVERY company's founder CRM rows with no reference to who is
- * asking. That is fine for a founder-facing lookup inside a surface that has
- * already resolved the caller's company; it was NOT fine as the thing that set
- * `authorizedViaCrm = true` in `openDmChannelCore`, because a caller who owns
- * no company and holds no engagement could name any investor id in anyone
- * else's CRM and be authorised to open a direct message with them.
- *
- * The export survives because non-authorisation callers and tests use it.
- * ANY authorisation decision must use `findCrmContactByInvestorIdForCompanies`
- * below and pass the company set the CALLER can actually prove.
- */
 export function findCrmContactByInvestorId(investorId: string): FounderCrmContact | undefined {
   if (!investorId) return undefined;
   return contacts.find((c) => c.investorId === investorId || c.id === investorId);
-}
-
-/**
- * W304 (R244.1) — the SCOPED form. Identical matching rule, restricted to CRM
- * rows belonging to companies the caller has proved a relationship to.
- *
- * FAIL-CLOSED BY CONSTRUCTION: an empty or blank-only company set returns
- * `undefined`, so a caller who can prove nothing is authorised for nothing.
- * This deliberately does NOT fall back to the unscoped search — a fallback
- * would reinstate the defect for exactly the callers that trip it.
- *
- * It narrows nothing for a legitimate caller: a founder passing their own
- * company ids matches every row they could already see, and a partner passing
- * their engaged company ids matches every row that engagement covers.
- */
-export function findCrmContactByInvestorIdForCompanies(
-  investorId: string,
-  companyIds: readonly string[],
-): FounderCrmContact | undefined {
-  if (!investorId) return undefined;
-  const allowed = new Set(
-    (companyIds ?? []).map((c) => String(c ?? "").trim()).filter((c) => c.length > 0),
-  );
-  if (allowed.size === 0) return undefined;
-  return contacts.find(
-    (c) =>
-      (c.investorId === investorId || c.id === investorId) &&
-      typeof c.companyId === "string" &&
-      allowed.has(c.companyId),
-  );
 }
 
 /**

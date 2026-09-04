@@ -171,35 +171,6 @@ function tenantOf(req: Request): string {
   return String(c?.tenantId ?? c?.partner?.tenantId ?? "default");
 }
 
-/* ============================================================================
- * W303 (R247) — THE READ-SIDE TENANT RESOLVER.
- *
- * `tenantOf` above is the WRITE-side resolver and it is not safe to reuse for
- * reads unchanged. `String(c?.tenantId ?? c?.partner?.tenantId ?? "default")`
- * uses `??`, which does NOT catch an empty string: a context carrying
- * `tenantId: ""` yields `""`. Every store predicate added by this wave is
- * written `AND (? IS NULL OR tenant_id = ?)`, so a blank must be REFUSED here
- * rather than trusted to be caught downstream. A fence whose installation
- * depends on a value being non-blank is not a fence.
- *
- * "default" is NOT refused. Single-tenant installations legitimately run with
- * that tenant id, and refusing it would lock out real users — which this band
- * is expressly forbidden to do.
- * ========================================================================== */
-function requireTenantForRead(req: Request, res: Response): string | null {
-  const raw = tenantOf(req).trim();
-  if (!raw) {
-    res.status(400).json({
-      ok: false,
-      error: "TENANT_UNRESOLVED",
-      message:
-        "This request has no resolvable tenant, so it cannot be scoped. Reporting reads are tenant-scoped and are refused rather than widened.",
-    });
-    return null;
-  }
-  return raw;
-}
-
 function badVehicle(res: Response, kind: string): boolean {
   if (!VEHICLE_KINDS.includes(kind as VehicleKind)) {
     res.status(400).json({ ok: false, error: "BAD_VEHICLE_KIND", message: `expected one of ${VEHICLE_KINDS.join(", ")}` });
@@ -232,11 +203,7 @@ export function registerReportingEngineRoutes(app: Express): void {
     try {
       const kind = String(req.params.kind);
       if (badVehicle(res, kind)) return;
-      /* W303 (R247) — SCOPED. `listFlows` has accepted `tenantId` since it was
-         written; this route simply never passed it, so it returned whatever
-         vehicle id the caller named, foreign tenant_id in every row. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const flows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId: String(req.params.id), tenantId });
+      const flows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId: String(req.params.id) });
       res.json({
         ok: true,
         vehicleKind: kind,
@@ -282,9 +249,7 @@ export function registerReportingEngineRoutes(app: Express): void {
     try {
       const kind = String(req.params.kind);
       if (badVehicle(res, kind)) return;
-      /* W303 (R247) — SCOPED. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const result = verifyVehicleChain(kind, String(req.params.id), tenantId);
+      const result = verifyVehicleChain(kind, String(req.params.id));
       res.json({ ok: true, verification: result });
     } catch (e) { fail(res, e); }
   });
@@ -306,10 +271,7 @@ export function registerReportingEngineRoutes(app: Express): void {
       const vehicleId = String(req.params.id);
       const asOfDate = String(req.query.asOf ?? new Date().toISOString()).slice(0, 10);
 
-      /* W303 (R247) — SCOPED. BOTH reads on this route: the flow series and
-         the valuation event that supplies residual value. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const rows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId, tenantId });
+      const rows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId });
       const flows: IlpaFlow[] = rows.map((r) => ({
         lpId: r.lpId ?? null,
         txnType: r.txnType,
@@ -319,12 +281,7 @@ export function registerReportingEngineRoutes(app: Express): void {
         isRecallable: r.isRecallable,
       }));
 
-      /* W303 (R247) — SCOPED. The SECOND unscoped read on this route, and the
-         audit did not name it: the valuation event that supplies residual
-         value, and therefore RVPI and TVPI. A stronger fixture caught this
-         after the first pass of the fix had already been written — the flow
-         series was scoped and this was not. */
-      const ev = latestValuationEvent(kind, vehicleId, null, tenantId);
+      const ev = latestValuationEvent(kind, vehicleId);
       const residualValueMinor = ev ? ev.fairValueMinor : null;
       const committedRaw = req.query.committedMinor;
       const committedMinor =
@@ -411,14 +368,7 @@ export function registerReportingEngineRoutes(app: Express): void {
       }
       const vehicleId = String(req.params.id);
       const asOfDate = new Date().toISOString().slice(0, 10);
-      /* W303 (R247) — SCOPED. This route WRITES with `tenantId: tenantOf(req)`
-         but its own READ of the flow series was unscoped, so a snapshot could
-         be computed from another tenant's cash flows and then stored under the
-         caller's tenant. The audit named the GET routes; this write's read was
-         not on that list and is the more damaging of the two, because it
-         PERSISTS the foreign numbers. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const rows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId, tenantId });
+      const rows = listFlows({ vehicleKind: kind as VehicleKind, vehicleId });
       const flows: IlpaFlow[] = rows.map((r) => ({
         lpId: r.lpId ?? null,
         txnType: r.txnType,
@@ -427,10 +377,7 @@ export function registerReportingEngineRoutes(app: Express): void {
         currency: r.currency,
         isRecallable: r.isRecallable,
       }));
-      /* W303 (R247) — SCOPED. Same class as the metrics read above; this one
-         PERSISTS what it computes, so an unscoped valuation would be written
-         into the caller's own snapshot row. */
-      const ev = latestValuationEvent(kind, vehicleId, null, tenantId);
+      const ev = latestValuationEvent(kind, vehicleId);
 
       /* WAVE 21 · ITEM 2 — a DURABLE snapshot must never carry a mixed sum.
          The old code wrote `currency: rows[0]?.currency ?? "USD"` next to
@@ -487,9 +434,7 @@ export function registerReportingEngineRoutes(app: Express): void {
     try {
       const kind = String(req.params.kind);
       if (badVehicle(res, kind)) return;
-      /* W303 (R247) — SCOPED. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const points = listSnapshots(kind, String(req.params.id), 60, tenantId);
+      const points = listSnapshots(kind, String(req.params.id));
       res.json({
         ok: true,
         points,
@@ -511,15 +456,8 @@ export function registerReportingEngineRoutes(app: Express): void {
     try {
       const companyId = String(req.params.companyId);
       const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
-      /* W303 (R247) — SCOPED, on the half of this route that reads tenant-owned
-         rows. The GP OVERRIDE lives in `valuation_mark_override.tenant_id` and
-         is now scoped. `deriveMarkForCompany` is deliberately left alone: it
-         derives from the company's own priced rounds, which is company-scoped
-         data, not tenant-scoped data. See the note in
-         `effectiveMarkForCompany`. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
       const derived = deriveMarkForCompany(companyId, asOf);
-      const effective = effectiveMarkForCompany(companyId, { asOf, tenantId });
+      const effective = effectiveMarkForCompany(companyId, { asOf });
       res.json({
         ok: true,
         companyId,
@@ -540,12 +478,7 @@ export function registerReportingEngineRoutes(app: Express): void {
     try {
       const companyId = String(req.params.companyId);
       const b = (req.body ?? {}) as Record<string, unknown>;
-      /* W303 (R247) — SCOPED. This WRITE route reads the effective mark first,
-         and that read consults the tenant-owned override. Unscoped, another
-         tenant's override could set the number this tenant then persists as an
-         auditable valuation_event. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const mark = effectiveMarkForCompany(companyId, { tenantId });
+      const mark = effectiveMarkForCompany(companyId);
       if (!mark) {
         return res.status(409).json({
           ok: false,
@@ -622,10 +555,7 @@ export function registerReportingEngineRoutes(app: Express): void {
   app.get("/api/reporting/mark-overrides", requireAuth, (req: Request, res: Response) => {
     try {
       const approvalState = typeof req.query.approvalState === "string" ? req.query.approvalState : undefined;
-      /* W303 (R247) — SCOPED. This route returned EVERY tenant's valuation
-         overrides, reason text included, to any authenticated caller. */
-      const tenantId = requireTenantForRead(req, res); if (!tenantId) return;
-      const rows = listOverrides(approvalState ? { approvalState, tenantId } : { tenantId });
+      const rows = listOverrides(approvalState ? { approvalState } : undefined);
       res.json({ ok: true, overrides: rows, total: rows.length, approvalMode: getOverrideApprovalMode() });
     } catch (e) { fail(res, e); }
   });

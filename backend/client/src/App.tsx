@@ -239,9 +239,6 @@ import { V25_COLLECTIVE_SHIPPED } from "@/lib/v25Marker"; void V25_COLLECTIVE_SH
 import { V26_FIXES_SHIPPED } from "@/lib/v26Marker"; void V26_FIXES_SHIPPED;
 import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
 import PrivacyPage from "@/pages/settings/PrivacyPage";
-/* WAVE 305 · R251 — the user-facing two-step sign-in screen. Opt-in; nothing on
-   it changes how anybody else signs in. */
-import TwoFactorSetup from "@/pages/settings/TwoFactorSetup";
 import CollectivePreview from "@/pages/CollectivePreview";
 import { seedSprint3Telemetry } from "@/lib/sprint3Seed";
 import { useRealtimeSync } from "@/lib/realtimeSync";
@@ -1294,25 +1291,6 @@ function AppRouter() {
         <Route path="/collective/notifications">
           {() => <RequireAuth><CollectiveShell><NotificationCenter /></CollectiveShell></RequireAuth>}
         </Route>
-        {/* WAVE A · ITEM 3b — A SECOND DOOR ONTO THE SAME PAGE, SO A CONSORTIUM
-            PARTNER KEEPS THEIR OWN SHELL.
-            ──────────────────────────────────────────────────────────────────
-            The onboarding checklist's retention acknowledgement linked at
-            `/settings/privacy`, which is registered below WITHOUT CollectiveShell.
-            The anchor is a plain `<a href>`, so following it was a full page load
-            that dropped the partner out of their rail and topbar entirely — which
-            is what "goes to a completely different section" feels like from the
-            outside. Both anchors on that page resolve to real registered routes;
-            this was never a dead link.
-
-            The pattern is the one immediately above: a NEW path onto the SAME
-            component, so there is no second source of truth and no duplicated
-            page. The bare `/settings/privacy` registration below is UNTOUCHED —
-            founder and investor personas reach it exactly as they did, and
-            nothing is deleted (R195.5). */}
-        <Route path="/collective/partner/privacy">
-          {() => <RequireAuth><CollectiveShell><PrivacyPage /></CollectiveShell></RequireAuth>}
-        </Route>
         <Route path="/collective/dashboard">
           {/* v25.48.2 MF7 (Q9) — the member gate now lives inside CollectiveShell
               and wraps ALL member-only routes, so no per-route wrap here. */}
@@ -1565,10 +1543,6 @@ function AppRouter() {
           {() => <RequireAuth><CollectiveShell><PartnerOnboardingChecklistPage /></CollectiveShell></RequireAuth>}
         </Route>
         {/* CP Phase B — Per-user privacy / GDPR controls */}
-        {/* WAVE 305 · R251 — enrolment must be reachable by a real user, not by curl. */}
-        <Route path="/settings/two-factor">
-          {() => <RequireAuth><TwoFactorSetup /></RequireAuth>}
-        </Route>
         <Route path="/settings/privacy">
           {() => <RequireAuth><PrivacyPage /></RequireAuth>}
         </Route>

@@ -37,9 +37,6 @@ import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize";
 import { readFailureMessage, writeFailureMessage } from "./wave197FailureCopy";
 import { log } from "./logger";
-/* WAVE 305 · R251 — the `mfa` column is derived from CONFIRMED ENROLMENT, not
-   from the presence of a secret. See the note in listAll(). */
-import { ensureMfaSchema } from "./mfaStore";
 
 /* SEED_USERS — Avi's original demo personas. v25.31.1 keeps this verbatim
  * but treats it as a read-only constant. It is used ONLY in demo mode to
@@ -79,46 +76,12 @@ function listAll(): AdminUser[] {
     name: string | null; tenant: string | null; totp_secret: string | null;
   }>;
 
-  /* WAVE 305 · R251 — THE `mfa` COLUMN NOW MEANS WHAT IT SAYS.
-   *
-   * It was derived from `totp_secret != ''`. That was FALSE information: the
-   * retired scaffold at /api/auth/secure/2fa/setup wrote a secret on request,
-   * before verifying anything, using an alphabet no authenticator app can decode.
-   * Every account that ever touched that route showed "MFA: yes" on the admin
-   * screen while having no working second factor at all — the exact opposite of
-   * what an administrator reading that column needs to know.
-   *
-   * The truth lives in `mfa_enrolment.state`, the same column the login gate
-   * reads, so the screen and the enforcement can never disagree. Read as a SET of
-   * confirmed user ids in ONE query — not per row — so a large user list does not
-   * become N queries.
-   *
-   * IF THE READ FAILS the set is empty and `mfaReadable` is false, so the column
-   * renders as unknown rather than as "no". An absence is never rendered as a
-   * negative claim (R231 in spirit: never fabricate the reassuring value). */
-  const confirmedMfa = new Set<string>();
-  let mfaReadable = true;
-  try {
-    /* The table must exist before it can be read honestly. On a database the
-     * migration runner has not reached, this installs it; on one it has, it is a
-     * no-op. Without this the read below would fail and every account would show
-     * as "unknown" for no good reason. */
-    ensureMfaSchema();
-    const mfaRows = db.prepare(
-      `SELECT user_id AS userId FROM mfa_enrolment WHERE state = 'confirmed'`
-    ).all() as Array<{ userId: string }>;
-    for (const m of mfaRows) confirmedMfa.add(m.userId);
-  } catch {
-    mfaReadable = false;
-  }
-
   const out: AdminUser[] = [];
   const seenIds = new Set<string>();
 
   for (const r of rows) {
     seenIds.add(r.id);
-    /* NOT `totp_secret != ''`. See the note above. */
-    const mfa = mfaReadable ? confirmedMfa.has(r.id) : false;
+    const mfa = r.totp_secret != null && r.totp_secret !== "";
     out.push({
       id: r.id, email: r.email, name: r.name || r.email.split("@")[0]!,
       role: r.role, status: r.status, tenant: r.tenant || "—", mfa,

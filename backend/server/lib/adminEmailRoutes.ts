@@ -24,7 +24,7 @@
  *   - This module does NOT cache verify() results. Each call probes live.
  */
 import type { Express, Request, Response } from "express";
-import { verifyTransport, sendEmail, resolveSmtpMode } from "./emailSender";
+import { verifyTransport, sendEmail } from "./emailSender";
 import { appendAdminAudit } from "../adminPlatformStore";
 
 interface SanitizedSmtpConfig {
@@ -51,9 +51,7 @@ function getSanitizedConfig(): SanitizedSmtpConfig {
     !!appUrl &&
     !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(appUrl);
   return {
-    /* WAVE 281 · R243.1 — the EFFECTIVE mode, not a guess at it. `?? "smtp"` here
-       would tell an admin the platform is sending while the sender is inert. */
-    mode: resolveSmtpMode(),
+    mode: process.env.SMTP_MODE ?? "smtp",
     host: process.env.SMTP_HOST ?? null,
     port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : null,
     secure: process.env.SMTP_SECURE

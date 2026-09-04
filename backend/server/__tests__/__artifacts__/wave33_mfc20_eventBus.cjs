@@ -287,11 +287,11 @@ var init_foreign_keys = __esm({
       onDelete;
       getName() {
         const { name, columns, foreignColumns } = this.reference();
-        const columnNames3 = columns.map((column) => column.name);
+        const columnNames2 = columns.map((column) => column.name);
         const foreignColumnNames = foreignColumns.map((column) => column.name);
         const chunks = [
           this.table[TableName],
-          ...columnNames3,
+          ...columnNames2,
           foreignColumns[0].table[TableName],
           ...foreignColumnNames
         ];
@@ -2007,11 +2007,11 @@ var init_foreign_keys2 = __esm({
       onDelete;
       getName() {
         const { name, columns, foreignColumns } = this.reference();
-        const columnNames3 = columns.map((column) => column.name);
+        const columnNames2 = columns.map((column) => column.name);
         const foreignColumnNames = foreignColumns.map((column) => column.name);
         const chunks = [
           this.table[TableName],
-          ...columnNames3,
+          ...columnNames2,
           foreignColumns[0].table[TableName],
           ...foreignColumnNames
         ];
@@ -3112,12 +3112,12 @@ var init_dialect = __esm({
       }
       buildUpdateSet(table, set) {
         const tableColumns = table[Table.Symbol.Columns];
-        const columnNames3 = Object.keys(tableColumns).filter(
+        const columnNames2 = Object.keys(tableColumns).filter(
           (colName) => set[colName] !== void 0 || tableColumns[colName]?.onUpdateFn !== void 0
         );
-        const setSize = columnNames3.length;
+        const setSize = columnNames2.length;
         return sql.join(
-          columnNames3.flatMap((colName, i) => {
+          columnNames2.flatMap((colName, i) => {
             const col = tableColumns[colName];
             const onUpdateFnResult = col.onUpdateFn?.();
             const value = set[colName] ?? (is(onUpdateFnResult, SQL) ? onUpdateFnResult : sql.param(onUpdateFnResult, col));
@@ -6234,8 +6234,8 @@ var init_parseUtil = __esm({
     init_errors2();
     init_en();
     makeIssue = (params) => {
-      const { data, path: path9, errorMaps, issueData } = params;
-      const fullPath = [...path9, ...issueData.path || []];
+      const { data, path: path7, errorMaps, issueData } = params;
+      const fullPath = [...path7, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -6543,11 +6543,11 @@ var init_types = __esm({
     init_parseUtil();
     init_util();
     ParseInputLazyPath = class {
-      constructor(parent, value, path9, key2) {
+      constructor(parent, value, path7, key2) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path9;
+        this._path = path7;
         this._key = key2;
       }
       get path() {
@@ -12392,25 +12392,7 @@ var init_schema = __esm({
       agreementVersion: text("agreement_version"),
       agreementSignedName: text("agreement_signed_name"),
       agreementSignedAt: text("agreement_signed_at"),
-      agreementSignatureHash: text("agreement_signature_hash"),
-      // WAVE 217 · R190.8 · Decision A9 — the PARTNER COMPLIANCE ATTESTATION, made
-      // once at registration against §4 of the SIGNED agreement (Eligibility,
-      // Licensing & Regulatory Compliance), whose text is SLICED from the executed
-      // document at render by wave 213's helper and never retyped.
-      // Migration: 0222_wave217_partner_compliance_attestation.sql (mirrored).
-      // All nullable with no default: every pre-217 application keeps the values it
-      // has, and NULL still reads as "predates the declaration" rather than as a
-      // regulatory answer (R176.1 — an absence is never converted into a value).
-      // `jurisdiction` above is REUSED and no second jurisdiction field is added.
-      // NOT part of chainPayload, for the same reason agreement* is not: the chain
-      // stays stable. `rowToApp` is an explicit allowlist mapper with no spread, so
-      // these columns reach ONLY the two admin-authenticated GET routes; the public
-      // `/apply/:id/status` route emits `{applicationId, status}` and nothing else.
-      complianceAttestedAt: text("compliance_attested_at"),
-      complianceAttestationVersion: text("compliance_attestation_version"),
-      complianceAttestationText: text("compliance_attestation_text"),
-      regulatoryStatus: text("regulatory_status"),
-      complianceEvidenceRef: text("compliance_evidence_ref")
+      agreementSignatureHash: text("agreement_signature_hash")
     });
     partnerOrganizations = sqliteTable("partner_organizations", {
       id: text("id").primaryKey(),
@@ -12692,15 +12674,15 @@ var init_logger2 = __esm({
 });
 
 // server/lib/applyWaveC2MfcStagesSchema.ts
-function applyWaveC2MfcStagesSchema(db2) {
+function applyWaveC2MfcStagesSchema(db) {
   try {
-    const parentTableExists = db2.prepare(
+    const parentTableExists = db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='partner_organizations'"
     ).get();
     if (!parentTableExists) {
       return;
     }
-    db2.exec(`CREATE TABLE IF NOT EXISTS mfc_stages (
+    db.exec(`CREATE TABLE IF NOT EXISTS mfc_stages (
       id                       TEXT PRIMARY KEY NOT NULL,
       partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
       stage_machine_type       TEXT NOT NULL CHECK (stage_machine_type IN ('mfc_engagement','partner_pipeline','mp_soft_circle')),
@@ -12716,8 +12698,8 @@ function applyWaveC2MfcStagesSchema(db2) {
       UNIQUE (partner_id, stage_machine_type, ordinal),
       UNIQUE (id, stage_machine_type)
     )`);
-    db2.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stages_terminal ON mfc_stages(is_terminal)");
-    db2.exec(`CREATE TABLE IF NOT EXISTS mfc_stage_transitions (
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stages_terminal ON mfc_stages(is_terminal)");
+    db.exec(`CREATE TABLE IF NOT EXISTS mfc_stage_transitions (
       id                       TEXT PRIMARY KEY NOT NULL,
       partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
       stage_machine_type       TEXT NOT NULL CHECK (stage_machine_type IN ('mfc_engagement','partner_pipeline','mp_soft_circle')),
@@ -12732,10 +12714,10 @@ function applyWaveC2MfcStagesSchema(db2) {
       FOREIGN KEY (from_stage_id, stage_machine_type) REFERENCES mfc_stages(id, stage_machine_type),
       FOREIGN KEY (to_stage_id,   stage_machine_type) REFERENCES mfc_stages(id, stage_machine_type)
     )`);
-    db2.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_subject_created ON mfc_stage_transitions(subject_id, created_at DESC)");
-    db2.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_partner_type    ON mfc_stage_transitions(partner_id, stage_machine_type)");
-    db2.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_to_stage   ON mfc_stage_transitions(to_stage_id)");
-    db2.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_from_stage ON mfc_stage_transitions(from_stage_id) WHERE from_stage_id IS NOT NULL");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_subject_created ON mfc_stage_transitions(subject_id, created_at DESC)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_partner_type    ON mfc_stage_transitions(partner_id, stage_machine_type)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_to_stage   ON mfc_stage_transitions(to_stage_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_from_stage ON mfc_stage_transitions(from_stage_id) WHERE from_stage_id IS NOT NULL");
   } catch (err) {
     log.warn("[wave-c2-mfc-stages] self-heal skipped:", err.message);
   }
@@ -12748,13 +12730,13 @@ var init_applyWaveC2MfcStagesSchema = __esm({
 });
 
 // server/lib/applyD25Slice3CollectiveEnvFallbackSchema.ts
-function applyD25Slice3CollectiveEnvFallbackSchema(db2) {
+function applyD25Slice3CollectiveEnvFallbackSchema(db) {
   try {
-    const tableExists4 = db2.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collective_subscription_configs'").get();
-    if (!tableExists4) return;
-    const cols = db2.prepare("PRAGMA table_info(collective_subscription_configs)").all();
+    const tableExists3 = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collective_subscription_configs'").get();
+    if (!tableExists3) return;
+    const cols = db.prepare("PRAGMA table_info(collective_subscription_configs)").all();
     if (cols.some((c) => c.name === "use_env_fallback")) return;
-    db2.exec(
+    db.exec(
       "ALTER TABLE collective_subscription_configs ADD COLUMN use_env_fallback INTEGER NOT NULL DEFAULT 1"
     );
     log.info("[d2.5-slice-3] collective_subscription_configs.use_env_fallback added (default 1 \u2014 env fallback preserved for all existing rows)");
@@ -12773,14 +12755,14 @@ var init_applyD25Slice3CollectiveEnvFallbackSchema = __esm({
 });
 
 // server/lib/applyWaveC2PartnerAttributionsScopeSchema.ts
-function applyWaveC2PartnerAttributionsScopeSchema(db2) {
+function applyWaveC2PartnerAttributionsScopeSchema(db) {
   try {
-    const tableExists4 = db2.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_attributions'`
     ).get();
-    if (!tableExists4) return;
+    if (!tableExists3) return;
     const existingCols = new Set(
-      db2.prepare(`PRAGMA table_info(partner_attributions)`).all().map((r) => r.name)
+      db.prepare(`PRAGMA table_info(partner_attributions)`).all().map((r) => r.name)
     );
     const lock2Columns = [
       // authority_artifact_id: BARE TEXT, no REFERENCES clause (V32-M8, spec §2.2/0129).
@@ -12795,7 +12777,7 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
     for (const [colName, colDef] of lock2Columns) {
       if (existingCols.has(colName)) continue;
       try {
-        db2.exec(`ALTER TABLE partner_attributions ADD COLUMN ${colName} ${colDef};`);
+        db.exec(`ALTER TABLE partner_attributions ADD COLUMN ${colName} ${colDef};`);
       } catch (e) {
         const msg = String(e?.message ?? "");
         if (!/duplicate column name/i.test(msg)) {
@@ -12803,7 +12785,7 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
         }
       }
     }
-    const dupePairs = db2.prepare(
+    const dupePairs = db.prepare(
       `SELECT partner_id, company_id, COUNT(*) AS n
          FROM partner_attributions
         WHERE revoked_at IS NULL
@@ -12812,7 +12794,7 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
     ).all();
     if (dupePairs.length > 0) {
       const migrationRunAt = (/* @__PURE__ */ new Date()).toISOString();
-      db2.exec(`
+      db.exec(`
         CREATE TABLE IF NOT EXISTS c2_backfill_skip_log (
           id TEXT PRIMARY KEY NOT NULL,
           source_table TEXT NOT NULL,
@@ -12823,7 +12805,7 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
         );
       `);
       for (const pair of dupePairs) {
-        const activeRows = db2.prepare(
+        const activeRows = db.prepare(
           `SELECT id, attributed_at
              FROM partner_attributions
             WHERE partner_id = ? AND company_id = ? AND revoked_at IS NULL
@@ -12831,12 +12813,12 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
         ).all(pair.partner_id, pair.company_id);
         const toRevoke = activeRows.slice(1);
         for (const row of toRevoke) {
-          db2.prepare(
+          db.prepare(
             `UPDATE partner_attributions
                 SET revoked_at = ?, revoked_by = ?
               WHERE id = ?`
           ).run(migrationRunAt, "system:c2_migration_0129", row.id);
-          db2.prepare(
+          db.prepare(
             `INSERT INTO c2_backfill_skip_log
                (id, source_table, source_id, missing_fk, reason, skipped_at)
              VALUES (?, ?, ?, ?, ?, ?)`
@@ -12851,7 +12833,7 @@ function applyWaveC2PartnerAttributionsScopeSchema(db2) {
         }
       }
     }
-    db2.exec(`
+    db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_attributions_active
         ON partner_attributions(partner_id, company_id)
         WHERE revoked_at IS NULL;
@@ -12868,19 +12850,19 @@ var init_applyWaveC2PartnerAttributionsScopeSchema = __esm({
 });
 
 // server/lib/applyWaveC2AuthorityArtifactsSchema.ts
-function applyWaveC2AuthorityArtifactsSchema(db2) {
+function applyWaveC2AuthorityArtifactsSchema(db) {
   try {
-    const parentExists = db2.prepare(
+    const parentExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_attributions'`
     ).get();
     if (!parentExists) {
       return;
     }
-    const tableExists4 = db2.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='authority_artifacts'`
     ).get();
-    if (!tableExists4) {
-      db2.exec(`
+    if (!tableExists3) {
+      db.exec(`
         CREATE TABLE IF NOT EXISTS authority_artifacts (
           id                       TEXT PRIMARY KEY NOT NULL,
           partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
@@ -12933,16 +12915,16 @@ function applyWaveC2AuthorityArtifactsSchema(db2) {
           WHERE revoked_at IS NULL AND partner_attribution_id IS NOT NULL;
       `);
     }
-    const mfEngagementExists = db2.prepare(
+    const mfEngagementExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mf_engagement'`
     ).get();
     if (mfEngagementExists) {
       const existingCols = new Set(
-        db2.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
       );
       if (!existingCols.has("consent_scope")) {
         try {
-          db2.exec(`ALTER TABLE mf_engagement ADD COLUMN consent_scope TEXT NOT NULL DEFAULT 'public_data_only';`);
+          db.exec(`ALTER TABLE mf_engagement ADD COLUMN consent_scope TEXT NOT NULL DEFAULT 'public_data_only';`);
         } catch (e) {
           if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
             throw e;
@@ -12951,14 +12933,14 @@ function applyWaveC2AuthorityArtifactsSchema(db2) {
       }
       if (!existingCols.has("authority_artifact_id")) {
         try {
-          db2.exec(`ALTER TABLE mf_engagement ADD COLUMN authority_artifact_id TEXT REFERENCES authority_artifacts(id);`);
+          db.exec(`ALTER TABLE mf_engagement ADD COLUMN authority_artifact_id TEXT REFERENCES authority_artifacts(id);`);
         } catch (e) {
           if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
             throw e;
           }
         }
       }
-      db2.exec(`
+      db.exec(`
         CREATE INDEX IF NOT EXISTS idx_mf_engagement_authority_artifact
           ON mf_engagement(authority_artifact_id) WHERE authority_artifact_id IS NOT NULL;
       `);
@@ -12975,14 +12957,14 @@ var init_applyWaveC2AuthorityArtifactsSchema = __esm({
 });
 
 // server/lib/applyWaveC2MfEngagementSchema.ts
-function applyWaveC2MfEngagementSchema(db2) {
+function applyWaveC2MfEngagementSchema(db) {
   try {
-    const mfEngagementExists = db2.prepare(
+    const mfEngagementExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mf_engagement'`
     ).get();
     if (mfEngagementExists) {
       const engagementCols = new Set(
-        db2.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
       );
       const engagementAdds = [
         ["founder_revoked_at", `ALTER TABLE mf_engagement ADD COLUMN founder_revoked_at TEXT;`],
@@ -12996,7 +12978,7 @@ function applyWaveC2MfEngagementSchema(db2) {
       for (const [col, ddl] of engagementAdds) {
         if (!engagementCols.has(col)) {
           try {
-            db2.exec(ddl);
+            db.exec(ddl);
           } catch (e) {
             if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
               throw e;
@@ -13004,16 +12986,16 @@ function applyWaveC2MfEngagementSchema(db2) {
           }
         }
       }
-      const mfcStagesExists = db2.prepare(
+      const mfcStagesExists = db.prepare(
         `SELECT name FROM sqlite_master WHERE type='table' AND name='mfc_stages'`
       ).get();
       if (mfcStagesExists) {
         const refreshedCols = new Set(
-          db2.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
+          db.prepare(`PRAGMA table_info(mf_engagement)`).all().map((r) => r.name)
         );
         if (!refreshedCols.has("current_stage_id")) {
           try {
-            db2.exec(`ALTER TABLE mf_engagement ADD COLUMN current_stage_id TEXT REFERENCES mfc_stages(id);`);
+            db.exec(`ALTER TABLE mf_engagement ADD COLUMN current_stage_id TEXT REFERENCES mfc_stages(id);`);
           } catch (e) {
             if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
               throw e;
@@ -13022,7 +13004,7 @@ function applyWaveC2MfEngagementSchema(db2) {
         }
         if (!refreshedCols.has("current_stage_machine_type")) {
           try {
-            db2.exec(
+            db.exec(
               `ALTER TABLE mf_engagement ADD COLUMN current_stage_machine_type TEXT CHECK (current_stage_machine_type = 'mfc_engagement');`
             );
           } catch (e) {
@@ -13033,12 +13015,12 @@ function applyWaveC2MfEngagementSchema(db2) {
         }
       }
     }
-    const mfEngagementEventExists = db2.prepare(
+    const mfEngagementEventExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mf_engagement_event'`
     ).get();
     if (mfEngagementEventExists) {
       const eventCols = new Set(
-        db2.prepare(`PRAGMA table_info(mf_engagement_event)`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(mf_engagement_event)`).all().map((r) => r.name)
       );
       const eventAdds = [
         [
@@ -13095,7 +13077,7 @@ function applyWaveC2MfEngagementSchema(db2) {
       for (const [col, ddl] of eventAdds) {
         if (!eventCols.has(col)) {
           try {
-            db2.exec(ddl);
+            db.exec(ddl);
           } catch (e) {
             if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
               throw e;
@@ -13116,24 +13098,24 @@ var init_applyWaveC2MfEngagementSchema = __esm({
 });
 
 // server/lib/applyWaveC2SoftCircleProvenanceSchema.ts
-function applyWaveC2PipelineSchema(db2) {
+function applyWaveC2PipelineSchema(db) {
   try {
-    const tableExists4 = db2.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_deal_pipeline'`
     ).get();
-    if (!tableExists4) {
+    if (!tableExists3) {
       return;
     }
     const existingCols = new Set(
-      db2.prepare(`PRAGMA table_info(partner_deal_pipeline)`).all().map((r) => r.name)
+      db.prepare(`PRAGMA table_info(partner_deal_pipeline)`).all().map((r) => r.name)
     );
-    const mfcStagesExists = db2.prepare(
+    const mfcStagesExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mfc_stages'`
     ).get();
     const addColumnIfMissing = (col, ddl) => {
       if (existingCols.has(col)) return;
       try {
-        db2.exec(ddl);
+        db.exec(ddl);
         existingCols.add(col);
       } catch (e) {
         if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
@@ -13187,13 +13169,13 @@ function applyWaveC2PipelineSchema(db2) {
       "kv_revision_hash",
       `ALTER TABLE partner_deal_pipeline ADD COLUMN kv_revision_hash TEXT;`
     );
-    db2.exec(`
+    db.exec(`
       CREATE INDEX IF NOT EXISTS idx_partner_deal_pipeline_current_stage
         ON partner_deal_pipeline(current_stage_id) WHERE current_stage_id IS NOT NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_deal_pipeline_legacy_id
         ON partner_deal_pipeline(legacy_id) WHERE legacy_id IS NOT NULL;
     `);
-    db2.exec(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS c2_backfill_skip_log (
         id            TEXT PRIMARY KEY NOT NULL,
         source_table  TEXT NOT NULL,
@@ -13203,7 +13185,7 @@ function applyWaveC2PipelineSchema(db2) {
         skipped_at    TEXT NOT NULL
       );
     `);
-    db2.exec(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS _c2_pipeline_backfill_lock (
         id            TEXT PRIMARY KEY NOT NULL,
         started_at    TEXT NOT NULL,
@@ -13223,14 +13205,14 @@ var init_applyWaveC2SoftCircleProvenanceSchema = __esm({
 });
 
 // server/lib/applyWaveC2ProvenanceColumnsSchema.ts
-function applyWaveC2ProvenanceColumnsSchema(db2) {
+function applyWaveC2ProvenanceColumnsSchema(db) {
   try {
-    const roundInvitationsExists = db2.prepare(
+    const roundInvitationsExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='round_invitations'`
     ).get();
     if (roundInvitationsExists) {
       const riCols = new Set(
-        db2.prepare(`PRAGMA table_info(round_invitations)`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(round_invitations)`).all().map((r) => r.name)
       );
       const riAlters = [
         [
@@ -13269,7 +13251,7 @@ function applyWaveC2ProvenanceColumnsSchema(db2) {
       for (const [colName, sql2] of riAlters) {
         if (!riCols.has(colName)) {
           try {
-            db2.exec(sql2 + ";");
+            db.exec(sql2 + ";");
           } catch (e) {
             if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
               throw e;
@@ -13277,7 +13259,7 @@ function applyWaveC2ProvenanceColumnsSchema(db2) {
           }
         }
       }
-      db2.exec(`
+      db.exec(`
         CREATE INDEX IF NOT EXISTS idx_round_invitations_sourced_partner
           ON round_invitations(sourced_from_partner_id, sourced_from_partner_attribution_id)
           WHERE sourced_from_partner_id IS NOT NULL;
@@ -13286,12 +13268,12 @@ function applyWaveC2ProvenanceColumnsSchema(db2) {
           WHERE engagement_id IS NOT NULL;
       `);
     }
-    const softCirclesExists = db2.prepare(
+    const softCirclesExists = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='soft_circles'`
     ).get();
     if (softCirclesExists) {
       const scCols = new Set(
-        db2.prepare(`PRAGMA table_info(soft_circles)`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(soft_circles)`).all().map((r) => r.name)
       );
       const scAlters = [
         [
@@ -13321,7 +13303,7 @@ function applyWaveC2ProvenanceColumnsSchema(db2) {
       for (const [colName, sql2] of scAlters) {
         if (!scCols.has(colName)) {
           try {
-            db2.exec(sql2 + ";");
+            db.exec(sql2 + ";");
           } catch (e) {
             if (!/duplicate column name/i.test(String(e?.message ?? ""))) {
               throw e;
@@ -13329,7 +13311,7 @@ function applyWaveC2ProvenanceColumnsSchema(db2) {
           }
         }
       }
-      db2.exec(`
+      db.exec(`
         CREATE INDEX IF NOT EXISTS idx_soft_circles_sourced_partner
           ON soft_circles(sourced_from_partner_id, sourced_from_partner_attribution_id)
           WHERE sourced_from_partner_id IS NOT NULL;
@@ -13347,12 +13329,12 @@ var init_applyWaveC2ProvenanceColumnsSchema = __esm({
 });
 
 // server/lib/applyWaveC2ClientScopeSchema.ts
-function applyWaveC2ClientScopeSchema(db2) {
+function applyWaveC2ClientScopeSchema(db) {
   try {
-    const crmContactsParent = db2.prepare(
+    const crmContactsParent = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_crm_contacts'`
     ).get();
-    const attributionsParent = db2.prepare(
+    const attributionsParent = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_attributions'`
     ).get();
     if (!crmContactsParent || !attributionsParent) {
@@ -13362,60 +13344,24 @@ function applyWaveC2ClientScopeSchema(db2) {
       );
       return;
     }
-    const tableExists4 = db2.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_crm_contact_client_scope'`
     ).get();
-    if (!tableExists4) {
-      db2.exec(`
+    if (!tableExists3) {
+      db.exec(`
         CREATE TABLE IF NOT EXISTS partner_crm_contact_client_scope (
           id                       TEXT PRIMARY KEY NOT NULL,
           partner_crm_contact_id   TEXT NOT NULL REFERENCES partner_crm_contacts(id),
           partner_attribution_id   TEXT NOT NULL REFERENCES partner_attributions(id),
-          scoped_by_user_id        TEXT NOT NULL,
+          scoped_by_user_id        TEXT NOT NULL REFERENCES users(id),
           scoped_at                TEXT NOT NULL,
           created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
           created_by               TEXT,
           UNIQUE (partner_crm_contact_id, partner_attribution_id)
         );
       `);
-    } else {
-      const declared = db2.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='partner_crm_contact_client_scope'`
-      ).get();
-      const ddl = String(declared?.sql ?? "");
-      const hasLegacyActorFk = /scoped_by_user_id[^,]*REFERENCES\s+users\s*\(/i.test(ddl);
-      if (hasLegacyActorFk) {
-        log.warn(
-          "[wave-c2-client-scope] legacy actor FK detected on partner_crm_contact_client_scope (scoped_by_user_id REFERENCES users(id)); rebuilding without it \u2014 wave 178 item B"
-        );
-        db2.exec(`
-          DROP TABLE IF EXISTS partner_crm_contact_client_scope_w178_new;
-          CREATE TABLE partner_crm_contact_client_scope_w178_new (
-            id                       TEXT PRIMARY KEY NOT NULL,
-            partner_crm_contact_id   TEXT NOT NULL REFERENCES partner_crm_contacts(id),
-            partner_attribution_id   TEXT NOT NULL REFERENCES partner_attributions(id),
-            scoped_by_user_id        TEXT NOT NULL,
-            scoped_at                TEXT NOT NULL,
-            created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            created_by               TEXT,
-            UNIQUE (partner_crm_contact_id, partner_attribution_id)
-          );
-          INSERT INTO partner_crm_contact_client_scope_w178_new
-            (id, partner_crm_contact_id, partner_attribution_id, scoped_by_user_id,
-             scoped_at, created_at, created_by)
-          SELECT
-             id, partner_crm_contact_id, partner_attribution_id, scoped_by_user_id,
-             scoped_at, created_at, created_by
-          FROM partner_crm_contact_client_scope;
-          DROP TABLE partner_crm_contact_client_scope;
-          PRAGMA legacy_alter_table = ON;
-          ALTER TABLE partner_crm_contact_client_scope_w178_new
-            RENAME TO partner_crm_contact_client_scope;
-          PRAGMA legacy_alter_table = OFF;
-        `);
-      }
     }
-    db2.exec(`
+    db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pccs_attribution
         ON partner_crm_contact_client_scope(partner_attribution_id);
     `);
@@ -13431,18 +13377,18 @@ var init_applyWaveC2ClientScopeSchema = __esm({
 });
 
 // server/lib/applyWaveC2PcrSpineSchema.ts
-function applyWaveC2PcrSpineSchema(db2) {
+function applyWaveC2PcrSpineSchema(db) {
   try {
-    const partnerOrgsExist = db2.prepare(
+    const partnerOrgsExist = db.prepare(
       `SELECT 1 FROM sqlite_master WHERE type='table' AND name='partner_organizations'`
     ).get();
-    const companiesExist = db2.prepare(
+    const companiesExist = db.prepare(
       `SELECT 1 FROM sqlite_master WHERE type='table' AND name='companies'`
     ).get();
     if (!partnerOrgsExist || !companiesExist) {
       return;
     }
-    db2.exec(`CREATE TABLE IF NOT EXISTS partner_company_relationship (
+    db.exec(`CREATE TABLE IF NOT EXISTS partner_company_relationship (
       id          TEXT PRIMARY KEY NOT NULL,
       partner_id  TEXT NOT NULL REFERENCES partner_organizations(id),
       company_id  TEXT NOT NULL REFERENCES companies(id),
@@ -13450,9 +13396,9 @@ function applyWaveC2PcrSpineSchema(db2) {
       updated_at  TEXT NOT NULL,
       UNIQUE (partner_id, company_id)
     )`);
-    db2.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_partner ON partner_company_relationship(partner_id)`);
-    db2.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_company ON partner_company_relationship(company_id)`);
-    db2.exec(`CREATE TABLE IF NOT EXISTS pcr_surface_presence (
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_partner ON partner_company_relationship(partner_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_company ON partner_company_relationship(company_id)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS pcr_surface_presence (
       id          TEXT PRIMARY KEY NOT NULL,
       pcr_id      TEXT NOT NULL REFERENCES partner_company_relationship(id),
       surface     TEXT NOT NULL CHECK (surface IN ('mfc','pipeline','clients','portfolio')),
@@ -13461,8 +13407,8 @@ function applyWaveC2PcrSpineSchema(db2) {
       removed_at  TEXT,
       UNIQUE (pcr_id, surface, row_id)
     )`);
-    db2.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_pcr ON pcr_surface_presence(pcr_id)`);
-    db2.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_row ON pcr_surface_presence(surface, row_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_pcr ON pcr_surface_presence(pcr_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_row ON pcr_surface_presence(surface, row_id)`);
     const surfaceAlters = [
       ["mf_engagement", "idx_mf_engagement_pcr"],
       ["partner_deal_pipeline", "idx_partner_deal_pipeline_pcr"],
@@ -13470,18 +13416,18 @@ function applyWaveC2PcrSpineSchema(db2) {
       ["partner_portfolio_company", "idx_partner_portfolio_company_pcr"]
     ];
     for (const [table, indexName] of surfaceAlters) {
-      const tableExists4 = db2.prepare(
+      const tableExists3 = db.prepare(
         `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`
       ).get(table);
-      if (!tableExists4) {
+      if (!tableExists3) {
         continue;
       }
       const cols = new Set(
-        db2.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name)
+        db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name)
       );
       if (!cols.has("pcr_id")) {
         try {
-          db2.exec(
+          db.exec(
             `ALTER TABLE ${table} ADD COLUMN pcr_id TEXT REFERENCES partner_company_relationship(id)`
           );
         } catch (e) {
@@ -13490,7 +13436,7 @@ function applyWaveC2PcrSpineSchema(db2) {
           }
         }
       }
-      db2.exec(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${table}(pcr_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${table}(pcr_id)`);
     }
   } catch (err) {
     log.warn("[wave-c2-pcr-spine] self-heal skipped:", err.message);
@@ -13504,22 +13450,22 @@ var init_applyWaveC2PcrSpineSchema = __esm({
 });
 
 // server/lib/applyWaveC2ClassificationRequestsSchema.ts
-function applyWaveC2ClassificationRequestsSchema(db2) {
+function applyWaveC2ClassificationRequestsSchema(db) {
   try {
-    const partnerOrgsExist = db2.prepare(
+    const partnerOrgsExist = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='partner_organizations'`
     ).get();
-    const usersExist = db2.prepare(
+    const usersExist = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='users'`
     ).get();
     if (!partnerOrgsExist || !usersExist) {
       return;
     }
-    const tableExists4 = db2.prepare(
+    const tableExists3 = db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='mfc_classification_requests'`
     ).get();
-    if (!tableExists4) {
-      db2.exec(`
+    if (!tableExists3) {
+      db.exec(`
         CREATE TABLE IF NOT EXISTS mfc_classification_requests (
           id                    TEXT PRIMARY KEY NOT NULL,
           partner_id            TEXT NOT NULL REFERENCES partner_organizations(id),
@@ -13536,7 +13482,7 @@ function applyWaveC2ClassificationRequestsSchema(db2) {
         );
       `);
     }
-    db2.exec(`
+    db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_mfc_classification_requests_pending
         ON mfc_classification_requests(partner_id)
         WHERE status = 'pending';
@@ -13568,14 +13514,14 @@ function ensureTable(storeName) {
   const t = tableNameFor(storeName);
   if (ensuredTables.has(t)) return true;
   try {
-    const db2 = rawDb();
-    db2.exec(`CREATE TABLE IF NOT EXISTS ${t} (
+    const db = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS ${t} (
       id TEXT PRIMARY KEY NOT NULL,
       payload_json TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT
     );`);
-    db2.exec(`CREATE INDEX IF NOT EXISTS idx_${t}_updated_at ON ${t}(updated_at);`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${t}_updated_at ON ${t}(updated_at);`);
     ensuredTables.add(t);
     return true;
   } catch (err) {
@@ -13590,10 +13536,10 @@ function persistEntry(storeName, id, obj) {
   if (!id || !obj) return false;
   if (!ensureTable(storeName)) return false;
   try {
-    const db2 = rawDb();
+    const db = rawDb();
     const t = tableNameFor(storeName);
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    db2.prepare(
+    db.prepare(
       `INSERT INTO ${t} (id, payload_json, updated_at, deleted_at)
          VALUES (?, ?, ?, NULL)
          ON CONFLICT(id) DO UPDATE SET
@@ -13613,9 +13559,9 @@ function persistEntry(storeName, id, obj) {
 function hydrateEntries(storeName) {
   if (!ensureTable(storeName)) return [];
   try {
-    const db2 = rawDb();
+    const db = rawDb();
     const t = tableNameFor(storeName);
-    const rows = db2.prepare(`SELECT id, payload_json FROM ${t} WHERE deleted_at IS NULL ORDER BY updated_at ASC`).all();
+    const rows = db.prepare(`SELECT id, payload_json FROM ${t} WHERE deleted_at IS NULL ORDER BY updated_at ASC`).all();
     const result = [];
     for (const r of rows) {
       try {
@@ -13677,12 +13623,12 @@ function buildMappingNote(kvStage, v19Stage, mfcStageId) {
   const base = `kv_stage:${kvStage}->v19_stage:${v19Stage}`;
   return mfcStageId ? `${base};mfc_stage_id=${mfcStageId}` : `${base};mfc_stage_unresolved`;
 }
-function tableExists(db2, name) {
-  const row = db2.prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?`).get(name);
+function tableExists(db, name) {
+  const row = db.prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?`).get(name);
   return !!row;
 }
-function columnSet(db2, table) {
-  const cols = db2.prepare(`PRAGMA table_info(${table})`).all();
+function columnSet(db, table) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
   return new Set(cols.map((c) => c.name));
 }
 function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
@@ -13701,11 +13647,11 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
     errors: []
   };
   let lockAcquired = false;
-  let db2 = null;
+  let db = null;
   try {
-    db2 = dbArg ?? rawDb();
+    db = dbArg ?? rawDb();
     for (const t of REQUIRED_TABLES) {
-      if (!tableExists(db2, t)) {
+      if (!tableExists(db, t)) {
         result.skipped = "schema_not_ready";
         log.warn({
           route: "runWaveC2PipelineKvBackfill",
@@ -13714,7 +13660,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
         return result;
       }
     }
-    const have = columnSet(db2, "partner_deal_pipeline");
+    const have = columnSet(db, "partner_deal_pipeline");
     const missingCols = REQUIRED_PIPELINE_COLUMNS.filter((c) => !have.has(c));
     if (missingCols.length > 0) {
       result.skipped = "schema_not_ready";
@@ -13726,13 +13672,13 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
     }
     const startedAt = nowIso();
     if (!opts.verifyOnly) {
-      const ins = db2.prepare(
+      const ins = db.prepare(
         `INSERT INTO _c2_pipeline_backfill_lock (id, started_at, host, completed_at)
              VALUES (?, ?, ?, NULL)
              ON CONFLICT (id) DO NOTHING`
       ).run(BACKFILL_LOCK_ID, startedAt, (0, import_os.hostname)());
       if (ins.changes === 0) {
-        const existing = db2.prepare(
+        const existing = db.prepare(
           `SELECT started_at, host, completed_at FROM _c2_pipeline_backfill_lock WHERE id = ?`
         ).get(BACKFILL_LOCK_ID);
         if (existing?.completed_at) {
@@ -13741,7 +13687,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
             route: "runWaveC2PipelineKvBackfill",
             message: `backfill already completed at ${existing.completed_at} by ${existing.host}; running verify-only pass`
           });
-          result.chainVerify = verifyAllTenantChains(db2);
+          result.chainVerify = verifyAllTenantChains(db);
           result.ok = result.chainVerify.every((v) => v.status !== "drifted");
           return result;
         }
@@ -13755,7 +13701,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
       lockAcquired = true;
     }
     if (opts.verifyOnly) {
-      result.chainVerify = verifyAllTenantChains(db2);
+      result.chainVerify = verifyAllTenantChains(db);
       result.ok = result.chainVerify.every((v) => v.status !== "drifted");
       return result;
     }
@@ -13782,10 +13728,10 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
     result.tenantsSeen = byPartner.size;
     const runAt = nowIso();
     const verifyResults = [];
-    db2.transaction(() => {
+    db.transaction(() => {
       for (const [partnerId, deals] of Array.from(byPartner.entries())) {
         const tenantId = tenantIdFor(partnerId);
-        const tip = db2.prepare(
+        const tip = db.prepare(
           `SELECT curr_hash FROM partner_deal_pipeline
               WHERE tenant_id = ? AND deleted_at IS NULL
               ORDER BY created_at DESC, id DESC LIMIT 1`
@@ -13794,7 +13740,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
         let insertedForTenant = 0;
         for (const deal of deals) {
           if (deal.companyId === null || deal.companyId === void 0 || deal.companyId === "") {
-            insertSkipLog(db2, {
+            insertSkipLog(db, {
               sourceId: deal.id,
               missingFk: "company_id",
               reason: SKIP_REASON_NULL_COMPANY,
@@ -13803,11 +13749,11 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
             result.skippedNullCompany += 1;
             continue;
           }
-          const dup = db2.prepare(
+          const dup = db.prepare(
             `SELECT id FROM partner_deal_pipeline WHERE legacy_id = ? LIMIT 1`
           ).get(deal.id);
           if (dup) {
-            insertSkipLog(db2, {
+            insertSkipLog(db, {
               sourceId: deal.id,
               missingFk: "legacy_id",
               reason: `${SKIP_REASON_LEGACY_ID_CONFLICT}:v19_row=${dup.id}`,
@@ -13818,7 +13764,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
           }
           const kvStage = String(deal.stage ?? "invited");
           const v19Stage = KV_STAGE_TO_V19_STAGE[kvStage] ?? "sourced";
-          const stageRow = db2.prepare(
+          const stageRow = db.prepare(
             `SELECT id FROM mfc_stages
                 WHERE partner_id = ? AND stage_machine_type = ? AND key = ? LIMIT 1`
           ).get(partnerId, PIPELINE_STAGE_MACHINE_TYPE, kvStage);
@@ -13836,7 +13782,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
             createdAt
           });
           const currHash = computeHash(prevHash, payload);
-          db2.prepare(
+          db.prepare(
             `INSERT INTO partner_deal_pipeline (
                id, tenant_id, partner_id, company_id, stage, assigned_user_ids,
                target_close_at, notes, prev_hash, curr_hash, legacy_id,
@@ -13898,7 +13844,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
             deal.revisionHash ?? null
           );
           if (mfcStageId) {
-            db2.prepare(
+            db.prepare(
               `INSERT INTO mfc_stage_transitions (
                  id, partner_id, stage_machine_type, subject_id,
                  from_stage_id, to_stage_id, actor_user_id, actor_role,
@@ -13924,7 +13870,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
           insertedForTenant += 1;
           result.inserted += 1;
         }
-        const v = verifyTenantChain(db2, tenantId, partnerId);
+        const v = verifyTenantChain(db, tenantId, partnerId);
         v.backfilledRows = insertedForTenant;
         verifyResults.push(v);
         if (v.status === "drifted") {
@@ -13934,7 +13880,7 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
         }
         result.tenantsCommitted += 1;
       }
-      db2.prepare(
+      db.prepare(
         `UPDATE _c2_pipeline_backfill_lock SET completed_at = ? WHERE id = ?`
       ).run(nowIso(), BACKFILL_LOCK_ID);
     })();
@@ -13950,9 +13896,9 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
     result.ok = false;
     result.skipped = "error";
     result.errors.push(msg);
-    if (lockAcquired && db2) {
+    if (lockAcquired && db) {
       try {
-        db2.prepare(`DELETE FROM _c2_pipeline_backfill_lock WHERE id = ? AND completed_at IS NULL`).run(BACKFILL_LOCK_ID);
+        db.prepare(`DELETE FROM _c2_pipeline_backfill_lock WHERE id = ? AND completed_at IS NULL`).run(BACKFILL_LOCK_ID);
       } catch (relErr) {
         result.errors.push(`lock_release_failed: ${relErr?.message ?? String(relErr)}`);
       }
@@ -13964,8 +13910,8 @@ function runWaveC2PipelineKvBackfill(dbArg, opts = {}) {
     return result;
   }
 }
-function insertSkipLog(db2, args) {
-  db2.prepare(
+function insertSkipLog(db, args) {
+  db.prepare(
     `INSERT INTO c2_backfill_skip_log (id, source_table, source_id, missing_fk, reason, skipped_at)
        VALUES (?, ?, ?, ?, ?, ?)`
   ).run(
@@ -13980,7 +13926,7 @@ function insertSkipLog(db2, args) {
 function isBackfilledRow(row) {
   return row.legacy_id !== null && row.legacy_id !== void 0 && typeof row.mapping_note === "string" && row.mapping_note.startsWith("kv_stage:");
 }
-function verifyTenantChain(db2, tenantId, partnerId) {
+function verifyTenantChain(db, tenantId, partnerId) {
   const out = {
     tenantId,
     partnerId,
@@ -13991,7 +13937,7 @@ function verifyTenantChain(db2, tenantId, partnerId) {
     brokenAtRowId: null,
     hint: null
   };
-  const rows = db2.prepare(
+  const rows = db.prepare(
     `SELECT id, prev_hash, curr_hash, partner_id, company_id, stage,
               created_at, legacy_id, mapping_note, kv_revision_hash,
               kv_prev_revision_hash
@@ -14036,12 +13982,12 @@ function verifyTenantChain(db2, tenantId, partnerId) {
   }
   return out;
 }
-function verifyAllTenantChains(db2) {
-  const tenants2 = db2.prepare(
+function verifyAllTenantChains(db) {
+  const tenants2 = db.prepare(
     `SELECT DISTINCT tenant_id, partner_id FROM partner_deal_pipeline
         WHERE deleted_at IS NULL ORDER BY tenant_id ASC`
   ).all();
-  return tenants2.map((t) => verifyTenantChain(db2, t.tenant_id, t.partner_id));
+  return tenants2.map((t) => verifyTenantChain(db, t.tenant_id, t.partner_id));
 }
 var import_crypto, import_crypto2, import_os, BACKFILL_LOCK_ID, PIPELINE_STAGE_MACHINE_TYPE, SKIP_LOG_SOURCE_TABLE, MINOR_UNITS_PER_MAJOR, KV_STAGE_TO_V19_STAGE, SKIP_REASON_NULL_COMPANY, SKIP_REASON_LEGACY_ID_CONFLICT, REQUIRED_PIPELINE_COLUMNS, REQUIRED_TABLES;
 var init_runWaveC2PipelineKvBackfill = __esm({
@@ -14146,20 +14092,20 @@ function getDb() {
   }
   const Database = _require("better-sqlite3");
   const sqliteDrizzle = _require("drizzle-orm/better-sqlite3").drizzle;
-  let path9;
+  let path7;
   if (url && url.startsWith("file:")) {
-    path9 = url.slice(5);
+    path7 = url.slice(5);
   } else if (url && url.startsWith("sqlite:")) {
-    path9 = url.slice(7);
+    path7 = url.slice(7);
   } else if (false) {
-    path9 = ":memory:";
+    path7 = ":memory:";
   } else if (process.env.SQLITE_PATH) {
-    path9 = process.env.SQLITE_PATH;
+    path7 = process.env.SQLITE_PATH;
   } else {
-    path9 = "./data.db";
+    path7 = "./data.db";
   }
-  log.info(`[db] Opening SQLite at: ${path9}`);
-  _rawSqlite = new Database(path9);
+  log.info(`[db] Opening SQLite at: ${path7}`);
+  _rawSqlite = new Database(path7);
   _rawSqlite.pragma("journal_mode = WAL");
   _rawSqlite.pragma("recursive_triggers = ON");
   _rawSqlite.pragma("foreign_keys = ON");
@@ -14210,39 +14156,39 @@ function getDbDriver() {
   if (_isPostgresUrl(process.env.DATABASE_URL)) return "postgres";
   return "sqlite";
 }
-function applyInlineMigrations(db2) {
+function applyInlineMigrations(db) {
   try {
-    db2.pragma("busy_timeout = 5000");
+    db.pragma("busy_timeout = 5000");
   } catch {
   }
   try {
-    const hasLegacyTable = db2.prepare(
+    const hasLegacyTable = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations_applied'"
     ).get();
     if (hasLegacyTable) {
-      const cols = db2.prepare("PRAGMA table_info('_migrations_applied')").all();
+      const cols = db.prepare("PRAGMA table_info('_migrations_applied')").all();
       const colNames = new Set(cols.map((c) => c.name));
       const hasKey = colNames.has("key");
       const hasName = colNames.has("name");
       if (!hasKey && hasName) {
         let target = "_migrations_applied_legacy_v26_7_2";
-        for (let n = 2; db2.prepare(
+        for (let n = 2; db.prepare(
           "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
         ).get(target); n++) {
           target = `_migrations_applied_legacy_v26_7_2_${n}`;
         }
-        db2.pragma("legacy_alter_table = ON");
+        db.pragma("legacy_alter_table = ON");
         try {
-          const repairTx = db2.transaction(() => {
-            db2.exec(
+          const repairTx = db.transaction(() => {
+            db.exec(
               `ALTER TABLE _migrations_applied RENAME TO ${target}`
             );
-            db2.exec(`CREATE TABLE IF NOT EXISTS _migrations_applied (
+            db.exec(`CREATE TABLE IF NOT EXISTS _migrations_applied (
               key TEXT PRIMARY KEY NOT NULL,
               applied_at TEXT NOT NULL,
               details TEXT NOT NULL DEFAULT ''
             );`);
-            db2.exec(
+            db.exec(
               `INSERT OR IGNORE INTO _migrations_applied (key, applied_at, details)
                  SELECT name, applied_at, 'seeded from legacy tracker by v26.7.2'
                  FROM ${target}`
@@ -14253,7 +14199,7 @@ function applyInlineMigrations(db2) {
             `[db] v26.7.2 repaired legacy _migrations_applied shape (backup kept as ${target})`
           );
         } finally {
-          db2.pragma("legacy_alter_table = OFF");
+          db.pragma("legacy_alter_table = OFF");
         }
       }
     }
@@ -14264,14 +14210,14 @@ function applyInlineMigrations(db2) {
   }
   const baseStmts = buildCreateTableStatements();
   const productionStmts = buildProductionTableStatements();
-  const tx = db2.transaction(() => {
+  const tx = db.transaction(() => {
     const isIndexNoColOrTable = (sql2, msg) => {
       if (!/^\s*CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql2)) return false;
       return /no such column|no such table/i.test(msg);
     };
     for (const sql2 of [...baseStmts, ...productionStmts]) {
       try {
-        db2.exec(sql2);
+        db.exec(sql2);
       } catch (err) {
         const msg = err.message || "";
         if (isIndexNoColOrTable(sql2, msg)) {
@@ -14283,34 +14229,34 @@ function applyInlineMigrations(db2) {
     }
   });
   tx();
-  applyV12AdditiveAlters(db2);
-  applyV12Backfill(db2);
-  applyV2533PartnerPaymentSchema(db2);
-  applyV2534CollectiveSchema(db2);
-  applyV2538PricingConfigSchema(db2);
-  applyV2542HTelemetryEventsSchema(db2);
-  applyV2545_4Schema(db2);
-  applyV2547Schema(db2);
-  applyV2548Schema(db2);
-  applyV2553RoundInviteUniqueIndex(db2);
-  applyEnh1YourDecisionDurableSchema(db2);
-  applyC1cSpvLaunchSignoffSchema(db2);
-  applyH6MembershipDeactivationQueueSchema(db2);
-  applyW2CapTableExemptSchema(db2);
-  applyWaveCFdPreMoneySharesSchema(db2);
-  applyWaveC2PartnerAttributionsScopeSchema(db2);
-  applyWaveC2AuthorityArtifactsSchema(db2);
-  applyWaveC2MfEngagementSchema(db2);
-  applyWaveC2PipelineSchema(db2);
-  applyWaveC2ProvenanceColumnsSchema(db2);
-  applyWaveC2ClientScopeSchema(db2);
-  applyWaveC2PcrSpineSchema(db2);
-  applyWaveC2ClassificationRequestsSchema(db2);
-  applyWaveC2MfcStagesSchema(db2);
-  applyD25Slice3CollectiveEnvFallbackSchema(db2);
+  applyV12AdditiveAlters(db);
+  applyV12Backfill(db);
+  applyV2533PartnerPaymentSchema(db);
+  applyV2534CollectiveSchema(db);
+  applyV2538PricingConfigSchema(db);
+  applyV2542HTelemetryEventsSchema(db);
+  applyV2545_4Schema(db);
+  applyV2547Schema(db);
+  applyV2548Schema(db);
+  applyV2553RoundInviteUniqueIndex(db);
+  applyEnh1YourDecisionDurableSchema(db);
+  applyC1cSpvLaunchSignoffSchema(db);
+  applyH6MembershipDeactivationQueueSchema(db);
+  applyW2CapTableExemptSchema(db);
+  applyWaveCFdPreMoneySharesSchema(db);
+  applyWaveC2PartnerAttributionsScopeSchema(db);
+  applyWaveC2AuthorityArtifactsSchema(db);
+  applyWaveC2MfEngagementSchema(db);
+  applyWaveC2PipelineSchema(db);
+  applyWaveC2ProvenanceColumnsSchema(db);
+  applyWaveC2ClientScopeSchema(db);
+  applyWaveC2PcrSpineSchema(db);
+  applyWaveC2ClassificationRequestsSchema(db);
+  applyWaveC2MfcStagesSchema(db);
+  applyD25Slice3CollectiveEnvFallbackSchema(db);
   const runWave0Apply = (name, fn) => {
     try {
-      fn(db2);
+      fn(db);
     } catch (e) {
       if (isWave0SeedDriftError(e)) {
         log.error(`[db][wave0] ${name} DRIFT \u2014 aborting bootstrap:`, e.message);
@@ -14325,7 +14271,7 @@ function applyInlineMigrations(db2) {
   if (process.env.WAVE_C2_SKIP_PIPELINE_KV_BACKFILL !== "1") {
     setImmediate(() => {
       try {
-        const res = runWaveC2PipelineKvBackfill(db2);
+        const res = runWaveC2PipelineKvBackfill(db);
         if (res && res.skipped) {
           log.info(
             `[db] runWaveC2PipelineKvBackfill skipped: ${res.skipped}`
@@ -14358,7 +14304,7 @@ function isWave0SeedDriftError(e) {
   if (e instanceof Wave0SeedDriftError) return true;
   return typeof e === "object" && e !== null && e.kind === "wave0-seed-drift";
 }
-function applyWave0CurrencyRefSchema(db2) {
+function applyWave0CurrencyRefSchema(db) {
   const ZERO_DECIMAL = /* @__PURE__ */ new Set([
     "BIF",
     "CLP",
@@ -14576,16 +14522,16 @@ function applyWave0CurrencyRefSchema(db2) {
      BEGIN SELECT RAISE(ABORT, 'CURRENCY_REF_NO_DELETE'); END`
   ];
   const expOf = (code) => ZERO_DECIMAL.has(code) ? 0 : FOUR_DECIMAL.has(code) ? 4 : THREE_DECIMAL.has(code) ? 3 : 2;
-  const tx = db2.transaction(() => {
-    for (const sql2 of ddl) db2.exec(sql2);
-    const seed = db2.prepare(
+  const tx = db.transaction(() => {
+    for (const sql2 of ddl) db.exec(sql2);
+    const seed = db.prepare(
       `INSERT OR IGNORE INTO currency_ref (code, minor_unit_exponent, is_active)
          VALUES (?, ?, 1)`
     );
     for (const code of ISO_4217) seed.run(code, expOf(code));
   });
   tx();
-  const check = db2.prepare(
+  const check = db.prepare(
     `SELECT minor_unit_exponent AS e FROM currency_ref WHERE code = ?`
   );
   const drift = [];
@@ -14604,7 +14550,7 @@ function applyWave0CurrencyRefSchema(db2) {
     );
   }
 }
-function applyWave0MoneyCoreSchema(db2) {
+function applyWave0MoneyCoreSchema(db) {
   const ddl = [
     `CREATE TABLE IF NOT EXISTS allocation_rule (
        rule_id             TEXT NOT NULL,
@@ -14643,12 +14589,12 @@ function applyWave0MoneyCoreSchema(db2) {
     `CREATE TRIGGER IF NOT EXISTS trg_fx_no_delete BEFORE DELETE ON fx_rate_snapshot
      BEGIN SELECT RAISE(ABORT, 'FX_SNAPSHOT_IMMUTABLE'); END`
   ];
-  const tx = db2.transaction(() => {
-    for (const sql2 of ddl) db2.exec(sql2);
+  const tx = db.transaction(() => {
+    for (const sql2 of ddl) db.exec(sql2);
   });
   tx();
 }
-function applyWave0PlatformConfigSchema(db2) {
+function applyWave0PlatformConfigSchema(db) {
   const GENESIS_PREV = "0000000000000000000000000000000000000000000000000000000000000000";
   const seedRows = [
     {
@@ -14833,14 +14779,14 @@ function applyWave0PlatformConfigSchema(db2) {
          ))
        BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_CHAIN_BREAK'); END`
   ];
-  const tx = db2.transaction(() => {
-    for (const sql2 of ddl) db2.exec(sql2);
-    const seedHistory = db2.prepare(
+  const tx = db.transaction(() => {
+    for (const sql2 of ddl) db.exec(sql2);
+    const seedHistory = db.prepare(
       `INSERT OR IGNORE INTO platform_config_history
          (history_id, config_key, version, snapshot_json, prev_revision_hash, revision_hash, changed_at, changed_by, change_kind)
        VALUES (?, ?, 1, ?, ?, ?, ?, 'system:wave0_seed', 'genesis')`
     );
-    const seedCurrent = db2.prepare(
+    const seedCurrent = db.prepare(
       `INSERT OR IGNORE INTO platform_config
          (key, value_json, value_type, description, is_secret, version, prev_revision_hash, revision_hash, created_at, updated_at, created_by, updated_by)
        VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, 'system:wave0_seed', 'system:wave0_seed')`
@@ -14866,13 +14812,13 @@ function applyWave0PlatformConfigSchema(db2) {
     }
     throw e;
   }
-  const readCur = db2.prepare(
+  const readCur = db.prepare(
     `SELECT value_json, value_type, description, is_secret, version,
             prev_revision_hash, revision_hash, created_at, updated_at,
             created_by, updated_by
      FROM platform_config WHERE key = ?`
   );
-  const readHist = db2.prepare(
+  const readHist = db.prepare(
     `SELECT config_key, version, snapshot_json, prev_revision_hash, revision_hash,
             changed_at, changed_by, change_kind
      FROM platform_config_history WHERE history_id = ?`
@@ -14897,7 +14843,7 @@ function applyWave0PlatformConfigSchema(db2) {
       if (cur.updated_at !== T0) drift.push(`platform_config[${r.key}]: updated_at drift`);
       if (cur.updated_by !== "system:wave0_seed") drift.push(`platform_config[${r.key}]: updated_by drift`);
     } else {
-      const linked = db2.prepare(
+      const linked = db.prepare(
         `SELECT 1 FROM platform_config_history
          WHERE config_key = ? AND version = ? AND revision_hash = ?
            AND prev_revision_hash = ?`
@@ -14926,11 +14872,11 @@ function applyWave0PlatformConfigSchema(db2) {
     );
   }
 }
-function applyWaveCFdPreMoneySharesSchema(db2) {
+function applyWaveCFdPreMoneySharesSchema(db) {
   try {
-    const cols = db2.prepare("PRAGMA table_info(rounds)").all();
+    const cols = db.prepare("PRAGMA table_info(rounds)").all();
     if (cols.some((c) => c.name === "fd_pre_money_shares")) return;
-    db2.exec("ALTER TABLE rounds ADD COLUMN fd_pre_money_shares INTEGER");
+    db.exec("ALTER TABLE rounds ADD COLUMN fd_pre_money_shares INTEGER");
   } catch (e) {
     const msg = String(e?.message ?? e);
     if (!/duplicate column name|no such table/i.test(msg)) {
@@ -14938,9 +14884,9 @@ function applyWaveCFdPreMoneySharesSchema(db2) {
     }
   }
 }
-function applyW2CapTableExemptSchema(db2) {
+function applyW2CapTableExemptSchema(db) {
   try {
-    db2.exec(
+    db.exec(
       "ALTER TABLE collective_memberships ADD COLUMN cap_table_exempt INTEGER NOT NULL DEFAULT 0"
     );
   } catch (e) {
@@ -14950,13 +14896,13 @@ function applyW2CapTableExemptSchema(db2) {
     }
   }
   try {
-    db2.exec(
+    db.exec(
       "CREATE INDEX IF NOT EXISTS idx_collective_memberships_cap_table_exempt ON collective_memberships(cap_table_exempt)"
     );
   } catch {
   }
 }
-function applyH6MembershipDeactivationQueueSchema(db2) {
+function applyH6MembershipDeactivationQueueSchema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS collective_membership_deactivation_queue (
        id TEXT PRIMARY KEY,
@@ -14981,15 +14927,15 @@ function applyH6MembershipDeactivationQueueSchema(db2) {
        ON collective_membership_deactivation_queue(user_id, resolved_at);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of stmts) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of stmts) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v26.2.0 W1 H6 membership deactivation queue bootstrap failed (continuing):", err.message);
   }
 }
-function applyEnh1YourDecisionDurableSchema(db2) {
+function applyEnh1YourDecisionDurableSchema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS your_decision_records (
        invitation_id    TEXT PRIMARY KEY NOT NULL,
@@ -15011,15 +14957,15 @@ function applyEnh1YourDecisionDurableSchema(db2) {
        ON your_decision_records (round_id);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of stmts) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of stmts) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v26.1.x ENH-1 your_decision_records bootstrap failed (continuing):", err.message);
   }
 }
-function applyC1cSpvLaunchSignoffSchema(db2) {
+function applyC1cSpvLaunchSignoffSchema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS spv_launch_signoffs (
        id                  TEXT PRIMARY KEY NOT NULL,
@@ -15041,18 +14987,18 @@ function applyC1cSpvLaunchSignoffSchema(db2) {
        ON spv_launch_signoffs (spv_id);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of stmts) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of stmts) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v26.1.x 1c spv_launch_signoffs bootstrap failed (continuing):", err.message);
   }
 }
-function applyV2553RoundInviteUniqueIndex(db2) {
+function applyV2553RoundInviteUniqueIndex(db) {
   const sql2 = "CREATE UNIQUE INDEX IF NOT EXISTS uq_round_invite_active_email ON round_invitations (round_id, lower(trim(investor_email))) WHERE state IN ('pending','sent','viewed','accepted') AND deleted_at IS NULL AND investor_email IS NOT NULL AND trim(investor_email) <> ''";
   try {
-    db2.exec(sql2);
+    db.exec(sql2);
   } catch (err) {
     const msg = err.message || "";
     if (!/already exists/i.test(msg)) {
@@ -15060,7 +15006,7 @@ function applyV2553RoundInviteUniqueIndex(db2) {
     }
   }
 }
-function applyV2548Schema(db2) {
+function applyV2548Schema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS subscription_docs_sent (
        id            TEXT PRIMARY KEY NOT NULL,
@@ -15113,15 +15059,15 @@ function applyV2548Schema(db2) {
        updated_by      TEXT
      )`
   ];
-  const tx = db2.transaction(() => {
-    for (const sql2 of stmts) db2.exec(sql2);
+  const tx = db.transaction(() => {
+    for (const sql2 of stmts) db.exec(sql2);
     try {
     } catch {
     }
   });
   tx();
 }
-function applyV2547Schema(db2) {
+function applyV2547Schema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS audit_chain_health (
        key         TEXT PRIMARY KEY NOT NULL,
@@ -15178,9 +15124,9 @@ function applyV2547Schema(db2) {
      )`,
     `CREATE INDEX IF NOT EXISTS idx_moderation_log_post ON moderation_log (post_id)`
   ];
-  const tx = db2.transaction(() => {
-    for (const sql2 of stmts) db2.exec(sql2);
-    const subSeed = db2.prepare(
+  const tx = db.transaction(() => {
+    for (const sql2 of stmts) db.exec(sql2);
+    const subSeed = db.prepare(
       `INSERT OR IGNORE INTO platform_fees
          (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
          VALUES (?, ?, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed', 'monthly', NULL)`
@@ -15191,11 +15137,11 @@ function applyV2547Schema(db2) {
     subSeed.run("consortium.subscription.amplifier", 149900);
     subSeed.run("consortium.subscription.nexus", 499900);
     subSeed.run("consortium.subscription.founding_member", 0);
-    db2.prepare(
+    db.prepare(
       `INSERT OR IGNORE INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
          VALUES ('collective_application_fee', 30000, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed')`
     ).run();
-    const pulseSeed = db2.prepare(
+    const pulseSeed = db.prepare(
       `INSERT OR IGNORE INTO pulse_index_symbols
          (symbol, label, category, enabled, refresh_seconds, sort_order, updated_at)
          VALUES (?, ?, ?, 1, 3600, ?, '2026-06-30T00:00:00.000Z')`
@@ -15213,7 +15159,7 @@ function applyV2547Schema(db2) {
       ["USD/EUR", "US Dollar / Euro", "fx"]
     ];
     pulse.forEach(([symbol, label, category], i) => pulseSeed.run(symbol, label, category, i));
-    db2.prepare(
+    db.prepare(
       `INSERT OR IGNORE INTO audit_chain_health (key, status, detail, updated_at)
          VALUES ('tenant_admin_capavate', 'ok',
                  'seeded ok; boot verifier tick will re-check (Wave A-1 v2 ADR-3 action 4)',
@@ -15221,28 +15167,28 @@ function applyV2547Schema(db2) {
     ).run();
   });
   tx();
-  const waveBAlreadyApplied = db2.prepare("SELECT 1 AS one FROM _migrations_applied WHERE key = 'wave_b_backup_ddl_v1'").get();
+  const waveBAlreadyApplied = db.prepare("SELECT 1 AS one FROM _migrations_applied WHERE key = 'wave_b_backup_ddl_v1'").get();
   if (!waveBAlreadyApplied) {
-    const waveBBackupTx = db2.transaction(() => {
-      db2.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvs (
+    const waveBBackupTx = db.transaction(() => {
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvs (
         id TEXT PRIMARY KEY NOT NULL,
         payload_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT
       );`);
-      db2.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFunds (
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFunds (
         id TEXT PRIMARY KEY NOT NULL,
         payload_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT
       );`);
-      db2.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvPositions (
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvPositions (
         id TEXT PRIMARY KEY NOT NULL,
         payload_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT
       );`);
-      db2.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFundCommitments (
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFundCommitments (
         id TEXT PRIMARY KEY NOT NULL,
         payload_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -15291,7 +15237,7 @@ function applyV2547Schema(db2) {
           id TEXT PRIMARY KEY NOT NULL, payload_json TEXT, updated_at TEXT, deleted_at TEXT
         );`]
       ];
-      for (const [, ddl] of backupDdl) db2.exec(ddl);
+      for (const [, ddl] of backupDdl) db.exec(ddl);
       const copies = [
         ["wave_b_backup_spvs", `INSERT INTO wave_b_backup_spvs
           (id, tenant_id, partner_id, name, lead_company_id, structure_type, status,
@@ -15360,8 +15306,8 @@ function applyV2547Schema(db2) {
           WHERE 1=1
           ON CONFLICT (id) DO NOTHING`]
       ];
-      for (const [, sql2] of copies) db2.prepare(sql2).run();
-      db2.prepare(
+      for (const [, sql2] of copies) db.prepare(sql2).run();
+      db.prepare(
         `INSERT INTO _migrations_applied (key, applied_at, details)
            VALUES ('wave_b_backup_ddl_v1', CURRENT_TIMESTAMP,
                    'Wave B v26.4.0-fix backup DDL applied at boot. 9 backup tables materialized with PRIMARY KEY(id).')
@@ -15387,7 +15333,7 @@ function applyV2547Schema(db2) {
   ];
   for (const sql2 of addColumns) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch (err) {
       if (!/duplicate column name/i.test(err?.message ?? String(err))) {
         if (!/no such table/i.test(err?.message ?? String(err))) throw err;
@@ -15395,7 +15341,7 @@ function applyV2547Schema(db2) {
     }
   }
 }
-function applyV2545_4Schema(db2) {
+function applyV2545_4Schema(db) {
   const platformFeesAddColumns = [
     `ALTER TABLE platform_fees ADD COLUMN billing_period TEXT`,
     `ALTER TABLE platform_fees ADD COLUMN deleted_at TEXT`,
@@ -15416,7 +15362,7 @@ function applyV2545_4Schema(db2) {
   ];
   for (const sql2 of platformFeesAddColumns) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch (err) {
       const msg = err?.message ?? String(err);
       if (!/duplicate column name/i.test(msg) && !/no such table/i.test(msg)) throw err;
@@ -15470,13 +15416,13 @@ function applyV2545_4Schema(db2) {
      )`,
     `CREATE INDEX IF NOT EXISTS idx_press_items_published ON press_items (published_at)`
   ];
-  const tx = db2.transaction(() => {
-    for (const sql2 of stmts) db2.exec(sql2);
-    db2.prepare(
+  const tx = db.transaction(() => {
+    for (const sql2 of stmts) db.exec(sql2);
+    db.prepare(
       `INSERT OR IGNORE INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
          VALUES ('collective_application_fee', 30000, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed')`
     ).run();
-    const v25461SubTierSeed = db2.prepare(
+    const v25461SubTierSeed = db.prepare(
       `INSERT OR IGNORE INTO platform_fees
          (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
          VALUES (?, ?, 'USD', '2026-06-28T00:00:00.000Z', 'system:seed', 'monthly', NULL)`
@@ -15487,7 +15433,7 @@ function applyV2545_4Schema(db2) {
     v25461SubTierSeed.run("consortium.subscription.partner_basic", 49900);
     v25461SubTierSeed.run("consortium.subscription.partner_pro", 99900);
     v25461SubTierSeed.run("consortium.subscription.partner_enterprise", 249900);
-    db2.prepare(
+    db.prepare(
       `INSERT OR IGNORE INTO platform_fees
          (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
          VALUES ('consortium.spv_deployment_fee', 500000, 'USD', '2026-06-28T00:00:00.000Z', 'system:seed', NULL, NULL)`
@@ -15495,7 +15441,7 @@ function applyV2545_4Schema(db2) {
   });
   tx();
 }
-function applyV2533PartnerPaymentSchema(db2) {
+function applyV2533PartnerPaymentSchema(db) {
   const tables = [
     /* partner_fee_schedules — admin-configurable fee catalogue.
      * fee_kind enum semantics:
@@ -15597,8 +15543,8 @@ function applyV2533PartnerPaymentSchema(db2) {
     `CREATE INDEX IF NOT EXISTS idx_iad_investor ON investor_accreditation_declaration (investor_id, signed_at);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of tables) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of tables) db.exec(sql2);
     });
     tx();
   } catch (err) {
@@ -15680,7 +15626,7 @@ function applyV2533PartnerPaymentSchema(db2) {
   ];
   for (const [table, sql2] of alters) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch (err) {
       const msg = err.message || "";
       if (/duplicate column|already exists/i.test(msg)) continue;
@@ -15699,13 +15645,13 @@ function applyV2533PartnerPaymentSchema(db2) {
   ];
   for (const sql2 of v2533Indices) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch {
     }
   }
   const T0 = "2026-06-22T00:00:00Z";
   try {
-    db2.prepare(
+    db.prepare(
       `INSERT OR IGNORE INTO partner_fee_schedules
          (id, tier, fee_kind, amount_minor, currency, size_band_min, size_band_max, effective_from, created_at, updated_at)
        VALUES
@@ -15747,7 +15693,7 @@ function applyV2533PartnerPaymentSchema(db2) {
     log.warn("[db] v25.33 fee seed failed (continuing):", err.message);
   }
 }
-function applyV2534CollectiveSchema(db2) {
+function applyV2534CollectiveSchema(db) {
   const collectiveIndices = [
     "CREATE INDEX IF NOT EXISTS idx_v2534_se_chapter ON screening_events(chapter_id, deleted_at)",
     "CREATE INDEX IF NOT EXISTS idx_v2534_se_company ON screening_events(company_id, deleted_at)",
@@ -15770,7 +15716,7 @@ function applyV2534CollectiveSchema(db2) {
   ];
   for (const sql2 of collectiveIndices) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch (err) {
       const msg = err.message || "";
       if (!/no such table|no such column/i.test(msg)) {
@@ -15843,15 +15789,15 @@ function applyV2534CollectiveSchema(db2) {
     `CREATE INDEX IF NOT EXISTS idx_cinv_status ON collective_invoices(status);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of tables) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of tables) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v25.34 collective payment table creation failed (continuing):", err.message);
   }
   try {
-    db2.exec("ALTER TABLE collective_payment_entries ADD COLUMN idempotency_key TEXT");
+    db.exec("ALTER TABLE collective_payment_entries ADD COLUMN idempotency_key TEXT");
   } catch (err) {
     const msg = err.message || "";
     if (!/duplicate column|already exists/i.test(msg)) {
@@ -15859,7 +15805,7 @@ function applyV2534CollectiveSchema(db2) {
     }
   }
   try {
-    db2.exec(
+    db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_cpe_idem ON collective_payment_entries(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
   } catch (err) {
@@ -15867,7 +15813,7 @@ function applyV2534CollectiveSchema(db2) {
   }
   const T0 = "2026-06-22T00:00:00Z";
   try {
-    db2.prepare(
+    db.prepare(
       `INSERT OR IGNORE INTO collective_payment_schedules
          (id, scope_kind, member_id, tier, chapter_id, fee_kind, amount_minor, currency, cadence, effective_from, created_at, updated_at)
        VALUES
@@ -15881,7 +15827,7 @@ function applyV2534CollectiveSchema(db2) {
     log.warn("[db] v25.34 collective fee seed failed (continuing):", err.message);
   }
 }
-function applyV2538PricingConfigSchema(db2) {
+function applyV2538PricingConfigSchema(db) {
   const stmts = [
     // --- Phase 1: collective application-fee config (single-row) ---
     `CREATE TABLE IF NOT EXISTS collective_application_fee_config (
@@ -16033,15 +15979,15 @@ function applyV2538PricingConfigSchema(db2) {
     `CREATE INDEX IF NOT EXISTS idx_pattr_rev_partner ON partner_attribution_revisions(partner_id);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of stmts) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of stmts) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v25.38 pricing-config bootstrap failed (continuing):", err.message);
   }
 }
-function applyV2542HTelemetryEventsSchema(db2) {
+function applyV2542HTelemetryEventsSchema(db) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS telemetry_events (
       id             TEXT PRIMARY KEY NOT NULL,
@@ -16065,15 +16011,15 @@ function applyV2542HTelemetryEventsSchema(db2) {
        ON telemetry_events(occurred_at DESC);`
   ];
   try {
-    const tx = db2.transaction(() => {
-      for (const sql2 of stmts) db2.exec(sql2);
+    const tx = db.transaction(() => {
+      for (const sql2 of stmts) db.exec(sql2);
     });
     tx();
   } catch (err) {
     log.warn("[db] v25.42h telemetry_events bootstrap failed (continuing):", err.message);
   }
 }
-function applyV12AdditiveAlters(db2) {
+function applyV12AdditiveAlters(db) {
   const alters = [
     // company_members tenant-scoping + lifecycle
     ["company_members", "ALTER TABLE company_members ADD COLUMN tenant_id TEXT"],
@@ -16278,7 +16224,7 @@ function applyV12AdditiveAlters(db2) {
   ];
   for (const [table, sql2] of alters) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch (err) {
       const msg = err.message || "";
       if (/duplicate column|already exists/i.test(msg)) continue;
@@ -16431,14 +16377,14 @@ function applyV12AdditiveAlters(db2) {
   ];
   for (const sql2 of indices) {
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
     } catch {
     }
   }
 }
-function applyV12Backfill(db2) {
+function applyV12Backfill(db) {
   try {
-    db2.exec(`
+    db.exec(`
       INSERT OR IGNORE INTO tenants (id, kind, name, billing_email, status, is_demo, created_at, updated_at, deleted_at)
       SELECT
         'tenant_co_' || c.id,
@@ -16453,20 +16399,20 @@ function applyV12Backfill(db2) {
       FROM companies c
       WHERE NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = 'tenant_co_' || c.id)
     `);
-    db2.exec(`
+    db.exec(`
       UPDATE companies
       SET tenant_id = 'tenant_co_' || id
       WHERE tenant_id IS NULL OR tenant_id = ''
     `);
-    db2.exec(`
+    db.exec(`
       UPDATE company_members
       SET tenant_id = (
         SELECT companies.tenant_id FROM companies WHERE companies.id = company_members.company_id
       )
       WHERE tenant_id IS NULL AND company_id IS NOT NULL
     `);
-    db2.exec(`UPDATE company_members SET joined_at = COALESCE(joined_at, datetime('now')) WHERE joined_at IS NULL`);
-    db2.exec(`
+    db.exec(`UPDATE company_members SET joined_at = COALESCE(joined_at, datetime('now')) WHERE joined_at IS NULL`);
+    db.exec(`
       INSERT OR IGNORE INTO tenants (id, kind, name, billing_email, status, is_demo, created_at, updated_at, deleted_at)
       VALUES (
         'tenant_chap_chap_keiretsu_canada',
@@ -16480,7 +16426,7 @@ function applyV12Backfill(db2) {
         NULL
       )
     `);
-    db2.exec(`
+    db.exec(`
       INSERT OR IGNORE INTO chapters (
         id, tenant_id, name, region, city, status,
         admin_user_id, partner_org_id, membership_fee_annual_minor,
@@ -16501,22 +16447,22 @@ function applyV12Backfill(db2) {
         NULL
       )
     `);
-    db2.exec(`UPDATE collective_waitlist SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
-    db2.exec(`UPDATE dsc_feedback        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
-    db2.exec(`UPDATE dsc_votes           SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
-    db2.exec(`UPDATE soft_circles        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE collective_waitlist SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE dsc_feedback        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE dsc_votes           SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE soft_circles        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
     try {
-      const row = db2.prepare(
+      const row = db.prepare(
         "SELECT key FROM _migrations_applied WHERE key = 'cp_b_promotion_moderation_backfill_v1'"
       ).get();
       if (!row) {
-        db2.exec(
+        db.exec(
           `UPDATE partner_deal_promotions
              SET moderation_status = 'approved',
                  moderated_at      = COALESCE(approved_at, created_at)
              WHERE status = 'live' AND (moderation_status IS NULL OR moderation_status = '' OR moderation_status = 'pending')`
         );
-        db2.exec(
+        db.exec(
           `INSERT OR IGNORE INTO _migrations_applied (key, applied_at, details)
              VALUES ('cp_b_promotion_moderation_backfill_v1', datetime('now'), 'CP Phase B 0047 backfill')`
         );
@@ -19906,8 +19852,8 @@ function ensureHistoryTable() {
 }
 function persistOutboxInsert(entry) {
   try {
-    const db2 = getDb();
-    db2.insert(bridgeOutbox).values({
+    const db = getDb();
+    db.insert(bridgeOutbox).values({
       id: entry.envelope.eventId,
       eventType: entry.envelope.eventType,
       aggregateId: entry.envelope.aggregateId,
@@ -20007,23 +19953,6 @@ var init_bridgeStore = __esm({
   }
 });
 
-// server/lib/wave230TestDataFlags.ts
-var init_wave230TestDataFlags = __esm({
-  "server/lib/wave230TestDataFlags.ts"() {
-    "use strict";
-    init_connection();
-    init_logger2();
-  }
-});
-
-// server/lib/wave230DisplayExclusion.ts
-var init_wave230DisplayExclusion = __esm({
-  "server/lib/wave230DisplayExclusion.ts"() {
-    "use strict";
-    init_wave230TestDataFlags();
-  }
-});
-
 // server/pricingModelStore.ts
 function listModels(filter) {
   let out = Array.from(models.values());
@@ -20107,10 +20036,10 @@ function seedFromCanonicalCompanies() {
   }
 }
 function persistSeedToDb() {
-  const db2 = getDb();
+  const db = getDb();
   for (const rec of Array.from(store.values())) {
     try {
-      db2.insert(subscriptions).values({
+      db.insert(subscriptions).values({
         companyId: rec.companyId,
         status: rec.status,
         plan: rec.plan,
@@ -20128,7 +20057,7 @@ function persistSeedToDb() {
         updatedBy: rec.updatedBy,
         deletedAt: null
       }).onConflictDoNothing({ target: subscriptions.companyId }).run();
-      db2.insert(subscriptionsHistory).values({
+      db.insert(subscriptionsHistory).values({
         id: `subh_seed_${rec.companyId}`,
         companyId: rec.companyId,
         snapshotJson: JSON.stringify(rec),
@@ -20152,7 +20081,6 @@ var init_subscriptionsStore = __esm({
     init_connection();
     init_schema();
     init_logger2();
-    init_wave230DisplayExclusion();
     init_pricingModelStore();
     PLAN_TO_SLUG = {
       founder_free: "founder-free",
@@ -20405,20 +20333,12 @@ var init_narrowBasedWeightedAverage = __esm({
   }
 });
 
-// packages/cap-table-engine/src/primitives/currencySet.ts
-var init_currencySet = __esm({
-  "packages/cap-table-engine/src/primitives/currencySet.ts"() {
-    "use strict";
-  }
-});
-
 // packages/cap-table-engine/src/waterfall/liquidationWaterfall.ts
 var init_liquidationWaterfall = __esm({
   "packages/cap-table-engine/src/waterfall/liquidationWaterfall.ts"() {
     "use strict";
     init_bigDecimal();
     init_hash();
-    init_currencySet();
   }
 });
 
@@ -22010,7 +21930,6 @@ var init_compute = __esm({
     init_esopTopUp();
     init_registry();
     init_timeElapsed();
-    init_currencySet();
   }
 });
 
@@ -22098,14 +22017,9 @@ var init_src = __esm({
     init_broadBasedWeightedAverage();
     init_narrowBasedWeightedAverage();
     init_liquidationWaterfall();
-    init_liquidationWaterfall();
     init_esopTopUp();
     init_compute();
     init_compute();
-    init_compute();
-    init_compute();
-    init_currencySet();
-    init_currencySet();
     init_views();
     init_registry();
     init_ledger2();
@@ -22178,13 +22092,6 @@ var init_money = __esm({
     CARRY_FRACTION_SCALE = 1e9;
     B_SCALE = BigInt(CARRY_FRACTION_SCALE);
     B_TEN = BigInt(10);
-  }
-});
-
-// shared/roundNameRequired.ts
-var init_roundNameRequired = __esm({
-  "shared/roundNameRequired.ts"() {
-    "use strict";
   }
 });
 
@@ -22422,29 +22329,6 @@ var init_emailTokenRedaction = __esm({
   }
 });
 
-// server/lib/wave230cEmailTemplateHonesty.ts
-var HONEST_DECLARATION_SENTENCE, HONEST_NO_KYC_SENTENCE, WAVE230C_EMAIL_TEMPLATE_CORRECTIONS;
-var init_wave230cEmailTemplateHonesty = __esm({
-  "server/lib/wave230cEmailTemplateHonesty.ts"() {
-    "use strict";
-    init_connection();
-    HONEST_DECLARATION_SENTENCE = "This records your declaration. It is not a check of it.";
-    HONEST_NO_KYC_SENTENCE = "Capavate does not conduct KYC or AML verification and does not perform it on your behalf.";
-    WAVE230C_EMAIL_TEMPLATE_CORRECTIONS = [
-      {
-        slug: "kyc_update",
-        fromSubject: "Your KYC status: {{new_status}}",
-        fromBodyHtml: "<p>Hi {{recipient_name}}, your KYC status is now {{new_status}}. {{action_required}}</p>",
-        fromBodyText: "KYC update.",
-        toSubject: "Your Capavate document status: {{new_status}}",
-        toBodyHtml: `<p>Hi {{recipient_name}}, the status recorded against the document you uploaded is now {{new_status}}. {{action_required}}</p><p>${HONEST_DECLARATION_SENTENCE} ${HONEST_NO_KYC_SENTENCE}</p>`,
-        toBodyText: `Document status update. ${HONEST_DECLARATION_SENTENCE} ${HONEST_NO_KYC_SENTENCE}`,
-        rationale: 'Category "compliance"; subject and body assert a KYC status about a person. The Privacy Policy and the Terms both state Capavate "does not conduct KYC or AML verification", and the seeded outbox row renders {{new_status}} as the literal word "verified". R227.2 prohibits exactly that word about a person.'
-      }
-    ];
-  }
-});
-
 // server/emailStore.ts
 function persistOutbox(e) {
   try {
@@ -22552,7 +22436,7 @@ function seedDemo() {
   enqueueEmail({ templateSlug: "soft_circle_submitted", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { investor_name: "Aisha Patel", committed_amount: "$250,000", currency: "USD", round_name: "Seed Extension" } });
   enqueueEmail({ templateSlug: "round_closed", recipient: "team@hydra.vc", recipientUserId: "u_aisha_patel", variables: { company_name: "NovaPay AI", round_name: "Seed Extension", amount_closed: "$4.0M", security_type: "SAFE", cap_table_cta: "https://app.capavate.com/cap" } });
   enqueueEmail({ templateSlug: "collective_welcome", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", deal_room_cta: "/collective/#/deals", profile_cta: "/collective/#/profile", receipt_link: "/billing/receipts/r123" } });
-  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "on file", action_required: "" } });
+  enqueueEmail({ templateSlug: "kyc_update", recipient: "aisha@hydra.vc", recipientUserId: "u_aisha_patel", variables: { recipient_name: "Aisha", new_status: "verified", action_required: "" } });
   enqueueEmail({ templateSlug: "form_d_reminder", recipient: "maya@novapay.ai", recipientUserId: "u_maya", variables: { recipient_name: "Maya", filing_deadline: "2026-05-23", edgar_link: "https://efts.sec.gov" } });
   tickQueue();
   tickQueue();
@@ -22580,7 +22464,6 @@ var init_emailStore = __esm({
     init_storePersistenceShim();
     init_connection();
     init_emailTokenRedaction();
-    init_wave230cEmailTemplateHonesty();
     PERSIST_STORE = "emailStoreOutbox";
     templates = [
       { id: "tpl_round_invitation", slug: "round_invitation", subject: "{{founder_name}} invited you to {{company_name}}'s {{round_name}}", bodyHtml: '<p>Hi {{recipient_name}},</p><p>{{founder_name}} of {{company_name}} has invited you to participate in {{round_name}} ({{instrument}}).</p><p>{{personal_message}}</p><p><a href="{{cta_url}}">View invitation</a> \xB7 expires {{expiry_date}}.</p>', bodyText: "Hi {{recipient_name}}, {{founder_name}} invited you. {{cta_url}}", variables: ["recipient_name", "founder_name", "company_name", "round_name", "instrument", "personal_message", "cta_url", "expiry_date"], category: "round" },
@@ -22594,12 +22477,7 @@ var init_emailStore = __esm({
       { id: "tpl_membership_review", slug: "membership_review", subject: "Your Capavate Collective application is under review", bodyHtml: '<p>{{recipient_name}}, your application is under review. Timeline: {{timeline}}. <a href="{{edit_link}}">Edit application</a>.</p>', bodyText: "Under review.", variables: ["recipient_name", "timeline", "edit_link"], category: "membership" },
       { id: "tpl_membership_approved", slug: "membership_approved", subject: "Your Collective membership is approved", bodyHtml: "<p>{{recipient_name}}, your membership is approved. Next steps: {{next_steps}}.</p>", bodyText: "Approved.", variables: ["recipient_name", "next_steps"], category: "membership" },
       { id: "tpl_membership_rejected", slug: "membership_rejected", subject: "Your Collective application", bodyHtml: "<p>{{recipient_name}}, application not approved at this time. Notes: {{next_steps}}.</p>", bodyText: "Rejected.", variables: ["recipient_name", "next_steps"], category: "membership" },
-      // WAVE 230C · R227.2/R233.3 — was: subject "Your KYC status: {{new_status}}", body "your KYC status is now
-      // {{new_status}}". Capavate's own Terms and Privacy Policy state it does not conduct KYC or AML verification,
-      // so an email asserting a KYC status about a person claimed a check the platform does not perform (Class A).
-      // The superseded bytes are retained as the UPDATE predicate in server/lib/wave230cEmailTemplateHonesty.ts,
-      // which also corrects an already-seeded database (INSERT OR IGNORE would otherwise keep the stale row).
-      { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your Capavate document status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, the status recorded against the document you uploaded is now {{new_status}}. {{action_required}}</p><p>This records your declaration. It is not a check of it. Capavate does not conduct KYC or AML verification and does not perform it on your behalf.</p>", bodyText: "Document status update. This records your declaration. It is not a check of it. Capavate does not conduct KYC or AML verification and does not perform it on your behalf.", variables: ["recipient_name", "new_status", "action_required"], category: "compliance" },
+      { id: "tpl_kyc_update", slug: "kyc_update", subject: "Your KYC status: {{new_status}}", bodyHtml: "<p>Hi {{recipient_name}}, your KYC status is now {{new_status}}. {{action_required}}</p>", bodyText: "KYC update.", variables: ["recipient_name", "new_status", "action_required"], category: "compliance" },
       { id: "tpl_form_d_reminder", slug: "form_d_reminder", subject: "Form D filing deadline: {{filing_deadline}}", bodyHtml: '<p>{{recipient_name}}, your Form D 15-day deadline is {{filing_deadline}}. <a href="{{edgar_link}}">EDGAR portal</a>.</p>', bodyText: "Form D reminder.", variables: ["recipient_name", "filing_deadline", "edgar_link"], category: "compliance" },
       { id: "tpl_emi_notification_reminder", slug: "emi_notification_reminder", subject: "EMI grant: HMRC 92-day deadline", bodyHtml: '<p>{{recipient_name}}, EMI grant {{grant_date}} requires HMRC notification by {{hmrc_deadline}}. <a href="{{ers_url}}">ERS online service</a>.</p>', bodyText: "EMI reminder.", variables: ["recipient_name", "grant_date", "hmrc_deadline", "ers_url"], category: "compliance" },
       { id: "tpl_83b_election", slug: "83b_election", subject: "83(b) election due in 30 days", bodyHtml: "<p>{{recipient_name}}, an early option exercise occurred {{exercise_date}}; the 83(b) election deadline is {{deadline_date}}.</p>", bodyText: "83(b) reminder.", variables: ["recipient_name", "exercise_date", "deadline_date"], category: "compliance" },
@@ -22727,7 +22605,6 @@ var init_roundsStore = __esm({
     init_logger2();
     init_eventBus();
     init_bridgeStore();
-    init_roundNameRequired();
     init_roundCarryForwardRoutes();
     ROUNDS_BY_ID = /* @__PURE__ */ new Map();
     roundsCache = [];
@@ -22985,9 +22862,7 @@ var init_adminKpiDbReads = __esm({
     init_softCircleStore();
     init_connection();
     init_errors3();
-    init_wave230DisplayExclusion();
     init_roundRaisedTotals();
-    init_src();
   }
 });
 
@@ -23090,13 +22965,6 @@ var init_requireIdentity = __esm({
     "use strict";
     init_userContext();
     init_withTenant();
-  }
-});
-
-// shared/refusalHeadlineGate.ts
-var init_refusalHeadlineGate = __esm({
-  "shared/refusalHeadlineGate.ts"() {
-    "use strict";
   }
 });
 
@@ -23283,20 +23151,20 @@ function openSqliteAdapter(url, log2) {
   const Better = _require2("better-sqlite3");
   const dbPath = resolveSqlitePath(url);
   log2.info(`Connecting to sqlite at ${dbPath || "(default)"}\u2026`);
-  const db2 = new Better(dbPath);
+  const db = new Better(dbPath);
   try {
-    db2.pragma("journal_mode = WAL");
+    db.pragma("journal_mode = WAL");
   } catch {
   }
   try {
-    db2.pragma("foreign_keys = ON");
+    db.pragma("foreign_keys = ON");
   } catch {
   }
   return {
     driverLabel: "sqlite",
     url: dbPath,
     init() {
-      db2.exec(`
+      db.exec(`
         CREATE TABLE IF NOT EXISTS __drizzle_migrations_applied (
           name TEXT PRIMARY KEY,
           applied_at TEXT NOT NULL
@@ -23308,24 +23176,24 @@ function openSqliteAdapter(url, log2) {
           "_migrations_applied_legacy_v26_7_2"
         ];
         for (const tblName of legacyCandidates) {
-          const exists2 = db2.prepare(
+          const exists2 = db.prepare(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
           ).get(tblName);
           if (!exists2) continue;
-          const cols = db2.prepare(`PRAGMA table_info('${tblName}')`).all();
+          const cols = db.prepare(`PRAGMA table_info('${tblName}')`).all();
           const colSet = new Set(cols.map((c) => c.name));
           const filenameCol = colSet.has("name") ? "name" : colSet.has("key") ? "key" : null;
           if (!filenameCol) continue;
-          const legacyRows = db2.prepare(
+          const legacyRows = db.prepare(
             `SELECT ${filenameCol} AS n, applied_at AS at FROM ${tblName}`
           ).all();
           if (legacyRows.length === 0) continue;
           const nowIso2 = (/* @__PURE__ */ new Date()).toISOString();
-          const insert = db2.prepare(
+          const insert = db.prepare(
             "INSERT OR IGNORE INTO __drizzle_migrations_applied (name, applied_at) VALUES (?, ?)"
           );
           const seededNames = [];
-          const seedTxn = db2.transaction(
+          const seedTxn = db.transaction(
             (rows) => {
               let seeded2 = 0;
               for (const row of rows) {
@@ -23360,19 +23228,19 @@ function openSqliteAdapter(url, log2) {
       }
     },
     appliedSet() {
-      const rows = db2.prepare("SELECT name FROM __drizzle_migrations_applied").all();
+      const rows = db.prepare("SELECT name FROM __drizzle_migrations_applied").all();
       return new Set(rows.map((r) => r.name));
     },
     applyOne(name, sql2) {
       const stmts = splitStatements(sql2);
       const deferredReasons = [];
-      const apply = db2.transaction(() => {
+      const apply = db.transaction(() => {
         for (const s of stmts) {
           if (process.env.MIGRATE_VERBOSE === "1") {
             log2.info(`exec: ${s.slice(0, 80).replace(/\s+/g, " ")}\u2026`);
           }
           try {
-            db2.exec(s);
+            db.exec(s);
           } catch (err) {
             const msg = err?.message ?? String(err);
             const uniqueIndexFatal = indexStatementKind(s) === "unique" && !/index .* already exists/i.test(msg);
@@ -23398,7 +23266,7 @@ function openSqliteAdapter(url, log2) {
         if (deferredReasons.length > 0) {
           return;
         }
-        db2.prepare(
+        db.prepare(
           "INSERT OR REPLACE INTO __drizzle_migrations_applied (name, applied_at) VALUES (?, ?)"
         ).run(name, (/* @__PURE__ */ new Date()).toISOString());
       });
@@ -23407,7 +23275,7 @@ function openSqliteAdapter(url, log2) {
     },
     close() {
       try {
-        db2.close();
+        db.close();
       } catch {
       }
     }
@@ -23482,28 +23350,28 @@ function openPostgresAdapter(url, log2) {
 async function applyInlineBaselineForSqlite(url, log2) {
   const dbPath = resolveSqlitePath(url);
   const Better = _require2("better-sqlite3");
-  const db2 = new Better(dbPath);
+  const db = new Better(dbPath);
   try {
     try {
-      db2.pragma("journal_mode = WAL");
+      db.pragma("journal_mode = WAL");
     } catch {
     }
     try {
-      db2.pragma("foreign_keys = ON");
+      db.pragma("foreign_keys = ON");
     } catch {
     }
     const conn = await Promise.resolve().then(() => (init_connection(), connection_exports)).catch(async () => {
       return await Promise.resolve().then(() => (init_connection(), connection_exports)).catch(() => null);
     });
     if (conn && typeof conn.applyInlineMigrationsForFreshDb === "function") {
-      conn.applyInlineMigrationsForFreshDb(db2);
+      conn.applyInlineMigrationsForFreshDb(db);
       log2.info(`Inline-DDL baseline applied`);
       return;
     }
     log2.warn(`Inline-DDL baseline unavailable (applyInlineMigrationsForFreshDb missing); continuing without baseline`);
   } finally {
     try {
-      db2.close();
+      db.close();
     } catch {
     }
   }
@@ -23672,15 +23540,15 @@ function readWave13ShapeDdl() {
   }
   return null;
 }
-function partnerSubscriptionColumns(db2) {
+function partnerSubscriptionColumns(db) {
   try {
-    return db2.prepare("SELECT name FROM pragma_table_info('partner_subscription')").all().map((r) => String(r.name));
+    return db.prepare("SELECT name FROM pragma_table_info('partner_subscription')").all().map((r) => String(r.name));
   } catch {
     return [];
   }
 }
-function partnerSubscriptionShape(db2) {
-  const cols = new Set(partnerSubscriptionColumns(db2));
+function partnerSubscriptionShape(db) {
+  const cols = new Set(partnerSubscriptionColumns(db));
   if (cols.size === 0) return "absent";
   const canonical = cols.has("subject_kind") && cols.has("subject_id") && cols.has("cycle");
   const legacy = cols.has("partner_id") || cols.has("cadence");
@@ -23692,17 +23560,17 @@ function isIdempotentSqliteError2(msg) {
   const m = msg.toLowerCase();
   return m.includes("duplicate column name") || m.includes("already exists") || m.includes("unique constraint failed");
 }
-function rowCount(db2) {
+function rowCount(db) {
   try {
-    const r = db2.prepare("SELECT COUNT(*) AS n FROM partner_subscription").get();
+    const r = db.prepare("SELECT COUNT(*) AS n FROM partner_subscription").get();
     return typeof r?.n === "number" ? r.n : Number(r?.n ?? 0);
   } catch {
     return null;
   }
 }
-function applyWave13SubscriptionShape(db2) {
-  const shapeBefore = partnerSubscriptionShape(db2);
-  const rowsBefore = rowCount(db2);
+function applyWave13SubscriptionShape(db) {
+  const shapeBefore = partnerSubscriptionShape(db);
+  const rowsBefore = rowCount(db);
   const ddl = readWave13ShapeDdl();
   if (!ddl) {
     const reason2 = `W13_SHAPE_DDL_NOT_FOUND: looked in ${candidatePaths(W13_SHAPE_MIGRATION).join(", ")}`;
@@ -23717,7 +23585,7 @@ function applyWave13SubscriptionShape(db2) {
       statementsRun: 0,
       statementsSkippedIdempotent: 0,
       missingColumns: [...W13_CANONICAL_COLUMNS].filter(
-        (c) => !partnerSubscriptionColumns(db2).includes(c)
+        (c) => !partnerSubscriptionColumns(db).includes(c)
       )
     };
   }
@@ -23727,7 +23595,7 @@ function applyWave13SubscriptionShape(db2) {
   let reason = "applied";
   for (const stmt of splitStatements(ddl)) {
     try {
-      db2.exec(stmt);
+      db.exec(stmt);
       statementsRun++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -23745,9 +23613,9 @@ function applyWave13SubscriptionShape(db2) {
       break;
     }
   }
-  const shapeAfter = partnerSubscriptionShape(db2);
-  const rowsAfter = rowCount(db2);
-  const have = new Set(partnerSubscriptionColumns(db2));
+  const shapeAfter = partnerSubscriptionShape(db);
+  const rowsAfter = rowCount(db);
+  const have = new Set(partnerSubscriptionColumns(db));
   const missingColumns = [...W13_CANONICAL_COLUMNS].filter((c) => !have.has(c));
   if (shapeAfter !== "canonical" || missingColumns.length > 0) {
     log.error?.({
@@ -23837,21 +23705,21 @@ function readWave5MoneyDdl() {
   }
   return null;
 }
-function tableExists2(db2, name) {
+function tableExists2(db, name) {
   try {
-    return !!db2.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
   } catch {
     return false;
   }
 }
-function triggerExists(db2, name) {
+function triggerExists(db, name) {
   try {
-    return !!db2.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name=?").get(name);
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name=?").get(name);
   } catch {
     return false;
   }
 }
-function applyWave5MoneySchema(db2) {
+function applyWave5MoneySchema(db) {
   const ddl = readWave5MoneyDdl();
   if (!ddl) {
     const reason2 = `WAVE5_DDL_NOT_FOUND: looked in ${candidatePaths2().join(", ")}`;
@@ -23868,7 +23736,7 @@ function applyWave5MoneySchema(db2) {
   let applied = true;
   let reason = "applied";
   try {
-    db2.exec(ddl);
+    db.exec(ddl);
   } catch (err) {
     applied = false;
     reason = `partial: ${err.message}`;
@@ -23876,7 +23744,7 @@ function applyWave5MoneySchema(db2) {
       `[applyWave5MoneySchema] whole-script exec failed (${err.message}); falling back to per-statement install so the Wave 5 tables still land.`
     );
     try {
-      db2.exec(stripHostedTriggers(ddl));
+      db.exec(stripHostedTriggers(ddl));
       applied = true;
       reason = `applied_without_hosted_triggers: ${err.message}`;
     } catch (err2) {
@@ -23891,11 +23759,11 @@ function applyWave5MoneySchema(db2) {
   const triggersPresent = [];
   const triggersMissing = [];
   for (const t of HOSTED_TRIGGERS) {
-    if (triggerExists(db2, t.trigger)) {
+    if (triggerExists(db, t.trigger)) {
       triggersPresent.push(t.trigger);
       continue;
     }
-    if (!tableExists2(db2, t.hostTable)) {
+    if (!tableExists2(db, t.hostTable)) {
       triggersMissing.push({ ...t, reason: `host table ${t.hostTable} absent` });
       log.warn?.(
         `[applyWave5MoneySchema] domain fence ${t.trigger} NOT attached: host table ${t.hostTable} does not exist yet. The column it fences is UNFENCED until this installer runs again after the table is created.`
@@ -23908,7 +23776,7 @@ function applyWave5MoneySchema(db2) {
       continue;
     }
     try {
-      db2.exec(sql2);
+      db.exec(sql2);
       triggersPresent.push(t.trigger);
     } catch (err) {
       triggersMissing.push({ ...t, reason: err.message });
@@ -23917,11 +23785,11 @@ function applyWave5MoneySchema(db2) {
       );
     }
   }
-  applyWave13SubscriptionShape(db2);
+  applyWave13SubscriptionShape(db);
   const tablesPresent = [];
   const tablesMissing = [];
   for (const t of WAVE5_TABLES) {
-    (tableExists2(db2, t) ? tablesPresent : tablesMissing).push(t);
+    (tableExists2(db, t) ? tablesPresent : tablesMissing).push(t);
   }
   if (tablesMissing.length > 0) {
     log.error?.({
@@ -23947,10 +23815,10 @@ function extractStatement(ddl, triggerName) {
   if (endIdx < 0) return null;
   return ddl.slice(start, endIdx + 4);
 }
-function ensureWave5MoneySchema(db2) {
-  if (_installed.has(db2)) return;
-  applyWave5MoneySchema(db2);
-  _installed.add(db2);
+function ensureWave5MoneySchema(db) {
+  if (_installed.has(db)) return;
+  applyWave5MoneySchema(db);
+  _installed.add(db);
 }
 var import_node_fs2, import_node_path2, MIGRATION_BASENAME, WAVE5_TABLES, HOSTED_TRIGGERS, _installed;
 var init_applyWave5MoneySchema = __esm({
@@ -24001,172 +23869,11 @@ var init_spvFeeHydrationState = __esm({
   }
 });
 
-// server/lib/lpIdentity.ts
-var init_lpIdentity = __esm({
-  "server/lib/lpIdentity.ts"() {
-    "use strict";
-  }
-});
-
 // server/db/portable.ts
-function isSqlite() {
-  return getDbDriver() === "sqlite";
-}
 var init_portable = __esm({
   "server/db/portable.ts"() {
     "use strict";
     init_connection();
-    init_logger2();
-  }
-});
-
-// server/lib/applyWave10EngineSchema.ts
-function candidatePaths3(basename) {
-  const cwd = process.cwd();
-  return [
-    import_node_path3.default.join(cwd, "server", "db", "migrations", basename),
-    import_node_path3.default.join(cwd, "migrations", basename)
-  ];
-}
-function readWave10Ddl(basename) {
-  for (const p of candidatePaths3(basename)) {
-    try {
-      if (import_node_fs3.default.existsSync(p)) return import_node_fs3.default.readFileSync(p, "utf8");
-    } catch {
-    }
-  }
-  return null;
-}
-function tableExists3(db2, name) {
-  try {
-    return !!db2.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(name);
-  } catch {
-    return false;
-  }
-}
-function columnExists(db2, table, column) {
-  try {
-    const rows = db2.prepare(`PRAGMA table_info(${table})`).all();
-    return rows.some((r) => r.name === column);
-  } catch {
-    return false;
-  }
-}
-function splitEn1(ddl) {
-  const marker = "-- 2. Append-only enforcement.";
-  const at = ddl.indexOf(marker);
-  if (at < 0) return { columns: ddl, guards: "" };
-  return { columns: ddl.slice(0, at), guards: ddl.slice(at) };
-}
-function applyWave10EngineSchema(db2) {
-  try {
-    if (tableExists3(db2, "vehicle_cashflow")) {
-      const ddl = readWave10Ddl(EN1_MIGRATION);
-      if (ddl) {
-        const { columns, guards } = splitEn1(ddl);
-        if (!columnExists(db2, "vehicle_cashflow", "curr_hash")) {
-          db2.exec(columns);
-          log.info("[wave10] EN-1 cash-flow chain columns installed (bootstrap heal)");
-        }
-        if (guards) db2.exec(guards);
-      }
-    }
-  } catch (err) {
-    log.warn(
-      `[wave10] EN-1 chain heal skipped: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  try {
-    if (!tableExists3(db2, "investor_identity_alias")) {
-      const ddl = readWave10Ddl(EN3_MIGRATION);
-      if (ddl) {
-        db2.exec(ddl);
-        log.info("[wave10] EN-3 investor_identity_alias installed (bootstrap heal)");
-      }
-    }
-  } catch (err) {
-    log.warn(
-      `[wave10] EN-3 alias heal skipped: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-}
-var import_node_fs3, import_node_path3, EN1_MIGRATION, EN3_MIGRATION;
-var init_applyWave10EngineSchema = __esm({
-  "server/lib/applyWave10EngineSchema.ts"() {
-    "use strict";
-    import_node_fs3 = __toESM(require("node:fs"), 1);
-    import_node_path3 = __toESM(require("node:path"), 1);
-    init_logger2();
-    EN1_MIGRATION = "0165_wave10_en1_cashflow_hash_chain.sql";
-    EN3_MIGRATION = "0166_wave10_en3_investor_identity_alias.sql";
-  }
-});
-
-// server/lib/investorIdentityAliasStore.ts
-function db() {
-  if (!_ensured) {
-    _ensured = true;
-    try {
-      if (isSqlite()) applyWave10EngineSchema(rawDb());
-    } catch {
-    }
-  }
-  return rawDb();
-}
-function tableReady() {
-  try {
-    return !!db().prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='investor_identity_alias'`).get();
-  } catch {
-    return false;
-  }
-}
-function resolveInvestorIdSet(canonicalUserId) {
-  const canonical = String(canonicalUserId ?? "").trim();
-  if (!canonical) return [];
-  if (!tableReady()) return [canonical];
-  try {
-    const rows = db().prepare(
-      `SELECT alias_investor_id FROM investor_identity_alias
-          WHERE canonical_user_id = ? AND state = 'active'
-          ORDER BY created_at, id`
-    ).all(canonical);
-    const out = [canonical];
-    for (const r of rows) if (!out.includes(r.alias_investor_id)) out.push(r.alias_investor_id);
-    return out;
-  } catch (err) {
-    log.warn(`[en3] resolveInvestorIdSet failed, falling back to canonical only: ${err.message}`);
-    return [canonical];
-  }
-}
-var _ensured;
-var init_investorIdentityAliasStore = __esm({
-  "server/lib/investorIdentityAliasStore.ts"() {
-    "use strict";
-    init_lpIdentity();
-    init_connection();
-    init_portable();
-    init_logger2();
-    init_applyWave10EngineSchema();
-    _ensured = false;
-  }
-});
-
-// server/lib/lpIdentityBinding.ts
-var init_lpIdentityBinding = __esm({
-  "server/lib/lpIdentityBinding.ts"() {
-    "use strict";
-    init_investorIdentityAliasStore();
-    init_lpIdentity();
-    init_logger2();
-    init_connection();
-  }
-});
-
-// server/lib/spvLifecycleAudit.ts
-var init_spvLifecycleAudit = __esm({
-  "server/lib/spvLifecycleAudit.ts"() {
-    "use strict";
-    init_adminPlatformStore();
     init_logger2();
   }
 });
@@ -24192,32 +23899,6 @@ var init_applyWave38EventLedgerSchema = __esm({
     "use strict";
     init_logger2();
     init_migrate();
-  }
-});
-
-// server/lib/currencyScalar.ts
-var init_currencyScalar = __esm({
-  "server/lib/currencyScalar.ts"() {
-    "use strict";
-  }
-});
-
-// shared/wave221BenchmarkingOptOutCopy.ts
-var init_wave221BenchmarkingOptOutCopy = __esm({
-  "shared/wave221BenchmarkingOptOutCopy.ts"() {
-    "use strict";
-    init_refusalHeadlineGate();
-  }
-});
-
-// server/lib/wave221BenchmarkingOptOut.ts
-var init_wave221BenchmarkingOptOut = __esm({
-  "server/lib/wave221BenchmarkingOptOut.ts"() {
-    "use strict";
-    init_connection();
-    init_logger2();
-    init_adminPlatformStore();
-    init_wave221BenchmarkingOptOutCopy();
   }
 });
 
@@ -24389,9 +24070,15 @@ var init_wave9ReportingStore = __esm({
     init_applyWave38EventLedgerSchema();
     init_roundsStore();
     init_currency();
-    init_currencyScalar();
-    init_wave221BenchmarkingOptOut();
     init_src2();
+  }
+});
+
+// server/lib/applyWave10EngineSchema.ts
+var init_applyWave10EngineSchema = __esm({
+  "server/lib/applyWave10EngineSchema.ts"() {
+    "use strict";
+    init_logger2();
   }
 });
 
@@ -24420,555 +24107,6 @@ var init_ilpaCashflowLedger = __esm({
       excess_capital: "distribution_return_of_excess_capital",
       in_specie: "in_specie_distribution"
     });
-  }
-});
-
-// shared/spvEngine.ts
-function genericCompliance(code, formationIdItem = GENERIC_FORMATION_ID) {
-  return {
-    code,
-    label: SPV_JURISDICTION_LABELS[code],
-    isUnitedStates: false,
-    formationIdItem,
-    filings: GENERIC_FILINGS,
-    filingsAreJurisdictionSpecific: false,
-    investorCountLimit: null,
-    investorCountNote: GENERIC_COUNT_NOTE
-  };
-}
-function taxDocumentNotOnRecord(code) {
-  return {
-    code,
-    jurisdictionLabel: SPV_JURISDICTION_LABELS[code],
-    documentName: null,
-    authority: null,
-    onRecord: false,
-    documentLongName: null,
-    formNumber: null,
-    taxAuthority: null,
-    entityTreatment: "Not on record. The vehicle's jurisdiction itself is not recorded, so no tax treatment can be stated for it.",
-    vehicleFormDependent: false,
-    vehicleFormConditional: null,
-    additionalDocuments: [],
-    investorReceivesInstead: null,
-    noStandardFormExplanation: null,
-    recordStatus: "not_on_record",
-    sources: []
-  };
-}
-var SPV_JURISDICTIONS, SPV_JURISDICTION_COUNTRY, SPV_JURISDICTION_LABELS, COUNTRY_TO_JURISDICTION, GENERIC_FILINGS, GENERIC_FORMATION_ID, GENERIC_COUNT_NOTE, SPV_JURISDICTION_COMPLIANCE, SPV_JURISDICTION_TAX_DOCUMENT, SPV_TAX_DOCUMENT_ON_RECORD_JURISDICTIONS, SPV_TAX_DOCUMENT_NOT_ON_RECORD_JURISDICTIONS, SPV_TAX_DOCUMENT_NO_STANDARD_FORM_JURISDICTIONS, SPV_TAX_DOCUMENT_VEHICLE_FORM_DEPENDENT_JURISDICTIONS, SPV_SUBSCRIPTION_STATUSES;
-var init_spvEngine = __esm({
-  "shared/spvEngine.ts"() {
-    "use strict";
-    SPV_JURISDICTIONS = [
-      /* pre-existing four — DO NOT reorder or rename (persisted values) */
-      "delaware",
-      "cayman",
-      "bvi",
-      "canadian_lp",
-      /* WAVE 3C / J-1 — additive, one per remaining ontology country */
-      "united_kingdom",
-      "singapore",
-      "luxembourg",
-      "ireland",
-      "hong_kong",
-      "uae",
-      "jersey",
-      "guernsey",
-      "netherlands",
-      "mauritius",
-      "australia",
-      /* explicit "we do not know" — never silently a US jurisdiction */
-      "other"
-    ];
-    SPV_JURISDICTION_COUNTRY = {
-      delaware: "United States",
-      cayman: "Cayman Islands",
-      bvi: "British Virgin Islands",
-      canadian_lp: "Canada",
-      united_kingdom: "United Kingdom",
-      singapore: "Singapore",
-      luxembourg: "Luxembourg",
-      ireland: "Ireland",
-      hong_kong: "Hong Kong",
-      uae: "United Arab Emirates",
-      jersey: "Jersey",
-      guernsey: "Guernsey",
-      netherlands: "Netherlands",
-      mauritius: "Mauritius",
-      australia: "Australia",
-      other: null
-    };
-    SPV_JURISDICTION_LABELS = {
-      delaware: "United States (Delaware)",
-      cayman: "Cayman Islands",
-      bvi: "British Virgin Islands",
-      canadian_lp: "Canada",
-      united_kingdom: "United Kingdom",
-      singapore: "Singapore",
-      luxembourg: "Luxembourg",
-      ireland: "Ireland",
-      hong_kong: "Hong Kong",
-      uae: "United Arab Emirates",
-      jersey: "Jersey",
-      guernsey: "Guernsey",
-      netherlands: "Netherlands",
-      mauritius: "Mauritius",
-      australia: "Australia",
-      other: "Other / not specified"
-    };
-    COUNTRY_TO_JURISDICTION = (() => {
-      const out = {};
-      for (const code of SPV_JURISDICTIONS) {
-        const country = SPV_JURISDICTION_COUNTRY[code];
-        if (country) out[country.toLowerCase()] = code;
-      }
-      return out;
-    })();
-    GENERIC_FILINGS = [
-      "Check local regulatory notice requirements with your counsel"
-    ];
-    GENERIC_FORMATION_ID = "Local entity registration / tax identification number obtained";
-    GENERIC_COUNT_NOTE = "Capavate does not hold a verified investor-count threshold for this jurisdiction. Confirm any limit with local counsel.";
-    SPV_JURISDICTION_COMPLIANCE = {
-      delaware: {
-        code: "delaware",
-        label: SPV_JURISDICTION_LABELS.delaware,
-        isUnitedStates: true,
-        formationIdItem: "Tax ID / EIN obtained",
-        filings: [
-          "Form D filed with the SEC (if applicable)",
-          "Blue-sky / state notice filings (if applicable)"
-        ],
-        filingsAreJurisdictionSpecific: true,
-        investorCountLimit: 100,
-        investorCountNote: "US 3(c)(1) funds commonly cap at ~100 investors."
-      },
-      cayman: genericCompliance("cayman", "Registered number obtained"),
-      bvi: genericCompliance("bvi", "Company number obtained"),
-      canadian_lp: genericCompliance("canadian_lp"),
-      united_kingdom: genericCompliance("united_kingdom"),
-      singapore: genericCompliance("singapore"),
-      luxembourg: genericCompliance("luxembourg"),
-      ireland: genericCompliance("ireland"),
-      hong_kong: genericCompliance("hong_kong"),
-      uae: genericCompliance("uae"),
-      jersey: genericCompliance("jersey"),
-      guernsey: genericCompliance("guernsey"),
-      netherlands: genericCompliance("netherlands"),
-      mauritius: genericCompliance("mauritius"),
-      australia: genericCompliance("australia"),
-      other: genericCompliance("other")
-    };
-    SPV_JURISDICTION_TAX_DOCUMENT = {
-      /* ── FIVE JURISDICTIONS WITH A REAL STATUTORY INVESTOR DOCUMENT ───────── */
-      /* United States. Internal Revenue Service. */
-      delaware: {
-        code: "delaware",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.delaware,
-        documentName: "Schedule K-1",
-        authority: "US Internal Revenue Service",
-        onRecord: true,
-        documentLongName: "Schedule K-1 (Form 1065), Partner's Share of Income, Deductions, Credits, etc. The partnership files a copy with the tax authority and gives one to each partner.",
-        formNumber: "Schedule K-1 (Form 1065)",
-        taxAuthority: "Internal Revenue Service",
-        entityTreatment: "Tax-transparent: the partnership itself is generally not subject to income tax, and each partner is taxed on their share whether or not it is distributed.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [
-          "Schedule K-3 (Form 1065), for items of international tax relevance",
-          "Form 1042-S, issued to a foreign partner for United States source income subject to withholding"
-        ],
-        investorReceivesInstead: null,
-        noStandardFormExplanation: null,
-        recordStatus: "on_record",
-        sources: [
-          { label: "Internal Revenue Service \u2014 Partner's Instructions for Schedule K-1 (Form 1065)", url: "https://www.irs.gov/instructions/i1065sk1" },
-          { label: "Internal Revenue Service \u2014 Instructions for Schedule K-3 (Form 1065)", url: "https://www.irs.gov/instructions/i1065sk3" },
-          { label: "Internal Revenue Service \u2014 About Form 1042-S", url: "https://www.irs.gov/forms-pubs/about-form-1042-s" }
-        ]
-      },
-      /* Canada. Canada Revenue Agency. */
-      canadian_lp: {
-        code: "canadian_lp",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.canadian_lp,
-        documentName: "T5013",
-        authority: "Canada Revenue Agency",
-        onRecord: true,
-        documentLongName: "T5013, Statement of Partnership Income \u2014 an information slip issued by the authorised member of the partnership reporting each partner's share of income for the fiscal period.",
-        formNumber: "T5013",
-        taxAuthority: "Canada Revenue Agency",
-        entityTreatment: "Tax-transparent: a partnership does not pay income tax on its income and does not file an income tax return; each partner reports their share.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [
-          "NR4, Statement of Amounts Paid or Credited to Non-Residents of Canada, for a non-resident partner"
-        ],
-        investorReceivesInstead: null,
-        noStandardFormExplanation: null,
-        recordStatus: "on_record",
-        sources: [
-          { label: "Canada Revenue Agency \u2014 T5013, Statement of Partnership Income", url: "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms/t5013.html" },
-          { label: "Canada Revenue Agency \u2014 Reporting partnership income", url: "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/sole-proprietorships-partnerships/t5013-partnership-information-return-filing-requirements/reporting-partnership-income.html" },
-          { label: "Canada Revenue Agency \u2014 NR4", url: "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms/nr4.html" }
-        ]
-      },
-      /* United Kingdom. HM Revenue & Customs. */
-      united_kingdom: {
-        code: "united_kingdom",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.united_kingdom,
-        documentName: "Partnership Statement SA800(PS)",
-        authority: "HM Revenue & Customs",
-        onRecord: true,
-        documentLongName: "The Partnership Statement, form SA800(PS), part of the SA800 Partnership Tax Return. It allocates income, losses and tax credits to each partner, and each partner needs a copy of their own allocation to complete their personal return.",
-        formNumber: "SA800(PS)",
-        taxAuthority: "HM Revenue & Customs",
-        entityTreatment: "Tax-transparent: the partnership has no tax liability of its own. The partnership return exists to establish the profits on which the partners are taxed.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [
-          "The partnership statement is drawn up on a different basis for corporate partners and for non-resident partners, so those allocations differ",
-          "No separate United Kingdom withholding certificate for a limited partner was established"
-        ],
-        investorReceivesInstead: null,
-        noStandardFormExplanation: null,
-        recordStatus: "on_record",
-        sources: [
-          { label: "HM Revenue & Customs \u2014 Partnership Statement SA800(PS)", url: "https://assets.publishing.service.gov.uk/media/67e3e048e8428b01705de027/SA800PS_2025.pdf" },
-          { label: "HM Revenue & Customs \u2014 Partnership Manual PM138000", url: "https://www.gov.uk/hmrc-internal-manuals/partnership-manual/pm138000" }
-        ]
-      },
-      /* Mauritius. Mauritius Revenue Authority. */
-      mauritius: {
-        code: "mauritius",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.mauritius,
-        documentName: "Statement of share of net income and tax deducted",
-        authority: "Mauritius Revenue Authority",
-        onRecord: true,
-        documentLongName: "A statement in an approved form given to each associate, showing that associate's share of net income or loss and the amount of tax deducted at source, for inclusion in the associate's own annual return of income.",
-        /* The authority describes it only as "a statement in an approved form", so
-           there is no form number to state and none is invented. */
-        formNumber: null,
-        taxAuthority: "Mauritius Revenue Authority",
-        entityTreatment: "Tax-transparent for a resident soci\xE9t\xE9: the soci\xE9t\xE9 is not liable to tax on its own income and the associates are liable on their respective shares whether or not distributed. A company vehicle is taxed at entity level.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [
-          "The soci\xE9t\xE9's own return is I.T. Form 6, and the statement doubles as the record of tax deducted at source",
-          "A non-resident soci\xE9t\xE9 liable to tax as a company, or a global business licence soci\xE9t\xE9 that opts to be liable, files I.T. Form 3 instead"
-        ],
-        investorReceivesInstead: null,
-        noStandardFormExplanation: null,
-        recordStatus: "on_record",
-        sources: [
-          { label: "Mauritius Revenue Authority \u2014 Return of Soci\xE9t\xE9", url: "https://www.mra.mu/index.php/eservices1/corporate/societe" },
-          { label: "Mauritius Revenue Authority \u2014 I.T. Form 6", url: "https://www.mra.mu/download/Soc06_210808.pdf" },
-          { label: "Mauritius Revenue Authority \u2014 Corporate Taxation", url: "https://www.mra.mu/index.php/taxes-duties/corporate-taxation" }
-        ]
-      },
-      /* Australia. Australian Taxation Office. A document EXISTS, and WHICH one
-         depends on the vehicle's legal form — including the Division 5A corporate
-         limited partnership case, which is taxed as a company. */
-      australia: {
-        code: "australia",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.australia,
-        documentName: "Statement of distribution",
-        authority: "Australian Taxation Office",
-        onRecord: true,
-        documentLongName: "For a partnership, the statement of distribution completed for each partner at item 53 of the Partnership tax return, showing their share of income and credits. For a managed fund structured as an attribution managed investment trust, the Attribution Managed Investment Trust member annual (AMMA) statement, which must be given to each member within three months after the end of the income year.",
-        /* Named by name and by item number, not by a standalone form number. */
-        formNumber: null,
-        taxAuthority: "Australian Taxation Office",
-        entityTreatment: "An ordinary partnership does not pay tax on its income and the partners report their share. A corporate limited partnership is treated as a company for income tax purposes under Division 5A of Part III of the Income Tax Assessment Act 1936. An attribution managed investment trust attributes amounts to its members.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form. An ordinary partnership is tax-transparent and gives each partner a statement of distribution. A corporate limited partnership is treated as a company for income tax purposes under Division 5A of Part III of the Income Tax Assessment Act 1936, and its distributions are treated as dividends rather than partnership allocations. An attribution managed investment trust instead gives each member an Attribution Managed Investment Trust member annual (AMMA) statement. Confirm with your administrator.",
-        additionalDocuments: [
-          "The fund also lodges an annual investment income report with the tax authority, mirroring the member information",
-          "A revised member annual statement can be issued up to four years after the end of the income year"
-        ],
-        investorReceivesInstead: null,
-        noStandardFormExplanation: null,
-        recordStatus: "on_record",
-        sources: [
-          { label: "Australian Taxation Office \u2014 Statement of distribution, item 53", url: "https://www.ato.gov.au/forms-and-instructions/partnership-tax-return-2022-instructions/instructions-for-completing-the-tax-return/statement-of-distribution-item-53" },
-          { label: "Australian Taxation Office \u2014 AMIT reporting requirements", url: "https://www.ato.gov.au/businesses-and-organisations/trusts/specific-rules-for-some-trusts/managed-investment-trusts/managed-investment-trusts-overview/attribution-managed-investment-trusts/amit-reporting-requirements" },
-          { label: "Australian Taxation Office \u2014 TD 2022/5, corporate limited partnerships", url: "https://www.ato.gov.au/law/view/print?DocID=TXD/TD20225/NAT/ATO/00001&PiT=99991231235958" }
-        ]
-      },
-      /* ── TEN JURISDICTIONS WITH NO STANDARD INVESTOR TAX FORM ─────────────────
-           Each is an ESTABLISHED ABSENCE carried by the sources listed on it, not
-           an absence of data. Each says what the investor receives instead. ──── */
-      /* Hong Kong — the partnership itself is taxed, IN THE PARTNERSHIP'S NAME. */
-      hong_kong: {
-        code: "hong_kong",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.hong_kong,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Inland Revenue Department",
-        entityTreatment: "Taxed at entity level: assessable profits are computed as a single amount and profits tax is charged in the partnership's own name, subject to the unified funds exemption for a qualifying fund.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [],
-        investorReceivesInstead: "The vehicle's audited financial statements, together with capital-account and allocation information from the manager.",
-        noStandardFormExplanation: "Hong Kong issues no investor tax slip because it taxes the partnership itself, in the partnership's own name: the precedent partner files the profits tax return and the tax is charged on the partnership rather than allocated to partners on a statutory form. The fund-exemption guidance prescribes no investor reporting form either.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Inland Revenue Department \u2014 A Guide to Profits Tax for Unincorporated Businesses", url: "https://www.ird.gov.hk/eng/pdf/pam58e.pdf" },
-          { label: "Inland Revenue Department \u2014 Departmental Interpretation and Practice Notes No. 61", url: "https://www.ird.gov.hk/eng/pdf/dipn61.pdf" }
-        ]
-      },
-      /* Singapore — inform-the-partners duty only. LEGAL-FORM DEPENDENT. */
-      singapore: {
-        code: "singapore",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.singapore,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Inland Revenue Authority of Singapore",
-        entityTreatment: "A limited partnership is not liable to tax at entity level and each partner is taxed on their share. A variable capital company is treated as a company for income tax purposes and so is taxed at entity level.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form \u2014 a limited partnership is normally tax-transparent, so you are taxed on your own share, whereas a variable capital company is taxed as a company at entity level. Confirm with your administrator.",
-        additionalDocuments: [],
-        investorReceivesInstead: "An allocation notice from the precedent partner stating your share of the partnership's income, which may then be pre-filled into your own return.",
-        noStandardFormExplanation: "Singapore prescribes no investor slip. The only requirement is that the precedent partner inform all the partners of their share of the partnership's income; the partnership itself files the partnership return.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Inland Revenue Authority of Singapore \u2014 Responsibilities of precedent partners", url: "https://www.iras.gov.sg/taxes/individual-income-tax/self-employed-and-partnerships/tax-obligations-of-partnerships/responsibilities-of-precedent-partners" },
-          { label: "Inland Revenue Authority of Singapore \u2014 Types of partnerships", url: "https://www.iras.gov.sg/taxes/individual-income-tax/self-employed-and-partnerships/tax-obligations-of-partnerships/types-of-partnerships" },
-          { label: "Inland Revenue Authority of Singapore \u2014 Tax framework for variable capital companies", url: "https://www.iras.gov.sg/media/docs/default-source/e-tax/etaxguides_cit_tax_framework_for_vcc.pdf" }
-        ]
-      },
-      /* Cayman Islands — no direct taxes at all, so no revenue administration. */
-      cayman: {
-        code: "cayman",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.cayman,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: null,
-        entityTreatment: "Tax-neutral: there is no income, corporation or capital gains tax at entity level.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [],
-        investorReceivesInstead: "Audited financial statements, a capital-account or partner allocation statement, and distribution notices.",
-        noStandardFormExplanation: "There are no direct taxes in the Cayman Islands, so there is no domestic investor tax form to issue. The Tax Information Authority is expressly not a tax administration or revenue agency; its role, with the Department for International Tax Cooperation, is cross-border information exchange only.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Cayman Islands Government \u2014 Our Finance and Economy", url: "https://gov.ky/economy" },
-          { label: "Department for International Tax Cooperation \u2014 frequently asked questions", url: "https://www.ditc.ky/news-updates/faqs/" }
-        ]
-      },
-      /* British Virgin Islands — no corporate income or capital gains tax. */
-      bvi: {
-        code: "bvi",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.bvi,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: null,
-        entityTreatment: "Tax-neutral: no corporate income or capital gains tax is levied at entity level.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [],
-        investorReceivesInstead: "Audited financial statements together with partner allocation and distribution reporting.",
-        noStandardFormExplanation: "The British Virgin Islands levies no corporate income or capital gains tax, so no investor tax form exists. The Inland Revenue Department administers payroll and similar taxes, and the International Tax Authority acts only as the competent authority for cross-border information reporting.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "British Virgin Islands Financial Services Commission \u2014 tax structure", url: "https://www.bvifsc.vg/faq/what-tax-structure-bvi" },
-          { label: "Government of the Virgin Islands \u2014 Inland Revenue Department", url: "https://bvi.gov.vg/departments/inland-revenue-department-0" }
-        ]
-      },
-      /* Luxembourg — transparent, but the reverse-hybrid rule can displace it. */
-      luxembourg: {
-        code: "luxembourg",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.luxembourg,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Administration des contributions directes",
-        entityTreatment: "A common or special limited partnership is not taxable as such and its partners are taxed on their share. The reverse-hybrid rule can displace that transparency and tax the partnership itself on some investors' allocable income.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form and on its investor base. A common or special limited partnership is normally not taxable as such, so partners are taxed on their share; a corporate vehicle is taxed at entity level; and the reverse-hybrid rule can make the partnership itself taxable on some investors' allocable income. Confirm with your administrator.",
-        additionalDocuments: [],
-        investorReceivesInstead: "The annual accounts or annual report, plus a manager-prepared tax reporting package or allocation statement.",
-        noStandardFormExplanation: "Neither the tax administration's transparency guidance nor the government business portal identifies any partner or investor statement, certificate or numbered form for a Luxembourg limited partnership fund. The partnership's own return, with its investor annex, is filed with the authorities rather than issued to investors.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Administration des contributions directes \u2014 transparence fiscale", url: "https://impotsdirects.public.lu/fr/az/t/transparence.html" },
-          { label: "Guichet.lu \u2014 special limited partnership", url: "https://guichet.public.lu/en/entreprises/creation-developpement/forme-juridique/entreprise-individuelle-societe-personnes/scsp.html" }
-        ]
-      },
-      /* Ireland — transparent partnership vs gross roll-up regulated fund. */
-      ireland: {
-        code: "ireland",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.ireland,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Office of the Revenue Commissioners",
-        entityTreatment: "An investment limited partnership authorised on or after 13 February 2013 is tax-transparent and its partners self-assess. A regulated investment undertaking is generally exempt at fund level under gross roll-up, with exit tax deducted by the fund on a chargeable event.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form \u2014 an investment limited partnership is normally tax-transparent and its partners self-assess, with no investor form issued, whereas a regulated fund such as an Irish collective asset-management vehicle is taxed under gross roll-up and the fund itself deducts exit tax on a chargeable event. Confirm with your administrator.",
-        additionalDocuments: [
-          "A non-resident declaration held by the fund before a chargeable event removes the need to deduct exit tax"
-        ],
-        investorReceivesInstead: "The manager's allocation information for a partnership. For a regulated gross roll-up fund, exit tax is instead deducted at source by the fund.",
-        noStandardFormExplanation: "There is no investor tax form for an investment limited partnership: the partnership's annual statement is filed with the revenue authority, not issued to the partners, who return their own income under self-assessment.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Revenue Commissioners \u2014 Investment limited partnerships", url: "https://www.revenue.ie/en/companies-and-charities/financial-services/collective-investment-vehicles/investment-limited-partnerships.aspx" },
-          { label: "Revenue Commissioners \u2014 Tax and Duty Manual Part 27-01a-04", url: "https://www.revenue.ie/en/tax-professionals/tdm/income-tax-capital-gains-tax-corporation-tax/part-27/27-01a-04.pdf" },
-          { label: "Revenue Commissioners \u2014 Funds", url: "https://www.revenue.ie/en/companies-and-charities/financial-services/collective-investment-vehicles/funds.aspx" }
-        ]
-      },
-      /* United Arab Emirates — transparency via the authorised partner's annual
-         declaration; an OPAQUE ELECTION is available. */
-      uae: {
-        code: "uae",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.uae,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Federal Tax Authority",
-        entityTreatment: "An unincorporated partnership is fiscally transparent by default and is not itself a taxable person, but it may elect to be treated as a taxable person and so become opaque. An incorporated partnership is taxed at entity level, and a qualifying investment fund can be exempt.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form and on an election it may have made \u2014 an unincorporated partnership is fiscally transparent by default, but it can elect to be treated as a taxable person and be taxed as an entity, and an incorporated partnership is taxed at entity level. Confirm with your administrator.",
-        additionalDocuments: [
-          "Withholding tax on relevant non-resident state-sourced income is currently at a zero rate, so no investor withholding certificate arises"
-        ],
-        investorReceivesInstead: "The fund's financial statements, with net income available for distribution split into the authority's income categories.",
-        noStandardFormExplanation: "The United Arab Emirates prescribes no investor tax form. Transparency is routed instead through an annual declaration made by the authorised partner to the Federal Tax Authority, within nine months of the financial year end, setting out each partner's distributive share. No form number is published for that declaration.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Federal Tax Authority \u2014 Corporate Tax Guide: Taxation of Partnerships", url: "https://tax.gov.ae/Datafolder/Files/Guides/CT/CT%20Guide%20-%20Partnerships%20-%2004%2003%202024%20-%20for%20publishing.pdf" },
-          { label: "Federal Tax Authority \u2014 Corporate Tax Guide: Investment Funds and Investment Managers", url: "https://tax.gov.ae/Datafolder/Files/Guides/CT/CT%20Guide%20-%20Investment%20Funds%20and%20Managers%2006%2005%202024.pdf" }
-        ]
-      },
-      /* Jersey — reported to the authority, not to the investor. */
-      jersey: {
-        code: "jersey",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.jersey,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Revenue Jersey",
-        entityTreatment: "Tax-transparent for a partnership: from 2022 all profits are taxed and collected at the individual partner's own tax file, irrespective of partnership type, and a Jersey limited liability company is also treated as transparent. A Jersey company is taxed at entity level.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form \u2014 a Jersey partnership and a Jersey limited liability company are treated as tax-transparent, so partners are taxed on their own share, whereas a Jersey company is taxed at entity level. Confirm with your administrator.",
-        additionalDocuments: [],
-        investorReceivesInstead: "A partnership profit-share statement or the accounts, which may be attached to the partnership's notification but are not obligatory, plus your own return.",
-        noStandardFormExplanation: "Jersey prescribes no investor certificate. Each partner's name, tax identification number and taxable profit share are reported to Revenue Jersey in the online Combined Partnership Notification completed by the responsible partner, and partners then declare their share on their own personal return.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Revenue Jersey \u2014 Partnership income and tax", url: "https://www.gov.je/TaxesMoney/IncomeTax/PartnershipTaxInformation/pages/partnershipincome.aspx" },
-          { label: "Revenue Jersey \u2014 Combined Partnership Notification guidance", url: "https://www.gov.je/TaxesMoney/IncomeTax/PartnershipTaxInformation/pages/guidancecombinednotificationpartnerships.aspx" }
-        ]
-      },
-      /* Guernsey — no investor statement identified at all. */
-      guernsey: {
-        code: "guernsey",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.guernsey,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Guernsey Revenue Service",
-        entityTreatment: "A private-equity limited partnership is transparent for Guernsey income tax and resident partners are taxed on their share. A company vehicle is taxed at entity level but at a zero per cent standard rate, with higher rates for specified activities, and a collective investment vehicle may apply for exemption.",
-        vehicleFormDependent: true,
-        vehicleFormConditional: "Depends on this vehicle's legal form \u2014 a private-equity limited partnership is transparent for Guernsey income tax, whereas a company vehicle is taxed at entity level at a zero per cent standard rate unless a higher-rate activity applies, and a collective investment vehicle may instead be exempt and treated as non-resident. Confirm with your administrator.",
-        additionalDocuments: [
-          "The filings that do exist are entity-level: the annual exemption application for a collective investment vehicle, and a company's quarterly distribution reporter return"
-        ],
-        investorReceivesInstead: "The fund's accounts. Whether tax must be deducted from a distribution turns on which members are Guernsey-resident, not on any certificate given to the investor.",
-        noStandardFormExplanation: "Neither the Revenue Service's partnership and company guidance nor its exempt-bodies guidance identifies any statement issued to a partner, member or investor showing their share of income or tax deducted.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Guernsey Revenue Service \u2014 Statement of Practice M44", url: "https://www.gov.gg/CHttpHandler.ashx?id=189614&p=0" },
-          { label: "Guernsey Revenue Service \u2014 Companies", url: "https://gov.gg/RevenueService/Companies" },
-          { label: "Guernsey Revenue Service \u2014 Exempt bodies", url: "https://www.gov.gg/CHttpHandler.ashx?id=2175&p=0" }
-        ]
-      },
-      /* Netherlands — the limited partnership ceased to be independently liable to
-         corporate income tax on 1 January 2025. */
-      netherlands: {
-        code: "netherlands",
-        jurisdictionLabel: SPV_JURISDICTION_LABELS.netherlands,
-        documentName: null,
-        authority: null,
-        onRecord: false,
-        documentLongName: null,
-        formNumber: null,
-        taxAuthority: "Belastingdienst",
-        entityTreatment: "Tax-transparent: since 1 January 2025 a limited partnership is no longer independently liable for corporate income tax, unless it is liable under some other rule. A corporate vehicle remains taxed at entity level.",
-        vehicleFormDependent: false,
-        vehicleFormConditional: null,
-        additionalDocuments: [
-          "For a corporate vehicle, dividend tax of 15 per cent is generally withheld by the distributing company and reported by the recipient, who may offset, reclaim or be exempt from it; the form number of the dividend note was not established"
-        ],
-        investorReceivesInstead: "A contractual profit-share statement from the manager; investors report their own share of the profit.",
-        noStandardFormExplanation: "The Netherlands tax administration identifies no statutory partner statement for a limited partnership, and since 1 January 2025 the limited partnership is no longer independently subject to corporate income tax, so investors report their own profit share.",
-        recordStatus: "no_standard_form",
-        sources: [
-          { label: "Belastingdienst \u2014 corporate income tax and the limited partnership", url: "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/zakelijk/winst/vennootschapsbelasting/belastingplicht_en_aangifte/vennootschapsbelasting-en-commanditaire-vennootschap" },
-          { label: "business.gov.nl \u2014 limited partnership", url: "https://business.gov.nl/running-your-business/legal-forms-and-governance/limited-partnership/" }
-        ]
-      },
-      /* ── THE EXPLICIT UNKNOWN ─────────────────────────────────────────────────
-           `other` means the jurisdiction ITSELF is unrecorded, so "which form
-           applies?" is unanswerable by design. It is NOT an established absence
-           and must never be described as one. */
-      other: taxDocumentNotOnRecord("other")
-    };
-    SPV_TAX_DOCUMENT_ON_RECORD_JURISDICTIONS = SPV_JURISDICTIONS.filter((code) => SPV_JURISDICTION_TAX_DOCUMENT[code].recordStatus === "on_record");
-    SPV_TAX_DOCUMENT_NOT_ON_RECORD_JURISDICTIONS = SPV_JURISDICTIONS.filter((code) => !SPV_JURISDICTION_TAX_DOCUMENT[code].onRecord);
-    SPV_TAX_DOCUMENT_NO_STANDARD_FORM_JURISDICTIONS = SPV_JURISDICTIONS.filter(
-      (code) => SPV_JURISDICTION_TAX_DOCUMENT[code].recordStatus === "no_standard_form"
-    );
-    SPV_TAX_DOCUMENT_VEHICLE_FORM_DEPENDENT_JURISDICTIONS = SPV_JURISDICTIONS.filter((code) => SPV_JURISDICTION_TAX_DOCUMENT[code].vehicleFormDependent);
-    SPV_SUBSCRIPTION_STATUSES = [
-      "review",
-      "soft_circled",
-      "founder_confirmed",
-      "wire_funded",
-      "committed",
-      "withdrawn"
-    ];
-  }
-});
-
-// shared/spvCommittedCapital.ts
-var SPV_COMMITTED_SUBSCRIPTION_STATUS, SPV_UNCOMMITTED_PENDING_STATUSES, SPV_SOFT_CIRCLED_INTEREST_STATUSES;
-var init_spvCommittedCapital = __esm({
-  "shared/spvCommittedCapital.ts"() {
-    "use strict";
-    init_spvEngine();
-    SPV_COMMITTED_SUBSCRIPTION_STATUS = "committed";
-    SPV_UNCOMMITTED_PENDING_STATUSES = SPV_SUBSCRIPTION_STATUSES.filter(
-      (s) => s !== SPV_COMMITTED_SUBSCRIPTION_STATUS && s !== "withdrawn"
-    );
-    SPV_SOFT_CIRCLED_INTEREST_STATUSES = [
-      "soft_circled",
-      "founder_confirmed",
-      "review"
-    ];
   }
 });
 
@@ -25101,43 +24239,43 @@ var init_percentPolicy = __esm({
 });
 
 // server/lib/applyWave56TierDomainSchema.ts
-function candidatePaths4() {
+function candidatePaths3() {
   const cwd = process.cwd();
   return [
-    import_node_path4.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME2),
-    import_node_path4.default.join(cwd, "migrations", MIGRATION_BASENAME2)
+    import_node_path3.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME2),
+    import_node_path3.default.join(cwd, "migrations", MIGRATION_BASENAME2)
   ];
 }
 function readWave56TierDomainDdl() {
-  for (const p of candidatePaths4()) {
+  for (const p of candidatePaths3()) {
     try {
-      if (import_node_fs4.default.existsSync(p)) return import_node_fs4.default.readFileSync(p, "utf8");
+      if (import_node_fs3.default.existsSync(p)) return import_node_fs3.default.readFileSync(p, "utf8");
     } catch {
     }
   }
   return null;
 }
-function objectSql(db2, type, name) {
+function objectSql(db, type, name) {
   try {
-    const row = db2.prepare(`SELECT sql FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
+    const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
     return typeof row?.sql === "string" ? row.sql : null;
   } catch {
     return null;
   }
 }
-function probe(db2) {
+function probe(db) {
   const tablesStillPinned = [];
   for (const { table, removedCheck } of WAVE56_REBUILT_TABLES) {
-    const sql2 = objectSql(db2, "table", table);
+    const sql2 = objectSql(db, "table", table);
     if (sql2 !== null && sql2.includes(removedCheck)) tablesStillPinned.push(table);
   }
-  const triggersMissing = WAVE56_TRIGGERS.filter((t) => objectSql(db2, "trigger", t) === null);
-  const rankTablePresent = objectSql(db2, "table", WAVE56_RANK_TABLE) !== null;
+  const triggersMissing = WAVE56_TRIGGERS.filter((t) => objectSql(db, "trigger", t) === null);
+  const rankTablePresent = objectSql(db, "table", WAVE56_RANK_TABLE) !== null;
   return { tablesStillPinned, triggersMissing, rankTablePresent };
 }
-function ensureTierCurrentExists(db2) {
-  if (objectSql(db2, "table", "partner_tier_current") !== null) return;
-  db2.exec(`
+function ensureTierCurrentExists(db) {
+  if (objectSql(db, "table", "partner_tier_current") !== null) return;
+  db.exec(`
 CREATE TABLE IF NOT EXISTS partner_tier_current (
   partner_id      TEXT PRIMARY KEY NOT NULL,
   tier            TEXT NOT NULL,
@@ -25148,45 +24286,45 @@ CREATE TABLE IF NOT EXISTS partner_tier_current (
 CREATE INDEX IF NOT EXISTS idx_partner_tier_current_tier ON partner_tier_current (tier);
 `);
 }
-function applyWave56TierDomainSchema(db2) {
+function applyWave56TierDomainSchema(db) {
   const warnings = [];
-  if (objectSql(db2, "table", "partner_tier_lifecycle") === null) {
+  if (objectSql(db, "table", "partner_tier_lifecycle") === null) {
     return {
       ran: false,
       reason: "partner_tier_lifecycle absent \u2014 Wave 45 install has not run",
       warnings: ["wave56 tier-domain install skipped: partner_tier_lifecycle absent"],
-      ...probe(db2)
+      ...probe(db)
     };
   }
-  let state = probe(db2);
+  let state = probe(db);
   if (state.tablesStillPinned.length === 0 && state.triggersMissing.length === 0 && state.rankTablePresent) {
     return { ran: false, reason: "already installed", warnings, ...state };
   }
   const ddl = readWave56TierDomainDdl();
   if (!ddl) {
-    warnings.push(`could not read ${MIGRATION_BASENAME2} from any of: ${candidatePaths4().join(", ")}`);
+    warnings.push(`could not read ${MIGRATION_BASENAME2} from any of: ${candidatePaths3().join(", ")}`);
     log.error?.({ warnings }, "wave56 tier-domain install could not read its migration");
     return { ran: false, reason: "ddl not found", warnings, ...state };
   }
   try {
-    ensureTierCurrentExists(db2);
+    ensureTierCurrentExists(db);
   } catch (err) {
     warnings.push(`partner_tier_current pre-create failed: ${err.message}`);
   }
-  const anyDb = db2;
+  const anyDb = db;
   try {
     if (typeof anyDb.transaction === "function") {
       anyDb.transaction(() => {
-        db2.exec(ddl);
+        db.exec(ddl);
       })();
     } else {
       try {
-        db2.exec("BEGIN");
-        db2.exec(ddl);
-        db2.exec("COMMIT");
+        db.exec("BEGIN");
+        db.exec(ddl);
+        db.exec("COMMIT");
       } catch (inner) {
         try {
-          db2.exec("ROLLBACK");
+          db.exec("ROLLBACK");
         } catch {
         }
         throw inner;
@@ -25195,33 +24333,33 @@ function applyWave56TierDomainSchema(db2) {
   } catch (err) {
     warnings.push(`exec failed (rolled back): ${err.message}`);
     log.error?.({ err }, "wave56 tier-domain install failed and was rolled back");
-    return { ran: true, reason: "failed and rolled back", warnings, ...probe(db2) };
+    return { ran: true, reason: "failed and rolled back", warnings, ...probe(db) };
   }
-  state = probe(db2);
+  state = probe(db);
   if (state.tablesStillPinned.length > 0 || state.triggersMissing.length > 0 || !state.rankTablePresent) {
     log.warn?.(
       { tablesStillPinned: state.tablesStillPinned, triggersMissing: state.triggersMissing, rankTablePresent: state.rankTablePresent },
       "wave56 tier-domain install incomplete"
     );
   }
-  const displacedMissing = WAVE56_DISPLACED_TRIGGERS.filter((t) => objectSql(db2, "trigger", t) === null);
+  const displacedMissing = WAVE56_DISPLACED_TRIGGERS.filter((t) => objectSql(db, "trigger", t) === null);
   if (displacedMissing.length > 0) {
     warnings.push(`DISPLACED MONEY-FREEZE TRIGGERS NOT RESTORED: ${displacedMissing.join(", ")}`);
     log.error?.({ displacedMissing }, "wave56 tier-domain install did not restore money-freeze triggers");
   }
   return { ran: true, reason: "installed", warnings, ...state };
 }
-function ensureWave56TierDomainSchema(db2) {
-  if (_installed2.has(db2)) return;
-  applyWave56TierDomainSchema(db2);
-  _installed2.add(db2);
+function ensureWave56TierDomainSchema(db) {
+  if (_installed2.has(db)) return;
+  applyWave56TierDomainSchema(db);
+  _installed2.add(db);
 }
-var import_node_fs4, import_node_path4, MIGRATION_BASENAME2, WAVE56_REBUILT_TABLES, WAVE56_TRIGGERS, WAVE56_DISPLACED_TRIGGERS, WAVE56_RANK_TABLE, _installed2;
+var import_node_fs3, import_node_path3, MIGRATION_BASENAME2, WAVE56_REBUILT_TABLES, WAVE56_TRIGGERS, WAVE56_DISPLACED_TRIGGERS, WAVE56_RANK_TABLE, _installed2;
 var init_applyWave56TierDomainSchema = __esm({
   "server/lib/applyWave56TierDomainSchema.ts"() {
     "use strict";
-    import_node_fs4 = __toESM(require("node:fs"), 1);
-    import_node_path4 = __toESM(require("node:path"), 1);
+    import_node_fs3 = __toESM(require("node:fs"), 1);
+    import_node_path3 = __toESM(require("node:path"), 1);
     init_logger2();
     MIGRATION_BASENAME2 = "0191_wave56_tier_domain_dynamic.sql";
     WAVE56_REBUILT_TABLES = [
@@ -25246,304 +24384,43 @@ var init_applyWave56TierDomainSchema = __esm({
   }
 });
 
-// server/lib/applyWave50MoneyDefectSchema.ts
-function candidatePaths5() {
-  const cwd = process.cwd();
-  return [
-    import_node_path5.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME3),
-    import_node_path5.default.join(cwd, "migrations", MIGRATION_BASENAME3)
-  ];
-}
-function readWave50Ddl() {
-  for (const p of candidatePaths5()) {
-    try {
-      if (import_node_fs5.default.existsSync(p)) return import_node_fs5.default.readFileSync(p, "utf8");
-    } catch {
-    }
-  }
-  return null;
-}
-function splitWave50Sections(ddl) {
-  const lines = ddl.split("\n");
-  const cuts = [];
-  lines.forEach((l, i) => {
-    if (/^-- §\d+[a-z]? ·/.test(l)) cuts.push(i);
-  });
-  if (cuts.length === 0) return [ddl];
-  const out = [];
-  const bounds = [0, ...cuts, lines.length];
-  for (let i = 0; i < bounds.length - 1; i++) {
-    const chunk = lines.slice(bounds[i], bounds[i + 1]).join("\n");
-    if (chunk.trim()) out.push(chunk);
-  }
-  return out;
-}
-function columnNames(db2, table) {
-  try {
-    return db2.prepare(`PRAGMA table_info(${table})`).all().map((r) => String(r.name));
-  } catch {
-    return [];
-  }
-}
-function ensureWave50MoneyDefectSchema(handle) {
-  const db2 = handle ?? rawDb();
-  const key2 = getDbDriver();
-  if (!handle && key2 && installed.has(key2)) return;
-  try {
-    ensureWave5MoneySchema(db2);
-  } catch (err) {
-    log.warn(`[wave50] Wave 5 schema ensure failed before 0187: ${String(err)}`);
-  }
-  try {
-    ensureBillingTable();
-  } catch (err) {
-    log.warn(`[wave50] spv_deployment_fee_billing ensure failed before 0187: ${String(err)}`);
-  }
-  const ddl = readWave50Ddl();
-  if (!ddl) {
-    log.warn(`[wave50] ${MIGRATION_BASENAME3} not found in ${candidatePaths5().join(" or ")}; schema NOT installed`);
-    return;
-  }
-  const sections = splitWave50Sections(ddl);
-  const existing = columnNames(db2, "partner_tier_price");
-  const hasFreeAttested = existing.includes("free_attested");
-  const spvColumns = columnNames(db2, "spv");
-  const canBackfill = spvColumns.includes("deployment_fee_minor") && spvColumns.includes("migrated_from");
-  sections.forEach((section, idx) => {
-    const isItem3Section = /^-- §1 ·/m.test(section);
-    if (isItem3Section && hasFreeAttested) return;
-    if (/^-- §2b ·/m.test(section) && !canBackfill) return;
-    try {
-      db2.exec(section);
-    } catch (err) {
-      const msg = String(err);
-      if (/duplicate column name/i.test(msg)) return;
-      log.warn(`[wave50] section ${idx} of ${MIGRATION_BASENAME3} failed: ${msg}`);
-    }
-  });
-  if (!handle && key2) installed.add(key2);
-}
-var import_node_fs5, import_node_path5, MIGRATION_BASENAME3, installed;
-var init_applyWave50MoneyDefectSchema = __esm({
-  "server/lib/applyWave50MoneyDefectSchema.ts"() {
-    "use strict";
-    import_node_fs5 = __toESM(require("node:fs"), 1);
-    import_node_path5 = __toESM(require("node:path"), 1);
-    init_logger2();
-    init_connection();
-    init_applyWave5MoneySchema();
-    init_spvEngineDeploymentFeeHook();
-    MIGRATION_BASENAME3 = "0187_wave50_money_defects.sql";
-    installed = /* @__PURE__ */ new WeakSet();
-  }
-});
-
-// server/lib/applyWave152PricingSchema.ts
-function isMachineAuthor(author) {
-  if (author === null || author === void 0) return true;
-  const a = String(author).trim();
-  if (a === "") return true;
-  return /^(system[:_]|seed|migration_)/i.test(a);
-}
-function correctWave152BadSeed(db2) {
-  const base = {
-    key: WAVE152_SEED_CORRECTION_KEY,
-    beforeMinor: null,
-    afterMinor: null,
-    author: null,
-    updatedAt: null
-  };
-  let row;
-  try {
-    row = db2.prepare(
-      `SELECT amount_minor, currency, updated_at, updated_by_user_id, deleted_at
-           FROM platform_fees WHERE key = ?`
-    ).get(WAVE152_SEED_CORRECTION_KEY);
-  } catch (err) {
-    const message2 = `The SPV launch fee row could not be read, so the wave 152 seed correction did not run: ${err?.message ?? String(err)}. Run "npm run db:migrate" \u2014 migration 0200 sets this price.`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...base, outcome: "unreadable", message: message2 };
-  }
-  if (!row) {
-    const message2 = "There is no SPV launch fee row on this database, so there was nothing to correct. Migration 0200 creates it.";
-    return { ...base, outcome: "no_row", message: message2 };
-  }
-  const before = Number(row.amount_minor);
-  const author = row.updated_by_user_id ?? null;
-  const updatedAt = row.updated_at ?? null;
-  const found = { ...base, beforeMinor: before, afterMinor: before, author, updatedAt };
-  const deleted = row.deleted_at !== null && row.deleted_at !== void 0 && String(row.deleted_at) !== "";
-  if (deleted) {
-    const message2 = `The SPV launch fee row is retired (soft-deleted ${String(row.deleted_at)}), so it was left exactly as it is.`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...found, outcome: "soft_deleted_left_untouched", message: message2 };
-  }
-  if (before === WAVE152_RULED_SEED_MINOR) {
-    return {
-      ...found,
-      outcome: "already_ruled",
-      message: "The SPV launch fee already holds the ruled amount; no correction was needed."
-    };
-  }
-  if (before !== WAVE152_BAD_SEED_MINOR) {
-    const message2 = `The SPV launch fee holds ${before} minor units, which is not the known-bad seed amount, so it was LEFT UNTOUCHED. Only the untouched ${WAVE152_BAD_SEED_MINOR} seed is corrected (R121.2).`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...found, outcome: "admin_set_left_untouched", message: message2 };
-  }
-  if (!isMachineAuthor(author)) {
-    const message2 = `The SPV launch fee was set by "${String(author)}" and was LEFT UNTOUCHED. An administrator's price is never overwritten (R121.2); overwriting one would make the owner's pricing flexibility a lie.`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...found, outcome: "admin_set_left_untouched", message: message2 };
-  }
-  if (updatedAt !== WAVE152_SEED_UPDATED_AT) {
-    const message2 = `The SPV launch fee still holds the bad seed amount but its timestamp (${String(updatedAt)}) is no longer the seed's own, so something has written it since seeding and it was LEFT UNTOUCHED. Run "npm run db:migrate" \u2014 migration 0200 corrects it.`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...found, outcome: "edited_since_seed_left_untouched", message: message2 };
-  }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  try {
-    db2.prepare(
-      `UPDATE platform_fees
-          SET amount_minor = ?, currency = 'USD', billing_period = NULL,
-              updated_at = ?, updated_by_user_id = ?
-        WHERE key = ? AND amount_minor = ? AND updated_at = ?
-          AND (updated_by_user_id IS NULL OR updated_by_user_id = ?)`
-    ).run(
-      WAVE152_RULED_SEED_MINOR,
-      now,
-      WAVE152_SEED_CORRECTION_AUTHOR,
-      WAVE152_SEED_CORRECTION_KEY,
-      WAVE152_BAD_SEED_MINOR,
-      WAVE152_SEED_UPDATED_AT,
-      author
-    );
-  } catch (err) {
-    const message2 = `The wave 152 seed correction could not be written: ${err?.message ?? String(err)}. The price is unchanged. Run "npm run db:migrate".`;
-    log.warn(`[wave152SeedCorrection] ${message2}`);
-    return { ...found, outcome: "unreadable", message: message2 };
-  }
-  const message = `Corrected the untouched SPV launch fee seed on key "${WAVE152_SEED_CORRECTION_KEY}" from ${WAVE152_BAD_SEED_MINOR} to ${WAVE152_RULED_SEED_MINOR} minor units (R110.1 / R116.2 / R121.2). Previous author "${String(author)}", previous timestamp "${String(updatedAt)}". No administrator had ever set this price.`;
-  log.warn(`[wave152SeedCorrection] ${message}`);
-  return {
-    ...found,
-    afterMinor: WAVE152_RULED_SEED_MINOR,
-    outcome: "corrected",
-    message
-  };
-}
-function applyWave152PricingSchema(db2) {
-  const out = {
-    added: [],
-    alreadyPresent: [],
-    tableMissing: [],
-    failed: [],
-    /* Replaced below. Declared here so the shape is never partially built. */
-    seedCorrection: {
-      outcome: "no_row",
-      key: WAVE152_SEED_CORRECTION_KEY,
-      beforeMinor: null,
-      afterMinor: null,
-      author: null,
-      updatedAt: null,
-      message: "The seed correction has not run yet."
-    }
-  };
-  for (const sql2 of WAVE152_ADDITIVE_COLUMNS) {
-    try {
-      db2.exec(sql2);
-      out.added.push(sql2);
-    } catch (err) {
-      const msg = err?.message ?? String(err);
-      if (/duplicate column name/i.test(msg)) out.alreadyPresent.push(sql2);
-      else if (/no such table/i.test(msg)) out.tableMissing.push(sql2);
-      else {
-        out.failed.push({ sql: sql2, message: msg });
-        log.warn(`[wave152Schema] ${sql2} failed: ${msg}`);
-      }
-    }
-  }
-  out.seedCorrection = correctWave152BadSeed(db2);
-  return out;
-}
-function ensureWave152PricingSchema(db2) {
-  if (!db2) return;
-  const keyed = db2;
-  if (_installed3.has(keyed)) return;
-  _installed3.add(keyed);
-  try {
-    applyWave152PricingSchema(db2);
-  } catch (err) {
-    log.warn(`[wave152Schema] install threw: ${err.message}`);
-  }
-}
-var WAVE152_ADDITIVE_COLUMNS, WAVE152_SEED_CORRECTION_KEY, WAVE152_BAD_SEED_MINOR, WAVE152_RULED_SEED_MINOR, WAVE152_SEED_UPDATED_AT, WAVE152_SEED_CORRECTION_AUTHOR, _installed3;
-var init_applyWave152PricingSchema = __esm({
-  "server/lib/applyWave152PricingSchema.ts"() {
-    "use strict";
-    init_logger2();
-    WAVE152_ADDITIVE_COLUMNS = [
-      /* Migration 0200 — the zero declaration, on both zero-bearing money tables. */
-      `ALTER TABLE platform_fees ADD COLUMN intentional_zero INTEGER NOT NULL DEFAULT 0`,
-      `ALTER TABLE platform_fees ADD COLUMN intentional_zero_reason TEXT`,
-      `ALTER TABLE platform_fees ADD COLUMN intentional_zero_by TEXT`,
-      `ALTER TABLE platform_fees ADD COLUMN intentional_zero_at TEXT`,
-      `ALTER TABLE collective_payment_schedules ADD COLUMN intentional_zero INTEGER NOT NULL DEFAULT 0`,
-      `ALTER TABLE collective_payment_schedules ADD COLUMN intentional_zero_reason TEXT`,
-      `ALTER TABLE collective_payment_schedules ADD COLUMN intentional_zero_by TEXT`,
-      `ALTER TABLE collective_payment_schedules ADD COLUMN intentional_zero_at TEXT`,
-      /* Migration 0160 — the five columns the engine charge path stamps on `spv`. */
-      `ALTER TABLE spv ADD COLUMN deployment_fee_minor INTEGER`,
-      `ALTER TABLE spv ADD COLUMN deployment_fee_currency TEXT`,
-      `ALTER TABLE spv ADD COLUMN deployment_fee_payer TEXT`,
-      `ALTER TABLE spv ADD COLUMN deployment_fee_paid_at TEXT`,
-      `ALTER TABLE spv ADD COLUMN deployment_fee_schedule_id TEXT`
-    ];
-    WAVE152_SEED_CORRECTION_KEY = "consortium.spv_deployment_fee";
-    WAVE152_BAD_SEED_MINOR = 5e5;
-    WAVE152_RULED_SEED_MINOR = 24e3;
-    WAVE152_SEED_UPDATED_AT = "2026-06-28T00:00:00.000Z";
-    WAVE152_SEED_CORRECTION_AUTHOR = "wave152:r121_2_seed_correction";
-    _installed3 = /* @__PURE__ */ new WeakSet();
-  }
-});
-
 // server/lib/applyWave45PricingSchema.ts
-function candidatePaths6() {
+function candidatePaths4() {
   const cwd = process.cwd();
   return [
-    import_node_path6.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME4),
-    import_node_path6.default.join(cwd, "migrations", MIGRATION_BASENAME4)
+    import_node_path4.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME3),
+    import_node_path4.default.join(cwd, "migrations", MIGRATION_BASENAME3)
   ];
 }
 function readWave45PricingDdl() {
-  for (const p of candidatePaths6()) {
+  for (const p of candidatePaths4()) {
     try {
-      if (import_node_fs6.default.existsSync(p)) return import_node_fs6.default.readFileSync(p, "utf8");
+      if (import_node_fs4.default.existsSync(p)) return import_node_fs4.default.readFileSync(p, "utf8");
     } catch {
     }
   }
   return null;
 }
-function objectExists(db2, name, type) {
+function objectExists(db, name, type) {
   try {
-    const row = db2.prepare(`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
+    const row = db.prepare(`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`).get(type, name);
     return Boolean(row?.name);
   } catch {
     return false;
   }
 }
-function applyWave45PricingSchema(db2) {
+function applyWave45PricingSchema(db) {
   const warnings = [];
   try {
-    ensureWave5MoneySchema(db2);
+    ensureWave5MoneySchema(db);
   } catch (err) {
     warnings.push(`wave5 prerequisite install failed: ${err.message}`);
   }
   const probe2 = () => ({
-    tablesPresent: WAVE45_TABLES.filter((t) => objectExists(db2, t, "table")),
-    tablesMissing: WAVE45_TABLES.filter((t) => !objectExists(db2, t, "table")),
-    triggersPresent: WAVE45_TRIGGERS.filter((t) => objectExists(db2, t, "trigger")),
-    triggersMissing: WAVE45_TRIGGERS.filter((t) => !objectExists(db2, t, "trigger"))
+    tablesPresent: WAVE45_TABLES.filter((t) => objectExists(db, t, "table")),
+    tablesMissing: WAVE45_TABLES.filter((t) => !objectExists(db, t, "table")),
+    triggersPresent: WAVE45_TRIGGERS.filter((t) => objectExists(db, t, "trigger")),
+    triggersMissing: WAVE45_TRIGGERS.filter((t) => !objectExists(db, t, "trigger"))
   });
   let state = probe2();
   if (state.tablesMissing.length === 0 && state.triggersMissing.length === 0) {
@@ -25552,13 +24429,13 @@ function applyWave45PricingSchema(db2) {
   const ddl = readWave45PricingDdl();
   if (!ddl) {
     warnings.push(
-      `could not read ${MIGRATION_BASENAME4} from any of: ${candidatePaths6().join(", ")}`
+      `could not read ${MIGRATION_BASENAME3} from any of: ${candidatePaths4().join(", ")}`
     );
     log.error?.({ warnings }, "wave45 pricing schema install could not read its migration");
     return { ran: false, reason: "ddl not found", warnings, ...state };
   }
   try {
-    db2.exec(ddl);
+    db.exec(ddl);
   } catch (err) {
     warnings.push(`exec failed: ${err.message}`);
     log.error?.({ err }, "wave45 pricing schema install failed");
@@ -25572,48 +24449,36 @@ function applyWave45PricingSchema(db2) {
   }
   return { ran: true, reason: "installed", warnings, ...state };
 }
-function ensureWave45PricingSchema(db2) {
-  if (_installed4.has(db2)) return;
-  applyWave45PricingSchema(db2);
+function ensureWave45PricingSchema(db) {
+  if (_installed3.has(db)) return;
+  applyWave45PricingSchema(db);
   try {
-    ensureWave56TierDomainSchema(db2);
+    ensureWave56TierDomainSchema(db);
   } catch (err) {
     log.error?.({ err }, "wave56 tier-domain install threw during wave45 ensure");
   }
-  try {
-    ensureWave50MoneyDefectSchema(db2);
-  } catch (err) {
-    log.error?.({ err }, "wave50 money-defect install threw during wave45 ensure");
-  }
-  try {
-    ensureWave152PricingSchema(db2);
-  } catch (err) {
-    log.error?.({ err }, "wave152 pricing install threw during wave45 ensure");
-  }
-  _installed4.add(db2);
+  _installed3.add(db);
 }
 function wave45Db() {
   if (getDbDriver() === "postgres") {
     throw new Error(WAVE45_STORE_UNAVAILABLE);
   }
   getDb();
-  const db2 = rawDb();
-  ensureWave45PricingSchema(db2);
-  return db2;
+  const db = rawDb();
+  ensureWave45PricingSchema(db);
+  return db;
 }
-var import_node_fs6, import_node_path6, MIGRATION_BASENAME4, WAVE45_STORE_UNAVAILABLE, WAVE45_TABLES, WAVE45_TRIGGERS, _installed4;
+var import_node_fs4, import_node_path4, MIGRATION_BASENAME3, WAVE45_STORE_UNAVAILABLE, WAVE45_TABLES, WAVE45_TRIGGERS, _installed3;
 var init_applyWave45PricingSchema = __esm({
   "server/lib/applyWave45PricingSchema.ts"() {
     "use strict";
-    import_node_fs6 = __toESM(require("node:fs"), 1);
-    import_node_path6 = __toESM(require("node:path"), 1);
+    import_node_fs4 = __toESM(require("node:fs"), 1);
+    import_node_path4 = __toESM(require("node:path"), 1);
     init_logger2();
     init_connection();
     init_applyWave5MoneySchema();
     init_applyWave56TierDomainSchema();
-    init_applyWave50MoneyDefectSchema();
-    init_applyWave152PricingSchema();
-    MIGRATION_BASENAME4 = "0185_wave45_pricing_model_v3.sql";
+    MIGRATION_BASENAME3 = "0185_wave45_pricing_model_v3.sql";
     WAVE45_STORE_UNAVAILABLE = "PARTNER_PRICING_STORE_UNAVAILABLE";
     WAVE45_TABLES = [
       "partner_tier_lifecycle",
@@ -25626,7 +24491,7 @@ var init_applyWave45PricingSchema = __esm({
       "trg_ptp_frozen_no_price_insert",
       "trg_ptl_no_delete"
     ];
-    _installed4 = /* @__PURE__ */ new WeakSet();
+    _installed3 = /* @__PURE__ */ new WeakSet();
   }
 });
 
@@ -25662,10 +24527,10 @@ function mapRow(row, source) {
   };
 }
 function resolveTierCapability(tierSlug, capabilityKey) {
-  const db2 = wave45Db();
+  const db = wave45Db();
   let row;
   try {
-    row = db2.prepare(
+    row = db.prepare(
       `SELECT tier_slug, capability_key, value_kind, resolution, int_value, bool_value,
                 percent_value, label, notes, editable
            FROM partner_tier_capability
@@ -25707,25 +24572,6 @@ var init_partnerTierCapabilityStore = __esm({
   }
 });
 
-// shared/placeholderPersonNames.ts
-var PLACEHOLDER_PERSON_NAMES, PLACEHOLDER_SET;
-var init_placeholderPersonNames = __esm({
-  "shared/placeholderPersonNames.ts"() {
-    "use strict";
-    PLACEHOLDER_PERSON_NAMES = [
-      "new",
-      "new user",
-      "user",
-      "investor",
-      "\u2014",
-      "-",
-      "new contact",
-      "new contact data"
-    ];
-    PLACEHOLDER_SET = new Set(PLACEHOLDER_PERSON_NAMES);
-  }
-});
-
 // server/lib/emailSender.ts
 var import_nodemailer2;
 var init_emailSender = __esm({
@@ -25743,7 +24589,6 @@ var DEMO_SEED, contacts2;
 var init_founderCrmStore = __esm({
   "server/founderCrmStore.ts"() {
     "use strict";
-    init_placeholderPersonNames();
     init_sprint10Telemetry();
     init_authMiddleware();
     init_demoGate();
@@ -25952,7 +24797,6 @@ var init_spvDeploymentFeeSource = __esm({
   "server/lib/spvDeploymentFeeSource.ts"() {
     "use strict";
     init_connection();
-    init_applyWave152PricingSchema();
     init_partnerFeeResolver();
   }
 });
@@ -25987,70 +24831,24 @@ var init_spvDeploymentFee = __esm({
 });
 
 // server/lib/spvEngineDeploymentFeeHook.ts
-function ensureBillingTable(raw) {
-  if (_billingTableReady) return true;
-  if (!raw) {
-    try {
-      raw = rawDb();
-    } catch (err) {
-      log.warn(`[spv-engine-fee] billing table bootstrap: raw handle unavailable: ${String(err)}`);
-      return false;
-    }
-  }
-  try {
-    const present = raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(DEPLOYMENT_FEE_BILLING_TABLE);
-    if (!present) raw.exec(DEPLOYMENT_FEE_BILLING_SQL);
-    const cols = new Set(
-      raw.prepare(`PRAGMA table_info(${DEPLOYMENT_FEE_BILLING_TABLE})`).all().map(
-        (c) => c.name
-      )
-    );
-    if (!cols.has("fee_basis")) {
-      raw.exec(`ALTER TABLE ${DEPLOYMENT_FEE_BILLING_TABLE} ADD COLUMN fee_basis TEXT`);
-    }
-    if (!cols.has("basis_size_minor")) {
-      raw.exec(`ALTER TABLE ${DEPLOYMENT_FEE_BILLING_TABLE} ADD COLUMN basis_size_minor INTEGER`);
-    }
-    _billingTableReady = true;
-    return true;
-  } catch (err) {
-    log.warn(`[spv-engine-fee] billing table bootstrap failed: ${String(err)}`);
-    return false;
-  }
-}
-var DEPLOYMENT_FEE_BILLING_TABLE, DEPLOYMENT_FEE_BILLING_SQL, _billingTableReady;
 var init_spvEngineDeploymentFeeHook = __esm({
   "server/lib/spvEngineDeploymentFeeHook.ts"() {
     "use strict";
     init_connection();
-    init_spvCommittedCapital();
     init_spvDeploymentFee();
     init_partnerTierResolver();
     init_logger2();
-    DEPLOYMENT_FEE_BILLING_TABLE = "spv_deployment_fee_billing";
-    DEPLOYMENT_FEE_BILLING_SQL = `
-CREATE TABLE IF NOT EXISTS spv_deployment_fee_billing (
-  spv_id           TEXT PRIMARY KEY NOT NULL,
-  partner_id       TEXT NOT NULL,
-  state            TEXT NOT NULL CHECK (state IN ('pending','charged')),
-  attempts         INTEGER NOT NULL DEFAULT 0,
-  last_reason      TEXT,
-  last_attempt_at  TEXT,
-  amount_minor     INTEGER,
-  currency         TEXT,
-  charged_at       TEXT,
-  created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL,
-  -- WAVE 160 \xB7 ITEM 0 \xB7 R134.1 \u2014 which basis chose the band, and the amount it
-  -- was chosen on. Mirrored for existing databases by migration 0207 and by the
-  -- self-heal ALTERs in ensureBillingTable().
-  fee_basis        TEXT,
-  basis_size_minor INTEGER
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_sdfb_state_updated ON spv_deployment_fee_billing (state, updated_at);
-CREATE INDEX IF NOT EXISTS idx_sdfb_partner ON spv_deployment_fee_billing (partner_id);
-`;
-    _billingTableReady = false;
+  }
+});
+
+// server/lib/applyWave50MoneyDefectSchema.ts
+var init_applyWave50MoneyDefectSchema = __esm({
+  "server/lib/applyWave50MoneyDefectSchema.ts"() {
+    "use strict";
+    init_logger2();
+    init_connection();
+    init_applyWave5MoneySchema();
+    init_spvEngineDeploymentFeeHook();
   }
 });
 
@@ -26079,15 +24877,6 @@ var init_requireSignedAgreement = __esm({
 var init_legacyDistributionLedger = __esm({
   "server/lib/legacyDistributionLedger.ts"() {
     "use strict";
-  }
-});
-
-// server/lib/legacySpvActivationFeeBasis.ts
-var init_legacySpvActivationFeeBasis = __esm({
-  "server/lib/legacySpvActivationFeeBasis.ts"() {
-    "use strict";
-    init_spvCommittedCapital();
-    init_logger2();
   }
 });
 
@@ -26123,23 +24912,20 @@ var init_sseHub = __esm({
 });
 
 // server/spvFundStore.ts
-var import_node_module6, require5, spvCreateSchema, spvUpdateSchema, commitmentCreateSchema, commitmentTransitionSchema, capitalCallSchema, distributionSchema, positionSchema, positionUpdateSchema;
+var spvCreateSchema, spvUpdateSchema, commitmentCreateSchema, commitmentTransitionSchema, capitalCallSchema, distributionSchema, positionSchema, positionUpdateSchema;
 var init_spvFundStore = __esm({
   "server/spvFundStore.ts"() {
     "use strict";
-    import_node_module6 = require("node:module");
     init_zod();
     init_requirePartnerAuth();
     init_requireSignedAgreement();
     init_legacyDistributionLedger();
     init_connection();
     init_spvDeploymentFee();
-    init_legacySpvActivationFeeBasis();
     init_schema();
     init_sseHub();
     init_logger2();
     init_ilpaCashflowLedger();
-    require5 = (0, import_node_module6.createRequire)(__importMetaUrl);
     spvCreateSchema = external_exports.object({
       name: external_exports.string().min(1).max(200),
       lead_company_id: external_exports.string().optional().nullable(),
@@ -26317,70 +25103,6 @@ var init_paymentStore = __esm({
   }
 });
 
-// shared/spvSubscriptionTransitions.ts
-var init_spvSubscriptionTransitions = __esm({
-  "shared/spvSubscriptionTransitions.ts"() {
-    "use strict";
-    init_spvEngine();
-  }
-});
-
-// shared/spvClosedToNewCapital.ts
-var init_spvClosedToNewCapital = __esm({
-  "shared/spvClosedToNewCapital.ts"() {
-    "use strict";
-    init_refusalHeadlineGate();
-  }
-});
-
-// shared/spvCanonicalCommitmentResolution.ts
-var init_spvCanonicalCommitmentResolution = __esm({
-  "shared/spvCanonicalCommitmentResolution.ts"() {
-    "use strict";
-    init_refusalHeadlineGate();
-  }
-});
-
-// shared/spvUnattestedDraft.ts
-var init_spvUnattestedDraft = __esm({
-  "shared/spvUnattestedDraft.ts"() {
-    "use strict";
-  }
-});
-
-// shared/spvAttestationUnreadable.ts
-var init_spvAttestationUnreadable = __esm({
-  "shared/spvAttestationUnreadable.ts"() {
-    "use strict";
-  }
-});
-
-// server/lib/spvAttestationGate.ts
-var init_spvAttestationGate = __esm({
-  "server/lib/spvAttestationGate.ts"() {
-    "use strict";
-    init_connection();
-    init_logger2();
-    init_spvUnattestedDraft();
-    init_spvAttestationUnreadable();
-  }
-});
-
-// shared/spvCarryConfiguration.ts
-var init_spvCarryConfiguration = __esm({
-  "shared/spvCarryConfiguration.ts"() {
-    "use strict";
-  }
-});
-
-// shared/spvCapSplitDisclosure.ts
-var init_spvCapSplitDisclosure = __esm({
-  "shared/spvCapSplitDisclosure.ts"() {
-    "use strict";
-    init_refusalHeadlineGate();
-  }
-});
-
 // server/lib/feeSettlementAuthoritySchema.ts
 var init_feeSettlementAuthoritySchema = __esm({
   "server/lib/feeSettlementAuthoritySchema.ts"() {
@@ -26460,17 +25182,134 @@ var init_spvOfflineOps = __esm({
   }
 });
 
+// shared/spvEngine.ts
+function genericCompliance(code, formationIdItem = GENERIC_FORMATION_ID) {
+  return {
+    code,
+    label: SPV_JURISDICTION_LABELS[code],
+    isUnitedStates: false,
+    formationIdItem,
+    filings: GENERIC_FILINGS,
+    filingsAreJurisdictionSpecific: false,
+    investorCountLimit: null,
+    investorCountNote: GENERIC_COUNT_NOTE
+  };
+}
+var SPV_JURISDICTIONS, SPV_JURISDICTION_COUNTRY, SPV_JURISDICTION_LABELS, COUNTRY_TO_JURISDICTION, GENERIC_FILINGS, GENERIC_FORMATION_ID, GENERIC_COUNT_NOTE, SPV_JURISDICTION_COMPLIANCE;
+var init_spvEngine = __esm({
+  "shared/spvEngine.ts"() {
+    "use strict";
+    SPV_JURISDICTIONS = [
+      /* pre-existing four — DO NOT reorder or rename (persisted values) */
+      "delaware",
+      "cayman",
+      "bvi",
+      "canadian_lp",
+      /* WAVE 3C / J-1 — additive, one per remaining ontology country */
+      "united_kingdom",
+      "singapore",
+      "luxembourg",
+      "ireland",
+      "hong_kong",
+      "uae",
+      "jersey",
+      "guernsey",
+      "netherlands",
+      "mauritius",
+      "australia",
+      /* explicit "we do not know" — never silently a US jurisdiction */
+      "other"
+    ];
+    SPV_JURISDICTION_COUNTRY = {
+      delaware: "United States",
+      cayman: "Cayman Islands",
+      bvi: "British Virgin Islands",
+      canadian_lp: "Canada",
+      united_kingdom: "United Kingdom",
+      singapore: "Singapore",
+      luxembourg: "Luxembourg",
+      ireland: "Ireland",
+      hong_kong: "Hong Kong",
+      uae: "United Arab Emirates",
+      jersey: "Jersey",
+      guernsey: "Guernsey",
+      netherlands: "Netherlands",
+      mauritius: "Mauritius",
+      australia: "Australia",
+      other: null
+    };
+    SPV_JURISDICTION_LABELS = {
+      delaware: "United States (Delaware)",
+      cayman: "Cayman Islands",
+      bvi: "British Virgin Islands",
+      canadian_lp: "Canada",
+      united_kingdom: "United Kingdom",
+      singapore: "Singapore",
+      luxembourg: "Luxembourg",
+      ireland: "Ireland",
+      hong_kong: "Hong Kong",
+      uae: "United Arab Emirates",
+      jersey: "Jersey",
+      guernsey: "Guernsey",
+      netherlands: "Netherlands",
+      mauritius: "Mauritius",
+      australia: "Australia",
+      other: "Other / not specified"
+    };
+    COUNTRY_TO_JURISDICTION = (() => {
+      const out = {};
+      for (const code of SPV_JURISDICTIONS) {
+        const country = SPV_JURISDICTION_COUNTRY[code];
+        if (country) out[country.toLowerCase()] = code;
+      }
+      return out;
+    })();
+    GENERIC_FILINGS = [
+      "Check local regulatory notice requirements with your counsel"
+    ];
+    GENERIC_FORMATION_ID = "Local entity registration / tax identification number obtained";
+    GENERIC_COUNT_NOTE = "Capavate does not hold a verified investor-count threshold for this jurisdiction. Confirm any limit with local counsel.";
+    SPV_JURISDICTION_COMPLIANCE = {
+      delaware: {
+        code: "delaware",
+        label: SPV_JURISDICTION_LABELS.delaware,
+        isUnitedStates: true,
+        formationIdItem: "Tax ID / EIN obtained",
+        filings: [
+          "Form D filed with the SEC (if applicable)",
+          "Blue-sky / state notice filings (if applicable)"
+        ],
+        filingsAreJurisdictionSpecific: true,
+        investorCountLimit: 100,
+        investorCountNote: "US 3(c)(1) funds commonly cap at ~100 investors."
+      },
+      cayman: genericCompliance("cayman", "Registered number obtained"),
+      bvi: genericCompliance("bvi", "Company number obtained"),
+      canadian_lp: genericCompliance("canadian_lp"),
+      united_kingdom: genericCompliance("united_kingdom"),
+      singapore: genericCompliance("singapore"),
+      luxembourg: genericCompliance("luxembourg"),
+      ireland: genericCompliance("ireland"),
+      hong_kong: genericCompliance("hong_kong"),
+      uae: genericCompliance("uae"),
+      jersey: genericCompliance("jersey"),
+      guernsey: genericCompliance("guernsey"),
+      netherlands: genericCompliance("netherlands"),
+      mauritius: genericCompliance("mauritius"),
+      australia: genericCompliance("australia"),
+      other: genericCompliance("other")
+    };
+  }
+});
+
 // server/spvEngineStore.ts
-var GP_OFFLINE_CONFIRMATION_REQUIRED_FROM, GENESIS;
+var GENESIS;
 var init_spvEngineStore = __esm({
   "server/spvEngineStore.ts"() {
     "use strict";
-    init_refusalHeadlineGate();
     init_spvFeeHydrationState();
-    init_lpIdentityBinding();
     init_connection();
     init_logger2();
-    init_spvLifecycleAudit();
     init_ilpaCashflowLedger();
     init_bridgeStore();
     init_spvEngineDeploymentFeeHook();
@@ -26482,347 +25321,23 @@ var init_spvEngineStore = __esm({
     init_companyProfileStore();
     init_roundsStore();
     init_paymentStore();
-    init_spvSubscriptionTransitions();
-    init_spvClosedToNewCapital();
-    init_spvCanonicalCommitmentResolution();
-    init_spvAttestationGate();
-    init_spvCarryConfiguration();
-    init_spvEngine();
-    init_spvCommittedCapital();
-    init_spvCapSplitDisclosure();
     init_feeSettlementAuthority();
     init_money();
     init_spvSideLetterWaterfall();
     init_spvSideLetterStore();
     init_combinedCarryCapPolicy();
-    init_src();
     init_percentPolicy();
     init_spvDistributionType();
     init_spvOfflineOps();
     init_spvEngine();
-    GP_OFFLINE_CONFIRMATION_REQUIRED_FROM = new Set(
-      SPV_SOFT_CIRCLED_INTEREST_STATUSES.filter((s) => s !== "review")
-    );
     GENESIS = "0".repeat(64);
   }
 });
 
 // shared/accreditationClause.ts
-var ACCREDITATION_JURISDICTION_CODES, ACCREDITATION_CRITERIA_V0_2, ACCREDITATION_JURISDICTION_CRITERIA, ACCREDITATION_CRITERIA, ALL_KNOWN_CRITERION_IDS, SUPERSEDED_ONLY_CRITERION_IDS;
 var init_accreditationClause = __esm({
   "shared/accreditationClause.ts"() {
     "use strict";
-    ACCREDITATION_JURISDICTION_CODES = [
-      "US",
-      "CA",
-      "UK",
-      "EU",
-      "SG",
-      "HK",
-      "IN",
-      "JP",
-      "AU"
-    ];
-    ACCREDITATION_CRITERIA_V0_2 = [
-      {
-        id: "us_income",
-        region: "US",
-        label: "My individual income exceeded US$200,000 (or US$300,000 jointly with my spouse or spousal equivalent) in each of the two most recent years, and I reasonably expect the same for the current year."
-      },
-      {
-        id: "us_net_worth",
-        region: "US",
-        label: "My individual or joint net worth exceeds US$1,000,000, excluding the value of my primary residence."
-      },
-      {
-        id: "us_license",
-        region: "US",
-        label: "I hold, in good standing, a Series 7, Series 65, or Series 82 license."
-      },
-      {
-        id: "us_insider",
-        region: "US",
-        label: "I am a director, executive officer, or general partner of the issuer."
-      },
-      {
-        id: "us_entity",
-        region: "US",
-        label: "I am investing through an entity in which all equity owners are accredited investors, or an entity with assets exceeding US$5,000,000 not formed for the purpose of this investment."
-      },
-      {
-        id: "intl_equivalent",
-        region: "INTL",
-        label: "I qualify as a high-net-worth, sophisticated, professional, or accredited investor under the laws of my home jurisdiction (e.g. UK certified high-net-worth or self-certified sophisticated investor; EU/UK MiFID \u201Cprofessional client\u201D; Canada NI 45-106 \u201Caccredited investor\u201D; or the equivalent standard applicable to me), and the monetary thresholds I rely on are met in my local currency as of today."
-      }
-    ];
-    ACCREDITATION_JURISDICTION_CRITERIA = {
-      /* ── United States ────────────────────────────────────────────────────────
-         Kept verbatim from v0.2. Draft 07 change 13: "The existing US criteria are
-         kept unchanged | They are correct as drafted". Marked counsel_ratified and
-         NOT verified, because the perimeter research never verifies Rule 501(a)'s
-         natural-person thresholds. The $200,000/$1,000,000 pair the research DOES
-         verify is the Rule 506(c) minimum-investment safe harbour — a different
-         quantity that happens to share a number, and mistaking one for the other is
-         precisely the trap R-ASSERT exists to stop. */
-      US: [
-        {
-          id: "us_income",
-          region: "US",
-          jurisdiction: "US",
-          confidence: "counsel_ratified",
-          source: "Draft 07 \xA7C1 (Rule 501(a); SEC Rule 506(b) guidance)",
-          label: "My individual income exceeded US$200,000 (or US$300,000 jointly with my spouse or spousal equivalent) in each of the two most recent years, and I reasonably expect the same for the current year."
-        },
-        {
-          id: "us_net_worth",
-          region: "US",
-          jurisdiction: "US",
-          confidence: "counsel_ratified",
-          source: "Draft 07 \xA7C1 (Rule 501(a))",
-          label: "My individual or joint net worth exceeds US$1,000,000, excluding the value of my primary residence."
-        },
-        {
-          id: "us_license",
-          region: "US",
-          jurisdiction: "US",
-          confidence: "counsel_ratified",
-          source: "Draft 07 \xA7C1 (Rule 501(a))",
-          label: "I hold, in good standing, a Series 7, Series 65, or Series 82 license."
-        },
-        {
-          id: "us_insider",
-          region: "US",
-          jurisdiction: "US",
-          confidence: "counsel_ratified",
-          source: "Draft 07 \xA7C1 (Rule 501(a))",
-          label: "I am a director, executive officer, or general partner of the issuer."
-        },
-        {
-          id: "us_entity",
-          region: "US",
-          jurisdiction: "US",
-          confidence: "counsel_ratified",
-          source: "Draft 07 \xA7C1 (Rule 501(a))",
-          label: "I am investing through an entity in which all equity owners are accredited investors, or an entity with assets exceeding US$5,000,000 not formed for the purpose of this investment."
-        }
-      ],
-      /* ── United Kingdom — THE CORRECTION THIS WAVE EXISTS FOR ─────────────────
-         £100,000 income / £250,000 net assets, per S.I. 2024/301 in force
-         27 March 2024, as reflected in the FCA's own statement forms (COBS 4
-         Annex 2R / Annex 4R). The superseded £170,000/£430,000 pair is retained,
-         unrendered, in SUPERSEDED_UK_THRESHOLD_PS22_10 above. */
-      UK: [
-        {
-          id: "uk_hnw_income",
-          region: "UK",
-          jurisdiction: "UK",
-          confidence: "verified",
-          source: "S.I. 2024/301; FCA COBS 4 Annex 2R (high net worth investor statement)",
-          label: "In the last financial year I had an annual income of \xA3100,000 or more. Income does not include any one-off pension withdrawals."
-        },
-        {
-          id: "uk_hnw_net_assets",
-          region: "UK",
-          jurisdiction: "UK",
-          confidence: "verified",
-          source: "S.I. 2024/301; FCA COBS 4 Annex 2R",
-          label: "In the last financial year I had net assets of \xA3250,000 or more. Net assets do not include my home (primary residence), my pension or any pension withdrawals, or any rights under qualifying contracts of insurance."
-        },
-        {
-          id: "uk_self_certified_sophisticated",
-          region: "UK",
-          jurisdiction: "UK",
-          confidence: "verified",
-          source: "S.I. 2024/301; FPO Art 50A; FCA COBS 4 Annex 4R",
-          label: "In the last two years I have done at least one of: worked in private equity or in the provision of finance for small and medium enterprises; been the director of a company with an annual turnover of at least \xA31 million; made two or more investments in an unlisted company; or been a member of a network or syndicate of business angels for more than six months."
-        },
-        {
-          id: "uk_professional_client",
-          region: "UK",
-          jurisdiction: "UK",
-          confidence: "unverified",
-          counselNote: "UK counsel to confirm the professional-client criteria and their evidence requirements. No figure is stated because none could be confirmed from a primary source.",
-          source: "No primary source in REGULATORY_PERIMETER_RESEARCH.md",
-          label: "I have been categorised by an authorised firm as a professional client, either per se or on an elective basis."
-        }
-      ],
-      /* ── Canada — no figure is stated, on purpose ─────────────────────────── */
-      CA: [
-        {
-          id: "ca_accredited_investor",
-          region: "CA",
-          jurisdiction: "CA",
-          confidence: "unverified",
-          counselNote: "Canadian counsel must confirm the NI 45-106 tests and figures before this criterion is relied on. Draft 07 \xA7C7 marks Canada not yet draftable.",
-          source: "NI 45-106 \u2014 definition not confirmed from a primary source in Capavate's research",
-          label: "I meet the accredited-investor definition in National Instrument 45-106 that applies to me. (No threshold is stated here: the figures are unverified in Capavate's regulatory research.)"
-        },
-        {
-          id: "ca_permitted_client",
-          region: "CA",
-          jurisdiction: "CA",
-          confidence: "unverified",
-          counselNote: "Canadian counsel to confirm the NI 31-103 permitted-client tests.",
-          source: "NI 31-103 \u2014 no primary source in Capavate's research",
-          label: "I am a permitted client within the meaning of National Instrument 31-103."
-        }
-      ],
-      /* ── European Economic Area ───────────────────────────────────────────── */
-      EU: [
-        {
-          id: "eu_professional_per_se",
-          region: "EU",
-          jurisdiction: "EU",
-          confidence: "verified",
-          source: "MiFID II Annex II Section I(1)\u2013(4), via ECSPR Art 2(1)(j)",
-          label: "I am a per-se professional client within MiFID II Annex II Section I(1) to (4) \u2014 for example a credit institution, another authorised or regulated financial firm, or a large undertaking meeting that Section's tests."
-        },
-        {
-          id: "eu_professional_elective",
-          region: "EU",
-          jurisdiction: "EU",
-          confidence: "unverified",
-          counselNote: "EU counsel to confirm the elective professional-client criteria. No figure is stated because MiFID II Annex II Section II was not read from a primary source in Capavate's research. Separately, whether a pooled vehicle engages the EU fund-management regime is flagged there as the highest-priority EU question.",
-          source: "MiFID II Annex II Section II \u2014 not read from a primary source in Capavate's research",
-          label: "I have been assessed by an authorised firm and treated as an elective professional client under MiFID II Annex II Section II. (No threshold is stated here: the elective criteria are unverified in Capavate's regulatory research.)"
-        }
-      ],
-      /* ── Singapore ────────────────────────────────────────────────────────── */
-      SG: [
-        {
-          id: "sg_net_personal_assets",
-          region: "SG",
-          jurisdiction: "SG",
-          confidence: "verified",
-          source: "MAS consultation annex reproducing the accredited-investor provisions",
-          label: "My net personal assets are more than S$2 million, counting the estimated fair market value of my primary residence (less any outstanding amount on a credit facility secured on it) for no more than S$1 million of that total."
-        },
-        {
-          id: "sg_income",
-          region: "SG",
-          jurisdiction: "SG",
-          confidence: "verified",
-          source: "MAS consultation annex",
-          label: "My income in the preceding 12 months was at least S$300,000."
-        },
-        {
-          id: "sg_entity_net_assets",
-          region: "SG",
-          jurisdiction: "SG",
-          confidence: "verified",
-          source: "MAS consultation annex",
-          label: "I am declaring for an entity whose net assets are more than S$10 million."
-        },
-        {
-          id: "sg_net_financial_assets",
-          region: "SG",
-          jurisdiction: "SG",
-          confidence: "unverified",
-          counselNote: "Singapore counsel to confirm this limb and its figure. Capavate's research read the Singapore provisions only from a MAS consultation annex, not the live statute.",
-          source: "Not among the Singapore limbs Capavate's research could source",
-          label: "I meet the net-financial-assets limb of the Singapore accredited-investor definition that applies to me. (No threshold is stated here: this limb's figure is unverified in Capavate's regulatory research.)"
-        }
-      ],
-      /* ── Hong Kong — a PORTFOLIO test, not a net-worth test ───────────────── */
-      HK: [
-        {
-          id: "hk_individual_portfolio",
-          region: "HK",
-          jurisdiction: "HK",
-          confidence: "verified",
-          source: "SFC FAQs on Part IV of the SFO; Securities and Futures (Professional Investor) Rules",
-          label: "I hold a portfolio of not less than HK$8 million, or its foreign-currency equivalent. For this purpose a portfolio means securities, money held by a custodian, or certificates of deposit issued by an authorised financial institution or a bank regulated outside Hong Kong \u2014 it does not include real estate, private business interests or pensions."
-        },
-        {
-          id: "hk_entity_portfolio_or_assets",
-          region: "HK",
-          jurisdiction: "HK",
-          confidence: "verified",
-          source: "SFC FAQs on Part IV of the SFO",
-          label: "I am declaring for a corporation or partnership that holds a portfolio of not less than HK$8 million, or total assets of not less than HK$40 million."
-        }
-      ],
-      /* ── Australia ────────────────────────────────────────────────────────── */
-      AU: [
-        {
-          id: "au_minimum_subscription",
-          region: "AU",
-          jurisdiction: "AU",
-          confidence: "verified",
-          source: "Corporations Act 2001 (Cth) s708(8)(a)\u2013(b)",
-          label: "The minimum amount payable by me for this investment is at least A$500,000, or that amount together with amounts I have already paid for securities of the same class totals at least A$500,000. Amounts paid out of money lent by the person offering the securities, or an associate, do not count."
-        },
-        {
-          id: "au_accountant_certificate",
-          region: "AU",
-          jurisdiction: "AU",
-          confidence: "unverified",
-          counselNote: "The 6-month certificate requirement is confirmed from the statute; the net-asset and gross-income figures set by the regulations are not, and Australian counsel must confirm them. The certificate must be valid at the date of EACH offer, which is shorter than the UK's 12 months \u2014 Capavate does not yet re-check it per offer.",
-          source: "Corporations Act 2001 (Cth) s708(8)(c) \u2014 regulation figures unsourced",
-          label: "I hold a certificate from a qualified accountant, given no more than 6 months before this offer is made, stating that I have the net assets or the gross income specified in the regulations. (No figure is stated here: the regulation figures are unverified in Capavate's regulatory research.)"
-        },
-        {
-          id: "au_professional_gross_assets",
-          region: "AU",
-          jurisdiction: "AU",
-          confidence: "verified",
-          source: "Corporations Act 2001 (Cth) s708(11)",
-          label: "I have or control gross assets of at least A$10 million."
-        }
-      ],
-      /* ── India — NOT RESEARCHED. No figure is invented. ───────────────────── */
-      IN: [
-        {
-          id: "in_accredited_individual",
-          region: "IN",
-          jurisdiction: "IN",
-          confidence: "unverified",
-          counselNote: "Indian counsel must state the applicable test and its figures. India was not covered at all by Capavate's regulatory research, so nothing here rests on a source.",
-          source: "India is absent from REGULATORY_PERIMETER_RESEARCH.md",
-          label: "I am an accredited investor as an individual under the Indian accredited-investor framework that applies to me. (No threshold is stated here: India was not covered by Capavate's regulatory research.)"
-        },
-        {
-          id: "in_accredited_body_corporate",
-          region: "IN",
-          jurisdiction: "IN",
-          confidence: "unverified",
-          counselNote: "Indian counsel must state the applicable test and its figures.",
-          source: "India is absent from REGULATORY_PERIMETER_RESEARCH.md",
-          label: "I am declaring for a body corporate that is an accredited investor under the Indian framework that applies to it. (No threshold is stated here: India was not covered by Capavate's regulatory research.)"
-        }
-      ],
-      /* ── Japan — NOT RESEARCHED. No figure is invented. ──────────────────── */
-      JP: [
-        {
-          id: "jp_qualified_institutional_investor",
-          region: "JP",
-          jurisdiction: "JP",
-          confidence: "unverified",
-          counselNote: "Japanese counsel must state the applicable test and its figures. Japan was not covered at all by Capavate's regulatory research.",
-          source: "Japan is absent from REGULATORY_PERIMETER_RESEARCH.md",
-          label: "I am a qualified institutional investor within the meaning of the Financial Instruments and Exchange Act. (No threshold is stated here: Japan was not covered by Capavate's regulatory research.)"
-        },
-        {
-          id: "jp_professional_investor",
-          region: "JP",
-          jurisdiction: "JP",
-          confidence: "unverified",
-          counselNote: "Japanese counsel must state the applicable test and its figures.",
-          source: "Japan is absent from REGULATORY_PERIMETER_RESEARCH.md",
-          label: "I have been treated as a professional investor under the Financial Instruments and Exchange Act. (No threshold is stated here: Japan was not covered by Capavate's regulatory research.)"
-        }
-      ]
-    };
-    ACCREDITATION_CRITERIA = ACCREDITATION_JURISDICTION_CODES.flatMap((code) => ACCREDITATION_JURISDICTION_CRITERIA[code]);
-    ALL_KNOWN_CRITERION_IDS = Array.from(
-      /* @__PURE__ */ new Set([
-        ...ACCREDITATION_CRITERIA_V0_2.map((c) => c.id),
-        ...ACCREDITATION_CRITERIA.map((c) => c.id)
-      ])
-    );
-    SUPERSEDED_ONLY_CRITERION_IDS = ACCREDITATION_CRITERIA_V0_2.filter(
-      (c) => !ACCREDITATION_CRITERIA.some((cur) => cur.id === c.id)
-    ).map((c) => c.id);
   }
 });
 
@@ -26835,7 +25350,6 @@ var init_investorComplianceRoutes = __esm({
     init_logger2();
     init_adminPlatformStore();
     init_spvEngineStore();
-    init_refusalHeadlineGate();
     init_accreditationClause();
   }
 });
@@ -26873,8 +25387,8 @@ function rowToLedgerEntry(r) {
 }
 function getLedger() {
   try {
-    const db2 = getDb();
-    const rows = db2.select().from(captableCommits).where(crossTenant(isNull(captableCommits.deletedAt), captableCommits, { skipSoftDelete: true })).orderBy(asc(captableCommits.seq)).all();
+    const db = getDb();
+    const rows = db.select().from(captableCommits).where(crossTenant(isNull(captableCommits.deletedAt), captableCommits, { skipSoftDelete: true })).orderBy(asc(captableCommits.seq)).all();
     return rows.map(rowToLedgerEntry);
   } catch (err) {
     log.warn("[captableCommitStore.getLedger] DB read failed:", err.message);
@@ -26956,17 +25470,17 @@ var init_rateLimit = __esm({
 });
 
 // server/lib/applyRepair1AuditActorBindingSchema.ts
-function candidatePaths7() {
+function candidatePaths5() {
   const cwd = process.cwd();
   return [
-    import_node_path7.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME5),
-    import_node_path7.default.join(cwd, "migrations", MIGRATION_BASENAME5)
+    import_node_path5.default.join(cwd, "server", "db", "migrations", MIGRATION_BASENAME4),
+    import_node_path5.default.join(cwd, "migrations", MIGRATION_BASENAME4)
   ];
 }
 function readRepair1Ddl() {
-  for (const p of candidatePaths7()) {
+  for (const p of candidatePaths5()) {
     try {
-      if (import_node_fs7.default.existsSync(p)) return import_node_fs7.default.readFileSync(p, "utf8");
+      if (import_node_fs5.default.existsSync(p)) return import_node_fs5.default.readFileSync(p, "utf8");
     } catch {
     }
   }
@@ -26976,26 +25490,26 @@ function executableStatements(ddl) {
   const stripped = ddl.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n");
   return stripped.split(";").map((s) => s.trim()).filter((s) => s.length > 0);
 }
-function columnNames2(db2, table) {
+function columnNames(db, table) {
   try {
-    return db2.prepare(`PRAGMA table_info(${table})`).all().map((r) => String(r.name));
+    return db.prepare(`PRAGMA table_info(${table})`).all().map((r) => String(r.name));
   } catch {
     return [];
   }
 }
 function ensureRepair1AuditActorBindingSchema(handle) {
-  let db2;
+  let db;
   try {
-    db2 = handle ?? rawDb();
+    db = handle ?? rawDb();
   } catch {
     return false;
   }
-  if (!db2 || typeof db2.prepare !== "function") return false;
-  const key2 = db2;
-  if (key2 && typeof key2 === "object" && installed2.has(key2)) return true;
+  if (!db || typeof db.prepare !== "function") return false;
+  const key2 = db;
+  if (key2 && typeof key2 === "object" && installed.has(key2)) return true;
   let cols;
   try {
-    cols = columnNames2(db2, "audit_log");
+    cols = columnNames(db, "audit_log");
   } catch {
     return false;
   }
@@ -27003,14 +25517,14 @@ function ensureRepair1AuditActorBindingSchema(handle) {
     return false;
   }
   if (cols.includes("hash_version")) {
-    if (key2 && typeof key2 === "object") installed2.add(key2);
+    if (key2 && typeof key2 === "object") installed.add(key2);
     return true;
   }
   const ddl = readRepair1Ddl();
   const stmts = ddl ? executableStatements(ddl) : [REPAIR1_AUDIT_LOG_ALTER];
   for (const s of stmts) {
     try {
-      db2.exec(s);
+      db.exec(s);
     } catch (err) {
       const msg = err.message ?? String(err);
       if (/duplicate column name/i.test(msg)) continue;
@@ -27025,258 +25539,25 @@ function ensureRepair1AuditActorBindingSchema(handle) {
   }
   let after;
   try {
-    after = columnNames2(db2, "audit_log");
+    after = columnNames(db, "audit_log");
   } catch {
     return false;
   }
   const ok = after.includes("hash_version");
-  if (ok && key2 && typeof key2 === "object") installed2.add(key2);
+  if (ok && key2 && typeof key2 === "object") installed.add(key2);
   return ok;
 }
-var import_node_fs7, import_node_path7, MIGRATION_BASENAME5, REPAIR1_AUDIT_LOG_ALTER, installed2;
+var import_node_fs5, import_node_path5, MIGRATION_BASENAME4, REPAIR1_AUDIT_LOG_ALTER, installed;
 var init_applyRepair1AuditActorBindingSchema = __esm({
   "server/lib/applyRepair1AuditActorBindingSchema.ts"() {
     "use strict";
-    import_node_fs7 = __toESM(require("node:fs"), 1);
-    import_node_path7 = __toESM(require("node:path"), 1);
+    import_node_fs5 = __toESM(require("node:fs"), 1);
+    import_node_path5 = __toESM(require("node:path"), 1);
     init_logger2();
     init_connection();
-    MIGRATION_BASENAME5 = "0188_repair1_audit_actor_binding.sql";
+    MIGRATION_BASENAME4 = "0188_repair1_audit_actor_binding.sql";
     REPAIR1_AUDIT_LOG_ALTER = "ALTER TABLE audit_log ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1";
-    installed2 = /* @__PURE__ */ new WeakSet();
-  }
-});
-
-// server/lib/platformConfigShapeSchema.ts
-var init_platformConfigShapeSchema = __esm({
-  "server/lib/platformConfigShapeSchema.ts"() {
-    "use strict";
-  }
-});
-
-// server/lib/platformConfigWriter.ts
-var init_platformConfigWriter = __esm({
-  "server/lib/platformConfigWriter.ts"() {
-    "use strict";
-    init_connection();
-  }
-});
-
-// server/lib/userPrivacyResolver.ts
-var init_userPrivacyResolver = __esm({
-  "server/lib/userPrivacyResolver.ts"() {
-    "use strict";
-    init_connection();
-  }
-});
-
-// server/membershipStore.ts
-function rebuildLedgerIndexIfStale() {
-  const ledger = getLedger();
-  if (ledger.length === _ledgerIndexLen) return;
-  const idx = /* @__PURE__ */ new Map();
-  for (const e of ledger) {
-    if (e.state !== "committed") continue;
-    let perUser = idx.get(e.investorId);
-    if (!perUser) {
-      perUser = /* @__PURE__ */ new Map();
-      idx.set(e.investorId, perUser);
-    }
-    perUser.set(e.companyId, {
-      companyId: e.companyId,
-      ownershipPct: 0,
-      ownershipPctKnown: false,
-      ownershipBasis: null,
-      companyName: e.companyId
-    });
-  }
-  _ledgerIndex = idx;
-  _ledgerIndexLen = ledger.length;
-}
-function derivedPositionsFor(userId) {
-  rebuildLedgerIndexIfStale();
-  const ids = resolveInvestorIdSet(userId);
-  const per = /* @__PURE__ */ new Map();
-  for (const id of ids.length > 0 ? ids : [userId]) {
-    const forId = _ledgerIndex.get(id);
-    if (!forId) continue;
-    forId.forEach((pos, companyId) => {
-      if (!per.has(companyId)) per.set(companyId, pos);
-    });
-  }
-  if (per.size === 0) return [];
-  return Array.from(per.values()).map((p) => ({
-    companyId: p.companyId,
-    companyName: p.companyName,
-    ownershipPct: p.ownershipPct,
-    /* WAVE 116 · FINDING 3 — the "is this a real figure?" flag travels with the
-       figure. Dropping it here would have re-anonymised the sentinel one hop
-       later, which is exactly how the platform ended up with eight of these. */
-    ownershipPctKnown: p.ownershipPctKnown,
-    ownershipBasis: p.ownershipBasis
-  }));
-}
-function mergedMembership(userId) {
-  const seed = MOCK_MEMBERSHIP[userId] ?? null;
-  const derived = derivedPositionsFor(userId);
-  if (!seed && derived.length === 0) return null;
-  const base = seed ?? {
-    userId,
-    isCollectiveMember: false,
-    memberSince: null,
-    expiresAt: null,
-    lapsed: false,
-    reason: derived.length > 0 ? `Active member on cap table for ${derived.length} compan${derived.length === 1 ? "y" : "ies"}.` : "No cap-table positions.",
-    capTablePositions: [],
-    canApplyToCollective: derived.length > 0
-  };
-  if (derived.length === 0) return base;
-  const seen = new Set(base.capTablePositions.map((p) => p.companyId));
-  const merged = base.capTablePositions.slice();
-  for (const p of derived) {
-    if (!seen.has(p.companyId)) {
-      merged.push(p);
-      seen.add(p.companyId);
-    }
-  }
-  return { ...base, capTablePositions: merged, canApplyToCollective: base.canApplyToCollective || merged.length > 0 };
-}
-function getMembership(userId) {
-  return mergedMembership(userId);
-}
-var MOCK_MEMBERSHIP, _ledgerIndexLen, _ledgerIndex;
-var init_membershipStore = __esm({
-  "server/membershipStore.ts"() {
-    "use strict";
-    init_demoGate();
-    init_captableCommitStore();
-    init_storePersistenceShim();
-    init_investorIdentityAliasStore();
-    MOCK_MEMBERSHIP = DEMO_SEED_ENABLED ? {
-      u_aisha_patel: {
-        userId: "u_aisha_patel",
-        isCollectiveMember: true,
-        memberSince: "2025-03-01",
-        expiresAt: "2026-12-31",
-        lapsed: false,
-        reason: "Active member on cap table for 2 companies.",
-        capTablePositions: [
-          /* WAVE 116 · FINDING 3 — demo seed figures ARE entered values, so they are
-             flagged known, which is what distinguishes them from the ledger-derived
-             `0` sentinel below. */
-          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.041, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
-          { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
-        ],
-        canApplyToCollective: true
-      },
-      u_lapsed_lp: {
-        userId: "u_lapsed_lp",
-        isCollectiveMember: false,
-        memberSince: "2024-04-01",
-        expiresAt: "2025-12-31",
-        lapsed: true,
-        reason: "Membership renewal lapsed; Collective access removed but cap-table comms remain.",
-        capTablePositions: [
-          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
-        ],
-        canApplyToCollective: false
-      },
-      u_no_position: {
-        userId: "u_no_position",
-        isCollectiveMember: false,
-        memberSince: null,
-        expiresAt: null,
-        lapsed: false,
-        reason: "No cap-table positions \u2014 strict gating denies all Capavate access.",
-        capTablePositions: [],
-        canApplyToCollective: false
-      }
-    } : {};
-    _ledgerIndexLen = -1;
-    _ledgerIndex = /* @__PURE__ */ new Map();
-  }
-});
-
-// server/reportsStore.ts
-function defaultSections(template) {
-  const baseKinds = ["highlights", "kpis", "financials", "asks", "risks", "roadmap", "hiring", "press"];
-  const titles = {
-    highlights: "Highlights",
-    kpis: "KPIs",
-    financials: "Financials",
-    asks: "Asks",
-    risks: "Risks",
-    roadmap: "Roadmap",
-    hiring: "Hiring",
-    press: "Press"
-  };
-  const seedBody = {
-    highlights: "\u2022 Closed $2.65M of $4.0M soft-circle target\n\u2022 Onboarded 3 enterprise pilot customers\n\u2022 Hired Head of Compliance (ex-Stripe)",
-    kpis: "ARR: $1.4M (+18% MoM)\nNet Retention: 137%\nGross Margin: 71%\nCash Runway: 19 months",
-    financials: "Burn: $312k/mo\nCash on hand: $5.9M\nNext audit: Q3 2026",
-    asks: "1) Warm intros to Series A leads\n2) RevOps consulting referrals\n3) Compliance counsel for SG entity",
-    risks: "Cross-border settlement counterparty concentration; mitigations in dataroom Diligence/risk-register.xlsx",
-    roadmap: "May\u2013Jul: SG MAS sandbox launch \xB7 Aug: 2-sided liquidity cohort \xB7 Q4: Series A close",
-    hiring: "Open: Sr. Backend Engineer, Compliance Manager (SG), Enterprise AE",
-    press: "Featured in Fintech Weekly \xB7 Podcast on a16z 'Fintech in Practice'"
-  };
-  return baseKinds.map((k) => ({
-    id: `sec_${k}_${(0, import_node_crypto6.randomBytes)(3).toString("hex")}`,
-    kind: k,
-    title: titles[k],
-    body: seedBody[k],
-    comments: []
-  })).slice(0, template === "monthly_kpi" ? 8 : template === "quarterly_update" ? 8 : template === "annual" ? 8 : template === "round_close" ? 5 : 3);
-}
-var import_node_crypto6, reports2;
-var init_reportsStore = __esm({
-  "server/reportsStore.ts"() {
-    "use strict";
-    import_node_crypto6 = require("node:crypto");
-    init_sprint10Telemetry();
-    init_userContext();
-    init_userPrivacyResolver();
-    init_demoGate();
-    init_membershipStore();
-    init_notificationsStore();
-    init_bridgeStore();
-    init_connection();
-    init_schema();
-    init_adminPlatformStore();
-    init_logger2();
-    init_founderOwnershipEngine();
-    reports2 = DEMO_SEED_ENABLED ? [
-      {
-        id: "rpt_apr_2026",
-        companyId: "co_novapay",
-        template: "monthly_kpi",
-        title: "NovaPay AI \u2014 April 2026 Update",
-        period: "April 2026",
-        status: "sent",
-        sentAt: "2026-05-02T14:00:00Z",
-        recipients: ["u_aisha_patel", "u_forge_ventures", "u_hydra"],
-        recipientsCount: 3,
-        metricsSnapshot: { raisedToDateUsd: 1105e4, capTableHolders: 14, softCirclePipelineUsd: 265e4, activeRounds: 2 },
-        sections: defaultSections("monthly_kpi"),
-        readReceipts: [
-          { investorId: "u_aisha_patel", openedAt: "2026-05-02T16:30:00Z", reads: 3 },
-          { investorId: "u_hydra", openedAt: "2026-05-03T09:14:00Z", reads: 1 }
-        ],
-        schedule: { cron: "0 9 1 * *", cadence: "monthly", nextSendAt: "2026-06-01T09:00:00Z", enabled: true }
-      }
-    ] : [];
-  }
-});
-
-// server/lib/wave224CompanyExportFigures.ts
-var init_wave224CompanyExportFigures = __esm({
-  "server/lib/wave224CompanyExportFigures.ts"() {
-    "use strict";
-    init_currency();
-    init_currencyScalar();
-    init_roundsStore();
-    init_reportsStore();
-    init_connection();
+    installed = /* @__PURE__ */ new WeakSet();
   }
 });
 
@@ -27298,8 +25579,8 @@ function lookupByUserId(userId) {
     if (cred) return { email: cred.email, name: cred.name };
   }
   try {
-    const db2 = getDb();
-    const rows = db2.select().from(userCredentials).where(
+    const db = getDb();
+    const rows = db.select().from(userCredentials).where(
       sql`${userCredentials.userId} = ${userId} AND ${userCredentials.deletedAt} IS NULL`
     ).all();
     const row = rows[0];
@@ -27355,9 +25636,7 @@ var init_applyCommsDelegatedContextSchema = __esm({
 var init_partnerDelegatedContext = __esm({
   "server/lib/partnerDelegatedContext.ts"() {
     "use strict";
-    init_adminContactsStoreShim();
     init_connection();
-    init_investorIdentityAliasStore();
     init_applyCommsDelegatedContextSchema();
   }
 });
@@ -27382,14 +25661,6 @@ function resolveTenantId(entity, explicit) {
 function appendAdminAudit(actor, entity, eventType, payload, tenantId) {
   return appendAudit(actor, entity, eventType, payload, tenantId);
 }
-function noteAuditWriteOk(ts) {
-  _auditWriteOkSinceBoot += 1;
-  _lastAuditWriteOkAt = ts;
-}
-function noteAuditWriteFailure(rec) {
-  _auditWriteFailuresSinceBoot += 1;
-  _lastAuditWriteFailure = rec;
-}
 function generateAuditId(nowMs = Date.now()) {
   if (nowMs > _auditIdLastMs) {
     _auditIdLastMs = nowMs;
@@ -27400,7 +25671,7 @@ function generateAuditId(nowMs = Date.now()) {
   }
   const ts = nowMs.toString(36).padStart(9, "0").slice(-9);
   const ctr = _auditIdCounter.toString(16).padStart(5, "0").slice(-5);
-  const rand = (0, import_node_crypto7.randomBytes)(3).toString("hex");
+  const rand = (0, import_node_crypto6.randomBytes)(3).toString("hex");
   return `al_${ts}${ctr}${rand}`;
 }
 function auditHashBody(args) {
@@ -27425,8 +25696,8 @@ function appendAudit(actor, entity, eventType, payload, explicitTenantId) {
   const hashVersion = actorBindingAvailable ? AUDIT_HASH_VERSION_CURRENT : AUDIT_HASH_VERSION_LEGACY;
   let finalEntry = null;
   try {
-    const db2 = getDb();
-    db2.transaction((tx) => {
+    const db = getDb();
+    db.transaction((tx) => {
       const tipRow = tx.select({ hash: auditLog.hash }).from(auditLog).where(eq(auditLog.tenantId, tenantId)).orderBy(desc(auditLog.createdAt), desc(auditLog.id)).limit(1).all();
       const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
       const body = auditHashBody({
@@ -27459,14 +25730,6 @@ function appendAudit(actor, entity, eventType, payload, explicitTenantId) {
       finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
     });
   } catch (err) {
-    noteAuditWriteFailure({
-      at: (/* @__PURE__ */ new Date()).toISOString(),
-      message: err.message,
-      actor,
-      entity,
-      eventType,
-      tenantId
-    });
     log.error({
       route: "adminPlatformStore.appendAudit",
       errorType: "AUDIT_DB_WRITE_FAILED",
@@ -27474,14 +25737,10 @@ function appendAudit(actor, entity, eventType, payload, explicitTenantId) {
       actor,
       entity,
       eventType,
-      tenantId,
-      /* WAVE 186 — how many rows this process has already lost. One lost row is
-         an incident; a rising count is an outage. */
-      writeFailuresSinceBoot: _auditWriteFailuresSinceBoot
+      tenantId
     });
     return { id, ts, actor, entity, eventType, payload, priorHash: "", hash: "", tenantId };
   }
-  noteAuditWriteOk(ts);
   auditLog2.push(finalEntry);
   if (auditLog2.length > AUDIT_MIRROR_LIMIT) {
     auditLog2.splice(0, auditLog2.length - AUDIT_MIRROR_LIMIT);
@@ -27504,12 +25763,12 @@ function seedAudit() {
   ];
   for (const [a, e, t, p] of seed) appendAudit(a, e, t, p);
 }
-var import_node_crypto7, sha2563, activityFeed, users2, auditLog2, AUDIT_MIRROR_LIMIT, _auditWriteOkSinceBoot, _auditWriteFailuresSinceBoot, _lastAuditWriteOkAt, _lastAuditWriteFailure, _auditIdCounter, _auditIdLastMs, AUDIT_CHAIN_ORDER_SQL_ASC, AUDIT_CHAIN_ORDER_SQL_DESC, AUDIT_CHAIN_SELECT_SQL, _warnedActorBindingUnavailable, AUDIT_HASH_VERSION_LEGACY, AUDIT_HASH_VERSION_ACTOR_BOUND, AUDIT_HASH_VERSION_CURRENT, AUDIT_CHAIN_TIP_SQL, reconRuns2;
+var import_node_crypto6, sha2563, activityFeed, users2, auditLog2, AUDIT_MIRROR_LIMIT, _auditIdCounter, _auditIdLastMs, AUDIT_CHAIN_ORDER_SQL_ASC, AUDIT_CHAIN_ORDER_SQL_DESC, AUDIT_CHAIN_SELECT_SQL, _warnedActorBindingUnavailable, AUDIT_HASH_VERSION_LEGACY, AUDIT_HASH_VERSION_ACTOR_BOUND, AUDIT_HASH_VERSION_CURRENT, AUDIT_CHAIN_TIP_SQL, reconRuns2;
 var init_adminPlatformStore = __esm({
   "server/adminPlatformStore.ts"() {
     "use strict";
     init_currency();
-    import_node_crypto7 = require("node:crypto");
+    import_node_crypto6 = require("node:crypto");
     init_drizzle_orm();
     init_mockData();
     init_demoGate();
@@ -27524,17 +25783,12 @@ var init_adminPlatformStore = __esm({
     init_connection();
     init_schema();
     init_logger2();
-    init_wave230TestDataFlags();
     init_rateLimit();
     init_errors3();
     init_applyRepair1AuditActorBindingSchema();
-    init_platformConfigShapeSchema();
-    init_platformConfigWriter();
-    init_wave224CompanyExportFigures();
-    init_multiCompanyStore();
     init_actorIdentityDescriber();
     init_userContext();
-    sha2563 = (s) => (0, import_node_crypto7.createHash)("sha256").update(s, "utf8").digest("hex");
+    sha2563 = (s) => (0, import_node_crypto6.createHash)("sha256").update(s, "utf8").digest("hex");
     activityFeed = [
       { id: "act_1", ts: new Date(Date.now() - 2 * 6e4).toISOString(), actor: "u_maya", entity: "co_novapay", kind: "round.closed", text: "NovaPay Seed Extension closed \u2014 $4.0M" },
       { id: "act_2", ts: new Date(Date.now() - 6 * 6e4).toISOString(), actor: "u_aisha_patel", entity: "co_novapay", kind: "soft_circle.submitted", text: "Aisha soft-circled $250K" },
@@ -27624,10 +25878,6 @@ var init_adminPlatformStore = __esm({
     ];
     auditLog2 = [];
     AUDIT_MIRROR_LIMIT = 5e3;
-    _auditWriteOkSinceBoot = 0;
-    _auditWriteFailuresSinceBoot = 0;
-    _lastAuditWriteOkAt = null;
-    _lastAuditWriteFailure = null;
     _auditIdCounter = 0;
     _auditIdLastMs = 0;
     AUDIT_CHAIN_ORDER_SQL_ASC = "ORDER BY created_at ASC, id ASC";
@@ -27659,33 +25909,12 @@ var init_attributionProvenance = __esm({
   }
 });
 
-// shared/crmStages.ts
-var init_crmStages = __esm({
-  "shared/crmStages.ts"() {
-    "use strict";
-  }
-});
-
 // server/partnerWorkspaceStore.ts
 function newId2(prefix) {
-  return `${prefix}_${(0, import_node_crypto8.randomBytes)(8).toString("hex")}`;
-}
-function canonicalActiveTeamMemberId(m) {
-  if (m.status !== "active" || m.removedAt) return m.id;
-  try {
-    const row = rawDb().prepare(
-      `SELECT id FROM partner_team_members
-          WHERE partner_id = ? AND user_id = ? AND status = 'active' AND removed_at IS NULL
-          ORDER BY joined_at ASC, id ASC LIMIT 1`
-    ).get(m.partnerId, m.userId);
-    return row?.id ?? m.id;
-  } catch {
-    return m.id;
-  }
+  return `${prefix}_${(0, import_node_crypto7.randomBytes)(8).toString("hex")}`;
 }
 function persistTeamMember(m, strict = false) {
   try {
-    const rowId = canonicalActiveTeamMemberId(m);
     rawDb().prepare(
       `INSERT INTO partner_team_members (id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -27694,7 +25923,7 @@ function persistTeamMember(m, strict = false) {
          status = excluded.status,
          removed_at = excluded.removed_at,
          updated_at = excluded.updated_at`
-    ).run(rowId, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, (/* @__PURE__ */ new Date()).toISOString());
+    ).run(m.id, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, (/* @__PURE__ */ new Date()).toISOString());
   } catch (err) {
     log.warn("[partnerWorkspaceStore] teamMember write-through failed:", err.message);
     if (strict) {
@@ -27722,12 +25951,12 @@ function emit2(eventType, aggregateId, payload) {
   } catch {
   }
 }
-var import_node_module7, import_node_crypto8, require6, GENESIS2, teamMembers, partnerTeamStore, INVITE_TTL_MS;
+var import_node_module6, import_node_crypto7, require5, GENESIS2, teamMembers, partnerTeamStore, INVITE_TTL_MS;
 var init_partnerWorkspaceStore = __esm({
   "server/partnerWorkspaceStore.ts"() {
     "use strict";
-    import_node_module7 = require("node:module");
-    import_node_crypto8 = require("node:crypto");
+    import_node_module6 = require("node:module");
+    import_node_crypto7 = require("node:crypto");
     init_partnerCompanyRelationshipStore();
     init_eventBus();
     init_money();
@@ -27740,15 +25969,13 @@ var init_partnerWorkspaceStore = __esm({
     init_attributionProvenance();
     init_portable();
     init_schema();
-    init_crmStages();
     init_chapterDefaults();
     init_logger2();
     init_partnerFeeResolver();
     init_spvEngineStore();
     init_storePersistenceShim();
     init_storePersistenceShim();
-    init_crmStages();
-    require6 = (0, import_node_module7.createRequire)(__importMetaUrl);
+    require5 = (0, import_node_module6.createRequire)(__importMetaUrl);
     GENESIS2 = "0".repeat(64);
     teamMembers = [];
     partnerTeamStore = {
@@ -28082,11 +26309,11 @@ function getActiveCompanyId(userId) {
   const companies3 = USER_COMPANIES.get(resolvedUserId) ?? [];
   return companies3[0]?.companyId ?? null;
 }
-var import_node_module8, require7, USER_COMPANIES, USER_ACTIVE_COMPANY;
+var import_node_module7, require6, USER_COMPANIES, USER_ACTIVE_COMPANY;
 var init_multiCompanyStore = __esm({
   "server/multiCompanyStore.ts"() {
     "use strict";
-    import_node_module8 = require("node:module");
+    import_node_module7 = require("node:module");
     init_withTenant();
     init_userContext();
     init_demoGate();
@@ -28098,7 +26325,7 @@ var init_multiCompanyStore = __esm({
     init_schema();
     init_logger2();
     init_provisionalPartnerAttribution();
-    require7 = (0, import_node_module8.createRequire)(__importMetaUrl);
+    require6 = (0, import_node_module7.createRequire)(__importMetaUrl);
     USER_COMPANIES = /* @__PURE__ */ new Map();
     USER_ACTIVE_COMPANY = /* @__PURE__ */ new Map();
     if (DEMO_SEED_ENABLED) {
@@ -28172,6 +26399,124 @@ var init_multiCompanyStore = __esm({
   }
 });
 
+// server/membershipStore.ts
+function rebuildLedgerIndexIfStale() {
+  const ledger = getLedger();
+  if (ledger.length === _ledgerIndexLen) return;
+  const idx = /* @__PURE__ */ new Map();
+  for (const e of ledger) {
+    if (e.state !== "committed") continue;
+    let perUser = idx.get(e.investorId);
+    if (!perUser) {
+      perUser = /* @__PURE__ */ new Map();
+      idx.set(e.investorId, perUser);
+    }
+    perUser.set(e.companyId, {
+      companyId: e.companyId,
+      ownershipPct: 0,
+      ownershipPctKnown: false,
+      ownershipBasis: null,
+      companyName: e.companyId
+    });
+  }
+  _ledgerIndex = idx;
+  _ledgerIndexLen = ledger.length;
+}
+function derivedPositionsFor(userId) {
+  rebuildLedgerIndexIfStale();
+  const per = _ledgerIndex.get(userId);
+  if (!per) return [];
+  return Array.from(per.values()).map((p) => ({
+    companyId: p.companyId,
+    companyName: p.companyName,
+    ownershipPct: p.ownershipPct,
+    /* WAVE 116 · FINDING 3 — the "is this a real figure?" flag travels with the
+       figure. Dropping it here would have re-anonymised the sentinel one hop
+       later, which is exactly how the platform ended up with eight of these. */
+    ownershipPctKnown: p.ownershipPctKnown,
+    ownershipBasis: p.ownershipBasis
+  }));
+}
+function mergedMembership(userId) {
+  const seed = MOCK_MEMBERSHIP[userId] ?? null;
+  const derived = derivedPositionsFor(userId);
+  if (!seed && derived.length === 0) return null;
+  const base = seed ?? {
+    userId,
+    isCollectiveMember: false,
+    memberSince: null,
+    expiresAt: null,
+    lapsed: false,
+    reason: derived.length > 0 ? `Active member on cap table for ${derived.length} compan${derived.length === 1 ? "y" : "ies"}.` : "No cap-table positions.",
+    capTablePositions: [],
+    canApplyToCollective: derived.length > 0
+  };
+  if (derived.length === 0) return base;
+  const seen = new Set(base.capTablePositions.map((p) => p.companyId));
+  const merged = base.capTablePositions.slice();
+  for (const p of derived) {
+    if (!seen.has(p.companyId)) {
+      merged.push(p);
+      seen.add(p.companyId);
+    }
+  }
+  return { ...base, capTablePositions: merged, canApplyToCollective: base.canApplyToCollective || merged.length > 0 };
+}
+function getMembership(userId) {
+  return mergedMembership(userId);
+}
+var MOCK_MEMBERSHIP, _ledgerIndexLen, _ledgerIndex;
+var init_membershipStore = __esm({
+  "server/membershipStore.ts"() {
+    "use strict";
+    init_demoGate();
+    init_captableCommitStore();
+    init_storePersistenceShim();
+    MOCK_MEMBERSHIP = DEMO_SEED_ENABLED ? {
+      u_aisha_patel: {
+        userId: "u_aisha_patel",
+        isCollectiveMember: true,
+        memberSince: "2025-03-01",
+        expiresAt: "2026-12-31",
+        lapsed: false,
+        reason: "Active member on cap table for 2 companies.",
+        capTablePositions: [
+          /* WAVE 116 · FINDING 3 — demo seed figures ARE entered values, so they are
+             flagged known, which is what distinguishes them from the ledger-derived
+             `0` sentinel below. */
+          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.041, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" },
+          { companyId: "co_arboreal", companyName: "Arboreal Health", ownershipPct: 0.012, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
+        ],
+        canApplyToCollective: true
+      },
+      u_lapsed_lp: {
+        userId: "u_lapsed_lp",
+        isCollectiveMember: false,
+        memberSince: "2024-04-01",
+        expiresAt: "2025-12-31",
+        lapsed: true,
+        reason: "Membership renewal lapsed; Collective access removed but cap-table comms remain.",
+        capTablePositions: [
+          { companyId: "co_novapay", companyName: "NovaPay AI", ownershipPct: 0.018, ownershipPctKnown: true, ownershipBasis: "demo seed (fraction of fully-diluted shares)" }
+        ],
+        canApplyToCollective: false
+      },
+      u_no_position: {
+        userId: "u_no_position",
+        isCollectiveMember: false,
+        memberSince: null,
+        expiresAt: null,
+        lapsed: false,
+        reason: "No cap-table positions \u2014 strict gating denies all Capavate access.",
+        capTablePositions: [],
+        canApplyToCollective: false
+      }
+    } : {};
+    _ledgerIndexLen = -1;
+    _ledgerIndex = /* @__PURE__ */ new Map();
+  }
+});
+
 // server/lib/sessionRevocation.ts
 function isRevoked(userId) {
   if (!userId) return false;
@@ -28204,8 +26549,8 @@ function getAuthUsersRole(opts) {
 }
 function getDbUserRole(userId, email) {
   try {
-    const db2 = getDb();
-    const rows = db2.select({ role: users.role }).from(users).where(eq(users.id, userId)).all();
+    const db = getDb();
+    const rows = db.select({ role: users.role }).from(users).where(eq(users.id, userId)).all();
     const role = rows[0]?.role ?? null;
     if (typeof role === "string" && role.trim()) return role.trim();
     return getAuthUsersRole({ userId, email });
@@ -28464,11 +26809,11 @@ function getUserContext(req) {
   }
   return getUserContextForId(id);
 }
-var import_node_module9, require8, RUNTIME_PERSONAS, RUNTIME_INVITATIONS, PERSONAS;
+var import_node_module8, require7, RUNTIME_PERSONAS, RUNTIME_INVITATIONS, PERSONAS;
 var init_userContext = __esm({
   "server/lib/userContext.ts"() {
     "use strict";
-    import_node_module9 = require("node:module");
+    import_node_module8 = require("node:module");
     init_multiCompanyStore();
     init_membershipStore();
     init_roundsStore();
@@ -28482,7 +26827,7 @@ var init_userContext = __esm({
     init_schema();
     init_drizzle_orm();
     init_logger2();
-    require8 = (0, import_node_module9.createRequire)(__importMetaUrl);
+    require7 = (0, import_node_module8.createRequire)(__importMetaUrl);
     RUNTIME_PERSONAS = {};
     RUNTIME_INVITATIONS = {};
     PERSONAS = {

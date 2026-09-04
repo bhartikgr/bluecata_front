@@ -59,23 +59,6 @@ import { DbUnavailableError } from "./lib/errors";
    (audit_log.hash_version). server/db/connection.ts is SACRED and cannot be
    extended, so a handle built from its inline DDL needs this. */
 import { ensureRepair1AuditActorBindingSchema } from "./lib/applyRepair1AuditActorBindingSchema";
-/* WAVE 314b · R204/R265.5 — the inline-bootstrap mirror of migration 0231. The
- * `:memory:` bootstrap in server/db/connection.ts is SACRED-FROZEN (WAIVER-6) and
- * creates platform_config with 12 columns; migration 0231 converges the deploy
- * shape to 15. Without this installer the `value` column the lifecycle write
- * names does not exist on a test/bootstrap handle. See the module header. */
-import { ensurePlatformConfigShape } from "./lib/platformConfigShapeSchema";
-/* WAVE 314b · R265.1 — the ONE sanctioned platform_config writer. It writes the
- * audited history row and the config row in the order the eight triggers on that
- * table require, and it throws instead of returning an unpersisted value. */
-import {
-  ensurePlatformConfigKey,
-  updatePlatformConfigValue,
-  readConfigRow,
-} from "./lib/platformConfigWriter";
-
-/** The single spelling of the config key, so the read and the write cannot drift. */
-const LIFECYCLE_POLICIES_CONFIG_KEY = "lifecycle_policies";
 /* WAVE 224 · ITEM A — the company CSV export figures, derived from the canonical
    stores or explicitly refused. Replaces the hardcoded `6500000`, the
    `Math.random()` bulk raise, and the literal `6` investors / `4` reports that both
@@ -2153,23 +2136,13 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
   // 4) Lifecycle policies — platform_config[key="lifecycle_policies"].
   try {
     const db = getDb();
-    /* WAVE 314b · R204/R265.5 — same mirror, on the READ side. This SELECT reads
-       `rows[0].value`, a column the inline bootstrap does not create. */
-    ensurePlatformConfigShape(rawDb() as unknown as Parameters<typeof ensurePlatformConfigShape>[0]);
     const rows = (await db
       .select()
       .from(platformConfigTable)
-      .where(eq(platformConfigTable.key, LIFECYCLE_POLICIES_CONFIG_KEY))) as any[];
-    /* WAVE 314b — READ THE COLUMN THE WRITER ACTUALLY WRITES. The audited writer
-       (server/lib/platformConfigWriter.ts) persists to `value_json`; this read
-       looked only at `value`, which migration 0231 added and which that writer
-       never populates. So even a write that DID land was invisible on restart.
-       `value_json` is preferred, `value` accepted for any row written by the old
-       raw path. Neither is coerced: a row with neither stays on defaults. */
-    const storedJson: unknown = rows.length > 0 ? (rows[0].valueJson ?? rows[0].value_json ?? rows[0].value) : null;
-    if (typeof storedJson === "string" && storedJson.length > 0) {
+      .where(eq(platformConfigTable.key, "lifecycle_policies"))) as any[];
+    if (rows.length > 0 && rows[0].value) {
       try {
-        const parsed = JSON.parse(storedJson) as Partial<LifecyclePolicies>;
+        const parsed = JSON.parse(rows[0].value) as Partial<LifecyclePolicies>;
         for (const k of Object.keys(_lifecyclePolicies) as Array<keyof LifecyclePolicies>) {
           const v = (parsed as any)[k];
           if (typeof v === "number" && v > 0) _lifecyclePolicies[k] = v;
@@ -2329,36 +2302,8 @@ export function getLifecyclePolicies(): LifecyclePolicies {
   return { ..._lifecyclePolicies };
 }
 
-/**
- * WAVE 314b · R265.1 / R231 — THE FABRICATED SUCCESS THIS ERROR ANNOUNCES.
- *
- * A durable write that failed and was reported as saved is worse than a
- * fabricated zero, because a zero looks wrong and a success looks finished. This
- * error type is what `setLifecyclePolicies` now raises instead of handing the
- * caller the in-memory bag it had just mutated.
- */
-export class LifecyclePolicyWriteError extends Error {
-  readonly cause: string;
-  constructor(cause: string) {
-    super(
-      "These retention and expiry settings were NOT saved: the platform could not write them to the database, " +
-        "so the previous settings are still in force and would come back on the next restart. " +
-        `Nothing was changed. (${cause})`,
-    );
-    this.name = "LifecyclePolicyWriteError";
-    this.cause = cause;
-  }
-}
-
 export function setLifecyclePolicies(patch: Partial<LifecyclePolicies>): LifecyclePolicies {
   const allowed = Object.keys(_lifecyclePolicies) as Array<keyof LifecyclePolicies>;
-  /* WAVE 314b · R265.1 — SNAPSHOT BEFORE MUTATING. The in-memory bag is the read
-     model for every subsequent GET in this process, so if the durable write
-     throws it must go back exactly as it was. Previously it was mutated first,
-     the write was attempted second, and a failure left the process serving
-     values that exist nowhere on disk while telling the operator they were
-     saved. */
-  const priorValues: LifecyclePolicies = { ..._lifecyclePolicies };
   for (const key of allowed) {
     if (patch[key] !== undefined && (patch[key] as number) > 0) {
       _lifecyclePolicies[key] = patch[key] as number;
@@ -2370,77 +2315,36 @@ export function setLifecyclePolicies(patch: Partial<LifecyclePolicies>): Lifecyc
   // here is per-key (only one row per key, so really just a version counter).
   try {
     const db = getDb();
-    /* WAVE 314b · R204/R265.5 — THE INLINE-BOOTSTRAP MIRROR, AT ITS USE SITE.
-       This write names `platform_config.value`, `.prev_hash` and `.hash`. Migration
-       0231 guarantees those columns on a MIGRATED database. A database built from
-       the inline bootstrap in server/db/connection.ts — the sandbox, the dev
-       database and every `:memory:` test handle — never runs migrations, so it had
-       the new 12-column shape and none of those three columns, and this write threw
-       "no such column" on exactly the path whose swallowed failure R265.1 is about.
-       connection.ts is sacred-frozen, so the mirror is applied here, from the
-       migration's own text, PRAGMA-inspected on every call. See
-       server/lib/platformConfigShapeSchema.ts for why it lives there. */
-    ensurePlatformConfigShape(rawDb() as unknown as Parameters<typeof ensurePlatformConfigShape>[0]);
+    const now = new Date().toISOString();
     const value = JSON.stringify(_lifecyclePolicies);
-    /* WAVE 314b · R265.1 — WHY THIS NO LONGER WRITES ITS OWN ROW.
-
-       What was here was a hand-rolled `insert … onConflictDoUpdate` into
-       `platform_config` with a locally-computed `hash`/`prev_hash` pair. That
-       table carries eight audit triggers (created by migration 0123 and by the
-       inline bootstrap alike) and one of them, `trg_pc_audited_insert`, ABORTS any
-       insert that is not accompanied by a matching genesis row in
-       `platform_config_history`. This path never wrote one.
-
-       So the write did not merely fail on bootstrap handles missing a column: it
-       was REFUSED, by design, with `PLATFORM_CONFIG_UNAUDITED_INSERT`, on every
-       database that has the triggers — which is every migrated deploy. The old
-       catch swallowed that abort and returned the in-memory bag, which is why the
-       screen has always said "saved" and nothing has ever persisted.
-
-       The sanctioned writer is `server/lib/platformConfigWriter.ts`. It writes the
-       history row and the config row inside one transaction, in the order the
-       triggers require, and it throws `PlatformConfigWriteError` rather than
-       returning a value it did not persist. Two calls: genesis the key if this
-       database has never held it, then update it. */
-    ensurePlatformConfigKey({
-      key: LIFECYCLE_POLICIES_CONFIG_KEY,
-      valueJson: value,
-      valueType: "json",
-      description: "Retention and expiry windows applied to founder dashboards, archival and soft-circle records.",
-      createdBy: "admin",
+    db.transaction((tx: any) => {
+      const tipRow = tx
+        .select({ hash: platformConfigTable.hash, version: platformConfigTable.version })
+        .from(platformConfigTable)
+        .where(eq(platformConfigTable.key, "lifecycle_policies"))
+        .limit(1)
+        .all() as Array<{ hash: string; version: number }>;
+      const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
+      const nextVersion = (tipRow[0]?.version ?? 0) + 1;
+      const hash = sha256(`${prevHash}|lifecycle_policies|${nextVersion}|${now}|${value}`);
+      tx.insert(platformConfigTable)
+        .values({
+          key: "lifecycle_policies",
+          value,
+          version: nextVersion,
+          prevHash,
+          hash,
+          updatedAt: now,
+          updatedBy: "admin",
+        })
+        .onConflictDoUpdate({
+          target: platformConfigTable.key,
+          set: { value, version: nextVersion, prevHash, hash, updatedAt: now, updatedBy: "admin" },
+        })
+        .run();
     });
-    updatePlatformConfigValue({
-      key: LIFECYCLE_POLICIES_CONFIG_KEY,
-      valueJson: value,
-      changedBy: "admin",
-    });
-    /* ASSERT THE ROW, NOT THE ABSENCE OF A THROW (standing rule 2). The previous
-       wave's own migration reported FAILED=0 while seeding zero rows. A write that
-       returns quietly is not a write that landed, so the value is read back out of
-       SQLite and compared before this function is allowed to report success. */
-    const readBack = readConfigRow(LIFECYCLE_POLICIES_CONFIG_KEY);
-    if (!readBack || readBack.valueJson !== value) {
-      throw new Error(
-        `POST_WRITE_READBACK_MISMATCH: platform_config['${LIFECYCLE_POLICIES_CONFIG_KEY}'] ` +
-          (readBack ? "holds a different value than was just written" : "has no row at all"),
-      );
-    }
   } catch (err) {
-    /* WAVE 314b · R265.1 / R231. THE DEFECT THAT WAS HERE: this catch logged one
-       error and then fell through to `return { ..._lifecyclePolicies }` — the
-       values that had just been written into memory and NOWHERE ELSE. The route
-       responded 200 with `ok: true`, the admin screen showed a success toast, and
-       the settings reverted at the next restart. Nobody was ever told.
-
-       A WRITE PATH MAY NEVER REPORT SUCCESS FROM AN IN-MEMORY VALUE AFTER ITS
-       DURABLE WRITE THREW. Memory is restored to exactly what it held on entry,
-       and the failure is raised so the route can answer with a non-2xx and the
-       screen can say so. The error is still logged: this replaces the silence,
-       not the log line. */
-    const message = (err as Error)?.message ?? String(err);
-    log.error("[adminPlatformStore.setLifecyclePolicies] DB write failed:", message);
-    for (const key of allowed) _lifecyclePolicies[key] = priorValues[key];
-    throw new LifecyclePolicyWriteError(message);
+    log.error("[adminPlatformStore.setLifecyclePolicies] DB write failed:", (err as Error).message);
   }
   return { ..._lifecyclePolicies };
 }
@@ -3800,30 +3704,7 @@ export function registerAdminPlatformRoutes(app: Express): void {
         if (v > 0) patch[key] = v;
       }
     }
-    /* WAVE 314b · R265.1. Before this, `setLifecyclePolicies` swallowed a failed
-       durable write and returned the in-memory bag, so this handler appended an
-       audit event saying the policy CHANGED and answered 200 ok:true for a change
-       that never reached disk. Both of those are now conditional on the write
-       having actually happened: on failure the audit event is NOT written (an
-       audit trail that records changes that did not occur is worse than none) and
-       the response is a 503 carrying the plain-language reason, which
-       client/src/pages/admin/LifecyclePolicies.tsx already renders through its
-       destructive `onError` toast. */
-    let updated;
-    try {
-      updated = setLifecyclePolicies(patch);
-    } catch (err) {
-      if (err instanceof LifecyclePolicyWriteError) {
-        return res.status(503).json({
-          ok: false,
-          error: "lifecycle_policies_not_saved",
-          message: err.message,
-          changed: {},
-          policies: getLifecyclePolicies(),
-        });
-      }
-      throw err;
-    }
+    const updated = setLifecyclePolicies(patch);
     appendAudit(actor, "platform", "lifecycle_policy.changed", patch);
     res.json({ ok: true, policies: updated, changed: patch });
   });

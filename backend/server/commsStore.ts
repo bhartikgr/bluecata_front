@@ -95,7 +95,7 @@ import { requireAdmin } from "./lib/authMiddleware"; /* v25.20 Lane 1 NC1 */
 import { collectiveRateLimit } from "./lib/rateLimit";
 // B-505 fix v23.6.1 — resolve founder CRM contacts that have not yet been
 // provisioned into the comms layer, so "Message" never dead-ends on a 404.
-import { findCrmContactByInvestorIdForCompanies } from "./founderCrmStore";
+import { findCrmContactByInvestorId } from "./founderCrmStore";
 // v24.2 Bug 5 — derivedMembership must consult DURABLE relationship stores,
 // not only the runtime/static UserContext arrays. Secure-invite-redeemed users
 // have empty ctx.investor.invitedRounds (those are RUNTIME-only), so we also
@@ -2212,35 +2212,7 @@ export function openDmChannelCore(args: {
   let target: UserRef | DurableCommsUserRef | undefined = commsUserRef(args.targetUserId);
   let authorizedViaCrm = false;
   if (!target) {
-    /* W304 (R244.1) — THE COMPANY SET THE ACTOR CAN ACTUALLY PROVE.
-     *
-     * `findCrmContactByInvestorId` searched every company's founder CRM rows
-     * with no reference to the caller, and its hit set `authorizedViaCrm`,
-     * which is OR'd into `allowedByPolicy` below. A caller who owned no
-     * company and held no engagement could therefore name any investor id
-     * appearing in ANY founder's CRM and open a durable direct-message
-     * channel with them — proved over HTTP before this change
-     * (build_log/wave304/artefacts/http_exposure_before_raw.txt).
-     *
-     * Derived HERE from `actorId` rather than added to the signature, so BOTH
-     * callers of this function are covered without either having to opt in:
-     * the partner "New message" route and the M&A discuss route.
-     *
-     * The two authorities are the ones the platform already uses elsewhere:
-     *   - `getCompaniesForFounder` — company_members, the founder side;
-     *   - `resolveDelegatedContext(...).engagements` — the same live
-     *     engagements that `engagementFor` above consults for the delegated
-     *     branch of this very function.
-     * Nothing new is invented, and nothing a legitimate caller could already
-     * reach is removed. */
-    const actorFounderCompanyIds = getCompaniesForFounder(actorId).map((c) => c.companyId);
-    const actorEngagedCompanyIds = (resolveDelegatedContext(actorId)?.engagements ?? []).map(
-      (e) => e.companyId,
-    );
-    const actorProvableCompanyIds = Array.from(
-      new Set([...actorFounderCompanyIds, ...actorEngagedCompanyIds, ...(dmDelegatedCompanyId ? [dmDelegatedCompanyId] : [])]),
-    );
-    const crm = findCrmContactByInvestorIdForCompanies(args.targetUserId, actorProvableCompanyIds);
+    const crm = findCrmContactByInvestorId(args.targetUserId);
     if (crm && crm.email) {
       const provisioned: UserRef = {
         id: args.targetUserId,
