@@ -1,0 +1,174 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   WALKTHROUGH WAVE F · DASHBOARD GROUP (owner items 1a, 1b, 1c, 1e)
+   Consortium Partner dashboard: brand presence, the markets band, and the
+   four-group reading order of the dashboard cards.
+
+   ───────────────────────────────────────────────────────────────────────────
+   WHY A SEPARATE FILE, AND WHY IT IS SAFE
+   ───────────────────────────────────────────────────────────────────────────
+   `capavate-tokens.css` is SACRED (byte-frozen, 48-file gate). `ledger-partner.css`
+   carries a scope test that forbids layout properties inside it. Wave E therefore
+   established the pattern this file follows: a new, narrowly scoped stylesheet
+   imported exactly once from `client/src/index.css`.
+
+   NO NEW HUE IS INTRODUCED. Every colour below is read from the navy ramp Wave E
+   ratified in `wave-e-partner-colour.css` — six depths of one accent plus two
+   greys. No red. No green. No gradient. No decorative fill.
+
+   ───────────────────────────────────────────────────────────────────────────
+   COLOUR ENCODES MEANING — THE FOUR GROUPS (item 1c)
+   ───────────────────────────────────────────────────────────────────────────
+   The owner's complaint about the dashboard was that it is "boring and plain"
+   and "confusing to follow". Eight equally-weighted boxes in one flat grid gave
+   the eye no reading order. The fix is not decoration: the cards are sorted into
+   FOUR NAMED GROUPS, and one accent at four depths marks the group on each card.
+
+     depth      group attribute value   named label rendered on the card
+     ramp-6     capital                 "Your capital"
+     ramp-5     work                    "Your work"
+     ramp-3     firm                    "Your firm"
+     ramp-2     market                  "Markets and network"
+
+   NEVER COLOUR ALONE. Each depth is paired, in the same card, with the group's
+   name as rendered text (data-cv-dash-group-label, one per card). Remove the colour and
+   the grouping still reads; remove the label and the test reddens.
+
+   ───────────────────────────────────────────────────────────────────────────
+   MEASURED CONTRAST — ASSERTED, NOT CLAIMED
+   ───────────────────────────────────────────────────────────────────────────
+   Recomputed from WCAG 2.x first principles at test time by
+   `client/src/styles/__tests__/wf_dashboard_colour_contrast.test.tsx`, which
+   reads the hex values out of THIS FILE's live cascade rather than retyping them.
+   Reference figures, for the reader (backgrounds a partner surface can paint):
+
+     colour     on #FFFFFF   on #F1F4F8   on #F8FAFC   role
+     #041E41      16.57         15.02        15.84      capital label + rule
+     #0C2D55      13.80         12.51        13.19      work label + rule
+     #274C77       8.80          7.98         8.41      firm label + rule
+     #3E6491       6.11          5.54         5.84      market label + rule
+
+   All four clear 4.5:1 as small text and 3:1 as a non-text boundary.
+
+   Inside the markets band the ground is navy #041E41:
+     #FFFFFF on #041E41 = 16.57:1  (symbol and value text, unchanged by this wave)
+
+   Every colour inside the band is pre-existing. This wave changes the band's
+   LAYOUT only, so no new foreground/background pairing is created there.
+
+   The shared token `--cv-color-border` is NOT referenced anywhere in this file.
+   It fails 3:1 platform-wide and is deliberately left alone under W321.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ITEM 1a · BRAND PRESENCE IN THE SIDEBAR HEAD
+   The logo height itself is set in the component (h-9). What belongs here is
+   the typographic setting of the product label beneath it, so the brand block
+   reads as one deliberate lockup rather than an image with a caption.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-product="partner"] [data-testid="brand-product-label"] {
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ITEM 1a · THE WELCOME BAND AT THE TOP OF THE DASHBOARD
+   A single navy rule on the leading edge, at the deepest ramp step, marking the
+   one element on the page that addresses the partner by name. No fill, no
+   gradient, no icon.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-product="partner"] [data-cv-wf="welcome"] {
+  border-left: 4px solid var(--we-ramp-6);
+  border-radius: 6px;
+  background-color: var(--cv-color-surface);
+  padding: 18px 20px;
+}
+[data-product="partner"] [data-cv-wf="welcome-eyebrow"] {
+  color: var(--we-ramp-3);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+[data-product="partner"] [data-cv-wf="welcome-title"] {
+  color: var(--we-ramp-6);
+}
+[data-product="partner"] [data-cv-wf="welcome-lede"] {
+  color: var(--we-caption);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ITEM 1b · THE MARKETS BAND AS A BOX, NOT A SCROLLER
+   The owner: "This band is currently scrolled left/right. It should be placed
+   in a box and not scrolled." The band therefore wraps onto as many lines as it
+   needs and never scrolls sideways. `flex-wrap` and `overflow-x: hidden` are the
+   whole mechanism; the horizontal scroll can only come back if both are removed.
+
+   DELIBERATELY NOT SCOPED TO the partner product attribute. The band is one
+   shared component mounted in BOTH the Collective and the Consortium Partner
+   shells. A band that stopped scrolling on one of the two and kept scrolling on
+   the other would be the same defect, half-fixed. These declarations therefore
+   use no ramp token (the ramp is partner-scoped) and read the navy from the
+   sacred token file instead, which declares it at the document root.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-cv-wf="ticker-box"] {
+  overflow-x: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--cv-color-navy-light);
+  background-color: var(--cv-color-navy);
+}
+[data-cv-wf="ticker-rows"] {
+  flex-wrap: wrap;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ITEM 1c · GROUP MARKS ON THE DASHBOARD CARDS
+   3px is a non-text boundary; each of the four depths clears 3:1 against every
+   partner background. The label that names the group is rendered text inside the
+   same card, so the mark is never the only carrier of the meaning.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-product="partner"] [data-cv-dash-group] {
+  border-top-width: 3px;
+  border-top-style: solid;
+}
+[data-product="partner"] [data-cv-dash-group="capital"] {
+  border-top-color: var(--we-ramp-6);
+}
+[data-product="partner"] [data-cv-dash-group="work"] {
+  border-top-color: var(--we-ramp-5);
+}
+[data-product="partner"] [data-cv-dash-group="firm"] {
+  border-top-color: var(--we-ramp-3);
+}
+[data-product="partner"] [data-cv-dash-group="market"] {
+  border-top-color: var(--we-ramp-2);
+}
+
+[data-product="partner"] [data-cv-wf="dash-group-label"] {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+[data-product="partner"] [data-cv-dash-group-label="capital"] {
+  color: var(--we-ramp-6);
+}
+[data-product="partner"] [data-cv-dash-group-label="work"] {
+  color: var(--we-ramp-5);
+}
+[data-product="partner"] [data-cv-dash-group-label="firm"] {
+  color: var(--we-ramp-3);
+}
+[data-product="partner"] [data-cv-dash-group-label="market"] {
+  color: var(--we-ramp-2);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ITEM 2a · THE PERSONA-TOOLS INTRODUCTION
+   The same leading-edge rule as the dashboard welcome band, one step lighter,
+   because this block explains rather than greets. #274C77 measures 8.80:1 on
+   white and 8.41:1 on the page ground, so it clears 3:1 as a boundary with a
+   large margin. The heading takes the deepest step at 16.57:1 on white.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-product="partner"] [data-cv-wf="persona-intro"] {
+  border-left: 4px solid var(--we-ramp-3);
+  border-radius: 6px;
+}
+[data-product="partner"] [data-testid="mfcrm-persona-intro-heading"] {
+  color: var(--we-ramp-6);
+}

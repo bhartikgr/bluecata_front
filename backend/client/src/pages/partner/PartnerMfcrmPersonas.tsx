@@ -195,6 +195,52 @@ function carryBpsToPercentText(bps: unknown): string {
   return formatPercentValue(n / 100);
 }
 
+/**
+ * WAVE B · ITEM 2b — A STORED ZERO IS NOT A MEASURED RATE.
+ *
+ * The owner's point: "a chapter does not necessarily have a 'carry' unless it is
+ * a fund." The column behind these two cells is `carry_bps INTEGER NOT NULL
+ * DEFAULT 0`, and BOTH writers coerce a missing or unparseable value to 0
+ * (`createChapter`, `setChapterCarry`). So a chapter with NO carry arrangement
+ * at all and a chapter where a carry of exactly 0% was agreed are stored
+ * IDENTICALLY, as the integer 0.
+ *
+ * THE TWO CASES CANNOT BE TOLD APART FROM THE DATA WE HOLD. There is no
+ * "carry agreed" flag on the row; the create form's blank box and a typed "0"
+ * both persist 0; and the carry-report projection returns no timestamps at all,
+ * so the two screens could not even agree with each other if a timestamp were
+ * pressed into service as a proxy. Rather than invent a distinction the data
+ * does not support, a stored zero is rendered as an explicit "not confirmed"
+ * and the ambiguity is stated in words on the card.
+ *
+ * NO ARITHMETIC IS CHANGED. Every non-zero rate — and every unreadable value —
+ * is handed straight to `carryBpsToPercentText` above, unmodified. The schema
+ * default is NOT changed here: that is a money-field schema decision and is
+ * referred to the owner.
+ */
+const CHAPTER_CARRY_NOT_CONFIRMED = "No carry rate confirmed";
+
+function chapterCarryText(bps: unknown): string {
+  const n = typeof bps === "number" ? bps : Number(bps);
+  if (Number.isFinite(n) && n === 0) return CHAPTER_CARRY_NOT_CONFIRMED;
+  return carryBpsToPercentText(bps);
+}
+
+/** The standing explanation of what a chapter carry rate is and is not. It
+ *  states a RULE, so it is true before any data loads, while data is loading,
+ *  when the load fails, and when there are no chapters at all. */
+function ChapterCarryMeaningNote({ testId }: { testId: string }) {
+  return (
+    <p className="mt-3 text-xs text-[var(--cv-color-text-muted)]" data-testid={testId}>
+      A carry rate is something you record here for your own reference. Capavate stores and
+      shows it; Capavate does not calculate, accrue, invoice or pay carry from it, and a
+      chapter is not a fund. Where the recorded rate is zero we show &quot;No carry rate
+      confirmed&quot;, because a stored zero cannot be told apart from a chapter that has no
+      carry arrangement at all.
+    </p>
+  );
+}
+
 /* =========================================================== ANGEL persona */
 
 interface ChapterRow { id: string; name: string; region: string | null; carry_bps: number; status: string }
@@ -263,7 +309,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
 
   return (
     <div data-testid="mfcrm-persona-angel">
-      <SectionCard title="Chapters" description="Regional chapters of your network, and the carry each one earns." testId="mfcrm-angel-chapters">
+      <SectionCard title="Chapters" description="Regional chapters of your network, and any carry rate you have recorded against each one." testId="mfcrm-angel-chapters">
         {chaptersQ.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="mfcrm-angel-chapters-loading">Loading…</div>}
         {chaptersQ.isError && <PersonaLoadError err={chaptersQ.error} testId="mfcrm-angel-chapters-error" />}
         {!chaptersQ.isLoading && !chaptersQ.isError && chapters.length === 0 && (
@@ -283,7 +329,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
                 <tr key={c.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-angel-chapter-${c.id}`}>
                   <td className="py-1.5">{c.name}</td>
                   <td className="py-1.5">{c.region ?? "—"}</td>
-                  <td className="py-1.5" data-testid={`mfcrm-angel-chapter-carry-${c.id}`}>{carryBpsToPercentText(c.carry_bps)}</td>
+                  <td className="py-1.5" data-testid={`mfcrm-angel-chapter-carry-${c.id}`}>{chapterCarryText(c.carry_bps)}</td>
                   <td className="py-1.5">{humanizeMachineKey(c.status)}</td>
                   <td className="py-1.5 text-right">
                     {canWrite && personaActionState(act("angel-chapter-carry"), capability).allowed && (
@@ -300,9 +346,12 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
             </tbody>
           </table>
         )}
+        {/* WAVE B · ITEM 2b — appended LAST inside the card, as a static sibling.
+            Nothing above it moved. */}
+        <ChapterCarryMeaningNote testId="mfcrm-angel-chapters-carry-meaning" />
       </SectionCard>
 
-      <SectionCard title="Create a chapter" testId="mfcrm-angel-create">
+      <SectionCard title="Create a chapter" description="Add a regional chapter to your network. Carry is optional — leave it blank until a rate is actually agreed, because a recorded zero reads as an agreed zero." testId="mfcrm-angel-create">
         <GateNotice action={act("angel-chapter-create")} capability={capability} testId="mfcrm-angel-create-gate" />
         {!canWrite && (
           <div className="rounded-md border border-[var(--cv-color-border)] bg-[var(--cv-color-surface-muted)] p-3 text-sm" data-testid="mfcrm-angel-create-role">
@@ -313,7 +362,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
           <div className="grid gap-2 sm:grid-cols-4">
             <div><Label htmlFor="mfcrm-ch-name">Name</Label><Input id="mfcrm-ch-name" data-testid="mfcrm-angel-create-name" value={name} onChange={(e) => setName(e.target.value)} /></div>
             <div><Label htmlFor="mfcrm-ch-region">Region</Label><Input id="mfcrm-ch-region" data-testid="mfcrm-angel-create-region" value={region} onChange={(e) => setRegion(e.target.value)} /></div>
-            <div><Label htmlFor="mfcrm-ch-carry">Carry %</Label><Input id="mfcrm-ch-carry" data-testid="mfcrm-angel-create-carry" inputMode="decimal" value={carryPct} onChange={(e) => setCarryPct(e.target.value)} /></div>
+            <div><Label htmlFor="mfcrm-ch-carry">Carry %</Label><Input id="mfcrm-ch-carry" data-testid="mfcrm-angel-create-carry" inputMode="decimal" value={carryPct} onChange={(e) => setCarryPct(e.target.value)} /><span className="mt-1 block text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-angel-create-carry-hint">Leave this blank if you have not agreed a carry rate for this chapter.</span></div>
             <div className="flex items-end">
               <Button data-testid="mfcrm-angel-create-submit" disabled={createM.isPending || !name.trim()} onClick={() => createM.mutate()}>
                 {createM.isPending ? "Creating…" : "Create chapter"}
@@ -323,7 +372,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
         )}
       </SectionCard>
 
-      <SectionCard title="Assign an engagement to a chapter" testId="mfcrm-angel-assign">
+      <SectionCard title="Assign an engagement to a chapter" description="Attach one of your existing founder engagements to a chapter, so the chapter carry report below can scope it correctly." testId="mfcrm-angel-assign">
         <GateNotice action={act("angel-engagement-chapter")} capability={capability} testId="mfcrm-angel-assign-gate" />
         {canWrite && personaActionState(act("angel-engagement-chapter"), capability).allowed && (
           <div className="grid gap-2 sm:grid-cols-3">
@@ -350,7 +399,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
         )}
       </SectionCard>
 
-      <SectionCard title="Chapter carry report" description="Engagements scoped to each chapter, with that chapter's carry." testId="mfcrm-angel-report">
+      <SectionCard title="Chapter carry report" description="Engagements scoped to each chapter, with any carry rate recorded against that chapter." testId="mfcrm-angel-report">
         {reportQ.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="mfcrm-angel-report-loading">Loading…</div>}
         {reportQ.isError && <PersonaLoadError err={reportQ.error} testId="mfcrm-angel-report-error" />}
         {!reportQ.isLoading && !reportQ.isError && (reportQ.data?.report ?? []).length === 0 && (
@@ -363,7 +412,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
               {(reportQ.data?.report ?? []).map((r) => (
                 <tr key={r.chapterId} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-angel-report-${r.chapterId}`}>
                   <td className="py-1.5">{r.name}</td>
-                  <td className="py-1.5" data-testid={`mfcrm-angel-report-carry-${r.chapterId}`}>{carryBpsToPercentText(r.carryBps)}</td>
+                  <td className="py-1.5" data-testid={`mfcrm-angel-report-carry-${r.chapterId}`}>{chapterCarryText(r.carryBps)}</td>
                   <td className="py-1.5">{r.engagementCount}</td>
                   <td className="py-1.5">{r.activeCount}</td>
                 </tr>
@@ -371,6 +420,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
             </tbody>
           </table>
         )}
+        <ChapterCarryMeaningNote testId="mfcrm-angel-report-carry-meaning" />
       </SectionCard>
     </div>
   );
@@ -380,13 +430,17 @@ function ChapterCarryEditor({ chapterId, currentBps, pending, onSave }: { chapte
   const [open, setOpen] = useState(false);
   /* Seed from basis points, not from the formatted string, so re-saving an
    * unedited field is a no-op instead of a silent rounding drift. */
-  const [pct, setPct] = useState(String((Number(currentBps) || 0) / 100));
+  /* WAVE B · ITEM 2b — a stored zero is NOT a measured rate, so the box opens
+   * EMPTY rather than pre-filled with "0". Saving it blank still sends 0, which
+   * is byte-identical to what pre-filling "0" and saving sent, so the "re-saving
+   * an unedited field is a no-op" property above is preserved exactly. */
+  const [pct, setPct] = useState(Number(currentBps) === 0 ? "" : String((Number(currentBps) || 0) / 100));
   if (!open) {
     return <Button variant="outline" size="sm" data-testid={`mfcrm-angel-carry-edit-${chapterId}`} onClick={() => setOpen(true)}>Edit carry</Button>;
   }
   return (
     <span className="inline-flex items-center gap-1">
-      <Input className="h-8 w-20" inputMode="decimal" data-testid={`mfcrm-angel-carry-input-${chapterId}`} value={pct} onChange={(e) => setPct(e.target.value)} />
+      <Input className="h-8 w-20" inputMode="decimal" placeholder="—" data-testid={`mfcrm-angel-carry-input-${chapterId}`} value={pct} onChange={(e) => setPct(e.target.value)} />
       <Button size="sm" disabled={pending} data-testid={`mfcrm-angel-carry-save-${chapterId}`} onClick={() => { onSave(pct); setOpen(false); }}>Save</Button>
     </span>
   );
@@ -592,7 +646,7 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
         )}
       </SectionCard>
 
-      <SectionCard title="Document custody" testId="mfcrm-acct-custody">
+      <SectionCard title="Document custody" description="Founder documents your firm holds on record, each with the company it belongs to, its reference, its type and its current status." testId="mfcrm-acct-custody">
         <GateNotice action={act("acct-custody-create")} capability={capability} testId="mfcrm-acct-custody-gate" />
         {canWrite && personaActionState(act("acct-custody-create"), capability).allowed && (
           <div className="mb-3 grid gap-2 sm:grid-cols-4">
@@ -621,7 +675,7 @@ function AcctPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaD
         )}
       </SectionCard>
 
-      <SectionCard title="Fund administration" testId="mfcrm-acct-fundadmin">
+      <SectionCard title="Fund administration" description="A count-based summary of your firm’s engagements, documents in custody and recorded rebills. Money is deliberately not totalled here: pending rebills are shown per currency above, and Capavate never adds amounts across currencies." testId="mfcrm-acct-fundadmin">
         <GateNotice action={act("acct-fund-admin-report")} capability={capability} testId="mfcrm-acct-fundadmin-gate" />
         {fundAdminAllowed && reportQ.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="mfcrm-acct-fundadmin-loading">Loading…</div>}
         {fundAdminAllowed && reportQ.isError && <PersonaLoadError err={reportQ.error} testId="mfcrm-acct-fundadmin-error" />}
@@ -765,7 +819,7 @@ function LawPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaDe
 
   return (
     <div data-testid="mfcrm-persona-law">
-      <SectionCard title="Matters" testId="mfcrm-law-matters">
+      <SectionCard title="Matters" description="Legal matters your firm has opened for companies attributed to you, each with its company, title, type and status." testId="mfcrm-law-matters">
         {canWrite && (
           <div className="mb-3 grid gap-2 sm:grid-cols-4">
             <div><Label htmlFor="mfcrm-mt-co">Company ID</Label><Input id="mfcrm-mt-co" data-testid="mfcrm-law-matter-company" value={mtCompany} onChange={(e) => setMtCompany(e.target.value)} /></div>
@@ -793,7 +847,7 @@ function LawPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaDe
         )}
       </SectionCard>
 
-      <SectionCard title="Counsel of record" testId="mfcrm-law-cor">
+      <SectionCard title="Counsel of record" description="Record your firm as counsel of record for a company attributed to you. This is a record of standing, not a filing." testId="mfcrm-law-cor">
         <GateNotice action={act("law-counsel-of-record")} capability={capability} testId="mfcrm-law-cor-gate" />
         {canWrite && personaActionState(act("law-counsel-of-record"), capability).allowed && (
           <div className="grid gap-2 sm:grid-cols-3">
@@ -866,6 +920,44 @@ export default function PartnerMfcrmPersonas() {
       subRole={role.identity.subRole}
       partnerName={role.identity.identity.name}
     >
+      {/* ═══════════════════════════════════════════════════════════════════
+          WALKTHROUGH WAVE F · ITEM 2a — "It requires additional descriptions
+          throughout the page, as I suspect Consortium Partners may be confused
+          about what this section is about."
+
+          WHAT WAS ACTUALLY MISSING. The page opened straight onto a persona label
+          and a row of on/off chips. Nothing on screen said what persona tools
+          ARE, that the set on show is decided by an administrator's
+          classification of the firm rather than by anything the partner chose, or
+          that the chips are the reason a given tool may refuse. A partner could
+          only infer all three.
+
+          THREE PARAGRAPHS, EACH ANSWERING ONE OF THOSE QUESTIONS, and nothing
+          else. No figure, no count, no status — which is why this block is
+          rendered ABOVE and OUTSIDE the loading, error, unclassified and
+          resolved branches: there is nothing in it that could be false while the
+          capability profile is still being read or has failed to read.
+
+          BUILT AS PLAIN DIVS ON PURPOSE. `section`, `aside` and `nav` are panel
+          tags to the silent-drop guard; a new one here would renumber the panel
+          ordinals of every SectionCard below it. Divs create no panel record, so
+          this block is purely additive.
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div className="mb-4 rounded-lg bg-white p-4" data-cv-wf="persona-intro" data-testid="mfcrm-persona-intro">
+        <h2 className="text-sm font-semibold text-[var(--cv-color-text)]" data-testid="mfcrm-persona-intro-heading">
+          Tools built for what your firm does for founders
+        </h2>
+        <p className="mt-2 text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-persona-intro-what">
+          These are the parts of the Managed Founder CRM that only your kind of firm needs. An angel network works in chapters and carry; an accounting firm works in rebillable expenses, document custody and fund administration; a law firm works in matters, counsel of record and conflicts. Each keeps a different record, so each is given a different set of tools rather than one generic form.
+        </p>
+        <p className="mt-2 text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-persona-intro-classification">
+          Which set you see is not a setting you choose. Capavate classifies your firm on its capability profile, and that classification decides both the tools listed on this page and what your firm is permitted to call. If the classification does not match your business, ask Capavate to correct it — the tools follow the record.
+        </p>
+        <p className="mt-2 text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-persona-intro-gates">
+          Each capability on your profile is shown below as on or off. A tool whose capability is off says so in plain words before you use it, and your own sub-role decides whether you can record as well as read: managing partners, associates and business-development users can record; analysts and viewers have read access.
+        </p>
+      </div>
+
       {capQ.isLoading && (
         <div className="text-[var(--cv-color-text-muted)]" data-testid="mfcrm-persona-loading">Loading your firm's capability profile…</div>
       )}

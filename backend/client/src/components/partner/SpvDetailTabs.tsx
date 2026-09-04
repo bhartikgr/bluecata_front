@@ -761,41 +761,71 @@ export function SpvDetailTabs({
       data-testid={`spv-tabs-${spvId}`}
     >
       <TabsList className="flex flex-wrap h-auto">
-        <TabsTrigger value="overview" data-testid="spv-tab-overview">Overview</TabsTrigger>
-        <TabsTrigger value="mandate" data-testid="spv-tab-mandate">Mandate</TabsTrigger>
-        <TabsTrigger value="fees" data-testid="spv-tab-fees">Fees</TabsTrigger>
-        <TabsTrigger value="lps" data-testid="spv-tab-lps">LPs</TabsTrigger>
-        <TabsTrigger value="deployments" data-testid="spv-tab-deployments">Deployments</TabsTrigger>
-        <TabsTrigger value="distributions" data-testid="spv-tab-distributions">Distributions</TabsTrigger>
-        <TabsTrigger value="documents" data-testid="spv-tab-documents">Documents</TabsTrigger>
-        <TabsTrigger value="transfers" data-testid="spv-tab-transfers">Transfers</TabsTrigger>
-        <TabsTrigger value="close" data-testid="spv-tab-close">Close</TabsTrigger>
-        <TabsTrigger value="winddown" data-testid="spv-tab-winddown">Wind-down</TabsTrigger>
-        <TabsTrigger value="compliance" data-testid="spv-tab-compliance">Compliance</TabsTrigger>
+        <TabsTrigger value="overview" data-testid="spv-tab-overview" data-spv-tab-group="vehicle" data-spv-tab-group-start="true">Overview</TabsTrigger>
+        <TabsTrigger value="mandate" data-testid="spv-tab-mandate" data-spv-tab-group="vehicle">Mandate</TabsTrigger>
+        <TabsTrigger value="fees" data-testid="spv-tab-fees" data-spv-tab-group="vehicle">Fees</TabsTrigger>
+        <TabsTrigger value="lps" data-testid="spv-tab-lps" data-spv-tab-group="money" data-spv-tab-group-start="true">LPs</TabsTrigger>
+        <TabsTrigger value="deployments" data-testid="spv-tab-deployments" data-spv-tab-group="money">Deployments</TabsTrigger>
+        <TabsTrigger value="distributions" data-testid="spv-tab-distributions" data-spv-tab-group="money">Distributions</TabsTrigger>
+        <TabsTrigger value="documents" data-testid="spv-tab-documents" data-spv-tab-group="paperwork" data-spv-tab-group-start="true">Documents</TabsTrigger>
+        <TabsTrigger value="transfers" data-testid="spv-tab-transfers" data-spv-tab-group="money">Transfers</TabsTrigger>
+        <TabsTrigger value="close" data-testid="spv-tab-close" data-spv-tab-group="lifecycle" data-spv-tab-group-start="true">Close</TabsTrigger>
+        <TabsTrigger value="winddown" data-testid="spv-tab-winddown" data-spv-tab-group="lifecycle">Wind-down</TabsTrigger>
+        <TabsTrigger value="compliance" data-testid="spv-tab-compliance" data-spv-tab-group="vehicle">Compliance</TabsTrigger>
         {/* WAVE 11 / EN-9 — the TWELFTH tab. WAVE 10 could not add this: the
             silent-drop guard fingerprinted TabsList by its children's
             concatenated text, so appending a trigger reported the eleven-tab
             list as REMOVED. That fingerprinting was fixed at the start of this
             wave (child-set membership + subsequence order), and this tab is the
             proof it works on the real file, not only on a fixture. */}
-        <TabsTrigger value="esignature" data-testid="spv-tab-esignature">E-signature</TabsTrigger>
+        <TabsTrigger value="esignature" data-testid="spv-tab-esignature" data-spv-tab-group="paperwork">E-signature</TabsTrigger>
         {/* WAVE 32 / CP-SPV-30 — the THIRTEENTH tab. APPENDED AT THE END on
             purpose: the silent-drop guard reads a Card or trigger inserted
             mid-list as a renumbering of its siblings' positional paths, which
             reports untouched surfaces as removals. Appending is the shape that
             adds without renumbering. */}
-        <TabsTrigger value="nav" data-testid="spv-tab-nav">NAV</TabsTrigger>
+        <TabsTrigger value="nav" data-testid="spv-tab-nav" data-spv-tab-group="lifecycle">NAV</TabsTrigger>
         {/* WAVE 32 / CP-SPV-30 capability 3 — the FOURTEENTH tab, appended at
             the END for the same reason as the thirteenth: appending adds
             without renumbering its siblings' positional paths. */}
-        <TabsTrigger value="k1" data-testid="spv-tab-k1">K-1</TabsTrigger>
+        <TabsTrigger value="k1" data-testid="spv-tab-k1" data-spv-tab-group="paperwork">K-1</TabsTrigger>
         {/* WAVE 32 / CP-SPV-30 capability 4 — the FIFTEENTH tab, appended at
             the END so no sibling's positional path is renumbered. */}
-        <TabsTrigger value="sideletters" data-testid="spv-tab-sideletters">Side letters</TabsTrigger>
+        <TabsTrigger value="sideletters" data-testid="spv-tab-sideletters" data-spv-tab-group="paperwork">Side letters</TabsTrigger>
         {/* WAVE 33 / CP-SPV-53 — the SIXTEENTH tab, appended at the END so no
             sibling's positional path is renumbered. The scope selector said
             what the GP had chosen; nothing said what the choice actually did. */}
-        <TabsTrigger value="reach" data-testid="spv-tab-reach">Reach</TabsTrigger>
+        <TabsTrigger value="reach" data-testid="spv-tab-reach" data-spv-tab-group="lifecycle">Reach</TabsTrigger>
+        {/* WALKTHROUGH WAVE E · ITEMS 6a / 6b / 6e / 6f — THE KEY TO THE COLOUR.
+            The owner: this strip "gets lost in all of the information" and
+            "should be either colour-coded and/or better designed/displayed so
+            that Consortium Partners are able to navigate intuitively."
+
+            Sixteen triggers now carry a `data-spv-tab-group` attribute and the
+            first of each group carries `data-spv-tab-group-start`. NOT ONE
+            TRIGGER IS REORDERED, RENAMED, REMOVED OR HIDDEN — the sixteen lines
+            above are byte-identical apart from the added attributes, so
+            `SPV_TAB_KEYS` validation, the `initialTab` fallback and every
+            `spv-tab-*` testid are untouched.
+
+            THIS LEGEND IS THE NON-COLOUR HALF. A colour that cannot be named is
+            decoration, so the four group names are printed as text; each swatch
+            is a named label, never a bare colour chip. It is APPENDED AS THE
+            LAST CHILD of TabsList — the same append-only shape tabs 12 to 16
+            above required, so no sibling's positional path is renumbered — and
+            `wave-e-partner-colour.css` places it visually above the strip with
+            `order: -1`. `role="presentation"` keeps it out of the tablist's
+            list of tabs; it is not focusable and it is not a control. */}
+        <span
+          role="presentation"
+          className="spv-tab-group-legend"
+          data-testid="spv-tab-group-legend"
+        >
+          <span data-we-legend-key="vehicle">The vehicle</span>
+          <span data-we-legend-key="money">The money</span>
+          <span data-we-legend-key="paperwork">The paperwork</span>
+          <span data-we-legend-key="lifecycle">Lifecycle</span>
+        </span>
       </TabsList>
 
       {/* ── Overview ─────────────────────────────────────────────────────── */}

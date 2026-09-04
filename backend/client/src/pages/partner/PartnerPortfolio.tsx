@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { partyReferenceLabel } from "@/lib/partnerDisplay";
 import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { PartnerSurfaceGuide } from "@/components/partner/PartnerSurfaceGuide"; /* WAVE C · ITEM 10a */
 import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
@@ -150,6 +151,38 @@ export default function PartnerPortfolio() {
           onOpenChange={(o) => { if (!o) setEditing(null); }}
         />
       )}
+
+      {/* WAVE C · ITEM 10a — the owner asked, ON THIS PAGE: "What is the
+          difference between this section and 'Clients' and 'Add Portfolio
+          Company'?" Nothing on the screen answered him. APPENDED as the LAST
+          sibling inside the shell, never inserted mid-list. */}
+      <PartnerSurfaceGuide
+        testId="portfolio-surface-guide"
+        title="How Portfolio differs from Clients and Add Portfolio Company"
+        relations={[
+          {
+            label: "Clients",
+            href: "/collective/partner/clients",
+            why: "the separate list of companies whose introduction is formally attributed to you",
+            testId: "portfolio-guide-to-clients",
+          },
+          {
+            label: "Add Portfolio Company",
+            href: "/collective/partner/add-portfolio-company",
+            why: "the one action that creates a company's portfolio profile, and its attribution to you, together",
+            testId: "portfolio-guide-to-add",
+          },
+        ]}
+      >
+        Portfolio is the profile you keep for each company: its sector, stage,
+        headquarters and your own notes. It is a record you maintain and edit, and it
+        holds no money figures of its own. Clients is a different list answering a
+        different question — who is formally credited with the introduction. Add
+        Portfolio Company is neither list; it is the action that writes into both.
+        That is why the same company name can appear in both places after you add it
+        once. The two lists are stored separately, so a company can appear on one
+        without the other.
+      </PartnerSurfaceGuide>
     </PartnerShell>
   );
 }

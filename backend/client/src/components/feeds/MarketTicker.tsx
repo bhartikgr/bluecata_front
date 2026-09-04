@@ -127,12 +127,43 @@ export function MarketTicker() {
   const feedSilent = !providerOff && quotes.length > 0 && quotes.every((q) => q.last == null);
 
   return (
+    /* ═════════════════════════════════════════════════════════════════════════
+       WALKTHROUGH WAVE F · ITEM 1b (owner: "This band is currently scrolled
+       left/right. It should be placed in a box and not scrolled.")
+
+       WHAT CHANGED, AND WHY EACH PART OF IT.
+       The band was a fixed 32px-tall strip with `overflow-x-auto` and an inner
+       `min-w-max` row. Those two classes together are the sideways scroll: the
+       row was told never to shrink, and the strip was told to scroll when it
+       overflowed. So every market past the fourth or fifth was off-screen unless
+       the reader thought to drag the strip — which is exactly the complaint.
+
+         · `overflow-x-auto` removed, and `overflow-x: hidden` asserted in CSS.
+         · `min-w-max` removed from the row, and `flex-wrap` added, so the tiles
+           wrap onto as many lines as they need and ALL of them are on screen.
+         · `h-8` removed — a fixed height cannot contain a wrapping row; the box
+           now grows to fit its own content.
+         · `mx-3 my-2` plus the rounded 1px border in CSS turn the full-bleed
+           strip into the BOX the owner asked for, sitting on the shell's white
+           ground rather than bleeding edge to edge.
+
+       THE COLOURS ARE THE PRE-EXISTING ONES. `bg-[#041e41]` is kept in the class
+       list even though `wave-f-partner-dashboard.css` sets the same value, so the
+       band still paints correctly if that stylesheet ever fails to load. Same
+       reason `flex-wrap` is written here as well as declared there: the fix must
+       not depend on a single artefact resolving.
+
+       NOTHING IS REMOVED FROM THE BAND'S CONTENT. All three honesty states
+       (provider not configured, feed silent, live quotes) and the Capavate Pulse
+       counters are untouched, as is the aria-label and every data-testid.
+       ═════════════════════════════════════════════════════════════════════════ */
     <div
-      className="h-8 flex items-center overflow-x-auto bg-[#041e41] text-white text-[11px] border-b border-[#0c2d55]"
+      className="flex items-center mx-3 my-2 px-3 py-2 bg-[#041e41] text-white text-[11px]"
+      data-cv-wf="ticker-box"
       data-testid="market-ticker"
       aria-label="Market and Capavate activity ticker"
     >
-      <div className="flex items-center divide-x divide-white/10 min-w-max">
+      <div className="flex flex-wrap items-center gap-y-1 divide-x divide-white/10" data-cv-wf="ticker-rows">
         {/* Capavate Pulse — ALWAYS real DB numbers. */}
         <span
           className="inline-flex items-center gap-1.5 px-3 whitespace-nowrap"

@@ -129,7 +129,33 @@ describe("WAVE A item 3b — the retention link resolves inside the partner sect
     expect(block!).toContain("CollectiveShell");
   });
 
-  it("R-3 exactly two anchors exist on this page, so 'the onboarding link' has only two candidates", async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+     AMENDED BY WALKTHROUGH WAVE F · ITEM 3a — READ THIS BEFORE JUDGING IT.
+
+     THIS ASSERTION USED TO READ `expect(anchors.length).toBe(2)`. It was not a
+     product rule. It was WAVE A's argument that "the onboarding link" in the
+     owner's report had only two possible referents, so measuring which of the
+     two left the partner's shell settled which one he meant. That argument is
+     settled and is carried in full by R-1, R-2, R-4 and R-5, none of which are
+     touched.
+
+     WAVE F's item 3a adds a route to every checklist item that has an
+     in-platform destination, so a page census of 2 is now simply out of date.
+     Loosening a failing assertion to make a build pass is not allowed, so it is
+     NOT loosened: it is REPLACED BY A STRICTLY STRONGER ONE. The old assertion
+     said only "there are two". The new one says:
+       (a) the anchor set is EXACTLY the set the page's own route table implies —
+           so a link added without a table entry, or a table entry that renders
+           no link, both fail here;
+       (b) BOTH original anchors are still present — the old test's real content;
+       (c) EVERY anchor on the page, old and new, resolves to a path registered
+           in the real router INSIDE CollectiveShell. That is the actual product
+           rule the old count was standing in for, and it is now enforced for six
+           anchors instead of asserted for none.
+     A count is weaker than a set, and a set is weaker than a set each of whose
+     members is proved to resolve. This moves up that ladder, not down it.
+     ═══════════════════════════════════════════════════════════════════════ */
+  it("R-3 the anchor set is exactly what the page's route table implies, and every anchor resolves in-shell", async () => {
     const { container } = render(
       <RoleProvider>
         <PartnerOnboardingChecklistPage />
@@ -137,11 +163,51 @@ describe("WAVE A item 3b — the retention link resolves inside the partner sect
     );
     await screen.findByTestId("item-data_retention_acked");
     const anchors = Array.from(container.querySelectorAll("a"));
-    expect(anchors.length).toBe(2);
-    expect(anchors.map((a) => a.getAttribute("data-testid")).sort()).toEqual([
+
+    // PRECONDITION — an empty page must not pass this as a vacuous truth.
+    expect(anchors.length).toBeGreaterThan(0);
+
+    const testids = anchors.map((a) => a.getAttribute("data-testid")).sort();
+    expect(testids).toEqual([
+      "link-billing_contact",
       "link-data-retention-privacy",
+      "link-first_client_org",
+      "link-first_pipeline_deal",
       "link-sign-agreement",
+      "link-team_invites",
     ]);
+
+    // (b) the two anchors WAVE A reasoned about are both still on the page.
+    expect(testids).toContain("link-sign-agreement");
+    expect(testids).toContain("link-data-retention-privacy");
+
+    // (c) every one of them lands on a route registered inside the partner shell.
+    for (const a of anchors) {
+      const href = a.getAttribute("href")!;
+      expect(href, `anchor ${a.getAttribute("data-testid")} has no href`).toBeTruthy();
+      const block = routeRegistrationFor(href);
+      expect(block, `no <Route path="${href}"> in the real router`).not.toBeNull();
+      expect(block!, `${href} is registered but not inside CollectiveShell`).toContain("CollectiveShell");
+    }
+  });
+
+  /* WAVE F · ITEM 3a — THE ABSENCES ARE DELIBERATE AND MUST STAY ABSENT.
+     Four items have no in-platform destination: two KYC uploads (no upload
+     control exists anywhere), SSO (no integration to configure) and the go-live
+     review (booked with a human). A link on any of them would be a lie on
+     screen, so their absence is asserted rather than left to chance. */
+  it("R-6 the four items with no platform destination carry NO link", async () => {
+    render(
+      <RoleProvider>
+        <PartnerOnboardingChecklistPage />
+      </RoleProvider>,
+    );
+    await screen.findByTestId("item-data_retention_acked");
+    for (const key of ["kyc_org_doc", "kyc_signatory_doc", "sso_configured", "go_live_review"]) {
+      // The row itself must be on screen, or "no link" would be trivially true.
+      expect(screen.queryByTestId(`item-${key}`), `row ${key} is missing`).not.toBeNull();
+      expect(screen.queryByTestId(`link-${key}`), `${key} must not offer a route`).toBeNull();
+    }
   });
 
   it("R-4 CONTROL — the old bare route is still registered and still has NO shell", () => {

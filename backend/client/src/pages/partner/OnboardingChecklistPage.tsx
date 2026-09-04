@@ -242,6 +242,65 @@ void LEGACY_BARE_PRIVACY_PATH;
 const RETENTION_ITEM_KEY = "data_retention_acked";
 const RETENTION_LINK_LABEL = "Open Settings → Privacy to read the retention policy →";
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WALKTHROUGH WAVE F · ITEM 3a — "Include guidance for Consortium Partners as
+   to how/where they can complete their profiles."
+
+   RE-MEASURED FIRST. Ten items. Every one already carried a description, and
+   six of them already NAMED a destination in prose ("Use /collective/partner/
+   team to issue magic-link invitations", "Pipeline → New deal"). Two of the ten
+   already carried a real clickable anchor. So the gap was never "no guidance";
+   the gap was that eight items told a partner where to go and then made them
+   find it themselves.
+
+   WHAT IS ADDED: a route for each item that HAS an in-platform destination, and
+   NOTHING for the four that do not. Those four are:
+     · kyc_org_doc / kyc_signatory_doc — no upload control exists anywhere on
+       the platform; the support prose already says the document goes to the
+       chapter admin. A link would have to point somewhere, and there is nowhere
+       true to point.
+     · sso_configured — Capavate has no SSO integration to configure. It cannot
+       be completed on the platform. Inventing a "Configure SSO" link would be a
+       lie on screen.
+     · go_live_review — arranged with a human. Nothing on the platform books it.
+
+   EVERY PATH BELOW IS A ROUTE REGISTERED IN client/src/App.tsx AND WRAPPED IN
+   CollectiveShell. That is asserted by test against the real router source, not
+   claimed here; an href is only a string until something answers it.
+
+   The map is keyed by checklist key and is deliberately PARTIAL. A key with no
+   entry renders no anchor — absence is the honest default, not an oversight.
+   ═══════════════════════════════════════════════════════════════════════════ */
+type ItemRoute = { href: string; label: string };
+const ITEM_ROUTES: Record<string, ItemRoute> = {
+  billing_contact: {
+    href: "/collective/partner/billing",
+    label: "Open Billing to add your billing contact and invoice address →",
+  },
+  team_invites: {
+    href: "/collective/partner/team",
+    label: "Open Team to send a magic-link invitation →",
+  },
+  first_pipeline_deal: {
+    href: "/collective/partner/pipeline",
+    label: "Open Pipeline to log your first deal →",
+  },
+  first_client_org: {
+    href: "/collective/partner/clients",
+    label: "Open Clients to add or accept your first client org →",
+  },
+};
+
+/* The items that genuinely have no in-platform destination. Named as data so a
+   test can assert the ABSENCE is deliberate and complete, rather than reading a
+   missing link as an accident. */
+const ITEMS_WITH_NO_PLATFORM_DESTINATION: string[] = [
+  "kyc_org_doc",
+  "kyc_signatory_doc",
+  "sso_configured",
+  "go_live_review",
+];
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     credentials: "include",
@@ -571,6 +630,22 @@ export default function PartnerOnboardingChecklistPage() {
                             data-testid="link-data-retention-privacy"
                           >
                             {RETENTION_LINK_LABEL}
+                          </a>
+                        )}
+                        {/* WAVE F · ITEM 3a — APPENDED AS THE LAST SIBLING, after
+                            every existing child, so no existing element changes
+                            position. Rendered whether or not the item is ticked:
+                            a partner who has already added a billing contact must
+                            still be able to reach Billing to change it, and taking
+                            a route away on completion would be a regression
+                            (R190.10). Renders NOTHING for a key with no entry. */}
+                        {ITEM_ROUTES[it.key] && (
+                          <a
+                            href={ITEM_ROUTES[it.key].href}
+                            className="mt-0.5 block text-xs text-[var(--cv-color-primary)] underline"
+                            data-testid={`link-${it.key}`}
+                          >
+                            {ITEM_ROUTES[it.key].label}
                           </a>
                         )}
                       </div>

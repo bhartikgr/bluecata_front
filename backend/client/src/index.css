@@ -89,6 +89,21 @@
 @import "./styles/ledger-admin.css";
 @import "./styles/ledger-investor.css";
 
+/* WALKTHROUGH WAVE E · GROUP 1 (items 6a/6b/6e/6f, 4a, 9a) — colour that
+   encodes meaning on the Consortium Partner SPV tab strip, Pipeline board and
+   Contacts stage column. Scoped entirely to [data-product="partner"]; imported
+   LAST of the area skins so it resolves after ledger-partner.css. Colour,
+   border and weight only — no control moves, is renamed, removed or hidden. */
+@import "./styles/wave-e-partner-colour.css";
+
+/* WALKTHROUGH WAVE F · DASHBOARD GROUP (owner items 1a, 1b, 1c, 1e) — brand
+   presence in the sidebar head, the markets band as a box rather than a sideways
+   scroller, and the four named reading groups on the Consortium Partner
+   dashboard cards. Imported AFTER wave-e-partner-colour.css because it consumes
+   that file's ramp custom properties; it declares none of its own. No new hue.
+   The shared border token is not referenced. */
+@import "./styles/wave-f-partner-dashboard.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

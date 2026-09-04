@@ -424,7 +424,16 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
     >
       {/* Brand header */}
       <div
-        className="flex items-center justify-between px-4 py-4"
+        /* WALKTHROUGH WAVE F · ITEM 1a (owner: "make this logo bigger. It's too
+           small and is not good for branding. This top area could be more
+           'welcoming' and powerful.")
+
+           SPACING ONLY on this element: py-4 → py-5. The brand lockup below grew
+           from a 24px mark to a 36px mark, and a taller mark inside the same
+           28px of vertical padding reads as crowding, not as presence. Nothing
+           here is removed, renamed, reordered or hidden; the divider token and
+           the close button are untouched. */
+        className="flex items-center justify-between px-4 py-5"
         /* WAVE 96 · ITEM 2 — token, not a literal. See the note on the rail above. */
         style={{ borderBottom: "1px solid var(--cv-color-divider)" }}
       >
@@ -433,8 +442,28 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             CONSORTIUM/COLLECTIVE badge. Partner-only sessions read
             "Consortium Partner"; Collective/combined sessions read "Collective".
             The logo asset already contains the Capavate wordmark. */}
-        <div className="flex flex-col items-start gap-0.5" data-testid="brand-block">
-          <CapavateLogo className="h-6 w-auto" />
+        {/* WALKTHROUGH WAVE F · ITEM 1a — THE MARK IS BIGGER, MEASURED AGAINST
+            THE RAIL IT SITS IN.
+
+            The brand asset is 362×128, i.e. 2.83:1. At h-6 (24px) it rendered
+            about 68px wide inside a 224px rail — under a third of the width it
+            had available, which is why the owner read it as "too small" and "not
+            good for branding". At h-9 (36px) it renders about 102px wide, a
+            little under half the rail: unmistakably the brand, still clear of the
+            close button on mobile, and consistent with the h-7 the landing page
+            and both auth screens already use for the same asset on wider
+            surfaces. Larger steps were rejected — h-12 (136px) crowds the
+            mobile close button.
+
+            SIZE ONLY. The image element, its alt text, its testid and the
+            product label beneath it are unchanged. The label's uppercase setting
+            and letter-spacing are applied in
+            `client/src/styles/wave-f-partner-dashboard.css` so that the two
+            halves of the lockup read as one deliberate unit; the label's TEXT is
+            not touched, because the silent-drop guard treats a rewritten literal
+            as a removal. */}
+        <div className="flex flex-col items-start gap-1" data-testid="brand-block">
+          <CapavateLogo className="h-9 w-auto" />
           <span
             className="text-[11px] font-semibold tracking-wide"
             style={{ color: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)" }}

@@ -117,6 +117,123 @@ ALTER TABLE platform_config ADD COLUMN hash TEXT;
 --
 -- The rows below are byte-identical to migrations/0123_wave0_platform_config.sql.
 
+-- ---------------------------------------------------------------------------
+-- v26.42.0 REPAIR (live install 2026-09-04). 0231 previously assumed
+-- `platform_config_history` already existed, because 0123 creates it. On the
+-- LIVE database it does NOT exist: the inline bootstrap runs the identical DDL
+-- inside sqliteTransaction(), the seed INSERT into platform_config raises, and
+-- THE WHOLE TRANSACTION ROLLS BACK — taking the CREATE TABLE with it, every
+-- boot. The failure was invisible because the boot log says "continuing".
+-- Reproduced from the operator's own migrate output:
+--   ERROR Migration 0231 failed: no such table: platform_config_history
+-- This block makes 0231 SELF-SUFFICIENT. Every statement is IF NOT EXISTS, so
+-- it is a no-op on any database where 0123 did land. Byte-identical DDL to
+-- migrations/0123_wave0_platform_config.sql — copied, not retyped.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform_config_history (
+  history_id          TEXT PRIMARY KEY NOT NULL,
+  config_key          TEXT NOT NULL,
+  version             INTEGER NOT NULL CHECK (version > 0),
+  snapshot_json       TEXT NOT NULL
+                        CHECK (json_valid(snapshot_json)),
+  prev_revision_hash  TEXT NOT NULL,
+  revision_hash       TEXT NOT NULL,
+  changed_at          TEXT NOT NULL
+                        CHECK (changed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+  changed_by          TEXT,
+  change_kind         TEXT NOT NULL CHECK (change_kind IN ('genesis','update','revert')),
+  UNIQUE (config_key, version)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_pch_key_version ON platform_config_history(config_key, version);
+CREATE INDEX IF NOT EXISTS idx_pch_changed_at ON platform_config_history(changed_at);
+
+-- Wave 0 Increment 1 review item 4: history is append-only, DB-enforced.
+-- Any UPDATE or DELETE against history is a chain-break; abort loudly.
+CREATE TRIGGER IF NOT EXISTS trg_pch_no_update
+  BEFORE UPDATE ON platform_config_history
+  BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_IMMUTABLE'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_pch_no_delete
+  BEFORE DELETE ON platform_config_history
+  BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_IMMUTABLE'); END;
+
+-- Wave 0 Increment 1 v3+v4+v5+v6 review — chain-guard triggers on current state
+-- + audit-content integrity + history-side integrity + key immutability.
+--
+-- v3 fix: trg_pc_chain_guard — UPDATE must advance version and link prev_hash.
+-- v4 fix (GPT-5 B1): trg_pc_atomic_audit — matching history row must exist.
+-- v5 fix (GPT-5 B1 + Opus C2): trg_pc_atomic_audit checks snapshot CONTENT too
+--       (prev_hash + snapshot_json.val + .vt + .key + .v). "Audited" now means
+--       "the history row records what actually changed," not just "any row
+--       with the right hash exists."
+-- v5 fix (GPT-5 B2): trg_pc_no_direct_insert — INSERT into platform_config
+--       requires a matching genesis history row. New keys are added via
+--       Wave F's audited genesis path only.
+-- v5 fix (GPT-5 B3): trg_pch_chain_integrity — platform_config_history
+--       INSERT must be an exact-next append (version = prior+1 and
+--       prev_hash = prior.revision_hash), or a genesis row (version=1,
+--       prev=64 zeros).
+-- v6 fix (Opus v5 B1): boot-time drift check split into always-invariant vs
+--       version=1-only assertions. Prevents boot-brick after first legitimate
+--       Wave F audited update (which moves version to 2, 3, ...).
+-- v6 fix (Opus v5 B2): pre-existing divergent history rows converted from
+--       fail-open (schema rolled away with log.warn) to fail-loud
+--       (Wave0SeedDriftError → runWave0Apply re-throws → boot aborts).
+-- v6 fix (all 3 v5 reviewers): trg_pc_no_direct_insert now enforces the FULL
+--       content-linkage predicate (prev_hash + snapshot val/vt/key/v),
+--       symmetric with trg_pc_atomic_audit.
+-- v6 fix (GPT-5 v5): trg_pc_no_key_change — platform_config.key is part of
+--       audit identity. Renaming is a new key (must use genesis path), not
+--       an update. Closes the cross-key hijack path GPT-5 flagged.
+--
+-- ENCODING CONVENTION (v7, Opus v5 C6 + v6 C3):
+--   snapshot_json.val is the DOUBLY-encoded JSON string of value_json, not the
+--   inner value. Examples:
+--     value_json = '30'         →  snapshot_json.val = "30"       (JSON string of "30")
+--     value_json = '"monthly"'  →  snapshot_json.val = ""monthly""
+--     value_json = 'true'       →  snapshot_json.val = "true"
+--   The canonical hash preimage requires this so hashes are stable across
+--   value types. json_extract(snapshot_json, '$.val') returns a TEXT storage
+--   class, and the trigger predicates compare it to NEW.value_json (also TEXT),
+--   so the encoding must match. Wave F writers MUST use JSON.stringify on the
+--   inner value_json when building snapshot_json, not the raw value_json string.
+--   A common mistake is to write {val: 30} instead of {val: "30"} — the trigger
+--   will reject the resulting current-state INSERT/UPDATE with
+--   PLATFORM_CONFIG_UNAUDITED_INSERT or PLATFORM_CONFIG_UNAUDITED_UPDATE.
+--   See wave0/regen_0123.mjs canonicalPreimage() for the reference implementation.
+--
+-- Out-of-Wave-0 (deferred with named IDs; see 0123 tail & DECISION_LOG):
+--   WAVE0-DEF-HASH-RECOMPUTE-VERIFIER: SQLite has no sha256(); hash-authenticity
+--       verification (recomputing revision_hash from canonical preimage) belongs
+--       to the app-layer writer/verifier in Wave F. Triggers verify CHAIN
+--       integrity, not chain AUTHENTICITY.
+--   WAVE0-DEF-TX-OWNED-WRITER: the transaction-owned write pattern (history +
+--       current in one atomic tx with rollback proof) belongs to Wave F's
+--       write path, not Wave 0's schema.
+--   WAVE0-DEF-SQL-PATH-DRIFT-CHECK: byte-for-byte drift check on the raw SQL
+--       migration path (used only by external migration tooling, not by server
+--       boot). Server boot always uses the inline path where drift IS checked.
+--       Belongs to Wave K when migration tooling is chosen.
+
+CREATE TRIGGER IF NOT EXISTS trg_pch_chain_integrity
+  BEFORE INSERT ON platform_config_history
+  WHEN
+    (NEW.change_kind = 'genesis' AND (
+       NEW.version <> 1
+       OR NEW.prev_revision_hash <> '0000000000000000000000000000000000000000000000000000000000000000'
+    ))
+    OR
+    (NEW.change_kind <> 'genesis' AND NOT EXISTS (
+       SELECT 1 FROM platform_config_history h
+       WHERE h.config_key = NEW.config_key
+         AND h.version = NEW.version - 1
+         AND h.revision_hash = NEW.prev_revision_hash
+    ))
+  BEGIN
+    SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_CHAIN_BREAK');
+  END;
+
 INSERT OR IGNORE INTO platform_config_history
   (history_id, config_key, version, snapshot_json, prev_revision_hash, revision_hash, changed_at, changed_by, change_kind)
 VALUES

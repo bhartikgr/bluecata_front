@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { PartnerSurfaceGuide } from "@/components/partner/PartnerSurfaceGuide"; /* WAVE C · ITEM 10a */
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
 import { attributionSourceLabel, formatDateOnly } from "@/lib/partnerDisplay";
@@ -229,6 +230,49 @@ export default function PartnerClients() {
           The client pipeline stages could not be read, so no stage is shown for any company on this page and the stage filter is switched off. This is a stated failure, not a pipeline in which every company is at the first stage. Everything else on this page — the companies, their sources and their attribution dates — was read normally and is unaffected.
         </div>
       )}
+      {/* WAVE C · ITEM 10a — NOT LAST, AND FOR THE SAME REASON WAVE 282 WAS NOT.
+          `wave33_pipe06_provenance.test.ts` U6 asserts that NOTHING follows the
+          provenance panel's mount before the shell's closing tag in this file.
+          That test is not weakened to make room for this block, so the block goes
+          immediately ABOVE the provenance panel. It is still an append after every
+          element it explains.
+
+          The JSX tags that test anchors on are deliberately NOT written out in
+          this comment: an earlier draft did, and an `indexOf` anchor then matched
+          the COMMENT instead of the mount. */}
+      <PartnerSurfaceGuide
+        testId="clients-surface-guide"
+        title="How Clients differs from Portfolio, Pipeline and SPVs"
+        relations={[
+          {
+            label: "Portfolio",
+            href: "/collective/partner/portfolio",
+            why: "the profile you keep for a company — its sector, stage and headquarters",
+            testId: "clients-guide-to-portfolio",
+          },
+          {
+            label: "Pipeline",
+            href: "/collective/partner/pipeline",
+            why: "the stage each of your deals has reached",
+            testId: "clients-guide-to-pipeline",
+          },
+          {
+            label: "Add Portfolio Company",
+            href: "/collective/partner/add-portfolio-company",
+            why: "the one action that creates an attribution, a portfolio profile and a pipeline deal together",
+            testId: "clients-guide-to-add",
+          },
+        ]}
+      >
+        Clients answers one question: which companies is your introduction formally
+        credited for. That credit is what this list stores, and it is the record
+        behind your fees. Portfolio and Pipeline are separate lists about the same
+        companies but different facts — what a company is, and how far its deal has
+        got. SPVs are separate again: a vehicle is only connected to a client if that
+        vehicle names the company as its target, and each client's own page shows
+        exactly which vehicles do. None of these lists is a copy of another, so a
+        company can be on one and not the others.
+      </PartnerSurfaceGuide>
       {/* WAVE 33 / CP-PIPE-06 — APPENDED as the LAST sibling inside the shell,
           never inserted mid-list (insertion renumbers a sibling's positional
           path and the guard reads that as a drop). The table above shows

@@ -10,6 +10,14 @@
  */
 import { Link } from "wouter";
 import SpvPerformance from "./SpvPerformance";
+/* WAVE D · ITEM 6d — the same vehicle switcher the SPVs list and the standalone
+   vehicle page now carry, so "switch vehicle" works identically on every page
+   under SPVs. This page reports on ONE vehicle and had no way to another. */
+import { PartnerSpvSwitcher } from "@/components/partner/PartnerSpvSwitcher";
+/* WAVE D · ITEM 6d — same imperative navigation, same reason, as
+   PartnerSpvDetail.tsx: this is the function wouter's default browser-location
+   hook hands back, imported from a module no existing test mocks. */
+import { navigate } from "wouter/use-browser-location";
 
 export default function SpvPerformanceRoute({ spvId }: { spvId: string }) {
   if (!spvId) {
@@ -57,6 +65,18 @@ export default function SpvPerformanceRoute({ spvId }: { spvId: string }) {
         <h1 className="mt-2 text-xl font-semibold text-[var(--cv-color-navy)]" data-testid="page-title">
           Performance
         </h1>
+        {/* WAVE D · ITEM 6d — APPENDED beneath the existing title. The breadcrumb
+            and the "Back to vehicle" link above are untouched; this adds a way
+            SIDEWAYS to another vehicle's performance, which did not exist. */}
+        <PartnerSpvSwitcher
+          currentSpvId={spvId}
+          testidPrefix="spv-performance-switcher"
+          onSelect={(id) => {
+            if (id !== null && id !== spvId) {
+              navigate(`/collective/partner/spvs/${encodeURIComponent(id)}/performance`);
+            }
+          }}
+        />
         <p className="mt-1 text-sm text-slate-600">
           Cash flows, ILPA performance measures and ledger integrity for this vehicle. Figures are
           derived from recorded flows and the current valuation mark; nothing here is estimated.

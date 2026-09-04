@@ -1,0 +1,260 @@
+/* ============================================================================
+ * wave-e-partner-colour.css — WALKTHROUGH WAVE E · GROUP 1 (items 6a, 6b, 6e,
+ * 6f, 4a, 9a): COLOUR AND NAVIGATION FOR THE CONSORTIUM PARTNER AREA.
+ * ============================================================================
+ *
+ * WHAT THE OWNER ASKED FOR
+ * ------------------------
+ * 6a/6b/6e/6f — the SPV navigation "gets lost in all of the information" and
+ * "should be either colour-coded and/or better designed/displayed so that
+ * Consortium Partners are able to navigate intuitively."
+ * 4a (Pipeline) and 9a (Contacts) — "can this be improved by colour coding…
+ * Do not make it more complicated, as the flow is awesome!" and, for Contacts,
+ * "DO NOT CHANGE THE LAYOUT of this page, as it is PERFECT!"
+ *
+ * THE FOUR RULES THIS FILE OBEYS, AND HOW
+ * ---------------------------------------
+ * 1. COLOUR ENCODES MEANING, NEVER DECORATES.  Three encodings only:
+ *      · WHICH GROUP a tab belongs to        (SPV tab strip)
+ *      · HOW FAR ALONG a stage is            (Pipeline columns, Contacts rows)
+ *      · WHETHER A COLUMN IS EMPTY           (Pipeline columns)
+ *    Nothing else is coloured. If a colour could not be given a sentence, it
+ *    is not here.
+ *
+ * 2. NEVER COLOUR ALONE.  Every colour below is redundant with something that
+ *    survives greyscale AND a screen reader:
+ *      · the SPV group ramp is paired with a NAMED, TEXT legend rendered above
+ *        the strip, and with a visible neutral divider at every group boundary;
+ *      · the Pipeline ramp is paired with the stage NAME and the "(n)" count
+ *        already printed in every column heading, and empty columns are ALSO
+ *        marked with a dashed (not solid) outline;
+ *      · the Contacts ramp is paired with the stage LABEL already printed in
+ *        the same cell.
+ *    NO RED/GREEN DISTINCTION IS INTRODUCED ANYWHERE. The whole palette below
+ *    is ONE accent — Capavate navy #041E41 — at four or six monotone lightness
+ *    steps, plus neutrals. A monotone ramp is fully readable in greyscale and
+ *    is unaffected by any form of colour-vision deficiency.
+ *
+ * 3. WCAG AA, MEASURED NOT CLAIMED.  Every value below is asserted by
+ *    `client/src/styles/__tests__/we_group1_contrast.test.ts`, which recomputes
+ *    the WCAG relative-luminance ratio from these hexes at test time. Body text
+ *    4.5:1; large text and non-text boundaries 3:1. Measured values:
+ *
+ *      #041E41 on #FFFFFF 16.57:1 · on #F1F4F8 15.02:1 · on #F8FAFC 15.84:1
+ *      #0C2D55 on #FFFFFF 13.80:1 · on #F1F4F8 12.51:1 · on #F8FAFC 13.19:1
+ *      #1F4E79 on #FFFFFF  8.66:1 · on #F1F4F8  7.85:1 · on #F8FAFC  8.28:1
+ *      #274C77 on #FFFFFF  8.80:1 · on #F1F4F8  7.98:1 · on #F8FAFC  8.41:1
+ *      #3E6491 on #FFFFFF  6.11:1 · on #F1F4F8  5.54:1 · on #F8FAFC  5.84:1
+ *      #6E8CB4 on #FFFFFF  3.46:1 · on #F1F4F8  3.13:1 · on #F8FAFC  3.30:1
+ *      #6C7A8E on #FFFFFF  4.36:1 · on #F1F4F8  3.96:1 · on #F8FAFC  4.17:1
+ *      #5B6B7F on #FFFFFF  5.45:1 · on #F1F4F8  4.94:1 · on #F8FAFC  5.21:1
+ *
+ *    The lightest ramp step (#6E8CB4, 3.13:1 at worst) is used ONLY as a
+ *    non-text boundary — a 3px rule — never as text. Everything used as text
+ *    clears 4.5:1 on all three partner backgrounds.
+ *
+ * 4. ONE ACCENT PLUS NEUTRALS.  The owner said twice: do not make it more
+ *    complicated. There is exactly one hue in this file (navy #041E41 and its
+ *    tonal steps) plus two grey-blue neutrals already shipped as partner
+ *    tokens. NO new hue, NO semantic red, NO semantic green.
+ *
+ * WHAT THIS FILE DELIBERATELY DOES NOT DO
+ * ---------------------------------------
+ *  · IT DOES NOT TOUCH `--cv-color-border` (#E5EAF0, measured 1.10:1/1.16:1/
+ *    1.21:1 against a 3:1 requirement) OR THE TAILWIND `--border` TOKEN.
+ *    Both fail, both are PRE-EXISTING and PLATFORM-WIDE, and the owner has
+ *    already scheduled them as W321 (R274.3). Census taken this wave:
+ *    `var(--cv-color-border)` has 92 occurrences in 24 files; the Tailwind
+ *    `border` utility that resolves to `--border` appears 3,454 times in
+ *    client/src (all .tsx and .css) across all five product areas and the public
+ *    marketing site; the canonical declaration lives in `capavate-tokens.css`,
+ *    which is SACRED (manifest entry 41/48) and cannot be edited without a
+ *    tenth waiver. Fixing it here would be a half-change to a design token.
+ *    IT IS LEFT AS AN OPEN ITEM, NOT SILENTLY PATCHED. Every border THIS file
+ *    introduces meets 3:1 on its own.
+ *  · No `display`, no `visibility`, no `opacity`, no `pointer-events`, no
+ *    `position`, no `content`, no `width`, no `height`. Nothing is hidden,
+ *    nothing moves, no control changes size. The single `order` declaration
+ *    below applies to ONE new presentational legend element introduced by this
+ *    same wave and to nothing that existed before it.
+ *  · It changes NOTHING on the Clients page (item 8a — "no adjustments
+ *    required") and NOTHING outside `[data-product="partner"]`.
+ *
+ * SCOPE — EVERY SELECTOR IS SCOPED TO [data-product="partner"], which
+ * `CollectiveShell.tsx` sets on the partner root. No other product area, and
+ * no page outside the shell, reads one declaration from this file.
+ * ========================================================================== */
+
+/* ── 1 · THE ONE RAMP ─────────────────────────────────────────────────────
+ * Capavate navy at six monotone lightness steps. Declared once, consumed by
+ * all three surfaces below so that "further along" means the same thing on the
+ * Pipeline board as it does on the Contacts table. */
+[data-product="partner"] {
+  --we-ramp-1: #6E8CB4; /* earliest / lightest — non-text boundaries only */
+  --we-ramp-2: #3E6491;
+  --we-ramp-3: #274C77;
+  --we-ramp-4: #1F4E79;
+  --we-ramp-5: #0C2D55;
+  --we-ramp-6: #041E41; /* latest / darkest — the Capavate navy itself */
+
+  /* Neutrals. Both are values already shipped in the partner scope
+   * (`--cv-color-text-faint`, `--cv-color-text-secondary`); they are restated
+   * as their own names so that a future change to the text tokens cannot
+   * silently move a boundary that has been measured against 3:1. */
+  --we-rule: #6C7A8E;       /* group / column boundaries — 3.96:1 worst case */
+  --we-caption: #5B6B7F;    /* legend caption text     — 4.94:1 worst case */
+}
+
+/* ── 2 · SPV DETAIL TAB STRIP (items 6a, 6b, 6e, 6f) ──────────────────────
+ * The complaint: sixteen identically-styled tabs, wrapped, with no grouping
+ * and no colour — "it gets lost in all of the information."
+ *
+ * THE DOM ORDER OF THE SIXTEEN TRIGGERS IS UNCHANGED, BYTE FOR BYTE. Nothing
+ * is reordered, renamed, removed or hidden. The only markup change is a
+ * `data-spv-tab-group` attribute on each trigger (and `data-spv-tab-group-start`
+ * on the first trigger of each group), plus one appended presentational legend.
+ *
+ * WHAT THE COLOUR MEANS: which of the four working groups a tab belongs to.
+ *   ramp-6 THE VEHICLE   overview · mandate · fees · compliance
+ *   ramp-3 THE MONEY     lps · deployments · distributions · transfers
+ *   ramp-2 THE PAPERWORK documents · e-signature · side letters · K-1
+ *   ramp-1 LIFECYCLE     close · wind-down · NAV · reach
+ * (The four groups are read from the legend, which names them in text.) */
+
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group] {
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+}
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group="vehicle"] {
+  border-bottom-color: var(--we-ramp-6);
+}
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group="money"] {
+  border-bottom-color: var(--we-ramp-3);
+}
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group="paperwork"] {
+  border-bottom-color: var(--we-ramp-2);
+}
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group="lifecycle"] {
+  border-bottom-color: var(--we-ramp-1);
+}
+
+/* THE NON-COLOUR HALF OF THE GROUPING. A visible neutral divider and a gap at
+ * every group boundary, so the four bands are perceivable with the colour
+ * removed entirely. #6C7A8E measures 3.96:1 at worst against the surfaces this
+ * strip sits on — it clears the 3:1 non-text requirement on its own. */
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group-start="true"] {
+  border-left: 1px solid var(--we-rule);
+  margin-left: 10px;
+  padding-left: 12px;
+}
+
+/* STATE, NOT DECORATION: which tab you are on. Colour is one of THREE signals
+ * here — the accent text, a heavier weight, and a thicker underline — so the
+ * active tab is identifiable without perceiving colour at all. Radix also sets
+ * `aria-selected="true"`, which is what a screen reader announces. */
+[data-product="partner"] [data-testid^="spv-tabs-"] [data-spv-tab-group][data-state="active"] {
+  color: var(--we-ramp-6);
+  font-weight: 700;
+  border-bottom-width: 4px;
+  box-shadow: none;
+}
+
+/* THE LEGEND — the text key that makes the ramp mean something. It is the LAST
+ * child of the tab strip in the DOM (the append-only shape this component's own
+ * comments require, so that no existing trigger's positional path is
+ * renumbered) and is placed visually ABOVE the strip with `order`. */
+[data-product="partner"] [data-testid="spv-tab-group-legend"] {
+  order: -1;
+  flex-basis: 100%;
+  color: var(--we-caption);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 4px 6px;
+}
+[data-product="partner"] [data-testid="spv-tab-group-legend"] [data-we-legend-key] {
+  border-bottom: 3px solid transparent;
+  margin-right: 10px;
+  padding-bottom: 2px;
+}
+[data-product="partner"] [data-testid="spv-tab-group-legend"] [data-we-legend-key="vehicle"] {
+  border-bottom-color: var(--we-ramp-6);
+}
+[data-product="partner"] [data-testid="spv-tab-group-legend"] [data-we-legend-key="money"] {
+  border-bottom-color: var(--we-ramp-3);
+}
+[data-product="partner"] [data-testid="spv-tab-group-legend"] [data-we-legend-key="paperwork"] {
+  border-bottom-color: var(--we-ramp-2);
+}
+[data-product="partner"] [data-testid="spv-tab-group-legend"] [data-we-legend-key="lifecycle"] {
+  border-bottom-color: var(--we-ramp-1);
+}
+
+/* ── 3 · PIPELINE KANBAN COLUMNS (item 4a) ────────────────────────────────
+ * "Great functionality… can this be improved by colour coding… Do not make it
+ * more complicated, as the flow is awesome!"
+ *
+ * NOTHING ABOUT THE FLOW CHANGES. No column moves, no card moves, no control
+ * is added to a card. Two attributes on the existing column container, and
+ * these rules.
+ *
+ * WHAT THE COLOUR MEANS (1): how far along the six-stage ladder a column sits.
+ * Light at `invited`, darkest at `committed`, left to right. The stage NAME and
+ * the live "(n)" count are already printed in every column heading, so the
+ * colour is redundant encoding and nothing is lost without it.
+ *
+ * WHAT THE COLOUR MEANS (2): a column with no deals in it is drawn with a
+ * DASHED neutral outline instead of a solid one — a shape difference, not a
+ * colour difference — and its heading already reads "(0)". A partner can tell
+ * an empty stage from a full one in greyscale, on a monochrome printout, and
+ * with the stylesheet switched off. */
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank] {
+  border-top-width: 3px;
+  border-top-style: solid;
+}
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="1"] { border-top-color: var(--we-ramp-1); }
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="2"] { border-top-color: var(--we-ramp-2); }
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="3"] { border-top-color: var(--we-ramp-3); }
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="4"] { border-top-color: var(--we-ramp-4); }
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="5"] { border-top-color: var(--we-ramp-5); }
+[data-product="partner"] [data-testid^="column-"][data-we-stage-rank="6"] { border-top-color: var(--we-ramp-6); }
+
+[data-product="partner"] [data-testid^="column-"][data-we-stage-empty="true"] {
+  border-right-style: dashed;
+  border-bottom-style: dashed;
+  border-left-style: dashed;
+  border-right-color: var(--we-rule);
+  border-bottom-color: var(--we-rule);
+  border-left-color: var(--we-rule);
+}
+[data-product="partner"] [data-testid^="column-"][data-we-stage-empty="false"] {
+  border-right-color: var(--we-rule);
+  border-bottom-color: var(--we-rule);
+  border-left-color: var(--we-rule);
+}
+
+/* ── 4 · CONTACTS (CRM) STAGE COLUMN (item 9a) ────────────────────────────
+ * "DO NOT CHANGE THE LAYOUT of this page, as it is PERFECT!"  Accordingly the
+ * ONLY markup change on that page is a `data-stage` attribute on the stage cell
+ * that already exists. No element is added, removed or wrapped; not one text
+ * node changes; no padding, alignment, width or font-size is touched here.
+ *
+ * WHAT THE COLOUR MEANS: how far along the partner client ladder the contact
+ * is — prospect → engaged → committed → invested → long-term — drawn as a
+ * left-edge rule on the stage cell. The stage LABEL is already printed in the
+ * same cell, so the colour is redundant encoding.
+ *
+ * THE HONEST FALLBACK, WHICH IS THE WHOLE POINT: `stage` on a CRM contact is
+ * `string | null` and is NOT constrained to this vocabulary. Any value that is
+ * not one of the five below — including `null`, an empty string and any stage
+ * imported from somewhere else — matches NO rule here and gets NO rule drawn.
+ * An unrecorded or unrecognised stage is therefore shown as exactly what it is:
+ * nothing. It is never coloured as though it were a stage we know. */
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage] {
+  border-left: 4px solid transparent;
+}
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage="prospect"]  { border-left-color: var(--we-ramp-1); }
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage="engaged"]   { border-left-color: var(--we-ramp-2); }
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage="committed"] { border-left-color: var(--we-ramp-3); }
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage="invested"]  { border-left-color: var(--we-ramp-5); }
+[data-product="partner"] [data-testid="contacts-table"] td[data-stage="longterm"]  { border-left-color: var(--we-ramp-6); }

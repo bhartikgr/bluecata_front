@@ -33,7 +33,20 @@ import { fieldValidityProps } from "@/lib/fieldValidityClass";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+/* WAVE C · ITEM 8b — the target-company picker's arithmetic. JSX-free and
+   directly runnable, so the merge and its ordering are asserted without a render. */
+import {
+  mergeTargetCompanyChoices,
+  targetCompanyOptionLabel,
+  targetCompanyPickerHint,
+  TARGET_COMPANY_OFF_LIST_SUFFIX,
+} from "@/lib/partner/targetCompanyOptions";
+import { canonicalSelectOptions, CANONICAL_SELECT_CLASS } from "@/lib/canonicalFieldOptions";
 import { SpvDetailTabs, type SpvDetail } from "@/components/partner/SpvDetailTabs"; /* W-FIX1f SPV-UI-1 */
+/* WAVE D · ITEM 6d — the single vehicle switcher, mounted ABOVE the list so that
+   the links to the OTHER vehicles live outside the detail area rather than
+   surrounding it. Nothing is removed: see the note at `visibleSpvs` below. */
+import { PartnerSpvSwitcher } from "@/components/partner/PartnerSpvSwitcher";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -493,6 +506,46 @@ export default function PartnerSpvEngine() {
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv-wizard/defaults")).json(),
   });
 
+  /* ══ WAVE C · ITEM 8b — THE TWO LISTS THE TARGET-COMPANY PICKER OFFERS ═════
+     The owner asked that creating an SPV for a client be "seamless and connected
+     with the overall Pipeline, Portfolio Company, SPV sections". These are the
+     partner's OWN Clients and Portfolio lists — the same two endpoints those two
+     pages read — so this dropdown can never show a company the partner does not
+     already have.
+
+     WHY IT IS HONEST TO OFFER THEM. `POST /api/partner/me/spv`, which is the
+     endpoint this wizard posts to, gates `targetCompanyId` through the six-proof
+     `partnerHasCompanyRelationship` (`server/lib/partnerCompanyLinkGate.ts`).
+     Proof 1 is a live partner-owned portfolio row and proof 2 is a live
+     non-revoked attribution, so everything these two endpoints return is already
+     inside the set the gate accepts. Offering an option the server would refuse
+     would be worse than the free-text box it replaces.
+
+     THE CONVERSE DOES NOT HOLD, AND THAT IS WHY THE FREE-TEXT BOX STAYS. Proofs 3
+     to 6 — a consortium sponsor link, a pipeline deal, a live deal promotion, an
+     existing SPV target — are all accepted by the server and NONE of them is
+     listed here. A company the partner knows only from a Pipeline deal is a valid
+     answer this dropdown cannot hold, so the input below it is the route to that
+     answer, not a defensive leftover.
+
+     `enabled` matches the rest of this page: nothing is fetched before the role
+     resolves. A failure is NOT fatal to the wizard — the hint states that the
+     list could not be loaded and the free-text field continues to work. */
+  const targetClients = useQuery<{ clients: { companyId: string; companyName?: string | null }[] }>({
+    queryKey: ["/api/partner/me/clients"],
+    enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/clients")).json(),
+  });
+  const targetPortfolio = useQuery<{ portfolio: { companyId: string; companyName: string | null }[] }>({
+    queryKey: ["/api/partner/me/portfolio"],
+    enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/portfolio")).json(),
+  });
+  const targetCompanyChoices = mergeTargetCompanyChoices(
+    targetClients.data?.clients,
+    targetPortfolio.data?.portfolio,
+  );
+
   const detail = useQuery<Record<string, unknown>>({
     queryKey: ["/api/partner/me/spv", selectedId],
     enabled: !!selectedId,
@@ -813,6 +866,28 @@ export default function PartnerSpvEngine() {
   const me = role.identity;
   const canWrite = me.subRole === "managing_partner" || me.subRole === "associate" || me.subRole === "bd";
   const spvs = list.data?.spvs ?? [];
+  /* WAVE D · ITEM 6d — WHICH VEHICLES THE LIST BELOW RENDERS.
+
+     Before this wave the list rendered every vehicle unconditionally, and one
+     row's sixteen detail tabs opened INSIDE it — so a partner reading one
+     vehicle's fees, LP roster or wind-down had five other vehicles' names,
+     target-raise figures and publish buttons on the same screen. That is the
+     owner's report and it was accurate.
+
+     While a vehicle is open the list shows THAT VEHICLE ONLY. Every other
+     vehicle stays reachable from `<PartnerSpvSwitcher>` directly above, which
+     lists all of them — so no navigation target is lost (R195.5), it is
+     relocated. `spvs` itself is untouched and is still what the switcher and the
+     counts read.
+
+     The `some()` guard is not decoration: `selectedId` can hold an id that the
+     refetched list no longer contains (a vehicle archived in another tab). In
+     that case the filter would produce an empty array and the partner would see
+     an empty page, so the full list is shown instead. */
+  const visibleSpvs =
+    selectedId !== null && spvs.some((s) => s.id === selectedId)
+      ? spvs.filter((s) => s.id === selectedId)
+      : spvs;
 
   const jurisdictionCountryValid = w.jurisdictionCountry === OTHER ? !!w.jurisdictionOther.trim() : !!w.jurisdictionCountry;
   // 2a — entity-structure options for the currently selected country. Empty for
@@ -1245,6 +1320,55 @@ export default function PartnerSpvEngine() {
                   a separate, deliberate money-path step on the Deployments tab). */}
               <div>
                 <Label>Target company (optional)</Label>
+                {/* WAVE C · ITEM 8b — THE PICKER WAVE 106 RECORDED AS AN OPEN ITEM.
+                    Until now this field was free text and its own placeholder told
+                    the partner to go and copy an internal reference code out of a
+                    browser address bar. That is the opposite of the "seamless"
+                    connection between Clients, Portfolio and SPVs the owner asked
+                    for.
+
+                    THE INPUT BELOW IS KEPT, NOT REPLACED (R195.5). It is the only
+                    route to a company the server accepts but these two lists do not
+                    carry — see the census beside the queries above.
+
+                    `canonicalSelectOptions` is the SAME helper the Sector, Stage,
+                    HQ and Jurisdiction dropdowns use. It exists to remove one
+                    specific failure: a native `<select value={x}>` whose options do
+                    not contain `x` does not render `x` — the browser silently
+                    selects the FIRST option and the next submit stores that instead.
+                    Here that would silently retarget an SPV at the wrong company.
+                    The helper guarantees the value on the record is always one of
+                    the returned options, marked as entered by the partner when the
+                    lists do not contain it, so nothing is ever coerced. */}
+                <select
+                  data-testid="spv-w-target-company-select"
+                  aria-label="Target company"
+                  className={CANONICAL_SELECT_CLASS}
+                  value={w.targetCompanyId}
+                  onChange={(e) => setW({ ...w, targetCompanyId: e.target.value })}
+                >
+                  {canonicalSelectOptions(
+                    w.targetCompanyId,
+                    targetCompanyChoices.map((c) => c.companyId),
+                    {
+                      notSpecifiedLabel: "No target company",
+                      offListSuffix: TARGET_COMPANY_OFF_LIST_SUFFIX,
+                      labelFor: (id) => {
+                        const c = targetCompanyChoices.find((x) => x.companyId === id);
+                        return c ? targetCompanyOptionLabel(c) : id;
+                      },
+                    },
+                  ).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <div className="text-[10px] text-[var(--cv-color-text-muted)] mt-1" data-testid="spv-w-target-company-hint">
+                  {targetCompanyPickerHint({
+                    isLoading: targetClients.isLoading || targetPortfolio.isLoading,
+                    isError: targetClients.isError || targetPortfolio.isError,
+                    choiceCount: targetCompanyChoices.length,
+                  })}
+                </div>
                 <Input data-testid="spv-w-target-company" value={w.targetCompanyId} onChange={(e) => setW({ ...w, targetCompanyId: e.target.value })} placeholder="Paste the company's reference code from its Capavate page" />
                 <div className="text-[10px] text-[var(--cv-color-text-faint)]">
                   Links a target company to this SPV for reference only — no capital is allocated or committed here.
@@ -1758,9 +1882,32 @@ export default function PartnerSpvEngine() {
         <PartnerEmptyState title="No SPVs yet" description="Create your first SPV with the 5-step wizard." />
       )}
 
+      {/* WAVE D · ITEM 6d — APPENDED as a static sibling above the list. It is the
+          ONE control that changes which vehicle is in view, and it is deliberately
+          outside the detail area rather than inside it. Selecting a vehicle here
+          does exactly what clicking that vehicle's own card has always done; the
+          "all vehicles" option puts the full list back. No existing control,
+          literal or test id in this file is replaced. */}
+      {spvs.length > 0 && (
+        <PartnerSpvSwitcher
+          currentSpvId={selectedId}
+          allOptionLabel="All vehicles — show the full list"
+          onSelect={(id) => {
+            setSelectedId(id);
+            if (id === null) setSelectedTab(null);
+          }}
+        />
+      )}
+      {spvs.length > 0 && visibleSpvs.length < spvs.length && (
+        <div className="mb-2 text-xs text-[color:var(--cv-color-text-muted)]" data-testid="spv-engine-scoped-note">
+          One vehicle is open, so only that vehicle is shown below. Your other vehicles are in the
+          control above.
+        </div>
+      )}
+
       {spvs.length > 0 && (
         <div className="space-y-2 mt-4" data-testid="spv-engine-list">
-          {spvs.map((s) => (
+          {visibleSpvs.map((s) => (
             <Card
               key={s.id}
               className="p-3 cursor-pointer hover:bg-[var(--cv-color-surface-2)]"

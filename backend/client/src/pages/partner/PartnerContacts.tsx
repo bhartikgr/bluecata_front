@@ -481,7 +481,29 @@ export default function PartnerContacts() {
                           vocabulary is NOT remapped onto any other ladder: per R91 the
                           partner, founder and investor ladders are genuinely different
                           and merging them would need an owner ruling. */}
-                      <td className="p-3 text-[var(--cv-color-text-muted)]">{humanizeMachineKey(r.stage, "—")}</td>
+                      {/* WALKTHROUGH WAVE E · ITEM 9a — "DO NOT CHANGE THE LAYOUT
+                          of this page, as it is PERFECT! Can colour-coding make
+                          it easier to view?"  THE LAYOUT IS PROTECTED WORK
+                          (R221.6). The ONLY change is the `data-stage` attribute
+                          below: no element is added, removed or wrapped, not one
+                          text node changes, and no padding, alignment, width or
+                          font-size is touched. The colour lives entirely in
+                          `client/src/styles/wave-e-partner-colour.css`, drawn as
+                          a left-edge rule on this cell.
+
+                          WHAT IT MEANS: how far along the partner client ladder
+                          the contact is. The stage LABEL is already printed in
+                          this same cell, so the colour is redundant encoding and
+                          a colour-blind reader loses nothing; the ramp is one
+                          hue at five lightness steps, with no red/green pairing.
+
+                          THE HONEST FALLBACK: `stage` is `string | null` and is
+                          NOT constrained to `PARTNER_CLIENT_STAGES`. `?? ""`
+                          means a cleared stage writes an empty attribute, and an
+                          empty or unrecognised value matches NO rule and gets NO
+                          colour. An unrecorded stage is shown as nothing at all
+                          — it is never coloured as a stage we recognise. */}
+                      <td className="p-3 text-[var(--cv-color-text-muted)]" data-stage={r.stage ?? ""}>{humanizeMachineKey(r.stage, "—")}</td>
                       <td className="p-3 text-right">
                         <button
                           type="button"

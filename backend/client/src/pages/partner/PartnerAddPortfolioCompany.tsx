@@ -17,6 +17,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell } from "@/components/partner/PartnerShell";
+import { PartnerSurfaceGuide } from "@/components/partner/PartnerSurfaceGuide"; /* WAVE C · ITEM 10a */
 import { AppCard } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -326,6 +327,46 @@ export default function PartnerAddPortfolioCompany() {
           </div>
         </AppCard>
       )}
+
+      {/* WAVE C · ITEM 10a — the owner asked what distinguishes this from Clients
+          and Portfolio. It is not a third list: it is the ACTION that writes into
+          them. That sequence was read out of
+          `server/partnerPortfolioCompanyRoutes.ts` and is named here in full, so
+          the partner knows what one submit actually does. APPENDED LAST; no test
+          pins another element to the end of this file. */}
+      <PartnerSurfaceGuide
+        testId="apc-surface-guide"
+        title="What this page does, and where the company then appears"
+        relations={[
+          {
+            label: "Clients",
+            href: "/collective/partner/clients",
+            why: "where the attribution this page creates is recorded",
+            testId: "apc-guide-to-clients",
+          },
+          {
+            label: "Portfolio",
+            href: "/collective/partner/portfolio",
+            why: "where the company profile this page creates can be edited",
+            testId: "apc-guide-to-portfolio",
+          },
+          {
+            label: "Pipeline",
+            href: "/collective/partner/pipeline",
+            why: "where the new deal this page creates starts, at the invited stage",
+            testId: "apc-guide-to-pipeline",
+          },
+        ]}
+      >
+        This page is an action, not a list. Submitting it once creates the company,
+        attributes it to you, adds its portfolio profile, opens a deal on your
+        pipeline at the invited stage, and emails the founder an invitation. That is
+        why the same company then appears under Clients, Portfolio and Pipeline —
+        three different records of one act, not three copies of it. If any step
+        fails, the earlier steps are rolled back, so you will not be left with a
+        half-created company. It does not create an SPV: vehicles are always created
+        deliberately from the SPVs section.
+      </PartnerSurfaceGuide>
     </PartnerShell>
   );
 }

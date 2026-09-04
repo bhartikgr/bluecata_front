@@ -113,6 +113,61 @@ interface FeatureFlags {
   COLLECTIVE_ADMIN_APPROVAL_ENABLED: boolean;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   WALKTHROUGH WAVE F · ITEM 1c — FOUR NAMED READING GROUPS.
+
+   The owner: "This is very boring and plain for any user. It can also be
+   confusing to follow. Rebrand/redesign this to be more engaging and easier to
+   read/look at."
+
+   THE DIAGNOSIS. Eight cards sat in one flat grid, each with the same weight,
+   the same white ground and a two-word title. Nothing told the eye where to
+   start or which boxes belonged together — "Portfolio", "Plan & quota" and
+   "Recent activity" looked like three unrelated things when two of them are
+   about money and one is a log.
+
+   THE FIX IS GROUPING, NOT DECORATION. Each card now declares which of four
+   groups it belongs to, and each group has a name that is RENDERED AS TEXT on
+   every card in it. One accent — the ratified navy — at four depths marks the
+   group as a 3px rule along the top of the card.
+
+   NEVER COLOUR ALONE. The rule and the label always ship together: the label is
+   the fact, the rule is the reinforcement. A reader who cannot distinguish the
+   four navy depths still reads four named groups, and
+   `client/src/pages/partner/__tests__/wf_dashboard_dom.test.tsx` fails if a card
+   ever carries the group attribute without the matching rendered label.
+
+   WHY ONLY THE CARDS THIS FILE RENDERS. `MessagesWidget` and
+   `VentureMarketsCard` are shared components owned elsewhere and mounted here;
+   reaching into them to paint a group mark would spend another file's risk
+   budget on this page's problem. They are therefore left unmarked. An unmarked
+   card makes no claim — it simply is not in a group — whereas a wrong mark
+   would be a false statement about the page's own structure.
+   ══════════════════════════════════════════════════════════════════════════════ */
+const DASH_GROUP_LABEL = {
+  capital: "Your capital",
+  work: "Your work",
+  firm: "Your firm",
+  market: "Markets and network",
+} as const;
+
+type DashGroup = keyof typeof DASH_GROUP_LABEL;
+
+/** The group's name, rendered inside the card it marks. The `cardKey` makes the
+ *  test id unique per card, because two cards can share a group. */
+function DashGroupLabel({ group, cardKey }: { group: DashGroup; cardKey: string }) {
+  return (
+    <div
+      className="text-[10px] font-semibold mb-1.5"
+      data-cv-wf="dash-group-label"
+      data-cv-dash-group-label={group}
+      data-testid={`dash-group-label-${cardKey}`}
+    >
+      {DASH_GROUP_LABEL[group]}
+    </div>
+  );
+}
+
 export default function PartnerDashboard() {
   const role = useRequirePartnerRole();
   const flagsQ = useQuery<FeatureFlags>({
@@ -215,8 +270,73 @@ export default function PartnerDashboard() {
   /* GROUP F3 — admin-set status from the /me payload drives the non-blocking
    * PartnerShell banner (DISPLAY only; server still gates all data/writes). */
   const partnerStatus = planQ.data?.status ?? role.identity.status ?? null;
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WALKTHROUGH WAVE F · ITEM 1a — THE NAME THE WELCOME BAND ADDRESSES.
+
+     Read from the SAME field the page header already prints at
+     `partner-name` (`role.identity.identity.name`), so the band can never greet
+     a different firm from the one the header names. Trimmed and tested for
+     emptiness rather than assumed present: a firm record with a blank name would
+     otherwise render "Welcome, " with nothing after the comma, and the band has
+     an honest wording for that case instead (R257.1 — absent is its own fact).
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const partnerDisplayName = (role.identity.identity.name ?? "").trim();
   return (
     <PartnerShell title="Dashboard" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name} status={partnerStatus}>
+      {/* ════════════════════════════════════════════════════════════════════════
+          WALKTHROUGH WAVE F · ITEM 1a — "This top area could be more 'welcoming'
+          and powerful."
+
+          A bigger logo answers half of what the owner asked for. The other half
+          is that the top of his front page said "Dashboard · Partner workspace"
+          and nothing else — it never addressed him, and it never said what the
+          workspace is for. This band does both, in three lines, using only facts
+          already on the page.
+
+          WHY IT SITS OUTSIDE EVERY DATA BRANCH. It is rendered as the FIRST
+          child of the shell body, above the error, loading, empty and loaded
+          branches, so the greeting is present in all four. It contains no
+          figure, no count and no status, which is precisely why it is safe
+          there: there is nothing in it that could be wrong while the dashboard
+          query is failing (R257.1, and the wave rule that copy must be true in
+          every branch — loaded, empty, loading and error).
+
+          NO NEW HUE. One navy rule on the leading edge at the deepest ramp step,
+          the eyebrow at ramp-3 and the lede in the ratified caption grey; the
+          measured ratios are asserted in
+          `client/src/styles/__tests__/wf_dashboard_colour_contrast.test.tsx`.
+          No icon, no illustration, no fill, no gradient.
+          ════════════════════════════════════════════════════════════════════════ */}
+      <div className="mb-5" data-cv-wf="welcome" data-testid="partner-welcome-band">
+        <div
+          className="text-[10px] font-semibold"
+          data-cv-wf="welcome-eyebrow"
+          data-testid="welcome-eyebrow"
+        >
+          Consortium Partner workspace
+        </div>
+        <div
+          className="mt-1.5 text-2xl font-bold leading-tight"
+          data-cv-wf="welcome-title"
+          data-testid="welcome-title"
+        >
+          {partnerDisplayName ? (
+            <>
+              Welcome,{" "}
+              <span data-testid="welcome-partner-name">{partnerDisplayName}</span>
+            </>
+          ) : (
+            <span data-testid="welcome-name-absent">Welcome to your Consortium Partner workspace</span>
+          )}
+        </div>
+        <div
+          className="mt-2 text-xs max-w-3xl"
+          data-cv-wf="welcome-lede"
+          data-testid="welcome-lede"
+        >
+          Everything your firm runs on Capavate, in one place: the companies attributed to you, the deals in your pipeline, your team and plan, and the growth-market exchanges Capavate tracks for you.
+        </div>
+      </div>
       {/* v25.16 NH1 — explicit error branch; previously a fetch failure left
          the dashboard stuck on "Loading…" with no retry path. */}
       {q.isError && (
@@ -236,7 +356,8 @@ export default function PartnerDashboard() {
       )}
       {data && !data.empty && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <AppCard data-testid="card-portfolio">
+          <AppCard data-testid="card-portfolio" data-cv-dash-group="capital">
+            <DashGroupLabel group="capital" cardKey="portfolio" />
             <div className="cv-card-title text-sm font-semibold mb-3">Portfolio</div>
             <div>
               <div className="text-3xl font-bold" data-testid="kpi-companies">{data.portfolio.attributedCompanies}</div>
@@ -388,7 +509,8 @@ export default function PartnerDashboard() {
               )}
             </div>
           </AppCard>
-          <AppCard data-testid="card-pipeline">
+          <AppCard data-testid="card-pipeline" data-cv-dash-group="work">
+            <DashGroupLabel group="work" cardKey="pipeline" />
             <div className="cv-card-title text-sm font-semibold mb-3">Pipeline</div>
             <div>
               <ul className="text-xs space-y-1">
@@ -398,7 +520,8 @@ export default function PartnerDashboard() {
               </ul>
             </div>
           </AppCard>
-          <AppCard data-testid="card-team">
+          <AppCard data-testid="card-team" data-cv-dash-group="firm">
+            <DashGroupLabel group="firm" cardKey="team" />
             <div className="cv-card-title text-sm font-semibold mb-3">Team</div>
             <div>
               <div className="text-3xl font-bold" data-testid="kpi-seats">{data.team.activeSeats} / {data.team.seatLimit === 9999 ? "∞" : data.team.seatLimit}</div>
@@ -406,156 +529,12 @@ export default function PartnerDashboard() {
               <div className="text-xs mt-2" data-testid="kpi-pending-invites">{data.team.pendingInvitations} pending invitations</div>
             </div>
           </AppCard>
-          {/* GROUP C (C5) — dynamic plan: quota tracker (report-only) + rev-share
-             status. Rendered only when the server resolved an effective plan. */}
-          {planQ.data?.effectivePlan && (
-            <AppCard className="md:col-span-3" data-testid="card-plan">
-              <div className="cv-card-title text-sm font-semibold mb-3">Plan &amp; quota</div>
-              {/* GROUP F3 — DISPLAY-only commission %. Renders the server-derived
-                 commissionPct (percent form of the EXISTING commission rate).
-                 It NEVER drives any calculation, ledger or payment path. */}
-              {planQ.data.commissionPct != null && (
-                <div className="text-xs text-[var(--cv-color-text-muted)] mb-3" data-testid="plan-commission">
-                  Commission:{" "}
-                  <span className="font-semibold text-[var(--cv-color-text)]" data-testid="kpi-commission-pct">
-                    {Number.isInteger(planQ.data.commissionPct)
-                      ? planQ.data.commissionPct
-                      : planQ.data.commissionPct.toFixed(2)}%
-                  </span>
-                </div>
-              )}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div data-testid="plan-quota">
-                  <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">
-                    Registered this month
-                    {planQ.data.effectivePlan.quotaProgress.threshold != null && (
-                      <span> (quota {planQ.data.effectivePlan.quotaProgress.threshold})</span>
-                    )}
-                    {/* GROUP F3 — DISPLAY-only quota enforcement mode (report|warn). */}
-                    <span data-testid="quota-enforcement-mode" className="text-[var(--cv-color-text-faint)]">
-                      {" · "}{quotaEnforcementLabel(planQ.data.effectivePlan.quotaProgress.enforcement)}
-                    </span>
-                  </div>
-                  <div className="text-3xl font-bold" data-testid="kpi-quota-registered">
-                    {planQ.data.effectivePlan.quotaProgress.registeredThisPeriod}
-                    {planQ.data.effectivePlan.quotaProgress.threshold != null && (
-                      <span className="text-base text-[var(--cv-color-text-faint)]"> / {planQ.data.effectivePlan.quotaProgress.threshold}</span>
-                    )}
-                  </div>
-                  {planQ.data.effectivePlan.quotaProgress.threshold != null &&
-                    planQ.data.effectivePlan.quotaProgress.met && (
-                      <div className="text-xs mt-1 text-amber-600" data-testid="quota-met-warning">
-                        Monthly quota reached (report-only — no change to price or access).
-                      </div>
-                    )}
-                </div>
-                <div data-testid="plan-price">
-                  {/* WAVE 7B FE-14 (DEF-060) — the price below has always been
-                      DB-driven (partnerEffectivePlan resolves a partner
-                      override, else the tier's advertised platform_fees row);
-                      the WAVE 7 citation check confirmed that and found the
-                      residual defect to be this LABEL. It read "Your
-                      subscription" for every partner, including Path-1
-                      partners who hold no subscription at all — a false
-                      statement about money. The number is unchanged; only the
-                      heading now tells the truth about what it is. */}
-                  {/* The heading is written as TWO literal branches rather than
-                      one interpolated string on purpose. The silent-drop guard
-                      fingerprints copy by the TEXT of the node, so collapsing
-                      this into {cond ? "Your subscription" : …} reads as a
-                      REMOVED copy string and blocks the build — it did, on the
-                      first run of this change. Wave 7 §3.4 precedent: restore
-                      the expression byte-for-byte instead of allow-listing.
-                      The literal below is unchanged from the original line. */}
-                  {planQ.data.subscriptionState === "unsubscribed" ? (
-                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1" data-testid="plan-price-label-advertised">
-                      Tier price (no active subscription)
-                    </div>
-                  ) : (
-                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Your subscription</div>
-                  )}
-                  <div className="text-xl font-semibold" data-testid="kpi-plan-price">
-                    {planPrice.figure}{" "}
-                    <span className="text-[var(--cv-color-text-faint)] text-xs" data-testid="kpi-plan-price-period">{planPrice.periodText}</span>
-                  </div>
-                  {planQ.data.effectivePlan.effectivePrice.source === "partner_override" && (
-                    <div className="text-xs mt-1 text-emerald-600" data-testid="price-custom-badge">Custom partner price</div>
-                  )}
-                  {/* FE-14 — say plainly that nothing is being billed, rather
-                      than leaving a price on screen that implies it is. */}
-                  {planQ.data.subscriptionState === "unsubscribed" && (
-                    <div className="text-xs mt-1 text-[var(--cv-color-text-faint)]" data-testid="plan-price-not-billed">
-                      You are not currently billed a subscription. This is the advertised price for your tier.
-                    </div>
-                  )}
-                </div>
-                <div data-testid="plan-revshare">
-                  <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Rev-share</div>
-                  {planQ.data.effectivePlan.arrangement?.revShare?.enabled ? (
-                    <div className="text-xl font-semibold" data-testid="kpi-revshare">
-                      {formatMinor(
-                        planQ.data.effectivePlan.arrangement.revShare.fixedAmountMinor ?? 0,
-                        planQ.data.effectivePlan.arrangement.revShare.currency ?? "USD",
-                        { locale: "en-US" },
-                      )}{" "}
-                      <span className="text-[var(--cv-color-text-faint)] text-xs">per paying company</span>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="revshare-disabled">Not enabled</div>
-                  )}
-                </div>
-              </div>
-            </AppCard>
-          )}
-          {/* ═══════════════════════════════════════════════════════════
-              WAVE 69 · V-4 (R58 row 4) — A MISSING CARD NOW EXPLAINS ITSELF.
-              ═══════════════════════════════════════════════════════════
-              `effectivePlanError` is non-null in EXACTLY the case `effectivePlan`
-              is null — so the `&&` above evaluated false and the whole "Plan &
-              quota" card VANISHED, with no explanation anywhere on the page. That
-              is the cleanest silent-drop-by-omission in the tree.
-
-              NOTHING IS FABRICATED HERE. `commissionPct` is `null` in this state
-              (`server/partnerRoutes.ts:793-794`) and is deliberately NOT rendered:
-              printing a `0%` commission would be a false statement about money,
-              which is the whole reason Wave 56 exists. No `?? 0`, no substituted
-              rate, no invented price. The message is the server's own.
-
-              APPENDED after `card-plan` and BEFORE `card-recent`, both of which
-              carry literal testids, so no sibling identity moves. */}
-          {!planQ.data?.effectivePlan && planQ.data?.effectivePlanError && (
-            <AppCard className="md:col-span-3" data-testid="card-plan-unavailable">
-              <div className="cv-card-title text-sm font-semibold mb-2">Plan &amp; quota unavailable</div>
-              <p className="text-sm text-amber-900" role="alert" data-testid="plan-unavailable-reason">
-                {planQ.data.effectivePlanError.message}
-              </p>
-              <p className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="plan-unavailable-tier">
-                Tier on file: {planTierLabel(planQ.data.effectivePlanError.tier)}
-              </p>
-            </AppCard>
-          )}
-          <AppCard className="md:col-span-3" data-testid="card-recent">
-            <div className="cv-card-title text-sm font-semibold mb-3">Recent activity</div>
-            <div>
-              {data.recentActivity.length === 0 && <div className="text-xs text-[var(--cv-color-text-muted)]">No activity yet.</div>}
-              <ul className="text-xs space-y-2">
-                {data.recentActivity.map((a) => (
-                  <li key={a.id} className="border-b pb-1">
-                    {/* WAVE 106 - FINDING 4.5: this printed the raw event code
-                        (`stage_change`) as the row's primary text. Same rows,
-                        same order, human wording. */}
-                    <span className="text-[var(--cv-color-text-muted)] mr-2">{activityTypeLabel(a.activityType)}</span>
-                    <span>{a.body}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </AppCard>
           {/* v25.49 Phase-3B — compact NETWORK cards: Messages + Posts. Reuse
              the shared comms widgets; feeds are session-scoped/fail-closed. */}
           <div className="md:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="card-network">
             <MessagesWidget basePath="/collective/partner/messages" title="Messages" />
-            <AppCard data-testid="card-posts">
+            <AppCard data-testid="card-posts" data-cv-dash-group="market">
+              <DashGroupLabel group="market" cardKey="posts" />
               <div className="cv-card-title text-sm font-semibold mb-3">Network posts</div>
               <PostsFeed role="investor" basePath="/collective/partner" maxPosts={3} viewAllHref="/collective/partner/posts" />
             </AppCard>
@@ -604,7 +583,8 @@ export default function PartnerDashboard() {
               this card to disable, because there never was one: it has never had an
               action, so nothing here can report a success it did not earn. */}
           {tierAtLeast(role.identity.tier, "nexus") && (
-            <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
+            <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio" data-cv-dash-group="market">
+              <DashGroupLabel group="market" cardKey="cross-portfolio" />
               <div className="cv-card-title text-sm font-semibold mb-3">Cross-portfolio investor overlap</div>
               <div>
                 {/* WAVE 135 · FINDING 1 — "Not yet available." is a statement about OUR build
@@ -619,6 +599,201 @@ export default function PartnerDashboard() {
               </div>
             </AppCard>
           )}
+          {/* ═══════════════════════════════════════════════════════════════════
+              WALKTHROUGH WAVE F · ITEM 1e — THE TWO ADMINISTRATIVE ROWS, MOVED TO
+              THE BOTTOM AND SET IN TWO COLUMNS.
+
+              The owner: the two admin boxes should move to the BOTTOM of the
+              content section, "maybe even displayed in two columns rather than
+              two big rows."
+
+              WHICH TWO BOXES. The only two full-width rows on this page were
+              `card-plan` ("Plan & quota") and `card-recent` ("Recent activity") —
+              both carried `md:col-span-3`, i.e. they each spanned the whole grid
+              and stacked as the "two big rows" the owner described. `card-team`
+              is a one-third card in the top row, so it is not one of the two.
+
+              `card-plan-unavailable` travels WITH `card-plan` because it is that
+              card's failure branch, not a third box: the two are mutually
+              exclusive (`planQ.data?.effectivePlan` versus
+              `!effectivePlan && effectivePlanError`). Leaving it behind would put
+              the plan area at the bottom when the plan reads and in the middle of
+              the page when it does not — the same information moving around
+              depending on whether a request succeeded.
+
+              HOW THE MOVE IS DONE, AND WHY IT IS NOT A DROP. The three blocks are
+              relocated VERBATIM, in their original source order, into the wrapper
+              below; the only edit inside them is that each card's own
+              `md:col-span-3` is gone, because the wrapper now owns the span. Not
+              one condition, handler, literal, prop or data-testid is changed, and
+              nothing is deleted (R195.5).
+
+              THE WRAPPER SHAPE IS ALREADY PROVEN IN THIS FILE. It is the exact
+              class list `card-network` above has used since v25.49 Phase-3B:
+              full-width on the outer grid, one column on small screens, two from
+              the `lg` breakpoint. So the two-column result is not a new layout
+              idea being tried out on the owner's front page.
+
+              A MOVE IS A CLAIM ABOUT REACHABILITY, AND REACHABILITY IS A SET.
+              `client/src/pages/partner/__tests__/wf_1e_move_set_equality.test.tsx`
+              enumerates every `data-testid` the loaded dashboard renders before
+              and after, asserts the two sets are EQUAL and both non-empty, and
+              runs a control that performs the same relocation by DELETION to show
+              the assertion does collapse when the panel really goes missing.
+              ═══════════════════════════════════════════════════════════════════ */}
+          <div
+            className="md:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-4"
+            data-testid="card-admin-columns"
+          >
+            {/* GROUP C (C5) — dynamic plan: quota tracker (report-only) + rev-share
+               status. Rendered only when the server resolved an effective plan. */}
+            {planQ.data?.effectivePlan && (
+              <AppCard data-testid="card-plan" data-cv-dash-group="capital">
+                <DashGroupLabel group="capital" cardKey="plan" />
+                <div className="cv-card-title text-sm font-semibold mb-3">Plan &amp; quota</div>
+                {/* GROUP F3 — DISPLAY-only commission %. Renders the server-derived
+                   commissionPct (percent form of the EXISTING commission rate).
+                   It NEVER drives any calculation, ledger or payment path. */}
+                {planQ.data.commissionPct != null && (
+                  <div className="text-xs text-[var(--cv-color-text-muted)] mb-3" data-testid="plan-commission">
+                    Commission:{" "}
+                    <span className="font-semibold text-[var(--cv-color-text)]" data-testid="kpi-commission-pct">
+                      {Number.isInteger(planQ.data.commissionPct)
+                        ? planQ.data.commissionPct
+                        : planQ.data.commissionPct.toFixed(2)}%
+                    </span>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div data-testid="plan-quota">
+                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">
+                      Registered this month
+                      {planQ.data.effectivePlan.quotaProgress.threshold != null && (
+                        <span> (quota {planQ.data.effectivePlan.quotaProgress.threshold})</span>
+                      )}
+                      {/* GROUP F3 — DISPLAY-only quota enforcement mode (report|warn). */}
+                      <span data-testid="quota-enforcement-mode" className="text-[var(--cv-color-text-faint)]">
+                        {" · "}{quotaEnforcementLabel(planQ.data.effectivePlan.quotaProgress.enforcement)}
+                      </span>
+                    </div>
+                    <div className="text-3xl font-bold" data-testid="kpi-quota-registered">
+                      {planQ.data.effectivePlan.quotaProgress.registeredThisPeriod}
+                      {planQ.data.effectivePlan.quotaProgress.threshold != null && (
+                        <span className="text-base text-[var(--cv-color-text-faint)]"> / {planQ.data.effectivePlan.quotaProgress.threshold}</span>
+                      )}
+                    </div>
+                    {planQ.data.effectivePlan.quotaProgress.threshold != null &&
+                      planQ.data.effectivePlan.quotaProgress.met && (
+                        <div className="text-xs mt-1 text-amber-600" data-testid="quota-met-warning">
+                          Monthly quota reached (report-only — no change to price or access).
+                        </div>
+                      )}
+                  </div>
+                  <div data-testid="plan-price">
+                    {/* WAVE 7B FE-14 (DEF-060) — the price below has always been
+                        DB-driven (partnerEffectivePlan resolves a partner
+                        override, else the tier's advertised platform_fees row);
+                        the WAVE 7 citation check confirmed that and found the
+                        residual defect to be this LABEL. It read "Your
+                        subscription" for every partner, including Path-1
+                        partners who hold no subscription at all — a false
+                        statement about money. The number is unchanged; only the
+                        heading now tells the truth about what it is. */}
+                    {/* The heading is written as TWO literal branches rather than
+                        one interpolated string on purpose. The silent-drop guard
+                        fingerprints copy by the TEXT of the node, so collapsing
+                        this into {cond ? "Your subscription" : …} reads as a
+                        REMOVED copy string and blocks the build — it did, on the
+                        first run of this change. Wave 7 §3.4 precedent: restore
+                        the expression byte-for-byte instead of allow-listing.
+                        The literal below is unchanged from the original line. */}
+                    {planQ.data.subscriptionState === "unsubscribed" ? (
+                      <div className="text-xs text-[var(--cv-color-text-muted)] mb-1" data-testid="plan-price-label-advertised">
+                        Tier price (no active subscription)
+                      </div>
+                    ) : (
+                      <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Your subscription</div>
+                    )}
+                    <div className="text-xl font-semibold" data-testid="kpi-plan-price">
+                      {planPrice.figure}{" "}
+                      <span className="text-[var(--cv-color-text-faint)] text-xs" data-testid="kpi-plan-price-period">{planPrice.periodText}</span>
+                    </div>
+                    {planQ.data.effectivePlan.effectivePrice.source === "partner_override" && (
+                      <div className="text-xs mt-1 text-emerald-600" data-testid="price-custom-badge">Custom partner price</div>
+                    )}
+                    {/* FE-14 — say plainly that nothing is being billed, rather
+                        than leaving a price on screen that implies it is. */}
+                    {planQ.data.subscriptionState === "unsubscribed" && (
+                      <div className="text-xs mt-1 text-[var(--cv-color-text-faint)]" data-testid="plan-price-not-billed">
+                        You are not currently billed a subscription. This is the advertised price for your tier.
+                      </div>
+                    )}
+                  </div>
+                  <div data-testid="plan-revshare">
+                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Rev-share</div>
+                    {planQ.data.effectivePlan.arrangement?.revShare?.enabled ? (
+                      <div className="text-xl font-semibold" data-testid="kpi-revshare">
+                        {formatMinor(
+                          planQ.data.effectivePlan.arrangement.revShare.fixedAmountMinor ?? 0,
+                          planQ.data.effectivePlan.arrangement.revShare.currency ?? "USD",
+                          { locale: "en-US" },
+                        )}{" "}
+                        <span className="text-[var(--cv-color-text-faint)] text-xs">per paying company</span>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="revshare-disabled">Not enabled</div>
+                    )}
+                  </div>
+                </div>
+              </AppCard>
+            )}
+            {/* ═══════════════════════════════════════════════════════════
+                WAVE 69 · V-4 (R58 row 4) — A MISSING CARD NOW EXPLAINS ITSELF.
+                ═══════════════════════════════════════════════════════════
+                `effectivePlanError` is non-null in EXACTLY the case `effectivePlan`
+                is null — so the `&&` above evaluated false and the whole "Plan &
+                quota" card VANISHED, with no explanation anywhere on the page. That
+                is the cleanest silent-drop-by-omission in the tree.
+
+                NOTHING IS FABRICATED HERE. `commissionPct` is `null` in this state
+                (`server/partnerRoutes.ts:793-794`) and is deliberately NOT rendered:
+                printing a `0%` commission would be a false statement about money,
+                which is the whole reason Wave 56 exists. No `?? 0`, no substituted
+                rate, no invented price. The message is the server's own.
+
+                APPENDED after `card-plan` and BEFORE `card-recent`, both of which
+                carry literal testids, so no sibling identity moves. */}
+            {!planQ.data?.effectivePlan && planQ.data?.effectivePlanError && (
+              <AppCard data-testid="card-plan-unavailable" data-cv-dash-group="capital">
+                <DashGroupLabel group="capital" cardKey="plan-unavailable" />
+                <div className="cv-card-title text-sm font-semibold mb-2">Plan &amp; quota unavailable</div>
+                <p className="text-sm text-amber-900" role="alert" data-testid="plan-unavailable-reason">
+                  {planQ.data.effectivePlanError.message}
+                </p>
+                <p className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="plan-unavailable-tier">
+                  Tier on file: {planTierLabel(planQ.data.effectivePlanError.tier)}
+                </p>
+              </AppCard>
+            )}
+            <AppCard data-testid="card-recent" data-cv-dash-group="work">
+              <DashGroupLabel group="work" cardKey="recent" />
+              <div className="cv-card-title text-sm font-semibold mb-3">Recent activity</div>
+              <div>
+                {data.recentActivity.length === 0 && <div className="text-xs text-[var(--cv-color-text-muted)]">No activity yet.</div>}
+                <ul className="text-xs space-y-2">
+                  {data.recentActivity.map((a) => (
+                    <li key={a.id} className="border-b pb-1">
+                      {/* WAVE 106 - FINDING 4.5: this printed the raw event code
+                          (`stage_change`) as the row's primary text. Same rows,
+                          same order, human wording. */}
+                      <span className="text-[var(--cv-color-text-muted)] mr-2">{activityTypeLabel(a.activityType)}</span>
+                      <span>{a.body}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </AppCard>
+          </div>
         </div>
       )}
     </PartnerShell>

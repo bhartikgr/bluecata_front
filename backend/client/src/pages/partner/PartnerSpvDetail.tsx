@@ -7,6 +7,26 @@ import { useMemo, useState } from "react";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { moneyOrNotProvided } from "@/lib/moneyDisplay"; /* WAVE 55 · R6 */
 import { useRoute } from "wouter";
+/* WAVE D · ITEM 6d — this page shows exactly ONE vehicle and, before this wave,
+   offered no way to reach another: the only route out was back to the list. The
+   switcher is the same control the SPVs list now carries, so "switch vehicle"
+   means the same thing on every page under SPVs. It ADDS a way to another
+   vehicle; it removes none. */
+import { PartnerSpvSwitcher } from "@/components/partner/PartnerSpvSwitcher";
+/* WAVE D · ITEM 6d — imperative navigation. `navigate` here is the SAME function
+   `useLocation()[1]` returns: App.tsx mounts `<Router>` with no `hook=` prop, so
+   wouter's default browser-location hook is in force (App.tsx line ~1682, and the
+   comment above it records that as an architectural decision). It is imported
+   from the subpath rather than from "wouter" on purpose: five existing tests
+   (w151, w176, w182, wave164 itemC, wave170) mock the "wouter" module with only
+   the exports this page used before, and adding `useLocation` to this page's
+   "wouter" imports made all five throw. Widening those mocks would have meant
+   editing five passing tests to accommodate this change; importing the same
+   function from a module they do not mock leaves every one of them untouched.
+   KNOWN LIMIT, stated rather than hidden: `navigate` reads window.history
+   directly, so it does not follow a `<Router base=...>` prefix or a custom
+   location hook. Neither exists in this application today. */
+import { navigate } from "wouter/use-browser-location";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient"; /* v25.14 NH3 — needed for queryFn */
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
@@ -756,6 +776,16 @@ export default function PartnerSpvDetail() {
 
   return (
     <PartnerShell title={`${s.name} · ${jurisdictionLabel(s)} · ${spvStatusLabel(s.status)}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+      {/* WAVE D · ITEM 6d — the vehicle switcher, at the top of the page and
+          OUTSIDE the vehicle's own detail card. No existing element, literal or
+          test id below is replaced, moved or wrapped. */}
+      <PartnerSpvSwitcher
+        currentSpvId={spvId ?? null}
+        testidPrefix="spv-detail-switcher"
+        onSelect={(id) => {
+          if (id !== null && id !== spvId) navigate(`/collective/partner/spvs/${encodeURIComponent(id)}`);
+        }}
+      />
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-spv-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>

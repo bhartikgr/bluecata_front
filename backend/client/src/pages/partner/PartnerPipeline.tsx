@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PartnerShell } from "@/components/partner/PartnerShell";
+import { PartnerSurfaceGuide } from "@/components/partner/PartnerSurfaceGuide"; /* WAVE C · ITEM 10a */
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -434,8 +435,39 @@ export default function PartnerPipeline() {
         )}
         {!showLoading && !showError && !showEmpty && (
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3" data-testid="pipeline-kanban">
-          {STAGES.map((s) => (
-            <div key={s} className="bg-white rounded-lg border p-2 min-h-[120px]" data-testid={`column-${s}`}>
+          {STAGES.map((s, sIdx) => (
+            /* WALKTHROUGH WAVE E · ITEM 4a — "can this be improved by colour
+               coding… Do not make it more complicated, as the flow is awesome!"
+
+               NOTHING ABOUT THE FLOW CHANGES. No column moves, no card moves, no
+               control is added, renamed or removed, and not one text node is
+               edited. The whole change is the two attributes below plus rules in
+               `client/src/styles/wave-e-partner-colour.css`.
+
+               `data-we-stage-rank` is 1-based over the SIX canonical
+               `PARTNER_PIPELINE_STAGES` and drives a monotone navy ramp on the
+               column's top edge: light at `invited`, darkest at `committed`.
+               THE COLOUR MEANS "how far along this stage is", and the stage NAME
+               and live "(n)" count printed immediately below are already the
+               non-colour statement of the same fact — remove the colour and
+               nothing is lost. The ramp is one hue at six lightness steps, so it
+               is unaffected by any colour-vision deficiency and readable in
+               greyscale; no red/green pairing is introduced.
+
+               `data-we-stage-empty` marks a stage with no deals. It is drawn as
+               a DASHED outline — a shape, not a colour — and the heading already
+               reads "(0)". `byStage` is keyed by `canonicalizeStage`, which is
+               NOT touched here: a legacy stage value is still routed by that
+               function, and because these attributes are read only by attribute
+               selectors, any rank this map did not anticipate simply draws
+               nothing rather than mislabelling a stage. */
+            <div
+              key={s}
+              className="bg-white rounded-lg border p-2 min-h-[120px]"
+              data-testid={`column-${s}`}
+              data-we-stage-rank={sIdx + 1}
+              data-we-stage-empty={byStage[s].length === 0 ? "true" : "false"}
+            >
               <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-secondary)] font-semibold">{PARTNER_PIPELINE_STAGE_LABELS[s]} ({byStage[s].length})</div>
               {/* v25.50.0 Phase 2 (2c-a) — per-stage description. */}
               <div className="text-[10px] leading-tight text-[var(--cv-color-text-faint)] mb-2" data-testid={`column-${s}-desc`}>{PARTNER_PIPELINE_STAGE_DESCRIPTIONS[s]}</div>
@@ -907,6 +939,46 @@ export default function PartnerPipeline() {
         onOpenChange={(o) => { if (!o) setActivityDeal(null); }}
       />
 
+      {/* WAVE C · ITEM 10a — PLACED ABOVE LOCK 1, NOT AFTER IT.
+          `wave33_pipe10_lock1.test.ts` asserts that NOTHING follows the Lock 1
+          panel's mount before the shell's closing tag in this file. That test is
+          not weakened, so this block sits immediately above it.
+
+          The JSX tags that test anchors on are deliberately NOT written out in
+          this comment, so an `indexOf` anchor cannot match this comment instead
+          of the mount. */}
+      <PartnerSurfaceGuide
+        testId="pipeline-surface-guide"
+        title="How Pipeline differs from Clients, Portfolio and SPVs"
+        relations={[
+          {
+            label: "Clients",
+            href: "/collective/partner/clients",
+            why: "which companies your introduction is formally credited for",
+            testId: "pipeline-guide-to-clients",
+          },
+          {
+            label: "Portfolio",
+            href: "/collective/partner/portfolio",
+            why: "the profile you keep for a company — its sector, stage and headquarters",
+            testId: "pipeline-guide-to-portfolio",
+          },
+          {
+            label: "SPVs",
+            href: "/collective/partner/spvs",
+            why: "the investment vehicles you sponsor, which are created separately and never automatically from a deal",
+            testId: "pipeline-guide-to-spvs",
+          },
+        ]}
+      >
+        Pipeline tracks MOVEMENT: how far each deal you are working has progressed,
+        and nothing else. A deal here does not have to name a company yet, which is
+        why some rows have no company to open. Clients records who gets the credit
+        for an introduction, Portfolio records what a company is, and SPVs are the
+        vehicles that actually hold an investment. Reaching a later stage here does
+        not create an SPV and does not move any money; both remain deliberate,
+        separate steps you take yourself.
+      </PartnerSurfaceGuide>
       {/* WAVE 33 · CP-PIPE-10 — LOCK 1. APPENDED as the LAST sibling inside the
           shell, never inserted mid-list. The lock governs the provenance of
           partner-sourced soft circles, which originate on this surface, so this
