@@ -29,12 +29,59 @@ import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { partnerAttributionStore } from "./partnerWorkspaceStore";
+import { getCompanyRecordById } from "./multiCompanyStore";
+import { resolveDisplayName } from "./lib/displayNameResolver";
 import {
   managedFounderStore,
   GateError,
   SEEDABLE_PARTNER_TYPES,
   type EngagementMode,
 } from "./managedFounderStore";
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WAVE NB-B — A NAME WHERE A NAME IS AVAILABLE, AND A PLAIN DESCRIPTION WHERE
+   IT IS NOT. NEVER A RAW TOKEN, NEVER AN INVENTED NAME.
+
+   Three read surfaces served a partner their own companies and contacts as raw
+   storage keys. The values needed to say it properly were already on the same
+   rows; nothing new is stored and nothing is looked up that this partner may not
+   already see. Both helpers below add a field BESIDE the existing ones — the raw
+   value stays on the wire, because support still needs to quote it.
+
+   THE RESOLVERS ARE THE TREE'S OWN. `getCompanyRecordById` is what
+   `GET /api/partner/me/clients` already uses, and `resolveDisplayName` is the
+   single user-identity resolver in `server/lib/displayNameResolver.ts`. A second
+   implementation of either would be the drift this band is about.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** A company name for an engagement, or null when the company has none on file. */
+function nbBWithCompanyName<T extends { companyId: string }>(e: T): T & { companyName: string | null } {
+  return { ...e, companyName: getCompanyRecordById(e.companyId)?.companyName ?? null };
+}
+
+/**
+ * A readable name for one CRM layer row.
+ *
+ * `contact_ref` is a COMPOSITE STORAGE KEY of the form `<kind>:<id>` — the
+ * `company:` / `investor:` prefix is load-bearing data written by
+ * `setLayerMembership`, not decoration, so it is not stripped or reformatted
+ * here; it stays on the wire untouched. This returns null whenever a real name
+ * cannot be established, and the screen then renders its labelled-reference
+ * floor rather than anything invented.
+ */
+function nbBContactName(l: { contact_ref?: string | null }): string | null {
+  const ref = String(l.contact_ref ?? "");
+  const sep = ref.indexOf(":");
+  const kind = sep >= 0 ? ref.slice(0, sep) : "";
+  const id = sep >= 0 ? ref.slice(sep + 1) : ref;
+  if (!id) return null;
+  if (kind === "company") return getCompanyRecordById(id)?.companyName ?? null;
+  /* An investor/user ref. `resolved:false` means neither a name nor an email is
+     on file — the resolver would hand back a humanised placeholder, and a
+     placeholder rendered in a name column is indistinguishable from a fact. */
+  const r = resolveDisplayName(id);
+  return r.resolved ? r.name : null;
+}
 
 /** Returns true iff companyId is attributed to this partner (partner-scoped). */
 function isAttributed(partnerId: string, companyId: string): boolean {
@@ -86,7 +133,7 @@ export function registerMfcrmRoutes(app: Express): void {
 
   app.get("/api/partner/me/mfcrm/engagements", requirePartnerAuth, (req: Request, res: Response) => {
     const pid = req.partnerContext!.partnerId;
-    res.json({ engagements: managedFounderStore.listEngagements(pid) });
+    res.json({ engagements: managedFounderStore.listEngagements(pid).map(nbBWithCompanyName) });
   });
 
   app.post(
@@ -126,7 +173,7 @@ export function registerMfcrmRoutes(app: Express): void {
     const pid = req.partnerContext!.partnerId;
     const e = managedFounderStore.getEngagement(pid, String(req.params.engagementId));
     if (!e) return res.status(404).json({ error: "ENGAGEMENT_NOT_FOUND" });
-    res.json({ engagement: e, trial: managedFounderStore.getTrial(pid, e.id) });
+    res.json({ engagement: nbBWithCompanyName(e), trial: managedFounderStore.getTrial(pid, e.id) });
   });
 
   app.get("/api/partner/me/mfcrm/engagements/:engagementId/events", requirePartnerAuth, (req: Request, res: Response) => {
@@ -291,7 +338,11 @@ export function registerMfcrmRoutes(app: Express): void {
     if (!isAttributed(pid, companyId)) {
       return res.status(404).json({ error: "COMPANY_NOT_FOUND_OR_NOT_ATTRIBUTED" });
     }
-    res.json({ layers: managedFounderStore.listLayerMembership(pid, companyId) });
+    res.json({
+      layers: managedFounderStore
+        .listLayerMembership(pid, companyId)
+        .map((l) => ({ ...l, contactName: nbBContactName(l) })),
+    });
   });
 
   /* ---- Money path 1: soft-circle graduation (sacred commitFunded) ---- */

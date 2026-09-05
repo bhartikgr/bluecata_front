@@ -35,6 +35,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { rawDb } from "../db/connection";
+import { asTenantScope } from "../lib/tenantId";
 import { markHistoryForCompany } from "../lib/investorMarkHistory";
 import { ensureWave9Schema, getW9Config, setW9Config, badgeForAge } from "../wave9ReportingStore";
 
@@ -42,6 +43,16 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const COMPONENT = "client/src/components/investor/PortfolioCompanyOverview.tsx";
 
 const TENANT = "w36r10_tenant";
+
+/* W316 — the tenant scope this fixture's rows are written under.
+ *
+ * `markHistoryForCompany` now REQUIRES a tenant scope, and these call sites were
+ * updated by SUPPLYING THE FIXTURE'S OWN TENANT — never by making the parameter
+ * optional again. An optional tenant is the defect W316 exists to remove, and a
+ * test that restores it to stay green would delete the fix. Every row this file
+ * inserts carries `tenant_id = TENANT`, so scoping to TENANT must leave every
+ * pre-W316 assertion in this file unchanged; that is the point of the exercise. */
+const SCOPE = asTenantScope([TENANT]);
 const CO = "w36r10_co";           // fresh + stale + expired USD marks
 const CO_OV = "w36r10_co_ov";     // one old mark carrying an EFFECTIVE override
 const CO_JPY = "w36r10_co_jpy";   // JPY (exponent 0) fixture
@@ -122,7 +133,7 @@ const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(
 
 describe("WAVE 36 ROW 10 · P1-P4 — the read model badges every point from DB-driven thresholds", () => {
   it("P1 — fresh / stale / expired are all three distinguished on one series", () => {
-    const h = markHistoryForCompany(CO);
+    const h = markHistoryForCompany(CO, { tenantScope: SCOPE });
     expect(h.unavailableReason).toBeNull();
     expect(h.marks.length).toBe(3);
     const by = Object.fromEntries(h.marks.map((m) => [m.id, m]));
@@ -138,7 +149,7 @@ describe("WAVE 36 ROW 10 · P1-P4 — the read model badges every point from DB-
   });
 
   it("P2 — the thresholds travel with the response and are the ones actually applied", () => {
-    const h = markHistoryForCompany(CO);
+    const h = markHistoryForCompany(CO, { tenantScope: SCOPE });
     expect(h.markThresholds).toEqual({ staleWarnDays: 180, staleExpiredDays: 365 });
     /* The verdicts agree with the canonical decider, run independently here. */
     for (const m of h.marks) {
@@ -152,7 +163,7 @@ describe("WAVE 36 ROW 10 · P1-P4 — the read model badges every point from DB-
     setW9Config("marks.stale_warn_days", 900, "w36r10");
     setW9Config("marks.stale_expired_days", 1000, "w36r10");
     try {
-      const h = markHistoryForCompany(CO);
+      const h = markHistoryForCompany(CO, { tenantScope: SCOPE });
       const by = Object.fromEntries(h.marks.map((m) => [m.id, m]));
       expect(by["w36r10_stale"]!.badge).toBe("fresh");
       expect(by["w36r10_expired"]!.badge).toBe("fresh");
@@ -162,12 +173,12 @@ describe("WAVE 36 ROW 10 · P1-P4 — the read model badges every point from DB-
       setW9Config("marks.stale_expired_days", 365, "w36r10");
     }
     /* …and restoring the config restores the verdict. Both poles. */
-    const back = Object.fromEntries(markHistoryForCompany(CO).marks.map((m) => [m.id, m]));
+    const back = Object.fromEntries(markHistoryForCompany(CO, { tenantScope: SCOPE }).marks.map((m) => [m.id, m]));
     expect(back["w36r10_stale"]!.badge).toBe("stale");
   });
 
   it("P4 — an override does NOT reset the clock, and the original figure survives", () => {
-    const h = markHistoryForCompany(CO_OV);
+    const h = markHistoryForCompany(CO_OV, { tenantScope: SCOPE });
     expect(h.marks.length).toBe(1);
     const m = h.marks[0]!;
     expect(m.overrideId).toBe("w36r10_ov");
@@ -181,14 +192,14 @@ describe("WAVE 36 ROW 10 · P1-P4 — the read model badges every point from DB-
   });
 
   it("P5 — JPY (exponent 0) is badged identically and its integer is untouched", () => {
-    const h = markHistoryForCompany(CO_JPY);
+    const h = markHistoryForCompany(CO_JPY, { tenantScope: SCOPE });
     expect(h.currency).toBe("JPY");
     expect(h.marks[0]!.fairValueMinor).toBe(900_000);   // not 9_000, not 90_000_000
     expect(h.marks[0]!.badge).toBe("expired");
   });
 
   it("P6 — an empty series carries null thresholds, not a fabricated default", () => {
-    const h = markHistoryForCompany("w36r10_company_that_does_not_exist");
+    const h = markHistoryForCompany("w36r10_company_that_does_not_exist", { tenantScope: SCOPE });
     expect(h.unavailableReason).toBe("NO_MARKS_RECORDED");
     expect(h.marks).toEqual([]);
     expect(h.markThresholds).toBeNull();

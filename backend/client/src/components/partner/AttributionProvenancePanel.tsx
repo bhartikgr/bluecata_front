@@ -26,6 +26,11 @@ import { Label } from "@/components/ui/label";
 interface ProvenanceRow {
   id: string;
   companyId: string;
+  /* WAVE NB-B — additive. Null when the company genuinely has no name on file
+     and when the account has neither a name nor an email; the existing wording
+     below is the floor for both cases. */
+  companyName?: string | null;
+  attributedByName?: string | null;
   attributionSource: string;
   attributedBy: string | null;
   attributedAt: string | null;
@@ -112,16 +117,36 @@ export default function AttributionProvenancePanel() {
                       person, and a raw ISO timestamp. The identifiers are still
                       readable for support - now LABELLED as reference codes
                       rather than passed off as a name or a title. */}
-                  <div className="text-sm font-medium">
-                    Company reference {a.companyId}
-                  </div>
+                  {/* WAVE NB-B — the company's own name when we hold one. The
+                      reference wording is UNCHANGED and still renders verbatim
+                      for a company with no name on file, so nothing is lost and
+                      no name is invented. */}
+                  {a.companyName ? (
+                    <div className="text-sm font-medium" data-testid={`attribution-provenance-company-${a.id}`}>
+                      {a.companyName}
+                    </div>
+                  ) : (
+                    <div className="text-sm font-medium" data-testid={`attribution-provenance-company-${a.id}`}>
+                      Company reference {a.companyId}
+                    </div>
+                  )}
                   <div className="text-xs text-[var(--cv-color-text-muted)]">
                     {/* Nulls are stated, never rendered as a fabricated value. */}
                     Source: {attributionSourceLabel(a.attributionSource)} · By:{" "}
-                    {actorDisplay(a.attributedBy).text}
-                    {actorDisplay(a.attributedBy).reference
-                      ? ` (reference ${actorDisplay(a.attributedBy).reference})`
-                      : ""}
+                    {/* WAVE NB-B — this account has no human name stored, but it
+                        DOES have an email, and the server resolves it through the
+                        tree's existing `resolveDisplayName`. An email on file is a
+                        real identifier, not a fabrication, so it is shown. When
+                        the server resolves nothing, `actorDisplay` is used exactly
+                        as before — a plain description plus the labelled reference
+                        — and NOTHING is derived from the email to make it look
+                        more like a person. */}
+                    {a.attributedByName ? a.attributedByName : actorDisplay(a.attributedBy).text}
+                    {a.attributedByName
+                      ? ""
+                      : actorDisplay(a.attributedBy).reference
+                        ? ` (reference ${actorDisplay(a.attributedBy).reference})`
+                        : ""}
                     {" "}· On: {formatTimestamp(a.attributedAt)}
                   </div>
                   <div

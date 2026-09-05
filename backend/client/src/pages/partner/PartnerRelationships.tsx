@@ -17,6 +17,18 @@
  * between that migration and Wave 30 is missing from the spine. Reconcile is the
  * repair path for exactly that gap, and the panel says so rather than leaving the
  * partner to guess.
+ *
+ * WAVE NB-A — THE FOUR SUMMARY TILES NO LONGER READ THE SPINE.
+ * They read the four surfaces themselves, on every load, so they cannot disagree
+ * with the pages they summarise and there is nothing about them to "repair". The
+ * spine and its presence rows still back the per-company table below the tiles —
+ * the dated history is the one thing only they hold — so reconcile keeps a real,
+ * narrower purpose: adding history entries that were never recorded, and the
+ * panel copy was re-framed to claim only that. Two further rules hold here: a
+ * surface the server could not read arrives as `null` and must render as a stated
+ * read-failure rather than a `0` nobody computed, and the tiles must say on
+ * screen that they count COMPANIES, not deals or records — both are asserted by
+ * `__tests__/nb_a_relationship_tiles_dom.test.tsx`.
  */
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -49,7 +61,11 @@ interface RelationshipRow {
 
 interface RelationshipsResponse {
   relationships: RelationshipRow[];
-  breakdown: Record<PcrSurface, number>;
+  /* WAVE NB-A — a surface the server could not read arrives as `null`, and null
+     is NOT zero. `0` means "counted, and there are none"; `null` means "not
+     counted". The tile must render those two differently or it is asserting a
+     figure nobody measured. */
+  breakdown: Record<PcrSurface, number | null>;
   surfaceLabels: Record<PcrSurface, string>;
 }
 
@@ -67,6 +83,17 @@ const FALLBACK_LABELS: Record<PcrSurface, string> = {
 
 /** Roles allowed to trigger reconcile — mirrors the server's assertSubRole list. */
 const RECONCILE_ROLES = ["managing_partner", "associate", "bd"];
+
+/* WAVE NB-A — a truthful zero and an uncomputed one must not look the same.
+   The server sends a number when it counted the surface and `null` when it could
+   not read it. Never print "0" for the second case. */
+function countText(v: number | null | undefined): string {
+  return typeof v === "number" ? String(v) : "Not counted";
+}
+
+function isUncounted(v: number | null | undefined): boolean {
+  return typeof v !== "number";
+}
 
 /* WAVE 87 · ITEM 1 — THIS LOCAL HELPER SHADOWED THE SAFE ONE.
    Twelve files define their own `fmtDate`/`formatIsoDate` whose body is the
@@ -150,9 +177,28 @@ export default function PartnerRelationships() {
             >
               <div className="text-xs text-[var(--cv-color-text-muted)]">{labels[s]}</div>
               {/* An explicit 0, never a blank — a blank reads as "unknown". */}
-              <div className="text-2xl font-semibold">{data.breakdown?.[s] ?? 0}</div>
+              <div className="text-2xl font-semibold">{countText(data.breakdown?.[s])}</div>
+              {isUncounted(data.breakdown?.[s]) && (
+                <div
+                  className="mt-1 text-xs text-[var(--cv-color-text-muted)]"
+                  data-testid={`relationships-count-${s}-unreadable`}
+                >
+                  This surface could not be read just now, so no figure is shown. Nothing has been
+                  lost; try again shortly.
+                </div>
+              )}
             </div>
           ))}
+          <div
+            key="nb-a-basis"
+            className="col-span-2 text-xs text-[var(--cv-color-text-muted)] sm:col-span-4"
+            data-testid="relationships-breakdown-basis"
+          >
+            Each figure counts companies, not deals or records, and is read from your Managed
+            Founder CRM, pipeline, clients and portfolio every time this page loads — so it always
+            matches those screens. A company you have several deals with counts once, and a deal
+            with no Capavate company behind it is not a company relationship and is not counted.
+          </div>
         </div>
       )}
 
@@ -161,9 +207,20 @@ export default function PartnerRelationships() {
           className="mb-4 rounded-md border border-[var(--cv-color-border)] bg-[var(--cv-color-surface-2)] p-3 text-sm"
           data-testid="relationships-reconcile-panel"
         >
+          {/* WAVE NB-A — this panel used to offer itself as the repair for the
+              figures. It never was one, and the figures no longer need repairing:
+              they are counted from the four surfaces on every load. What reconcile
+              genuinely does is add company entries and their dated history that
+              were never recorded, and the copy now says only that. It is stated as
+              a rule ("it only ever adds") rather than as a reassurance, because it
+              is a property of the code and not a promise. */}
           <div className="text-[var(--cv-color-text-muted)]">
-            The relationship map is built from your Managed Founder CRM, pipeline, clients and
-            portfolio. If a company is missing, reconcile rebuilds the map from those four surfaces.
+            The figures above are counted from your Managed Founder CRM, pipeline, clients and
+            portfolio each time this page loads. The table below adds one more thing: the dated
+            record of when each company joined or left each of them. If a company you work with is
+            missing from that table, reconcile adds the entries that were never recorded. Reconcile
+            only ever adds — it cannot remove or change a company, deal, client or portfolio
+            record, and it cannot make any figure smaller.
           </div>
           <div className="mt-2 flex items-center gap-3">
             <button

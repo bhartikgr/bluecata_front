@@ -123,6 +123,12 @@ import { isPushToLiveTransition } from "./lib/spvDeploymentFeeSource";
  * connection.ts's inline bootstrap, which is SACRED, so the self-heal installer
  * is what makes it present on a `:memory:` test database. */
 import { ensureWave50MoneyDefectSchema } from "./lib/applyWave50MoneyDefectSchema";
+/* WAVE 338 — same reason, for migration 0232's `spv_subscription.investor_display_name`.
+ * server/db/connection.ts is SACRED-FROZEN and cannot be widened, so the column
+ * would not exist on a `:memory:` test database or on the sandbox/dev bootstrap
+ * without this installer. Called from `hydrateSpvEngineStore` below, i.e. on the
+ * one path every boot takes before the first subscription row is read. */
+import { ensureSpvSubscriptionDisplayName } from "./lib/spvSubscriptionDisplayNameSchema";
 // Wave B v26.4.0-fix (BLOCK-B) — static import replaces the prior lazy
 // `require("./spvFundStore")`. Verified: NO circular dependency exists
 // (`spvFundStore.ts` does not import from `spvEngineStore` at all, and
@@ -2050,6 +2056,11 @@ export const spvEngineStore = {
       id: newId("spvsub"),
       spvId,
       investorId: data.investorId,
+      /* WAVE 338 — no writer ships in this wave, so a NEW subscription starts
+         with its display name UNKNOWN, which is the truth: nobody has told us
+         one. The read chain then behaves for this row exactly as it did before
+         wave 338. `_persistSub` does not write this column at all. */
+      investorDisplayName: null,
       investorPersona: (data.investorPersona as SpvSubscriptionDTO["investorPersona"]) ?? null,
       commitmentMinor: data.commitmentMinor,
       wiredMinor: 0,
@@ -2418,6 +2429,8 @@ export const spvEngineStore = {
       id: newId("spvsub"),
       spvId,
       investorId: data.investorId,
+      /* WAVE 338 — see subscribe(): unknown, not empty. */
+      investorDisplayName: null,
       investorPersona: (data.investorPersona as SpvSubscriptionDTO["investorPersona"]) ?? null,
       commitmentMinor: Number.isFinite(data.commitmentMinor) && data.commitmentMinor > 0 ? data.commitmentMinor : 0,
       wiredMinor: 0,
@@ -2528,7 +2541,23 @@ export const spvEngineStore = {
         );
       }
     }
-    const { prev, curr } = chain("spv_subscription", { ...sub, revisionHash: undefined });
+    /* ═══ WAVE 338 — THE NEW FIELD IS STRIPPED FROM THE HASHED BODY. ═══
+       `chain()` hashes `JSON.stringify(body, Object.keys(body).sort())`. The
+       spread `{ ...sub }` now carries `investorDisplayName`, and a NEW KEY IN A
+       HASHED PAYLOAD CHANGES THE HASH — every existing `curr_hash` on every
+       subscription row would stop verifying, on a chain this platform treats as
+       evidence. Setting it to `undefined` is exactly how `revisionHash` has
+       always been excluded on the line this replaces: `JSON.stringify` OMITS a
+       key whose value is `undefined` even when that key is listed in the
+       replacer array, so the canonical string is byte-identical to what it was
+       before this wave. That claim is not taken on trust — it is asserted
+       directly in server/__tests__/w338_spv_subscription_display_name.test.ts,
+       which recomputes a real subscription's hash with and without the field. */
+    const { prev, curr } = chain("spv_subscription", {
+      ...sub,
+      revisionHash: undefined,
+      investorDisplayName: undefined,
+    });
     sub.revisionHash = curr;
     // Wave B v26.4.0-fix (BLOCK-I part 1) — include commitment_minor and
     // currency in the DO UPDATE SET clause so a re-persist with different
@@ -4553,6 +4582,12 @@ export function shadowCommitmentToEngine(input: {
     id: engineSubId,
     spvId: engineSpvId,
     investorId: input.lpUserId,
+    /* WAVE 338 — PRESERVE, NEVER BLANK. This legacy migrator re-runs on every
+       boot for the same legacy position, so writing a bare `null` here would
+       wipe a display name migration 0232 had backfilled, out of the RAM cache,
+       on every restart. Same rule the surrounding lines already apply to
+       `commitmentMinor`: the engine is authoritative for a row it already has. */
+    investorDisplayName: existing?.investorDisplayName ?? null,
     investorPersona: "partner",
     // v26.4.0-fix4 (Opus F4-2 fix): if a subscription already exists for this
     // (spv, investor), the engine is authoritative for `commitmentMinor` —
@@ -6011,6 +6046,39 @@ export function engineGetLegacySpvById(spvId: string): SpvRow | null {
 /* ── hydrate-on-boot ────────────────────────────────────────────────────── */
 export async function hydrateSpvEngineStore(): Promise<void> {
   const db = rawDb();
+  /* ═══ WAVE 338 — INSTALL MIGRATION 0232's COLUMN BEFORE THE FIRST READ. ═══
+     server/db/connection.ts is SACRED-FROZEN, so its inline bootstrap — which
+     builds the sandbox database, the dev database and every `:memory:` test
+     database — does not know about `investor_display_name`. This is the third
+     schema home described in server/lib/spvSubscriptionDisplayNameSchema.ts, and
+     `hydrateSpvEngineStore` is the right place to call it because it is the one
+     path taken on every boot before any subscription row is read.
+
+     BEST-EFFORT BY DESIGN, AND THE FAIL DIRECTION IS THE SAFE ONE. If this
+     throws, the column is absent, `rowToSub` reads `undefined ?? null`, and
+     every row keeps exactly today's display behaviour. A schema installer must
+     never be able to take an SPV engine off the air, so it cannot be allowed to
+     abort the hydration that follows. It is not silent: the outcome is logged
+     with the row counts it actually wrote. */
+  try {
+    const install = ensureSpvSubscriptionDisplayName(db as never);
+    if (install.failures.length > 0) {
+      log.warn(
+        "[spvEngineStore] WAVE 338 investor_display_name install reported failures:",
+        install.failures.join(" | "),
+      );
+    } else if (install.columnAdded || install.backfilled > 0) {
+      log.info(
+        `[spvEngineStore] WAVE 338 investor_display_name: columnAdded=${install.columnAdded} ` +
+          `backfilled=${install.backfilled} leftNull=${install.leftNull} of ${install.totalRows} row(s)`,
+      );
+    }
+  } catch (err) {
+    log.warn(
+      "[spvEngineStore] WAVE 338 investor_display_name installer threw — rows keep pre-wave display behaviour:",
+      (err as Error).message,
+    );
+  }
   try {
     spvById.clear(); mandateBySpv.clear(); feesBySpv.clear(); subsBySpv.clear();
     deploymentsBySpv.clear(); distributionsBySpv.clear(); docsBySpv.clear();
@@ -6138,7 +6206,19 @@ function rowToFee(r: any): SpvFeeDTO {
 }
 function rowToSub(r: any): SpvSubscriptionDTO {
   return {
-    id: r.id, spvId: r.spv_id, investorId: r.investor_id, investorPersona: r.investor_persona,
+    id: r.id, spvId: r.spv_id, investorId: r.investor_id,
+    /* WAVE 338 — `?? null` is LOAD-BEARING, not defensive habit. This function
+       is fed by `SELECT * FROM spv_subscription`, so on a database that has not
+       yet run migration 0232 the property is simply ABSENT and `r.investor_display_name`
+       is `undefined`. Coercing it to `null` here is what makes such a row behave
+       EXACTLY as it does today: the read chain skips a null term and falls
+       through to the existing display heuristic. Same shape, and the same
+       reasoning, as `rowToDistribution`'s `distribution_type ?? …` above.
+       An empty string is preserved as an empty string deliberately: `??` only
+       replaces null/undefined, so a row someone blanked by hand is reported as
+       blank rather than silently re-guessed. */
+    investorDisplayName: r.investor_display_name ?? null,
+    investorPersona: r.investor_persona,
     commitmentMinor: r.commitment_minor, wiredMinor: r.wired_minor, currency: r.currency, status: r.status,
     kycRef: r.kyc_ref, accreditationRef: r.accreditation_ref, subscriptionDocRef: r.subscription_doc_ref,
     ownershipPct: r.ownership_pct, createdAt: r.created_at, updatedAt: r.updated_at, revisionHash: r.curr_hash,

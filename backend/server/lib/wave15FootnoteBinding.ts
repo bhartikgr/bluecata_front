@@ -49,6 +49,7 @@ import {
   type FootnoteConfig,
 } from "@capavate/math-fns";
 import { getW9Config, latestValuationEvent } from "../wave9ReportingStore";
+import type { TenantId } from "./tenantId";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
 
@@ -158,6 +159,17 @@ export function buildFootnotes(args: {
   vehicleId: string;
   asOfDate: string;
   currency?: string;
+  /**
+   * W316 — REQUIRED, and branded so it cannot be omitted or left blank.
+   *
+   * Before W316 this function read the latest valuation event with NO tenant at
+   * all, on a route carrying `requireAuth` and no ownership check of any kind:
+   * any authenticated user who knew a vehicle id read another tenant's
+   * valuation date and printed it into their own footnotes. The parameter is
+   * not optional, because the defect being fixed IS an optional tenant
+   * parameter that nobody passed.
+   */
+  tenantId: TenantId;
 }): FootnoteBindingResult {
   const rawRecallable = readString("footnote.recallable_treatment");
   const recallableTreatment = RECALLABLE_TREATMENT_MAP[rawRecallable];
@@ -187,7 +199,11 @@ export function buildFootnotes(args: {
   const requireValuationDate = readBool("footnote.require_valuation_date");
   const valuationSourceLabel = readString("footnote.valuation_source_label");
 
-  const ev = latestValuationEvent(args.vehicleKind, args.vehicleId);
+  /* W316 — the tenant is now THREADED IN and passed as the fourth argument.
+   * `latestValuationEvent`'s own SQL has carried `AND (? IS NULL OR tenant_id =
+   * ?)` since W303; the fence existed and this call site was never passing it.
+   * `holdingId` stays undefined — this reader is vehicle-level, not holding-level. */
+  const ev = latestValuationEvent(args.vehicleKind, args.vehicleId, undefined, args.tenantId);
   const valuationDate = ev && typeof ev.valuationDate === "string" && ev.valuationDate.trim() !== ""
     ? ev.valuationDate
     : null;

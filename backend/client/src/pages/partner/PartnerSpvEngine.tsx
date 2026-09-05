@@ -57,6 +57,10 @@ import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import { SPV_EDU } from "@/lib/spvEducation"; /* WAVE 8 / ORP-063 */
 import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 import { spvStatusLabel } from "@/lib/partnerDisplay"; /* WAVE 128 - FINDING 3 */
+/* NUMBERS BAND · WAVE C · W324 — the one sentence that says what the status word
+   above does and does not mean. Imported, not re-typed, so this list and the two
+   per-vehicle surfaces can never drift apart. */
+import { SPV_STATUS_IS_LIFECYCLE_ONLY } from "@/components/partner/SpvStatusAttestationQualifier";
 /* WAVE 170 — R77: a refusal reaching a paying client is a plain sentence with a
    next step, or a traceable reference; never whatever string arrived. */
 import { partnerActionRefusalText } from "@/lib/serverRefusalMessage";
@@ -2141,6 +2145,33 @@ export default function PartnerSpvEngine() {
                   >
                     Open standalone SPV admin page (LP invites, commits, capital calls) →
                   </Link>
+                  {/* NUMBERS BAND · WAVE C · W324 — WHAT THE STATUS WORD ON THE LINE
+                      ABOVE DOES AND DOES NOT MEAN.
+
+                      ON LIVE this row read "· Deployed ·" for "QUantum SPV", whose
+                      launch sign-off record is empty, with the wave 189 unattested-draft
+                      panel rendered directly beneath it inside the same expanded card.
+                      Both statements were true and nothing reconciled them.
+
+                      A STATIC SIBLING, APPENDED LAST. The line above is NOT edited —
+                      its text nodes, including the " · " separators and the "Carry: "
+                      literal, stay byte-verbatim, and `spvStatusLabel` is called
+                      exactly as before. This is an additional line, in the same shape
+                      as the Jurisdiction and Vintage siblings already on this card,
+                      placed after every existing child so no sibling is renumbered.
+
+                      THE RULE ONLY, NO PER-VEHICLE VERDICT, ON PURPOSE. Measured on
+                      live: neither the list payload `GET /api/partner/me/spvs` nor the
+                      detail payload `GET /api/partner/me/spv/:id` carries any
+                      attestation field, so a verdict here would cost one extra HTTP
+                      request per row of this list. The per-vehicle answer is rendered
+                      instead in the Status cell of the card's Overview tab and on the
+                      standalone page, where one vehicle is already being fetched. The
+                      sentence below makes no claim about this particular vehicle, so
+                      it is true for every row in every state. */}
+                  <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-status-lifecycle-only-${s.id}`}>
+                    {SPV_STATUS_IS_LIFECYCLE_ONLY}
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
                   {/* WAVE 126 · REFERRED ITEM — THIS FIGURE NOW SAYS WHAT IT IS.

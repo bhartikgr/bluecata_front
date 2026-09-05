@@ -1,0 +1,100 @@
+{
+  "_doc": [
+    "W316 — DECLARED EXCEPTIONS TO THE TENANT SCOPE FENCE.",
+    "",
+    "An entry here is INERT ON ITS OWN. The fence requires BOTH this entry AND a",
+    "'/* TENANT-SCOPE-EXEMPT: <key> */' marker immediately above the statement it",
+    "excuses. A marker with no entry FAILS the build ('an undeclared exception'),",
+    "and an entry with no marker FAILS the build as STALE ('an exception that",
+    "outlived the code it excused'). Two places, both required, both checked in",
+    "both directions — because a one-place exception list is how a fence quietly",
+    "becomes a rubber stamp.",
+    "",
+    "'ruling' must name the authority that decided the read may cross tenants.",
+    "'countervailingControl' must name what keeps the exception honest: an",
+    "exception with nothing standing against it is an unbounded permission."
+  ],
+  "exemptions": [
+    {
+      "key": "Q10_COHORT_BENCHMARK",
+      "file": "server/wave9ReportingStore.ts",
+      "function": "computeCohortBenchmark",
+      "table": "portfolio_metric_snapshot",
+      "ruling": "Owner ruling Q10 — the cohort benchmark MUST STAY CROSS-TENANT.",
+      "reason": [
+        "A benchmark computed inside one tenant is not a benchmark. It compares a",
+        "GP's portfolio to itself and returns approximately 1.00 by construction,",
+        "which is worse than no number: it looks like a peer comparison and is not",
+        "one. The whole product value of this read is that the cohort spans the",
+        "platform.",
+        "No individual subject's figures are disclosed by it: the read returns one",
+        "aggregate, gated on 'benchmark.min_cohort_n' so a cohort small enough to",
+        "re-identify a member is refused outright."
+      ],
+      "countervailingControl": [
+        "WAVE 221 (R190.10) — subjects who opt out of benchmarking are filtered",
+        "OUT WHERE THE NUMBER IS MADE, in this same function, not at display time.",
+        "shared/wave221BenchmarkingOptOutCopy.ts carries the user-facing copy and",
+        "server/__tests__/w221_benchmarking_opt_out.test.ts is the guard.",
+        "'benchmark.min_cohort_n' (wave9_reporting_config) is the k-anonymity floor."
+      ],
+      "provenAfterChange": "server/__tests__/w316_cross_tenant_reporting_scope.test.ts asserts this read STILL returns a cohort assembled from more than one tenant after W316."
+    },
+    {
+      "key": "W316_ME_CASHFLOWS_IDENTITY_SCOPED",
+      "file": "server/lib/ilpaCashflowLedger.ts",
+      "function": "listFlowsForInvestor",
+      "table": "vehicle_cashflow",
+      "ruling": "Owner question Q-D, delegated and decided in W316: DO NOT SCOPE THIS READ. W303 explicitly protected the '/api/me/**' surface.",
+      "reason": [
+        "This read is IDENTITY-scoped, which is TIGHTER than tenant-scoped, not",
+        "looser: 'WHERE lp_id IN (resolveInvestorIdSet(canonicalUserId))' returns",
+        "only rows belonging to the caller themselves.",
+        "Adding a tenant predicate here would REMOVE ROWS THE LP LEGITIMATELY OWNS.",
+        "An LP who has committed to vehicles under two different GPs owns cashflows",
+        "under two tenant ids; scoping '/api/me/cashflows' to one of them would",
+        "silently drop half of their own distributions from their own DPI. That is",
+        "not a smaller leak — it is a WRONG NUMBER on the investor's own statement.",
+        "Re-verified in W316 by reading the SQL and censusing the call sites: one",
+        "production caller, server/lib/reportingEngineRoutes.ts, route",
+        "GET /api/me/cashflows. The exclusion in the specification HELD."
+      ],
+      "countervailingControl": [
+        "'resolveInvestorIdSet' (server/lib/investorIdentityAliasStore.ts) is the",
+        "single decider of which ids denote the caller, and an empty set returns [],",
+        "never an unfiltered read. The route sits behind the authenticated /api/me",
+        "surface, so lp_id is derived from the session and never from the request."
+      ],
+      "provenAfterChange": "server/__tests__/w316_cross_tenant_reporting_scope.test.ts drives GET /api/me/cashflows as a CONTROL and asserts it still returns the LP's own cross-tenant rows."
+    },
+    {
+      "key": "W316_HOLDING_TENANT_DERIVATION",
+      "file": "server/lib/investorMarkHistory.ts",
+      "function": "holdingTenantsForCompany",
+      "table": "captable_commits",
+      "ruling": "Owner question Q-E, delegated and decided in W316: derive the tenant from the caller's own holdings.",
+      "reason": [
+        "This is the read that DERIVES the tenant scope, so it cannot itself be",
+        "tenant-scoped — there is nothing to scope it to yet. Requiring a tenant",
+        "here would be circular.",
+        "It is instead scoped by the caller's own identity, with the SAME predicate",
+        "'investorHoldsCompany' already trusts to authorise the request:",
+        "investor_id = caller, company_id = the company in the path,",
+        "state = 'committed', deleted_at IS NULL. It reads no figure of any kind —",
+        "only the DISTINCT tenant ids of the caller's own committed holdings.",
+        "server/lib/userContext.ts, which would otherwise be the place to carry a",
+        "tenant id, is FROZEN this wave and carries none."
+      ],
+      "countervailingControl": [
+        "Fails CLOSED: an unreadable table, a thrown query, or a blank tenant_id",
+        "yields an empty array, and GET /api/investor/portfolio/:id/marks turns an",
+        "empty scope into the same byte-identical 404 it already returns for 'you do",
+        "not hold this company'. It cannot widen a read.",
+        "asTenantScope() refuses an empty scope, so 'scope to nothing' — which would",
+        "return an empty chart to everyone and pass a naive leak test — is not",
+        "expressible."
+      ],
+      "provenAfterChange": "server/__tests__/w316_cross_tenant_reporting_scope.test.ts proves tenant A sees A's OWN marks first, then that A cannot see B's, over real HTTP."
+    }
+  ]
+}

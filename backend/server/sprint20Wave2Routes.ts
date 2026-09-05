@@ -39,7 +39,9 @@ import { registerCollectiveNetworkRoutes } from "./collectiveNetworkStore";
 import {
   investorHoldsCompany,
   markHistoryForCompany,
+  holdingTenantsForCompany,
 } from "./lib/investorMarkHistory";
+import { asTenantScope } from "./lib/tenantId";
 /* WAVE 197 / R169 Item A — the two KYC handlers below returned raw exception
    text at HTTP 500 to ANY authenticated member (the only gate is `ctx?.isAuthed`),
    which put driver text and the `collective_kyc_blobs` table name on an ordinary
@@ -180,7 +182,24 @@ export function registerSprint20Wave2Routes(app: Express): void {
     const holdingId =
       typeof rawHolding === "string" && rawHolding.trim() ? rawHolding.trim() : null;
 
-    const history = markHistoryForCompany(companyId, { holdingId });
+    /* W316 — the marks read is now TENANT-SCOPED, and the scope is derived from
+     * the caller's OWN holdings of this company (see
+     * `holdingTenantsForCompany`). Before this wave the read carried no tenant
+     * predicate at all: holding this company under GP A returned GP B's marks
+     * for the same company, and because the module refuses to plot a series
+     * that spans currencies, a foreign EUR mark did not merely leak — it made
+     * the investor's OWN USD chart disappear behind MARKS_SPAN_CURRENCIES.
+     *
+     * An empty scope is returned as the SAME byte-identical 404, because "no
+     * committed holding with a usable tenant" is indistinguishable, to this
+     * caller, from "you do not hold this company". It is never widened. */
+    const tenants = holdingTenantsForCompany(String(ctx.userId ?? ""), companyId);
+    if (tenants.length === 0) return notFound();
+
+    const history = markHistoryForCompany(companyId, {
+      holdingId,
+      tenantScope: asTenantScope(tenants),
+    });
     return res.json(history);
   });
 

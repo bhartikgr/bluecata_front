@@ -43,6 +43,14 @@ const TOUCHED = [
   "pages/admin/Reconciliation.tsx",
   "pages/partner/PartnerContacts.tsx",
   "pages/partner/PartnerMfcrmPersonas.tsx",
+  /* WAVE NB-B — added because this panel now goes to ZERO unexplained hits.
+     `pages/partner/PartnerManagedFounders.tsx` was deliberately NOT added here:
+     it carries six pre-existing hits outside this band's scope, and admitting
+     six new exemptions to this shared list would weaken an instrument that
+     currently guards eight other screens. That file is pinned instead by its own
+     dedicated test, `nb_b_managed_founders_residual.test.ts`, which names the
+     exact six and asserts the one this wave fixed is gone. */
+  "components/partner/AttributionProvenancePanel.tsx",
 ];
 
 /* ── the hand-reviewed exceptions ──────────────────────────────────────────────
@@ -63,6 +71,14 @@ const ALLOWED = [
   { file: "components/CloseRoundPanel.tsx", text: "{role}" },
   { file: "pages/founder/Dashboard.tsx", pos: "H2-attr:description" },
   { file: "pages/partner/PartnerMfcrmPersonas.tsx", text: "{code}" },
+  /* WAVE NB-B — the SAME labelled-reference exception as `{code}` above, and for
+     the same reason. After this wave `{a.companyId}` is reachable in only ONE
+     branch of the panel: the one where the company has no name on file at all,
+     where it renders as `Company reference co_…` — labelled, quotable, and the
+     only truthful thing available. The resolved branch prints the real name and
+     contains no identifier; `nb_b_provenance_names_dom.test.tsx` asserts both
+     branches by rendered text, which is what this static exemption cannot do. */
+  { file: "components/partner/AttributionProvenancePanel.tsx", text: "{a.companyId}" },
 ];
 
 function residual() {

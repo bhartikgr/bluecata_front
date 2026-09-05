@@ -74,6 +74,7 @@ import {
   investorHoldsCompany,
   markHistoryForCompany,
 } from "../lib/investorMarkHistory";
+import { asTenantScope } from "../lib/tenantId";
 import { ensureWave9Schema } from "../wave9ReportingStore";
 import { registerSprint20Wave2Routes } from "../sprint20Wave2Routes";
 
@@ -88,6 +89,16 @@ const CO_EMPTY = "w31a1_co_empty"; // held by A, has NO marks
 const CO_OTHER = "w31a1_co_other"; // held by B only, HAS marks — the oracle bait
 const CO_NOWHERE = "w31a1_co_does_not_exist"; // held by nobody, no rows anywhere
 const TENANT = "w31a1_tenant";
+
+/* W316 — the tenant scope this fixture's rows are written under.
+ *
+ * `markHistoryForCompany` now REQUIRES a tenant scope, and these call sites were
+ * updated by SUPPLYING THE FIXTURE'S OWN TENANT — never by making the parameter
+ * optional again. An optional tenant is the defect W316 exists to remove, and a
+ * test that restores it to stay green would delete the fix. Every row this file
+ * inserts carries `tenant_id = TENANT`, so scoping to TENANT must leave every
+ * pre-W316 assertion in this file unchanged; that is the point of the exercise. */
+const SCOPE = asTenantScope([TENANT]);
 
 let db: any;
 
@@ -360,7 +371,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
 
   /* (6) NULLS, NOT ZEROS — and a reason, not a bare empty array. */
   it("(6) a company with no marks returns NO_MARKS_RECORDED with a NULL currency, not a zero", () => {
-    const h = markHistoryForCompany(CO_EMPTY);
+    const h = markHistoryForCompany(CO_EMPTY, { tenantScope: SCOPE });
     expect(h.marks).toEqual([]);
     expect(h.currency).toBeNull();
     expect(h.unavailableReason).toBe("NO_MARKS_RECORDED");
@@ -374,7 +385,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
      Exact minor-unit integers, in date order, with the superseded revision
      excluded. No constant can satisfy this. */
   it("(7) returns the real dated series in minor units, oldest first, excluding superseded rows", () => {
-    const h = markHistoryForCompany(CO_HELD);
+    const h = markHistoryForCompany(CO_HELD, { tenantScope: SCOPE });
     expect(h.unavailableReason).toBeNull();
     expect(h.currency).toBe("USD");
     expect(h.marks.map((m) => m.valuationDate)).toEqual([
@@ -394,7 +405,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
 
   /* (8) JPY FIXTURE — the exponent-0 trap. */
   it("(8) JPY marks survive the read unscaled: ¥900,000 stays 900000 minor units", () => {
-    const h = markHistoryForCompany(CO_JPY);
+    const h = markHistoryForCompany(CO_JPY, { tenantScope: SCOPE });
     expect(h.currency).toBe("JPY");
     expect(h.marks.map((m) => m.fairValueMinor)).toEqual([900000, 1250000, 1234567]);
     // Explicit anti-assertions for the two ways this goes wrong.
@@ -451,25 +462,25 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
 
   /* (12) NEVER PLOT ACROSS CURRENCIES. */
   it("(12) a company whose marks span currencies yields a REFUSAL, not a mixed series", () => {
-    const h = markHistoryForCompany(CO_MIXED);
+    const h = markHistoryForCompany(CO_MIXED, { tenantScope: SCOPE });
     expect(h.unavailableReason).toBe("MARKS_SPAN_CURRENCIES");
     expect(h.marks).toEqual([]);
     expect(h.currency).toBeNull();
     // Control: the same reader DOES return a series when the currency is
     // single. Without this, a reader that refused everything would pass.
-    expect(markHistoryForCompany(CO_HELD).unavailableReason).toBeNull();
+    expect(markHistoryForCompany(CO_HELD, { tenantScope: SCOPE }).unavailableReason).toBeNull();
   });
 
   /* (13) The `?holdingId=` narrowing, both poles. */
   it("(13) holdingId narrows the series to that lot, and its absence returns all lots", () => {
-    const all = markHistoryForCompany(CO_HELD);
-    const lot = markHistoryForCompany(CO_HELD, { holdingId: "w31a1_lot_x" });
+    const all = markHistoryForCompany(CO_HELD, { tenantScope: SCOPE });
+    const lot = markHistoryForCompany(CO_HELD, { holdingId: "w31a1_lot_x", tenantScope: SCOPE });
     expect(all.marks.length).toBe(4);
     expect(lot.marks.map((m) => m.id)).toEqual(["w31a1_m_lot"]);
     expect(lot.holdingId).toBe("w31a1_lot_x");
     // A holding that exists nowhere yields the empty REASON, not all rows —
     // a filter built with a falsy-collapsing `||` would return everything here.
-    expect(markHistoryForCompany(CO_HELD, { holdingId: "w31a1_lot_none" }).unavailableReason).toBe(
+    expect(markHistoryForCompany(CO_HELD, { holdingId: "w31a1_lot_none", tenantScope: SCOPE }).unavailableReason).toBe(
       "NO_MARKS_RECORDED",
     );
   });
@@ -483,7 +494,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
     insertCommit("w31a1_cov", INV_A, CO_OV);
     insertMark({ id: "w31a1_ov_e1", companyId: CO_OV, date: "2026-03-01", minor: 100000_00, currency: "USD" });
     // Control BEFORE the override exists.
-    expect(markHistoryForCompany(CO_OV).marks[0].fairValueMinor).toBe(10000000);
+    expect(markHistoryForCompany(CO_OV, { tenantScope: SCOPE }).marks[0].fairValueMinor).toBe(10000000);
 
     insertOverride({
       id: "w31a1_ov1",
@@ -495,7 +506,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
       state: "approved",
       at: "2026-03-02T00:00:00.000Z",
     });
-    const h = markHistoryForCompany(CO_OV);
+    const h = markHistoryForCompany(CO_OV, { tenantScope: SCOPE });
     expect(h.marks).toHaveLength(1); // replaced IN PLACE, not appended
     expect(h.marks[0].fairValueMinor).toBe(12500000);
     expect(h.marks[0].originalFairValueMinor).toBe(10000000);
@@ -516,7 +527,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
       state: "pending",
       at: "2026-03-02T00:00:00.000Z",
     });
-    const h = markHistoryForCompany(CO_OV2);
+    const h = markHistoryForCompany(CO_OV2, { tenantScope: SCOPE });
     expect(h.marks[0].fairValueMinor).toBe(10000000); // the EVENT's own figure
     expect(h.marks[0].overrideId).toBeNull();
   });
@@ -538,7 +549,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
       state: "approved",
       at: "2026-03-02T00:00:00.000Z",
     });
-    expect(markHistoryForCompany(CO_OV3).marks[0].fairValueMinor).toBe(50000000); // control
+    expect(markHistoryForCompany(CO_OV3, { tenantScope: SCOPE }).marks[0].fairValueMinor).toBe(50000000); // control
     insertOverride({
       id: "w31a1_ov3b",
       eventId: "w31a1_ov_e3",
@@ -549,7 +560,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
       state: "rejected",
       at: "2026-03-03T00:00:00.000Z",
     });
-    const h = markHistoryForCompany(CO_OV3);
+    const h = markHistoryForCompany(CO_OV3, { tenantScope: SCOPE });
     expect(h.marks[0].fairValueMinor).toBe(10000000);
     expect(h.marks[0].overrideId).toBeNull();
   });
@@ -562,7 +573,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
     insertCommit("w31a1_cov4", INV_A, CO_OV4);
     insertMark({ id: "w31a1_ov_e4a", companyId: CO_OV4, date: "2026-03-01", minor: 100000_00, currency: "USD" });
     insertMark({ id: "w31a1_ov_e4b", companyId: CO_OV4, date: "2026-04-01", minor: 110000_00, currency: "USD" });
-    expect(markHistoryForCompany(CO_OV4).unavailableReason).toBeNull(); // control
+    expect(markHistoryForCompany(CO_OV4, { tenantScope: SCOPE }).unavailableReason).toBeNull(); // control
     insertOverride({
       id: "w31a1_ov4",
       eventId: "w31a1_ov_e4b",
@@ -573,7 +584,7 @@ describe("W31-A1 · investor mark history — the stub is gone and the engine is
       state: "approved",
       at: "2026-04-02T00:00:00.000Z",
     });
-    expect(markHistoryForCompany(CO_OV4).unavailableReason).toBe("MARKS_SPAN_CURRENCIES");
+    expect(markHistoryForCompany(CO_OV4, { tenantScope: SCOPE }).unavailableReason).toBe("MARKS_SPAN_CURRENCIES");
   });
 
   /* (18) End to end through the route for the rightful holder — the positive

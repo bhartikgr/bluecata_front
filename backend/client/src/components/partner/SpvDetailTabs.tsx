@@ -78,6 +78,7 @@ import { SpvSideLetterPanel } from "@/components/partner/SpvSideLetterPanel";
 import SpvReachPanel from "@/components/partner/SpvReachPanel";
 import PartnerCsvDownloadButton from "@/components/partner/PartnerCsvDownloadButton"; /* WAVE 179 · ITEM C · R151.2 */
 import SpvAttestationStatusNotice from "@/components/partner/SpvAttestationStatusNotice"; /* WAVE 189 · ITEM C · R159.6 */
+import SpvStatusAttestationQualifier from "@/components/partner/SpvStatusAttestationQualifier"; /* NUMBERS BAND · WAVE C · W324 */
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { auditReceiptReference } from "@/lib/auditReceiptRef"; /* WAVE 95 · ITEM 2 */
@@ -894,6 +895,21 @@ export function SpvDetailTabs({
           <div data-testid="spv-detail-status">
             <div className="font-medium">Status</div>
             <div className="text-xs">{spv.status ?? "—"}</div>
+            {/* NUMBERS BAND · WAVE C · W324 — THE CELL WHERE THE CONTRADICTION IS
+                READ. The wave 189 notice above this grid says a vehicle is an
+                unattested draft; this cell says "deployed"; on live, both are true
+                of the same vehicle and nothing on the screen reconciled them.
+
+                APPENDED AS THE LAST CHILDREN OF THIS CELL, in the same shape as the
+                wave 165 sibling inside `spv-detail-raise`. No grid cell is added,
+                so every existing cell keeps its position and its test id, and the
+                raw-status line above is byte-verbatim.
+
+                IT ALSO COVERS THE NOTICE'S BLIND SPOT. The notice renders nothing
+                for an attested vehicle AND nothing when its fetch fails, which a
+                reader cannot tell apart. The verdict child below always speaks, and
+                says "could not be read" rather than going quiet. */}
+            <SpvStatusAttestationQualifier spvId={spvId} testid="spv-detail-status-attestation" />
           </div>
           {/* J-4 (WAVE 3C) — jurisdiction on the overview, alongside status.
               Rendered through a component (not inline JSX) so the silent-drop

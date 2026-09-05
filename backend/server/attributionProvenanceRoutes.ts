@@ -25,6 +25,15 @@
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth } from "./lib/requirePartnerAuth";
 import { partnerAttributionStore } from "./partnerWorkspaceStore";
+/* WAVE NB-B — the two lookups this file needs already exist and are already the
+ * ones the neighbouring screens use. `getCompanyRecordById` is what
+ * `GET /api/partner/me/clients` (server/partnerRoutes.ts:1684) resolves company
+ * names with, and `resolveDisplayNames` is the tree's single user-identity
+ * resolver (server/lib/displayNameResolver.ts:113). NO SECOND RESOLVER IS
+ * WRITTEN HERE: a third mapping would be exactly the drift these fixes exist to
+ * remove. Both are static imports. */
+import { getCompanyRecordById } from "./multiCompanyStore";
+import { resolveDisplayNames } from "./lib/displayNameResolver";
 import {
   assessAdmission,
   assessExistingRow,
@@ -43,15 +52,34 @@ export function registerAttributionProvenanceRoutes(app: Express): void {
         if (!partnerId) return res.status(401).json({ error: "AUTH_REQUIRED" });
 
         const rows = partnerAttributionStore.listByPartner(partnerId, { includeRevoked: false });
+
+        /* Resolve every actor ONCE for the whole page rather than per row: the
+           batch helper de-duplicates, and these rows are typically all the same
+           person. `resolveDisplayNames` never returns a raw `u_…` as a name — on
+           total failure it returns a humanised placeholder and `resolved:false`,
+           which is the signal the client uses to keep its existing wording. */
+        const actorNames = resolveDisplayNames(
+          rows.map((a) => String(a.attributedBy ?? "")).filter((id) => id.length > 0),
+        );
+
         const assessed = rows.map((a) => {
           const integrity = assessExistingRow({
             attributionSource: a.attributionSource,
             attributedBy: a.attributedBy,
             attributedAt: a.attributedAt,
           });
+          /* Additive fields only. Every existing key keeps its name, type and
+             meaning, so no existing reader can trip on these. A company with no
+             name on file, or an actor with neither name nor email, yields null /
+             resolved:false — the client then renders its EXISTING wording. A
+             missing fact is reported as missing; it is never filled in. */
+          const actor = a.attributedBy ? actorNames.get(String(a.attributedBy)) : undefined;
           return {
             id: a.id,
             companyId: a.companyId,
+            companyName: getCompanyRecordById(a.companyId)?.companyName ?? null,
+            attributedByName: actor?.resolved ? actor.name : null,
+            attributedByEmail: actor?.email ?? null,
             attributionSource: a.attributionSource,
             attributedBy: a.attributedBy,
             attributedAt: a.attributedAt,

@@ -173,6 +173,8 @@ import {
   Wave211AttestationPanel,
   useWave211Attestation,
 } from "@/components/partner/Wave211AttestationPanel";
+/* NUMBERS BAND · WAVE C · W324 — see the component's own header. */
+import SpvStatusAttestationQualifier from "@/components/partner/SpvStatusAttestationQualifier";
 import {
   W211_EVENT_NOUN_CAPITAL_CALL,
   W211_EVENT_NOUN_DISTRIBUTION,
@@ -819,6 +821,18 @@ export default function PartnerSpvDetail() {
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Status</div>
             <div data-testid="partner-spv-status">{spvStatusLabel(s.status)}</div>
+            {/* NUMBERS BAND · WAVE C · W324 — the status word alone read as a
+                certificate of good order. On live, a vehicle whose stored status is
+                `deployed` renders "Deployed" while having an empty sign-off record.
+                Both facts are true; the single word is what misleads.
+
+                APPENDED AS THE LAST CHILDREN OF THIS CELL. The heading and the
+                `partner-spv-status` line above are byte-verbatim — no literal is
+                replaced, reworded, hoisted or moved, and `spvStatusLabel` is called
+                exactly as before, so the status filter that shares that function is
+                unaffected. Nothing about the lifecycle is changed: no state is
+                added, removed or reinterpreted. */}
+            <SpvStatusAttestationQualifier spvId={spvId ?? ""} testid="partner-spv-status-attestation" />
           </div>
         </div>
       </Card>

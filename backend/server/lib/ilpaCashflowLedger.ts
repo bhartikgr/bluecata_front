@@ -416,6 +416,7 @@ export function listFlowsForInvestor(canonicalUserId: string, vehicleId?: string
   if (!ids.length) return [];
   const placeholders = ids.map(() => "?").join(",");
   const args: unknown[] = [...ids];
+  /* TENANT-SCOPE-EXEMPT: W316_ME_CASHFLOWS_IDENTITY_SCOPED */
   let sql = `SELECT * FROM vehicle_cashflow WHERE lp_id IN (${placeholders})`;
   if (vehicleId) { sql += ` AND vehicle_id = ?`; args.push(vehicleId); }
   sql += ` ORDER BY value_date, chain_seq, id`;

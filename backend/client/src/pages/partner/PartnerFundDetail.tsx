@@ -64,6 +64,9 @@ type Commitment = {
   commitmentMinor: number;
   ownershipPct: number;
   status?: string | null;
+  /* NUMBERS BAND · WAVE E (W328) — the LP's name when the platform honestly holds
+     one, `null` when it does not. Additive; every key above is unchanged. */
+  investorName?: string | null;
 };
 
 type FundDetail = {
@@ -251,7 +254,17 @@ export default function PartnerFundDetail() {
             {commitments.map((c) => (
               <div key={c.investorId} className="flex justify-between text-sm border-b pb-2" data-testid={`partner-commitment-${c.investorId}`}>
                 <div>
-                  {partyReferenceLabel(c.investorId)}
+                  {/* NUMBERS BAND · WAVE E (W328) — A NAME IS NOT A "REFERENCE".
+                      This cell printed `Reference MARK INVEST PARTNERS` for an LP
+                      whose stored `investorId` IS the firm's name, because
+                      `partyReferenceLabel` found no known prefix to strip and
+                      labelled a human name as an internal reference. The server now
+                      sends `investorName` when it honestly holds one, resolved by the
+                      SAME chain the LP Roster uses, so both screens name one row the
+                      same way. `partyReferenceLabel` is UNEDITED and stays exactly
+                      where it was, as the floor for a genuine id — its own header
+                      already says a real name should win where one is available. */}
+                  {c.investorName ?? partyReferenceLabel(c.investorId)}
                   {" "}
                   <span
                     className={spvRegisterRowIsPreCommitment(c.status) ? "text-amber-900" : "text-emerald-800"}

@@ -24,6 +24,7 @@ import { AppCard } from "@/components/ui/app-card";
 import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
 import { PartnerPipelineActivityDialog } from "@/components/partner/PartnerPipelineActivityDialog"; /* WAVE 27 · CP-PIPE-04 */
 import Lock1NoticePanel from "@/components/partner/Lock1NoticePanel"; /* WAVE 33 · CP-PIPE-10 */
+import PipelineDealCapavatePresence from "@/components/partner/PipelineDealCapavatePresence"; /* NUMBERS BAND · WAVE D · W326 */
 import { canWritePortfolioProfile } from "@shared/partnerRoles"; /* w-partner F-new2 — one source of truth with the server guard */
 import {
   PARTNER_PIPELINE_STAGES,
@@ -476,6 +477,21 @@ export default function PartnerPipeline() {
                   const promos = promosByDeal.get(d.id) ?? [];
                   const liveCollective = promos.find((p) => p.promotionType === "collective_deal_room" && p.status === "live");
                   const pendingRefer = promos.find((p) => p.promotionType === "capavate_referral" && (p.status === "pending" || p.status === "live"));
+                  /* NUMBERS BAND · WAVE D · W326 — THE PREDICATE DEFECT.
+                     The visibility block below tests for a collective promotion
+                     BEFORE it tests `d.companyId`, so a deal with NO Capavate
+                     company that has been published takes the "Make Private"
+                     branch and never reaches the "Add to Capavate first" prompt.
+                     That contradicts the INVARIANT written in that same block.
+                     This recomputes the SAME promotion set that block matches on
+                     — live, pending, pending_collective_review, not merely `live`
+                     as `liveCollective` above does — so the correction covers
+                     exactly the cases the predicate pre-empted, no more.
+                     `liveCollective` is NOT touched: it drives other controls. */
+                  const publishedToCollective = promos.some(
+                    (p) => p.promotionType === "collective_deal_room"
+                      && (p.status === "live" || p.status === "pending" || p.status === "pending_collective_review"),
+                  );
                   return (
                     <div key={d.id} className="border rounded p-2 text-xs bg-[var(--cv-color-surface-2)]" data-testid={`deal-${d.id}`}>
                       <div className="font-medium">{d.dealName}</div>
@@ -620,6 +636,18 @@ export default function PartnerPipeline() {
                           </div>
                         );
                       })()}
+                      {/* NUMBERS BAND · WAVE D · W326 — appended LAST, as the
+                          final child of the deal card. Unconditional, because
+                          the question "is there a Capavate company behind this
+                          deal" has an answer for every card and the previous
+                          screen answered it for only some. Not gated on
+                          `canPromote`: an associate who cannot publish still
+                          needs to know whether a card is an orphan. */}
+                      <PipelineDealCapavatePresence
+                        companyId={d.companyId ?? null}
+                        isPublishedToCollective={publishedToCollective}
+                        testid={`deal-${d.id}-capavate-presence`}
+                      />
                     </div>
                   );
                 })}

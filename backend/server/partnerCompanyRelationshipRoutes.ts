@@ -22,12 +22,15 @@ import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import {
   listRelationshipsForPartner,
   getRelationship,
-  surfaceBreakdown,
   reconcilePartner,
   PcrNotFoundError,
   PcrValidationError,
   PCR_SURFACE_LABELS,
 } from "./partnerCompanyRelationshipStore";
+/* WAVE NB-A — the summary tiles are counted from the four surfaces the four
+   pages read, not from the materialised presence spine. See that module's header
+   for why two of `reconcilePartner`'s own queries could not be reused. */
+import { surfaceCompanyCounts } from "./partnerRelationshipSurfaceCounts";
 import { log } from "./lib/logger";
 
 function partnerIdOf(req: Request): string {
@@ -61,9 +64,12 @@ export function registerPartnerCompanyRelationshipRoutes(app: Express): void {
   app.get("/api/partner/me/relationships", requirePartnerAuth, (req: Request, res: Response) => {
     try {
       const partnerId = partnerIdOf(req);
+      /* The relationship LIST still comes from the spine — the dated history of
+         when a company joined and left a surface is the one thing only the spine
+         holds, and it is correct. Only the four summary FIGURES moved. */
       res.json({
         relationships: listRelationshipsForPartner(partnerId),
-        breakdown: surfaceBreakdown(partnerId),
+        breakdown: surfaceCompanyCounts(partnerId),
         surfaceLabels: PCR_SURFACE_LABELS,
       });
     } catch (err) {
@@ -104,7 +110,7 @@ export function registerPartnerCompanyRelationshipRoutes(app: Express): void {
         res.json({
           ...result,
           relationships: listRelationshipsForPartner(partnerId),
-          breakdown: surfaceBreakdown(partnerId),
+          breakdown: surfaceCompanyCounts(partnerId),
         });
       } catch (err) {
         fail(res, err);

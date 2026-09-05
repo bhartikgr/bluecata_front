@@ -1466,6 +1466,32 @@ export interface SpvSubscriptionDTO {
   id: string;
   spvId: string;
   investorId: string;
+  /* WAVE 338 — THE REAL DISPLAY-NAME FIELD.
+   *
+   * `investorId` above is a column whose NAME says "id" and whose CONTENT is
+   * sometimes display text (live: the literal string "Mark Invest Partners").
+   * It is not renamed, normalised or re-keyed and it never will be by this
+   * wave: the same string is a JSON object key in `spv.terms._fundsConfirmations`
+   * with money matched against it, so changing it would break the link between
+   * an investor and their money.
+   *
+   * This field is the additive answer. It is `investor_display_name` from
+   * migration 0232 and it holds a display name ONLY when one is actually known.
+   *
+   * `null` MEANS "NOT KNOWN", NOT "EMPTY STRING" AND NOT "NO NAME". Rows whose
+   * `investorId` is ambiguous (a single word such as "Blackstone", a storage id,
+   * digits only) are left null on purpose, and every reader must fall through to
+   * the existing display chain for them — which is exactly what they do today.
+   *
+   * NO WRITER SHIPS IN WAVE 338. The only thing that sets this field is
+   * migration 0232's narrow backfill (and its installer). `subscribe()` and the
+   * legacy migrator set it to null; `_persistSub` does not write the column at
+   * all, so a re-persist cannot blank a value the migration wrote.
+   *
+   * IT IS STRIPPED FROM THE HASH CHAIN. See `_persistSub` in
+   * server/spvEngineStore.ts — adding a key to the `chain()` body would change
+   * every subscription's `curr_hash`. */
+  investorDisplayName: string | null;
   investorPersona: SpvInvestorPersona | null;
   commitmentMinor: number;
   wiredMinor: number;

@@ -266,6 +266,9 @@ import { setSpvLegalForm } from "./spvLegalFormStore"; /* WAVE 179 · ITEM B · 
 import { resolveSpvJurisdiction } from "../shared/spvEngine"; /* WAVE 4A follow-up 2 */
 /* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
 import { wave230CompanyVisible, wave230HiddenCompanyIds } from "./lib/wave230DisplayExclusion";
+/* NUMBERS BAND · WAVE E (W328) — the same LP name chain the LP Roster builder
+   runs, so the Fund Register and the roster cannot name one row two ways. */
+import { investorDisplayNameMap } from "./lib/investorDisplayName";
 /* WAVE 198 · ITEM D — the four partner PATCH routes stop reporting success for a
    write their store would discard. See the module header for why three of the four
    refuse only provably-forced keys rather than an interface-derived accept-list. */
@@ -359,6 +362,57 @@ function resolveOrCreateConsortiumPartnerId(email: string, seedPassword: string)
 
   return userId;
 }
+/* ══ NUMBERS BAND · WAVE E (W328) — ADD THE NAME, CHANGE NOTHING ELSE. ═══════
+   Every existing key of every row is passed through by spread, in its original
+   order and with its original value, and exactly ONE key is appended. A register
+   row is money-bearing: this function reads no amount, no currency and no status,
+   performs no arithmetic, and writes nothing anywhere.
+
+   `investorName` is `string | null`. `null` means "no honest name exists" and the
+   screen then renders its own existing floor; it is NEVER a placeholder word and
+   NEVER the raw id. The name itself comes from `investorDisplayNameMap`, the one
+   shared chain the LP Roster also uses.
+
+   FAIL SOFT. If name resolution throws, the rows are returned exactly as the
+   store produced them. A register that lists the GP's capital must not go dark
+   because a display name could not be looked up. */
+function withInvestorNames<T extends { investorId: string }>(
+  partnerId: string,
+  spvId: string,
+  rows: T[],
+): Array<T & { investorName: string | null }> {
+  let names: Map<string, string | null>;
+  try {
+    /* ══ WAVE 338 — THE STORED DISPLAY NAME, THREADED IN FROM THE STORE. ════
+       The register's own row shape (`SpvInvestorRegisterRow`) carries no name
+       field, so the stored column is read here, from the SAME store call the
+       roster uses, and handed to the SAME shared chain. That is deliberate: the
+       whole point of `investorDisplayNameMap` is that the register and the
+       roster cannot answer differently for one row, and a second read path
+       would put that back at risk.
+
+       INSIDE THE EXISTING try/catch, WHICH ALREADY FAILS SOFT. If the store
+       read throws, `storedNames` stays empty, every row is UNKNOWN, and the
+       chain is the pre-wave chain. A register that lists the GP's capital must
+       not go dark because a display name could not be looked up. */
+    const storedNames = new Map<string, string | null>();
+    for (const sub of spvEngineStore.listSubscriptions(partnerId, spvId)) {
+      const key = String(sub.investorId ?? "").trim();
+      if (!key || storedNames.has(key)) continue;
+      storedNames.set(key, sub.investorDisplayName ?? null);
+    }
+    names = investorDisplayNameMap(
+      partnerId,
+      spvId,
+      rows.map((r) => r.investorId),
+      storedNames,
+    );
+  } catch {
+    names = new Map<string, string | null>();
+  }
+  return rows.map((r) => ({ ...r, investorName: names.get(String(r.investorId).trim()) ?? null }));
+}
+
 function isNumber(v: unknown): v is number { return typeof v === "number" && Number.isFinite(v); }
 function isISOCurrency(v: unknown): v is string {
   return typeof v === "string" && /^[A-Z]{3}$/.test(v);
@@ -3282,7 +3336,30 @@ export function registerPartnerRoutes(app: Express): void {
     if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
     res.json({
       fund,
-      commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      /* ══ NUMBERS BAND · WAVE E (W328) — THE LP'S NAME, ADDED BESIDE ITS ID. ══
+         This register's rows carry an `investorId` and NO name field, so the
+         screen ran the id through `partyReferenceLabel` and printed
+         "Reference MARK INVEST PARTNERS" — a human name shouted and mislabelled
+         as an internal reference, because `spv_subscription.investor_id` for
+         that LP literally holds the string "Mark Invest Partners".
+
+         `investorName` is ADDITIVE and resolved by `investorDisplayNameMap`, the
+         SAME chain the LP Roster builder uses (server/lib/investorDisplayName.ts),
+         so the two GP screens cannot answer differently for one row. It is `null`
+         — never a placeholder — when no honest name exists, and the screen keeps
+         `partyReferenceLabel` as its floor for that case. `partyReferenceLabel`
+         is NOT edited: 15 production files, 32 call sites.
+
+         NOTHING ELSE MOVES. `spvEngineStore.investorRegister` is not modified and
+         its rows are byte-identical for every existing key; no amount, status,
+         stage, percentage or currency is read, defaulted or recomputed here; and
+         `lpVisibility` is neither read nor written — this is a partner-scoped GP
+         route over the GP's own vehicle. */
+      commitments: withInvestorNames(
+        ctx.partnerId,
+        String(req.params.id),
+        spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)),
+      ),
       /* WAVE 161 · ITEM A (A24) — the Fund Commitment Register's split. The word
          "commitments" on this key is the reason the split matters most here: the
          rows include stages that are NOT commitments. */

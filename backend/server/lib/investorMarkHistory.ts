@@ -66,6 +66,8 @@
  * able to tell "nothing to show" from "we refuse to show this".
  */
 import { rawDb } from "../db/connection";
+import { log } from "./logger";
+import { asTenantId, tenantPlaceholders, type TenantId, type TenantScope } from "./tenantId";
 import { listCommitsForUser } from "../captableCommitStore";
 import { overrideIsEffective, getMarkThresholds, badgeForAge, type MarkBadge } from "../wave9ReportingStore";
 
@@ -204,6 +206,64 @@ export function investorHoldsCompany(
   }
 }
 
+/**
+ * W316 — WHICH TENANTS' MARKS IS THIS CALLER ENTITLED TO SEE?
+ *
+ * `server/lib/userContext.ts` is FROZEN this wave and carries no tenant id, and
+ * the marks route is an investor route with no partner context to read one from.
+ * So the tenant is not asserted by the caller — it is DERIVED FROM THE CALLER'S
+ * OWN HOLDINGS, using the same predicate `investorHoldsCompany` already trusts
+ * (`investor_id`, `company_id`, `state='committed'`, not soft-deleted). The
+ * answer to "whose marks may I see for this company" is therefore exactly "the
+ * GPs I actually hold this company under" — no wider, and no narrower.
+ *
+ * A caller can hold the same company under more than one GP; that is why this
+ * returns a SET rather than one id. Narrowing such a caller to one tenant would
+ * hide marks they legitimately own, and an over-tight fix that hides a real
+ * user's own data is not an improvement on the leak.
+ *
+ * Failure is CLOSED: an unreadable table, a thrown query or a row whose
+ * `tenant_id` is blank yields an empty array, and the route turns that into the
+ * same byte-identical 404 it already returns for "you do not hold this". It
+ * never yields "all tenants".
+ */
+export function holdingTenantsForCompany(userId: string, companyId: string): TenantId[] {
+  if (!userId || !companyId) return [];
+  let db: any;
+  try {
+    db = rawDb();
+  } catch {
+    return [];
+  }
+  if (!tableExists(db, "captable_commits")) return [];
+  let rows: any[] = [];
+  try {
+    /* TENANT-SCOPE-EXEMPT: W316_HOLDING_TENANT_DERIVATION */
+    rows = db
+      .prepare(
+        `SELECT DISTINCT tenant_id AS tenant_id
+           FROM captable_commits
+          WHERE investor_id = ? AND company_id = ?
+            AND state = 'committed' AND deleted_at IS NULL`,
+      )
+      .all(userId, companyId) as any[];
+  } catch {
+    return [];
+  }
+  const out: TenantId[] = [];
+  for (const r of rows) {
+    try {
+      out.push(asTenantId(r?.tenant_id));
+    } catch {
+      log.warn(
+        `[w316] captable_commits row for investor=${userId} company=${companyId} carries a blank tenant_id; ` +
+          "it is DROPPED from the mark scope rather than widening the read.",
+      );
+    }
+  }
+  return out;
+}
+
 /* ==========================================================================
  * Read model
  * ======================================================================== */
@@ -235,9 +295,26 @@ function tableExists(db: any, name: string): boolean {
  */
 export function markHistoryForCompany(
   companyId: string,
-  opts: { holdingId?: string | null } = {},
+  /**
+   * W316 — `opts` IS NOW REQUIRED, and `tenantScope` inside it is required and
+   * branded.
+   *
+   * Both of this module's reads — the valuation events here and the effective
+   * overrides in `loadEffectiveOverrides` — ran with NO tenant predicate, on a
+   * route whose only ownership check is "does this investor hold this company
+   * somewhere". Holding a company under GP A therefore returned GP B's marks
+   * for the same company. The default `= {}` was removed deliberately: an
+   * optional tenant is the defect, not the fix, and a caller who forgets it now
+   * FAILS TO COMPILE instead of silently reading every tenant.
+   *
+   * The scope is a SET because an investor can legitimately hold the same
+   * company under more than one GP; scoping to a single id would hide rows they
+   * own. See server/lib/tenantId.ts.
+   */
+  opts: { holdingId?: string | null; tenantScope: TenantScope },
 ): MarkHistory {
   const holdingId = opts.holdingId ?? null;
+  const tenantScope = opts.tenantScope;
   const empty = (reason: MarkUnavailableReason): MarkHistory => ({
     companyId,
     holdingId,
@@ -259,6 +336,10 @@ export function markHistoryForCompany(
   try {
     rows = db
       .prepare(
+        // W316 — `tenant_id IN (...)` is NOT written `(? IS NULL OR tenant_id =
+        // ?)`. That idiom is what let this platform ship a fence nobody passed:
+        // it has a widening branch. This one has none — an unscoped read is not
+        // expressible here.
         `SELECT id, valuation_date, fair_value_minor, currency, method, source,
                 is_external
            FROM valuation_event
@@ -266,9 +347,10 @@ export function markHistoryForCompany(
             AND vehicle_id = ?
             AND superseded_at IS NULL
             AND (? IS NULL OR holding_id = ?)
+            AND tenant_id IN (${tenantPlaceholders(tenantScope)})
           ORDER BY valuation_date ASC, created_at ASC`,
       )
-      .all(companyId, holdingId, holdingId) as any[];
+      .all(companyId, holdingId, holdingId, ...tenantScope) as any[];
   } catch {
     return empty("MARKS_UNAVAILABLE");
   }
@@ -278,7 +360,7 @@ export function markHistoryForCompany(
   // Rule 5 — never sum across currencies, and never plot across them either.
   // Checked BEFORE any override is applied: an override carries its own
   // currency column and could itself introduce a second denomination.
-  const overridesByEvent = loadEffectiveOverrides(db, companyId);
+  const overridesByEvent = loadEffectiveOverrides(db, companyId, tenantScope);
 
   const currencies = new Set<string>();
   for (const r of rows) {
@@ -348,18 +430,23 @@ export function markHistoryForCompany(
  * clause would hardcode today's mode and silently ignore the config switch —
  * the exact defect Wave 23 · ITEM 5 fixed elsewhere.
  */
-function loadEffectiveOverrides(db: any, companyId: string): Map<string, any> {
+function loadEffectiveOverrides(db: any, companyId: string, tenantScope: TenantScope): Map<string, any> {
   const out = new Map<string, any>();
   if (!tableExists(db, "valuation_mark_override")) return out;
   let rows: any[] = [];
   try {
     rows = db
       .prepare(
+        // W316 — same tenant scope as the events it restates. An override read
+        // across tenants would replace tenant A's value in place with tenant
+        // B's figure, which is worse than an extra row: it is a WRONG NUMBER at
+        // a right-looking date.
         `SELECT * FROM valuation_mark_override
           WHERE vehicle_kind = 'company' AND vehicle_id = ?
+            AND tenant_id IN (${tenantPlaceholders(tenantScope)})
           ORDER BY overridden_at ASC`,
       )
-      .all(companyId) as any[];
+      .all(companyId, ...tenantScope) as any[];
   } catch {
     return out;
   }

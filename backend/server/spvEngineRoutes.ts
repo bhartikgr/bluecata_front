@@ -146,6 +146,9 @@ import {
   revertLpCommitIdentityStatus,
 } from "./spvLpInviteStore";
 import { lpInvestorIdForEmail, lpCommitInvitationId } from "./lib/lpIdentity";
+/* NUMBERS BAND · WAVE E (W328) — the ONE definition of the LP name chain, shared
+   with the Fund Register route so the two screens cannot disagree about a row. */
+import { investorRealDisplayName } from "./lib/investorDisplayName";
 /* WAVE 25 / FE-3 — the rolling-close window comes from the DB policy ladder.
  * `resolveCloseWindowDays` shipped in WAVE 6 with ZERO callers while the literal
  * `30` stayed at this file's reopen route and at SpvDetailTabs.tsx. A policy
@@ -788,9 +791,43 @@ export function buildPartnerLpRosterPayload(
        * placeholder must never beat a real name the operator typed, so the
        * register wins whenever the resolver did not actually resolve. */
       const resolvedName = idn?.resolved ? idn.name : null;
+      /* ══ NUMBERS BAND · WAVE E (W328) — STOP DISCARDING A READABLE NAME. ═══
+         `spv_subscription.investor_id` for a live LP holds the literal string
+         "Mark Invest Partners". `resolveDisplayNames` cannot resolve a token that
+         is not an id, so its `humanizeFallback` substituted "Pending member" —
+         throwing away a name that was sitting in the field it had just read, on
+         this screen AND in the CSV export, which shares this builder.
+
+         `investorRealDisplayName` (server/lib/investorDisplayName.ts) is the ONE
+         definition of the chain; the Fund Register calls the same function, which
+         is why the two screens can no longer disagree about one row. It returns
+         `null` when there is genuinely no honest name, so `idn?.name` — the
+         existing placeholder floor — is UNCHANGED and still the last term.
+
+         `humanizeFallback` and `displayNameResolver.ts` are NOT edited (23 test
+         files reach them, and their "never return a raw u_… id" guarantee is
+         correct). `lpVisibility` is NOT read here: this is a GP route over the
+         GP's own vehicle, and entitlement is not this line's question. */
+      const honestName = investorRealDisplayName({
+        investorId: s.investorId,
+        resolvedName,
+        identityName,
+        /* ══ WAVE 338 — USE THE REAL COLUMN WHEN THE DATABASE HAS ONE. ═════
+           `investorDisplayName` is `spv_subscription.investor_display_name`
+           (migration 0232). It is `null` for every row whose `investor_id` was
+           ambiguous and for every row on a database that has not run 0232, and
+           in both of those cases this argument changes NOTHING: the chain falls
+           through to `displayNameFromNonIdentifier` and then to the existing
+           `idn?.name` floor below, exactly as before this wave.
+
+           THIS IS A GUESS REDUCED, NOT A GUESS ENDED. `investor_id` still holds
+           mixed content and this line still reaches the heuristic whenever the
+           column is null. */
+        storedDisplayName: s.investorDisplayName,
+      });
       return {
         investorId: s.investorId,
-        name: resolvedName ?? identityName ?? idn?.name ?? null,
+        name: honestName ?? idn?.name ?? null,
         email: idn?.email ?? identity?.email ?? null,
         commitmentMinor: s.commitmentMinor,
         status: s.status,

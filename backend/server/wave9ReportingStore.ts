@@ -902,6 +902,7 @@ export function computeCohortBenchmark(opts: {
   const col = opts.metric === "net_irr" ? "net_irr" : opts.metric;
   const subjectKind = opts.subjectKind ?? "investor";
   /* WAVE 221 — `let`, not `const`: the opt-out filter below rebinds this. */
+  /* TENANT-SCOPE-EXEMPT: Q10_COHORT_BENCHMARK */
   let rows = db()
     .prepare(
       `SELECT subject_id, ${col} AS v FROM portfolio_metric_snapshot

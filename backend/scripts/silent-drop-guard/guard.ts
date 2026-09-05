@@ -41,6 +41,41 @@
  *   --no-companion             skip companion comparison (bootstrap only)
  *   --json                     machine-readable summary
  *
+ * W311 — THE WAVE FLOOR (additive; nothing above is weakened or removed)
+ * ---------------------------------------------------------------------
+ * The baseline diff above is a ONE-WAY RATCHET against the 2026-08-10 companion
+ * snapshot. It answers "has anything that existed on 2026-08-10 gone?" It does
+ * NOT answer "has anything gone during THIS wave?", and it never could:
+ * `computeDisappeared` iterates the BASELINE, so an id that is in the current
+ * tree and not in the baseline cannot enter DISAPPEARED. Deleting it moves it
+ * out of `computeAdded`, which is informational only. At the time W311 was
+ * built, 2572 of 8970 copy ids (28.7 %) and 5052 of 19319 panel ids (26.2 %)
+ * were outside the baseline and therefore outside the gate's field of view.
+ *
+ * The FIX IS NOT TO RE-CUT THE BASELINE. The companion is a deterministic
+ * function of the G-0 snapshot, and `.g0-snapshot/G0_MANIFEST.sha256` is a
+ * SACRED manifest entry (ADDED_47). Re-cutting it would break a sacred entry and
+ * would erase the evidence of everything already lost. The fix is an ADDITIVE
+ * per-wave floor:
+ *
+ *   --emit-floor <file>   write the current inventory + per-file counts to an
+ *                         arbitrary path, AT THE START OF A WAVE. It REFUSES to
+ *                         write to either baseline, so it can never be mistaken
+ *                         for a re-baseline.
+ *   --floor <file>        compare the current tree against that file and FAIL on
+ *                         ANY of: an id present in the floor and absent now; a
+ *                         per-class count decrease; a per-file count decrease.
+ *
+ * THE ALLOWLIST AND THE DEFERRALS DO NOT APPLY TO THE FLOOR. They exist to
+ * forgive HISTORICAL losses. A loss inside the current wave is not historical.
+ * This is stated in the floor mode's own output on every run, not left to be
+ * inferred from its absence.
+ *
+ * WHAT THE FLOOR STILL DOES NOT CATCH — printed by the gate itself, every run:
+ * an id added and removed within the same wave (no diff-based instrument can
+ * see it); copy that is not a bare JSX text node; a repeated string, because
+ * every class is a Set.
+ *
  * ESM only — no require().
  */
 
@@ -187,7 +222,14 @@ function sha256File(p: string): string {
 
 function currentGitHead(): string {
   try {
-    return execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf-8" }).trim();
+    // stderr ignored: this tree is not a git repository, and letting git print
+    // `fatal: not a git repository` into a SAFETY GATE's output teaches readers
+    // to skim past gate output. The catch below already handles the failure.
+    return execSync("git rev-parse HEAD", {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     return "unknown";
   }
@@ -676,6 +718,416 @@ export function writeCompanionBaseline(opts: {
 }
 
 // ===========================================================================
+// W311 — THE WAVE FLOOR. Additive. Nothing above this line was weakened.
+// ===========================================================================
+
+/** Every class the floor tracks: the three protected ones plus all companion ones. */
+export const FLOOR_CLASSES = [
+  "routes",
+  "clientRoutes",
+  "nav",
+  ...COMPANION_CLASSES,
+] as const;
+export type FloorClass = (typeof FLOOR_CLASSES)[number];
+
+export interface WaveFloor {
+  version: 1;
+  kind: "w311-wave-floor";
+  generatedAt: string;
+  root: string;
+  gitHead: string;
+  /** Full id set per class, exactly as the inventory produced it. */
+  classes: Record<string, string[]>;
+  /** Per-class cardinality. Redundant with `classes` on purpose: it is the
+   *  counter a human reads, and W311 exists because a printed counter that
+   *  participates in no comparison is worse than no counter. */
+  classCounts: Record<string, number>;
+  /** file -> class -> count, for the classes whose ids are file-scoped. */
+  perFile: Record<string, Record<string, number>>;
+  /** Which classes contributed to `perFile`. Recorded so a class that is NOT
+   *  per-file-covered can never be silently assumed to be. */
+  perFileClasses: string[];
+  /** Classes deliberately excluded from perFile, with the reason. */
+  perFileExcluded: Record<string, string>;
+}
+
+/** True when a class's ids are `<relative file path>\t…`, so per-file counts
+ *  are meaningful. Decided from the DATA, not from a hardcoded class list, so a
+ *  future class is covered automatically instead of silently skipped. */
+function idIsFileScoped(id: string): boolean {
+  const head = id.split("\t", 1)[0] ?? "";
+  return /\.(tsx|ts|jsx|js|mjs|cjs)$/.test(head) && !head.startsWith("/");
+}
+
+export function buildWaveFloor(current: Inventory, root: string): WaveFloor {
+  const classes: Record<string, string[]> = {};
+  const classCounts: Record<string, number> = {};
+  const perFile: Record<string, Record<string, number>> = {};
+  const perFileClasses: string[] = [];
+  const perFileExcluded: Record<string, string> = {};
+
+  for (const cls of FLOOR_CLASSES) {
+    const ids = ((current as unknown as Record<string, string[] | undefined>)[cls] ?? []).slice();
+    classes[cls] = ids;
+    classCounts[cls] = ids.length;
+
+    /* A class is per-file-covered only if EVERY id in it is file-scoped. A
+       partially file-scoped class would give partial per-file floors, and a
+       partial floor reads exactly like a complete one. */
+    const fileScoped = ids.length > 0 && ids.every(idIsFileScoped);
+    if (!fileScoped) {
+      perFileExcluded[cls] =
+        ids.length === 0
+          ? "class is empty in this tree"
+          : "ids are not file-scoped (route/nav-keyed); per-CLASS count floor applies instead";
+      continue;
+    }
+    perFileClasses.push(cls);
+    for (const id of ids) {
+      const file = id.split("\t", 1)[0] as string;
+      ((perFile[file] ??= {})[cls] ??= 0);
+      perFile[file][cls] += 1;
+    }
+  }
+
+  return {
+    version: 1,
+    kind: "w311-wave-floor",
+    generatedAt: new Date().toISOString(),
+    root,
+    gitHead: currentGitHead(),
+    classes,
+    classCounts,
+    perFile,
+    perFileClasses,
+    perFileExcluded,
+  };
+}
+
+export interface FloorFailure {
+  kind: "id-gone" | "class-count-fell" | "per-file-count-fell" | "file-missing";
+  cls?: string;
+  file?: string;
+  id?: string;
+  before?: number;
+  after?: number;
+}
+
+/**
+ * Compare the current tree against a wave floor.
+ *
+ * THREE INDEPENDENT SIGNATURES, ALL FAILING:
+ *   1. an id present in the floor and absent now                  (`id-gone`)
+ *   2. a per-CLASS count decrease                                 (`class-count-fell`)
+ *   3. a per-FILE count decrease, or a floored file now missing    (`per-file-count-fell` / `file-missing`)
+ *
+ * (2) is not redundant with (1). (1) is a set diff and every class is a Set, so
+ * removing the second of two identical strings in a file changes no id but does
+ * change the underlying occurrence count. (3) catches the same thing localised.
+ *
+ * NO ALLOWLIST. NO DEFERRALS. Deliberately, and said out loud in the report.
+ */
+export function compareWaveFloor(
+  floor: WaveFloor,
+  current: Inventory,
+): { code: 0 | 1; report: string; failures: FloorFailure[] } {
+  const lines: string[] = [];
+  const failures: FloorFailure[] = [];
+
+  if (floor.kind !== "w311-wave-floor" || floor.version !== 1) {
+    return {
+      code: 1,
+      failures: [],
+      report:
+        "WAVE FLOOR: REFUSED — the file given to --floor is not a w311-wave-floor v1 document.\n" +
+        `  kind=${JSON.stringify(floor.kind)} version=${JSON.stringify(floor.version)}\n` +
+        "  Emit one at the START of the wave:  npm run guard:floor:emit -- <file>",
+    };
+  }
+
+  /* An empty or classless floor would pass everything. Refuse it rather than
+     return a green that means nothing. This is the precondition that stops the
+     floor from becoming an inert fence. */
+  const flooredClasses = Object.keys(floor.classes ?? {});
+  if (flooredClasses.length === 0) {
+    return {
+      code: 1,
+      failures: [],
+      report: "WAVE FLOOR: REFUSED — the floor file tracks zero classes. It would pass anything.",
+    };
+  }
+  const totalFlooredIds = Object.values(floor.classes).reduce((n, a) => n + a.length, 0);
+  if (totalFlooredIds === 0) {
+    return {
+      code: 1,
+      failures: [],
+      report: "WAVE FLOOR: REFUSED — the floor file contains zero ids across all classes. It would pass anything.",
+    };
+  }
+
+  /* 1 + 2 — per class. */
+  for (const cls of flooredClasses) {
+    const base = floor.classes[cls] ?? [];
+    const cur = ((current as unknown as Record<string, string[] | undefined>)[cls] ?? []);
+    const curSet = new Set(cur);
+    const gone = base.filter((id) => !curSet.has(id)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const id of gone) failures.push({ kind: "id-gone", cls, id });
+
+    const before = floor.classCounts?.[cls] ?? base.length;
+    if (cur.length < before) {
+      failures.push({ kind: "class-count-fell", cls, before, after: cur.length });
+    }
+  }
+
+  /* 3 — per file, only over the classes the floor recorded as file-scoped. */
+  const perFileClasses = floor.perFileClasses ?? [];
+  const nowPerFile: Record<string, Record<string, number>> = {};
+  for (const cls of perFileClasses) {
+    for (const id of ((current as unknown as Record<string, string[] | undefined>)[cls] ?? [])) {
+      const file = id.split("\t", 1)[0] as string;
+      ((nowPerFile[file] ??= {})[cls] ??= 0);
+      nowPerFile[file][cls] += 1;
+    }
+  }
+  for (const [file, counters] of Object.entries(floor.perFile ?? {})) {
+    const now = nowPerFile[file];
+    if (!now) {
+      failures.push({ kind: "file-missing", file });
+      continue;
+    }
+    for (const [cls, before] of Object.entries(counters)) {
+      const after = now[cls] ?? 0;
+      if (after < before) {
+        failures.push({ kind: "per-file-count-fell", file, cls, before, after });
+      }
+    }
+  }
+
+  const header = [
+    "WAVE FLOOR (W311) — per-wave comparison, additive to the baseline diff.",
+    `  floor file generated : ${floor.generatedAt}`,
+    `  floor tree root      : ${floor.root}`,
+    `  classes floored      : ${flooredClasses.length} (${totalFlooredIds} ids)`,
+    `  per-file floors      : ${Object.keys(floor.perFile ?? {}).length} file(s) over ${perFileClasses.length} class(es): ${perFileClasses.join(", ") || "none"}`,
+    "  ALLOWLIST AND DEFERRALS ARE DELIBERATELY NOT APPLIED HERE. allowlist.json and",
+    "  deferrals.json forgive HISTORICAL losses; a loss inside this wave is not",
+    "  historical. An allowlisted id that disappears during the wave FAILS here.",
+  ];
+  for (const [cls, why] of Object.entries(floor.perFileExcluded ?? {})) {
+    header.push(`  no per-file floor for ${cls}: ${why}`);
+  }
+  lines.push(...header);
+  lines.push("");
+
+  if (failures.length === 0) {
+    lines.push(
+      `WAVE FLOOR OK — 0 id(s) gone, 0 per-class decrease(s), 0 per-file decrease(s), ` +
+        `relative to the floor emitted at ${floor.generatedAt}.`,
+    );
+    lines.push(...floorLimitations());
+    return { code: 0, report: lines.join("\n"), failures };
+  }
+
+  const byKind = (k: FloorFailure["kind"]) => failures.filter((f) => f.kind === k);
+  lines.push("=".repeat(72));
+  lines.push(`WAVE FLOOR VIOLATION — ${failures.length} finding(s). BUILD BLOCKED.`);
+  lines.push("=".repeat(72));
+
+  const idGone = byKind("id-gone");
+  if (idGone.length) {
+    lines.push(`  ${idGone.length} id(s) present at the start of this wave and ABSENT NOW:`);
+    for (const f of idGone) lines.push(`    GONE  ${f.cls}  ${fmt(f.id ?? "")}`);
+  }
+  const classFell = byKind("class-count-fell");
+  if (classFell.length) {
+    lines.push(`  ${classFell.length} per-CLASS count decrease(s):`);
+    for (const f of classFell) lines.push(`    CLASS-COUNT-FELL  ${f.cls}: ${f.before} -> ${f.after}`);
+  }
+  const fileFell = byKind("per-file-count-fell");
+  if (fileFell.length) {
+    lines.push(`  ${fileFell.length} per-FILE count decrease(s):`);
+    for (const f of fileFell) {
+      lines.push(`    FILE-COUNT-FELL  ${f.file}  ${f.cls}: ${f.before} -> ${f.after}`);
+    }
+  }
+  const missing = byKind("file-missing");
+  if (missing.length) {
+    lines.push(`  ${missing.length} file(s) that contributed ids at wave start and contribute none now:`);
+    for (const f of missing) lines.push(`    FILE-MISSING  ${f.file}`);
+  }
+  lines.push("");
+  lines.push("These are losses inside THIS wave. Restore them.");
+  lines.push("DO NOT add them to allowlist.json — the allowlist is not read by this comparison,");
+  lines.push("so adding them there will change nothing and will corrupt the historical record.");
+  lines.push("DO NOT re-emit the floor to make this pass; that is the same act as re-baselining.");
+  lines.push(...floorLimitations());
+  return { code: 1, report: lines.join("\n"), failures };
+}
+
+/** W311 item 4 — the limitations, stated as a rule, on every floor run,
+ *  in the green branch as well as the red one. */
+function floorLimitations(): string[] {
+  return [
+    "",
+    "WHAT THIS FLOOR CANNOT SEE (unchanged by W311, and not closed by it):",
+    "  · an id ADDED AND REMOVED within this same wave. Both ends of the diff see",
+    "    the same tree. No diff-based instrument can catch it. Only a test that",
+    "    reads the rendered page can.",
+    "  · copy that is not a bare JSX text node: anything inside {…}, any attribute",
+    "    (title/aria-label/placeholder/alt), any toast, any exported constant, any",
+    "    template literal. It is not in the `copy` class at all, so its removal",
+    "    moves no counter here.",
+    "  · a repeated string. Every class is a Set, so a second occurrence of a",
+    "    string already present in the same file collapses into the existing id.",
+    "    Removing one of two identical strings changes no id — the per-file and",
+    "    per-class COUNT checks are what catch that, not the set diff.",
+  ];
+}
+
+/**
+ * W311 item 4 — the truth about the BASELINE diff, computed at run time from the
+ * files themselves. Never a hardcoded number, never a bare "0 drops".
+ */
+export function baselineCoverageNotes(opts: {
+  baseline: Baseline;
+  companion?: CompanionBaseline;
+  current: Inventory;
+  floorInUse: boolean;
+}): string[] {
+  const { baseline, companion, current, floorInUse } = opts;
+  const out: string[] = [];
+  out.push("");
+  out.push("-".repeat(72));
+  out.push("WHAT THE ABOVE VERDICT IS RELATIVE TO (W311)");
+  out.push("-".repeat(72));
+  out.push(
+    `  The pass/fail above is a diff against STORED BASELINES, not against the tree\n` +
+      `  as it stood when this wave began. The counters printed on the OK line are\n` +
+      `  CURRENT-TREE TOTALS and participate in no comparison.`,
+  );
+  out.push(`  protected baseline  generatedAt: ${baseline.generatedAt ?? "unknown"}`);
+  if (companion) {
+    out.push(`  companion baseline  generatedAt: ${companion.generatedAt ?? "unknown"}`);
+  } else {
+    out.push("  companion baseline  : NOT COMPARED (--no-companion)");
+  }
+  out.push(
+    "  This comparison CANNOT DETECT THE REMOVAL OF ANYTHING ADDED SINCE THOSE DATES.",
+  );
+
+  /* The coverage gap, per class, computed here and now. */
+  const rows: Array<[string, number, number, number]> = [];
+  const push = (cls: string, base: string[] | undefined, cur: string[] | undefined) => {
+    const b = new Set(base ?? []);
+    const c = cur ?? [];
+    rows.push([cls, b.size, c.length, c.filter((x) => !b.has(x)).length]);
+  };
+  push("routes", baseline.routes, current.routes);
+  push("clientRoutes", baseline.clientRoutes, current.clientRoutes);
+  push("nav", baseline.nav, current.nav);
+  if (companion) {
+    for (const cls of COMPANION_CLASSES) {
+      push(cls, (companion as unknown as Record<string, string[] | undefined>)[cls], (current as unknown as Record<string, string[] | undefined>)[cls]);
+    }
+  }
+  out.push("  MEASURED COVERAGE GAP (computed on this run, not typed in):");
+  for (const [cls, bN, cN, gap] of rows) {
+    const pct = cN > 0 ? ((100 * gap) / cN).toFixed(1) : "0.0";
+    out.push(
+      `    ${cls.padEnd(15)} ${String(gap).padStart(6)} of ${String(cN).padStart(6)} current ids ` +
+        `(${pct.padStart(5)} %) are OUTSIDE the baseline of ${bN} — their removal WOULD NOT BE DETECTED here.`,
+    );
+  }
+  out.push("  COVERAGE LIMITS OF THE `copy` CLASS, ALWAYS TRUE:");
+  out.push("    copy is collected from JSX TEXT NODES ONLY. Copy in expressions, in");
+  out.push("    attributes (title/aria-label/placeholder/alt), in toasts, and in exported");
+  out.push("    constants is NOT COVERED. Appending such copy moves no counter, truthfully.");
+  out.push("    Every class is a SET, so a repeated string does not move a counter either.");
+  out.push("  NO DIFF-BASED MODE, INCLUDING THE WAVE FLOOR, CAN SEE A STRING ADDED AND");
+  out.push("  REMOVED WITHIN THE SAME WAVE. Only a test that reads the rendered page can.");
+  if (!floorInUse) {
+    out.push("");
+    out.push("  NO WAVE FLOOR WAS SUPPLIED ON THIS RUN. This run therefore says NOTHING about");
+    out.push("  what this wave removed. To get that answer, emit a floor BEFORE editing:");
+    out.push("      npm run guard:floor:emit -- /tmp/wave-floor.json");
+    out.push("  and after editing:");
+    out.push("      npm run guard:floor -- /tmp/wave-floor.json");
+  }
+  return out;
+}
+
+/**
+ * W311 item 3 — print what is being FORGIVEN. A forgiveness channel nobody can
+ * see is indistinguishable from a bug. Reports only entries that were actually
+ * SUBTRACTED on this run (i.e. present in the baseline, absent now, allowlisted)
+ * as well as the full register size, because those two numbers differing is
+ * itself information.
+ */
+export function forgivenessNotes(opts: {
+  baseline: Baseline;
+  companion?: CompanionBaseline;
+  current: Inventory;
+  allowlist: Allowlist;
+  deferrals: DeferralRegister;
+}): string[] {
+  const { baseline, companion, current, allowlist, deferrals } = opts;
+  const out: string[] = [];
+  const pairs: Array<[string, keyof Allowlist, string[] | undefined, string[] | undefined]> = [
+    ["routes", "removedRoutes", baseline.routes, current.routes],
+    ["clientRoutes", "removedClientRoutes", baseline.clientRoutes, current.clientRoutes],
+    ["nav", "removedNav", baseline.nav, current.nav],
+  ];
+  if (companion) {
+    for (const cls of COMPANION_CLASSES) {
+      pairs.push([
+        cls,
+        ALLOWLIST_KEY[cls],
+        (companion as unknown as Record<string, string[] | undefined>)[cls],
+        (current as unknown as Record<string, string[] | undefined>)[cls],
+      ]);
+    }
+  }
+
+  let registerTotal = 0;
+  let appliedTotal = 0;
+  const applied: Array<[string, string]> = [];
+  const byClass: Array<[string, number, number]> = [];
+  for (const [cls, key, base, cur] of pairs) {
+    const ids = toIds(allowlist[key] as never);
+    registerTotal += ids.size;
+    const curSet = new Set(cur ?? []);
+    const hit = (base ?? []).filter((id) => !curSet.has(id) && ids.has(id));
+    appliedTotal += hit.length;
+    for (const id of hit) applied.push([cls, id]);
+    byClass.push([cls, ids.size, hit.length]);
+  }
+
+  out.push("");
+  out.push("-".repeat(72));
+  out.push(
+    `FORGIVEN ON THIS RUN (W311) — ${appliedTotal} baseline id(s) were absent from the ` +
+      `tree and were SUBTRACTED from DISAPPEARED because allowlist.json forgives them.`,
+  );
+  out.push("-".repeat(72));
+  out.push(`  allowlist.json register size: ${registerTotal} entr(y/ies) across ${byClass.length} class(es)`);
+  out.push(`  deferrals.json register size: ${(deferrals.deferrals ?? []).length} entr(y/ies)`);
+  for (const [cls, size, hit] of byClass) {
+    if (size === 0 && hit === 0) continue;
+    out.push(`    ${cls.padEnd(15)} register=${String(size).padStart(4)}  applied-this-run=${String(hit).padStart(4)}`);
+  }
+  if (applied.length) {
+    out.push("  The ids that were forgiven on this run:");
+    for (const [cls, id] of applied) out.push(`    FORGIVEN  ${cls}  ${fmt(id)}`);
+  } else {
+    out.push("  No allowlist entry was applied on this run: every forgiven id is either still");
+    out.push("  present in the tree, or is not in the baseline the comparison iterates.");
+  }
+  out.push("  A register entry that is never applied is dead weight, not safety. Prune it.");
+  out.push("  NOTE: the allowlist is NOT read by the wave-floor comparison (--floor).");
+  return out;
+}
+
+// ===========================================================================
 // CLI
 // ===========================================================================
 
@@ -700,6 +1152,68 @@ function main(): void {
   const baselinePath = argValue(argv, "--baseline") ?? BASELINE_PATH;
   const companionPath = argValue(argv, "--companion") ?? COMPANION_PATH;
   const root = argValue(argv, "--root") ?? REPO_ROOT;
+
+  /* ===================================================================== *
+   * W311 — --emit-floor. Writes a per-wave floor to an ARBITRARY path and
+   * REFUSES to write to either baseline, so it can never be mistaken for a
+   * re-baseline. The companion baseline is a deterministic function of the
+   * SACRED G-0 snapshot and is written only by --write-companion.
+   * ===================================================================== */
+  if (argv.includes("--emit-floor")) {
+    const dest = argValue(argv, "--emit-floor");
+    if (!dest) {
+      console.error("ERROR: --emit-floor requires a file path.");
+      process.exit(2);
+    }
+    const resolved = path.resolve(dest);
+    const forbidden: Array<[string, string]> = [
+      [path.resolve(BASELINE_PATH), "the PROTECTED baseline"],
+      [path.resolve(COMPANION_PATH), "the COMPANION baseline"],
+      [path.resolve(baselinePath), "the baseline given by --baseline"],
+      [path.resolve(companionPath), "the companion given by --companion"],
+    ];
+    for (const [p, what] of forbidden) {
+      if (resolved === p) {
+        console.error(
+          `REFUSED: --emit-floor will not write to ${what}.\n` +
+            `         ${resolved}\n` +
+            "         A wave floor is a PER-WAVE artefact. Writing it over a baseline would\n" +
+            "         be a re-baseline, which silently forgives every loss to date. The\n" +
+            "         companion baseline is derived from the SACRED G-0 snapshot\n" +
+            "         (.g0-snapshot/G0_MANIFEST.sha256) and must never be re-cut.",
+        );
+        process.exit(2);
+      }
+    }
+    /* Belt and braces: a basename match anywhere is also refused, so a copy of a
+       baseline sitting in another directory cannot be overwritten either. */
+    const base = path.basename(resolved);
+    if (base === "baseline.json" || base === "baseline.route-targets.json") {
+      console.error(
+        `REFUSED: --emit-floor will not write to a file named '${base}' anywhere.\n` +
+          "         Pick a wave-scoped name, e.g. /tmp/w311-floor.json",
+      );
+      process.exit(2);
+    }
+
+    const inv = buildInventory(root);
+    const floor = buildWaveFloor(inv, root);
+    fs.writeFileSync(resolved, JSON.stringify(floor, null, 1) + "\n", "utf-8");
+    const totalIds = Object.values(floor.classCounts).reduce((a, b) => a + b, 0);
+    console.log(
+      `wave floor written: ${resolved}\n` +
+        `  tree root          : ${root}\n` +
+        `  generatedAt        : ${floor.generatedAt}\n` +
+        `  classes            : ${Object.keys(floor.classes).length} (${totalIds} ids total)\n` +
+        `  per-class counts   : ` +
+        Object.entries(floor.classCounts).map(([k, v]) => `${k}=${v}`).join(" ") +
+        `\n  per-file floors    : ${Object.keys(floor.perFile).length} file(s) over ` +
+        `${floor.perFileClasses.length} class(es): ${floor.perFileClasses.join(", ")}\n` +
+        `  NOT a baseline. NOT sacred. Compare against it with:\n` +
+        `      npm run guard:floor -- ${resolved}`,
+    );
+    process.exit(0);
+  }
 
   if (argv.includes("--write-companion")) {
     const snapshotDir = argValue(argv, "--snapshot") ?? DEFAULT_SNAPSHOT;
@@ -783,14 +1297,85 @@ function main(): void {
     strict: argv.includes("--strict"),
   });
 
-  if (argv.includes("--json")) {
-    console.log(JSON.stringify({ exit: code, report, deferred }, null, 2));
-  } else if (code === 0) {
-    console.log(report);
-  } else {
-    console.error(report);
+  /* ===================================================================== *
+   * W311 — --floor. ADDITIVE. The baseline diff above ran unchanged, with
+   * its allowlist and its deferrals intact, and its verdict is honoured in
+   * full. The floor can only ever make the run STRICTER: the final exit code
+   * is 1 if EITHER comparison failed.
+   * ===================================================================== */
+  let floorReport = "";
+  let floorCode: 0 | 1 = 0;
+  let floorFailures = 0;
+  const floorPath = argValue(argv, "--floor");
+  /* `--floor` with no value must NOT quietly degrade into a plain baseline run.
+     The operator asked the per-wave question; answering the historical one and
+     exiting 0 is precisely the false green W311 exists to remove. */
+  if (argv.includes("--floor") && !floorPath) {
+    console.error(
+      "ERROR: --floor requires a file path (the wave floor emitted before the edits).\n" +
+        "       Refusing to run: a --floor with no argument must not read as a clean floor.\n" +
+        "         npm run guard:floor:emit -- /tmp/wave-floor.json    # before editing\n" +
+        "         npm run guard:floor      -- /tmp/wave-floor.json    # after editing",
+    );
+    process.exit(2);
   }
-  process.exit(code);
+  if (floorPath) {
+    if (!fs.existsSync(floorPath)) {
+      console.error(
+        `ERROR: --floor given ${floorPath}, which does not exist.\n` +
+          "       A wave floor must be emitted BEFORE the wave's edits:\n" +
+          "         npm run guard:floor:emit -- <file>\n" +
+          "       Refusing to run: a missing floor must not read as a clean floor.",
+      );
+      process.exit(2);
+    }
+    let floor: WaveFloor;
+    try {
+      floor = readJson<WaveFloor>(floorPath);
+    } catch (e) {
+      console.error(`ERROR: --floor file ${floorPath} is unreadable: ${(e as Error).message}`);
+      process.exit(2);
+    }
+    const r = compareWaveFloor(floor, current);
+    floorCode = r.code;
+    floorReport = r.report;
+    floorFailures = r.failures.length;
+  }
+
+  /* W311 items 3 and 4 — the forgiveness register and the truth about what the
+     verdict is relative to. Printed on EVERY run of the CLI, in the green branch
+     as well as the red one, because a green that overstates its own scope is the
+     defect this wave exists to repair. */
+  const notes = [
+    ...forgivenessNotes({ baseline, companion, current, allowlist, deferrals }),
+    ...baselineCoverageNotes({ baseline, companion, current, floorInUse: Boolean(floorPath) }),
+  ].join("\n");
+
+  const finalCode: 0 | 1 = code === 1 || floorCode === 1 ? 1 : 0;
+  const combined = [report, floorReport, notes].filter((s) => s.length > 0).join("\n");
+
+  if (argv.includes("--json")) {
+    console.log(
+      JSON.stringify(
+        {
+          exit: finalCode,
+          baselineDiffExit: code,
+          floorExit: floorPath ? floorCode : null,
+          floorFailures: floorPath ? floorFailures : null,
+          floorPath: floorPath ?? null,
+          report: combined,
+          deferred,
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (finalCode === 0) {
+    console.log(combined);
+  } else {
+    console.error(combined);
+  }
+  process.exit(finalCode);
 }
 
 const isDirectRun = (() => {

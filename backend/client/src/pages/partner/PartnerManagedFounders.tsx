@@ -31,6 +31,8 @@ import { managedFounderStatusLabel, partyReferenceLabel, humanizeMachineKey } fr
 interface Engagement {
   id: string;
   companyId: string;
+  /* WAVE NB-B — additive; null when the company has no name on file. */
+  companyName?: string | null;
   mode: "A" | "B";
   status: string;
   authorityArtifactRef: string | null;
@@ -65,7 +67,10 @@ interface HandoverRow {
   confirmedAt: string | null;
 }
 
-interface LayerRow { id: string; contact_ref: string; layer: string; engagement_id: string | null; updated_at: string }
+/* WAVE NB-B — `contactName` is additive and is null whenever no real name is on
+   file. `contact_ref` keeps its exact stored value; it is still sent and still
+   the thing support quotes. */
+interface LayerRow { id: string; contact_ref: string; contactName?: string | null; layer: string; engagement_id: string | null; updated_at: string }
 
 /** Shape returned by `managedFounderStore.listEvents` (server/managedFounderStore.ts:490) — camelCase, newest first. */
 interface EngagementEvent {
@@ -289,7 +294,11 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
 
       <div className="mt-3 bg-white rounded-lg border border-[var(--cv-color-border)] p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-lg font-semibold">{partyReferenceLabel(e.companyId)}</h2>
+          {/* WAVE NB-B — the company's name is the heading when we hold one.
+              Unlike the Portfolio table there is NO adjacent name column here, so
+              a bare reference was standing in for a name. `partyReferenceLabel`
+              is unchanged and remains the floor. */}
+          <h2 className="text-lg font-semibold">{e.companyName ?? partyReferenceLabel(e.companyId)}</h2>
           <ModeBadge mode={e.mode} />
           <StatusBadge status={e.status} />
         </div>
@@ -363,7 +372,10 @@ function ManagedFounderDetail({ engagementId, role }: { engagementId: string; ro
               )}
               {layerRows.map((l) => (
                 <tr key={l.id} className="border-t" data-testid={`mf-layer-row-${l.id}`}>
-                  <td className="p-3 font-medium">{l.contact_ref}</td>
+                  {/* WAVE NB-B — was the raw composite storage key. The floor is
+                      `partyReferenceLabel`, already imported in this file: unique
+                      per row, labelled as a reference, and never invented. */}
+                  <td className="p-3 font-medium">{l.contactName ?? partyReferenceLabel(l.contact_ref)}</td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">{l.layer}</td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">{l.updated_at ? new Date(l.updated_at).toLocaleDateString() : "—"}</td>
                 </tr>
@@ -1050,7 +1062,16 @@ export default function PartnerManagedFounders() {
     const rows = listQ.data?.engagements ?? [];
     const needle = search.trim().toLowerCase();
     if (!needle) return rows;
-    return rows.filter((e) => e.companyId.toLowerCase().includes(needle) || e.id.toLowerCase().includes(needle));
+    /* WAVE NB-B — the name is now what the row DISPLAYS, so it must also be what
+       the search box searches. Without this, typing the company name a partner
+       can plainly see would return "No engagements match your search." The two
+       existing terms are unchanged and still match. */
+    return rows.filter(
+      (e) =>
+        e.companyId.toLowerCase().includes(needle) ||
+        e.id.toLowerCase().includes(needle) ||
+        (e.companyName ?? "").toLowerCase().includes(needle),
+    );
   }, [listQ.data, search]);
 
   if (!role.ready || !role.identity) return null;
@@ -1182,7 +1203,7 @@ export default function PartnerManagedFounders() {
                     )}
                     {filtered.map((e) => (
                       <tr key={e.id} className="border-t" data-testid={`mf-row-${e.id}`}>
-                        <td className="p-3 font-medium">{partyReferenceLabel(e.companyId)}</td>
+                        <td className="p-3 font-medium">{e.companyName ?? partyReferenceLabel(e.companyId)}</td>
                         <td className="p-3"><ModeBadge mode={e.mode} /></td>
                         <td className="p-3"><StatusBadge status={e.status} /></td>
                         <td className="p-3 text-[var(--cv-color-text-muted)]">{e.createdAt ? new Date(e.createdAt).toLocaleDateString() : "—"}</td>

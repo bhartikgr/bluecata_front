@@ -20,6 +20,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { requireAuth } from "./authMiddleware";
+import { asTenantId, TenantUnresolvedError, type TenantId } from "./tenantId";
 import { log } from "./logger";
 import { buildFootnotes, FootnoteConfigError } from "./wave15FootnoteBinding";
 import {
@@ -35,6 +36,41 @@ const VEHICLE_KINDS: readonly string[] = Object.freeze(["spv", "fund", "company"
 function actorOf(req: Request): string {
   const c = (req as any).userContext ?? {};
   return String(c?.userId ?? c?.identity?.email ?? "u_unknown");
+}
+
+/* ============================================================================
+ * W316 — THE READ-SIDE TENANT RESOLVER FOR THIS FILE.
+ *
+ * Semantics are IDENTICAL to `requireTenantForRead` in
+ * server/lib/reportingEngineRoutes.ts (W303/R247), which is module-private
+ * there and cannot be imported without exporting it out of another wave's file:
+ *
+ *   · `??` does NOT catch an empty string, so a context carrying `tenantId: ""`
+ *     must be REFUSED here (400 TENANT_UNRESOLVED) and never passed on as a
+ *     blank that silently widens the read;
+ *   · `"default"` IS accepted — single-tenant installations run on it, and
+ *     refusing it would lock out real users.
+ *
+ * The footnotes route below was shipped with `requireAuth` and NO ownership
+ * check of any kind. This resolver is what makes it a tenant-scoped read.
+ * ========================================================================== */
+function requireTenantForRead(req: Request, res: Response): TenantId | null {
+  const c = (req as any).userContext ?? {};
+  const raw = String(c?.tenantId ?? c?.partner?.tenantId ?? "default").trim();
+  try {
+    return asTenantId(raw);
+  } catch (e) {
+    if (e instanceof TenantUnresolvedError) {
+      res.status(400).json({
+        ok: false,
+        error: "TENANT_UNRESOLVED",
+        message:
+          "This request has no resolvable tenant, so it cannot be scoped. Reporting reads are tenant-scoped and are refused rather than widened.",
+      });
+      return null;
+    }
+    throw e;
+  }
 }
 
 function today(): string {
@@ -67,11 +103,16 @@ export function registerWave15ReportingRoutes(app: Express): void {
         res.status(400).json({ ok: false, error: "BAD_VEHICLE_KIND", message: `expected one of ${VEHICLE_KINDS.join(", ")}` });
         return;
       }
+      // W316 — resolve the tenant BEFORE any read. A request with no resolvable
+      // tenant is refused, not widened.
+      const tenantId = requireTenantForRead(req, res);
+      if (!tenantId) return;
       const asOfDate = String(req.query.asOf ?? today()).slice(0, 10);
       const out = buildFootnotes({
         vehicleKind: kind,
         vehicleId: String(req.params.id),
         asOfDate,
+        tenantId,
         currency: typeof req.query.currency === "string" && req.query.currency ? String(req.query.currency) : undefined,
       });
       res.json({
