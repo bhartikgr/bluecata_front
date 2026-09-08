@@ -249,237 +249,66 @@ interface BaselineEntry {
  * tree cannot absorb.
  */
 export const BASELINE: BaselineEntry[] = [
-  /* ── WAVE 52c · B6 — THE REGISTER SHRANK FROM 9 TO 2 ───────────────────────
-     Wave 52b baselined NINE unlabelled percentage sites and Review 1 confirmed
-     that OWNERSHIP sites were among them, while §10 item 5 of the document
-     already sent to the external reviewer commits that "every percentage carries
-     its denominator label. A percentage without one is treated as a defect."
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 342 · ITEM 4 · W310 — THE REGISTER SHRANK FROM TWO TO ZERO, BY
+     LABELLING THE TREE, NOT BY WIDENING THE FENCE.
+     ══════════════════════════════════════════════════════════════════════════
+     THE TWO ENTRIES THAT STOOD HERE ARE RETIRED. Both were sites in
+     `client/src/pages/founder/RoundDetail.tsx`; both are now LABELLED ON SCREEN,
+     which is the mechanism WAVE 52c used for the seven entries it retired
+     ("SEVEN of the nine are now LABELLED ON SCREEN and their entries are
+     DELETED, not silenced"). An entry cannot survive its own fix: this fence
+     only ever matches an UNLABELLED site, so a labelled site reports
+     BASELINE-STALE for as long as its entry remains. The entries are therefore
+     retired here, with the reason recorded, and the sites remain in scope and
+     are still scanned on every run.
 
-     SEVEN of the nine are now LABELLED ON SCREEN and their entries are DELETED,
-     not silenced — CapTable.tsx :658 (ownership-bar tooltip), :909 (group
-     subtotal), :1007 (per-holder figure, the one a founder screenshots) and its
-     column header; RoundDetail.tsx :1188/:1199 (pro-forma projection column),
-     :1337 (share-of-raise), :1602 ("New investor %") and :1603 ("Founder %
-     after" — THE canonical ambiguous figure, the one that is legitimately
-     40.000% / 48.485% / 51.613% on identical facts).
+     NOTHING WAS WIDENED TO ACHIEVE THIS. No pattern was removed, no vocabulary
+     token was added to `DENOM_PHRASES`, `DENOM_LABELS`, `SAFE_CONSTRUCTS` or
+     `NON_OWNERSHIP_TOKENS`, no directory was excluded, `WINDOW` is unchanged and
+     nothing was newly allowlisted. The two sites pass because the screens now
+     name their denominators in the words a founder reads.
 
-     The fence was NOT widened to achieve that: `NON_OWNERSHIP_TOKENS`,
-     `DENOM_PHRASES`, `DENOM_LABELS`, `SAFE_CONSTRUCTS` and `WINDOW` are all
-     byte-identical to Wave 52b. The count went down because labels were added to
-     the screens, which is the only legitimate way for it to go down.
+     ── ENTRY 1 RETIRED — the use-of-proceeds total, formerly pinned at :2068 ──
+     Owner was "W53 (round surface) — arithmetic, not labelling". Its recorded
+     reason was that the figure is a SUM OF AN ALREADY-ROUNDED COLUMN, which
+     invariant I-4 forbids, and that WAVE 52c deliberately withheld a label
+     because "putting a denominator label on a figure computed the wrong way
+     would make a wrong number look authoritative".
 
-     WAVE 58 · R27 — LINE NUMBERS ONLY. Both entries below moved from 1394 and
-     1425 to 1455 and 1486 because Wave 58 appended an option-pool disclosure
-     panel ABOVE them in the same file (`disclosure-w58-option-pool`, in the
-     Projection card). The `text`, the `owner` and the `why` of each entry are
-     BYTE-IDENTICAL, both sites are untouched, and the baseline COUNT HOLDS AT
-     TWO — it is not widened, and no third entry is added. The fence's own
-     BASELINE-STALE check is what caught the shift, which is the check working.
+     THAT OBJECTION IS ANSWERED, NOT OVERRULED, and the debt it names is NOT
+     discharged. W310's ruling is that a ratio whose denominator came from the
+     caller is not the platform's number and the screen must say so. The screen
+     now says exactly that: the percentages are named as the ones RECORDED ON THE
+     ROUND WIZARD, taken as a share of the total the founder entered there;
+     Capavate is stated not to derive them and not to rescale them; each was
+     recorded already rounded, which is stated; and when they do not add to 100
+     the screen PRINTS THE TRUE SUM and says it is shown as recorded rather than
+     adjusted. So the figure is no longer presented as a platform computation at
+     all, which is the premise W52c's objection rested on — an authoritative-
+     looking derived number. A caller's own figures, labelled as the caller's,
+     cannot be made to look authoritative by naming what they are a share of.
 
-     WAVE 58b — LINE NUMBERS ONLY, AGAIN, AND FOR THE SAME REASON. Both entries
-     moved from 1455 and 1486 to 1547 and 1578 because Wave 58b appended TWO more
-     things ABOVE them in the same file: the fully-diluted base disclosure
-     (`disclosure-w58b-fd-base`, a sibling at the end of the Projection card) and
-     the dynamic ESOP row plus edit-surface sentence on the Terms tab. The `text`,
-     the `owner` and the `why` of each entry are again BYTE-IDENTICAL, both sites
-     are untouched by this wave, and the baseline COUNT HOLDS AT TWO. No third
-     entry is added and no exclusion vocabulary is widened — the two follow-on
-     repairs each entry names (total-the-unrounded-values for :1547, a
-     NON_OWNERSHIP classification with its own falsification test for :1578) are
-     still owed and still owned by W53. The fence's BASELINE-STALE check caught the
-     shift a second time, which is the check working a second time.
+     THE I-4 ARITHMETIC DEBT REMAINS OPEN AND REMAINS W53's. Totalling the
+     unrounded values and rounding once is an arithmetic change with its own
+     test, on a surface this wave does not own, and it was NOT done here. It is
+     recorded in `PRODUCTGAPS3_HANDOFF.md` as still owed so that retiring this
+     entry cannot lose it.
 
-     WAVE 58e · D3.7 — LINE NUMBERS ONLY, A THIRD TIME, SAME REASON. Both entries
-     moved from 1547 and 1578 to 1578 and 1609 because 58e inserted the
-     `Discount (% off the round price)` row ABOVE them on the same Terms tab: the
-     live audit found that tab showing NO discount at all on SAFE/Note rounds
-     (R31), so the value governing every SAFE conversion was absent from the
-     round's own terms panel. The `text`, the `owner` and the `why` of each entry
-     are again BYTE-IDENTICAL, neither site is touched by this wave, and the
-     baseline COUNT HOLDS AT TWO — nothing is widened, no third entry is added, and
-     no new site is excused. The new discount copy names its own denominator in
-     prose ("% off the round price", "% of the round price") and is not a
-     `{expr}%` site at all. BASELINE-STALE caught the shift a third time.
+     ── ENTRY 2 RETIRED — the closing-checklist figure, formerly pinned at :2152 ─
+     Owner was "W53 (round surface) — fence classification, not a screen edit",
+     the reason being that a checklist-progress figure is not an ownership share.
+     That is still true, and it is beside the point W310 makes: the denominator
+     is `items.length`, THE CHECKLIST RECORDED ON THAT ROUND, which counsel
+     defines and the caller supplies. The percentage now names it on screen
+     ("of the total N items on this round's recorded checklist"), so the figure
+     is no longer quotable as a Capavate-defined measure of completeness. This
+     was a screen edit after all, and it is made.
 
-     WAVE 71 · D18 — LINE NUMBERS ONLY, A FOURTH TIME, SAME REASON. Both entries
-     moved from 1578 and 1609 to 1601 and 1632 because Wave 71 inserted the
-     `ownershipCellText` helper and its block comment ABOVE them in the same file:
-     the engine's `ownershipPercent` became `string | null` (0 / 0 is undefined, not
-     zero — R47), and `SideTable` had to stop calling `parseFloat` on it. The
-     `text`, the `owner` and the `why` of each entry are again BYTE-IDENTICAL,
-     NEITHER SITE IS TOUCHED by this wave, and the baseline COUNT HOLDS AT TWO —
-     nothing is widened, no third entry is added, and no new site is excused.
-     BASELINE-STALE caught the shift a fourth time, which is the check working a
-     fourth time.
-
-     WAVE 72 · DEFECT 1 / R58 — LINE NUMBERS ONLY, A FIFTH TIME, SAME REASON. Both
-     entries moved from 1601 and 1632 to 1654 and 1685 because Wave 72 inserted THREE
-     things ABOVE them in the same file: the `try`/`catch` around `projectPostClose`
-     (so a named projection refusal is RENDERED instead of unmounting the page into
-     the app-level ErrorBoundary — R58's dead-promise rule) and the
-     `projection-refused` branch that displays it, and the `export` (plus its
-     comment) on `ProjectionPanel` so an R58 render test can MOUNT it. The `text`,
-     the `owner` and the
-     `why` of each entry are again BYTE-IDENTICAL, NEITHER SITE IS TOUCHED by this
-     wave, and the baseline COUNT HOLDS AT TWO — nothing is widened, no third entry
-     is added, and no new site is excused. The refusal panel this wave adds renders
-     NO percentage at all, so it is not a `{expr}%` site. BASELINE-STALE caught the
-     shift a fifth time, which is the check working a fifth time.
-
-     WAVE 73 · ITEM 7 — LINE NUMBERS ONLY, A SIXTH TIME, SAME REASON. Both entries
-     moved from 1654 and 1685 to 1673 and 1704 because Wave 73 moved ONE STATEMENT
-     and its comment ABOVE them in the same file: `ProjectionPanel`'s second
-     `useQuery` (the Wave 52c pricing-order read) was declared BELOW two early
-     returns, so a cold-cache mount ran one hook on the first render and two on the
-     next, React raised "Rendered more hooks than during the previous render", and
-     the Round Detail projection tab unmounted into the ErrorBoundary. Hoisting the
-     hook above the early returns is the whole fix (Wave 72 F-1 / OQ-1). The `text`,
-     the `owner` and the `why` of each entry are again BYTE-IDENTICAL, NEITHER SITE
-     IS TOUCHED by this wave, and the baseline COUNT HOLDS AT TWO — nothing is
-     widened, no third entry is added, and no new site is excused.
-
-     AND A NOTE THE NEXT AGENT NEEDS, because it is the opposite mistake: this wave
-     also removed a `?? 0` ownership fabrication from `founder/Dashboard.tsx`
-     (Item 8, R47/R48). **`founder/Dashboard.tsx` IS NOT AND WAS NEVER IN THIS
-     FENCE'S SCOPE** (see the file list above — R43, which would have added it, was
-     RETRACTED), so that fix must NOT change this baseline count. If a future wave
-     finds the count at anything other than TWO and reaches for Item 8 as the
-     explanation, it is looking at the wrong change.
-
-     TWO REMAIN, each with its reason and its owning wave printed on every run. */
-  {
-    /* WAVE 80 re-pin: 1673 -> 1735. SAME SITE, byte-identical text (which is what
-       made the fence report BASELINE-STALE rather than pass). It moved DOWN because
-       WAVE 80 ITEM 2 + ITEM 4.3 rewrote the `UseOfProceeds` card ABOVE it: the card
-       now renders the founder's FREE-TEXT use-of-proceeds narrative as well as the
-       structured rows, and the "Add use of proceeds" button no longer emits a
-       success toast for a stubbed editor. NEITHER CHANGE TOUCHES THIS FIGURE OR ITS
-       ARITHMETIC. The narrative branch renders NO percentage at all — deliberately,
-       because deriving per-bucket percentages from a sentence would be inventing
-       figures the founder never entered — so it adds no percent site for this fence
-       to see. The unlabelled total this entry pins is byte-for-byte the same
-       expression, computed the same (still-wrong, still-owned) way. The fence is
-       UNCHANGED: no pattern removed, no vocabulary token removed, no directory
-       excluded, nothing newly allowlisted, and the baseline is still exactly TWO.
-
-       WAVE 107 re-pin: 1735 -> 1918. SAME SITE, byte-identical text. It moved
-       DOWN because WAVE 107 rewrote three things ABOVE it in `RoundDetail.tsx`:
-       the "Round terms" panel's liquidation-preference / anti-dilution / pro-rata
-       rows now READ stored fields instead of printing literals (FINDING 2), the
-       "Round lifecycle" stepper now resolves a stage from the round's state AND
-       its own invitation record instead of silently defaulting to the first stage
-       (FINDING 4), and one `data-testid` was added to the terms-row renderer.
-       NONE of those touch this figure or its arithmetic, and none of them render
-       a percentage: the liquidation row renders stored TEXT, the anti-dilution and
-       pro-rata rows render stored tokens or a named absence, and the stepper
-       renders stage labels and sentences with no percent site at all. The fence
-       itself is UNCHANGED - no pattern removed, no vocabulary token removed, no
-       directory excluded, nothing newly allowlisted - and the baseline is still
-       exactly TWO.
-
-       WAVE 111 re-pin: 1918 -> 1939 (and 2002 -> 2023). SAME SITES, byte-identical
-       text, moved down by 21 lines because WAVE 111 replaced the Terms tab's inline
-       liquidation-preference parse in `RoundDetail.tsx` with a call to the ONE
-       reader in `shared/liquidationTermsReader.ts` and documented why in a comment
-       block above it. That edit renders NO percentage: it prints a liquidation
-       multiple, a participation word and a participation cap expressed as a
-       MULTIPLE ("2.5x the invested amount"), never a percent, so it creates no new
-       percent site and changes neither of these two figures nor their arithmetic.
-       The fence itself is UNCHANGED - no pattern removed, no vocabulary token
-       removed, no directory excluded, nothing newly allowlisted - and the baseline
-       is still exactly TWO. */
-    /* WAVE 114 re-pin: 1939 -> 2031. SAME SITE, byte-identical text (which is what
-       made the fence report BASELINE-STALE rather than pass). It moved DOWN because
-       Wave 114 replaced the round header's single `raisedAmount` line with the three
-       LABELLED money states of Finding 1, and read the four governance terms of
-       Finding 2 through their shared reader. Neither touches this figure or its
-       arithmetic: the new percentage this wave renders is the SUBSCRIBED share of
-       the round target and it names its denominator in the sentence next to it
-       ("of target subscribed"). The fence itself is UNCHANGED - no pattern removed,
-       no vocabulary token removed, no directory excluded, nothing newly allowlisted
-       - and the baseline is still exactly TWO. */
-    /* WAVE 118 re-pin: 2031 -> 2068. SAME SITE, byte-identical text - that identity
-       is exactly why the fence said BASELINE-STALE instead of reporting a new site.
-       It moved DOWN 37 lines because Wave 118 Finding 2 restored the round-summary
-       panel to the four-div-plus-one-expression shape it had at baseline (the drop
-       gate keys panel children positionally, so Wave 114's in-JSX ternary read as
-       two lost children) and hoisted the money derivation into a `useMemo` above
-       the early returns. That is a JSX SHAPE change and a hook move: this span,
-       its `data.reduce(...)` sum and every figure it prints are untouched. The
-       fence itself is UNCHANGED - no pattern removed, no vocabulary token removed,
-       no directory excluded, nothing newly allowlisted - and the baseline is still
-       exactly TWO. */
-    file: "client/src/pages/founder/RoundDetail.tsx",
-    line: 2068,
-    text: "<span className=\"font-mono tabular-nums\">{sym}{total.toLocaleString()} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>",
-    owner: "W53 (round surface) — arithmetic, not labelling",
-    why:
-      "This is the TOTAL of the :1337 column and it is a SUM OF THE ALREADY-ROUNDED COLUMN, which invariant I-4 forbids. WAVE 52c deliberately did NOT label it: putting a denominator label on a figure computed the wrong way would make a wrong number look authoritative. The repair is to total the unrounded values and then round once \u2014 an arithmetic change with its own test, owned by the wave that fixes I-4 on this surface.",
-  },
-  {
-    /* WAVE 80 re-pin: 1704 -> 1819. SAME SITE, byte-identical text (which is what
-       made the fence report BASELINE-STALE rather than pass). It moved DOWN because
-       WAVE 80 ITEM 2 + ITEM 4.3 rewrote the `UseOfProceeds` card ABOVE it: the card
-       now renders the founder's FREE-TEXT use-of-proceeds narrative as well as the
-       structured rows, and the "Add use of proceeds" button no longer emits a
-       success toast for a stubbed editor. NEITHER CHANGE TOUCHES THIS FIGURE OR ITS
-       ARITHMETIC. The narrative branch renders NO percentage at all — deliberately,
-       because deriving per-bucket percentages from a sentence would be inventing
-       figures the founder never entered — so it adds no percent site for this fence
-       to see. The unlabelled total this entry pins is byte-for-byte the same
-       expression, computed the same (still-wrong, still-owned) way. The fence is
-       UNCHANGED: no pattern removed, no vocabulary token removed, no directory
-       excluded, nothing newly allowlisted, and the baseline is still exactly TWO.
-       FOR THIS SECOND ENTRY specifically, the shift is larger because WAVE 80 also
-       APPENDED two panels — `RoundNarrative` and `TranchePlan`, the readers for the
-       round narrative and tranche plan the wizard used to discard — between the
-       use-of-proceeds card and the closing checklist. Appended at the END of their
-       container, never inserted at its head, because a head insertion in an ordered
-       container reads to the silent-drop guard as a mass removal. Neither panel
-       renders a percentage: both render only text the founder typed.
-
-       WAVE 107 re-pin: 1819 -> 2002. SAME SITE, byte-identical text. It moved
-       DOWN because WAVE 107 rewrote three things ABOVE it in `RoundDetail.tsx`:
-       the "Round terms" panel's liquidation-preference / anti-dilution / pro-rata
-       rows now READ stored fields instead of printing literals (FINDING 2), the
-       "Round lifecycle" stepper now resolves a stage from the round's state AND
-       its own invitation record instead of silently defaulting to the first stage
-       (FINDING 4), and one `data-testid` was added to the terms-row renderer.
-       NONE of those touch this figure or its arithmetic, and none of them render
-       a percentage: the liquidation row renders stored TEXT, the anti-dilution and
-       pro-rata rows render stored tokens or a named absence, and the stepper
-       renders stage labels and sentences with no percent site at all. The fence
-       itself is UNCHANGED - no pattern removed, no vocabulary token removed, no
-       directory excluded, nothing newly allowlisted - and the baseline is still
-       exactly TWO. 
-       WAVE 111 re-pin: 1918 -> 1939 (and 2002 -> 2023). SAME SITES, byte-identical
-       text, moved down by 21 lines because WAVE 111 replaced the Terms tab's inline
-       liquidation-preference parse in `RoundDetail.tsx` with a call to the ONE
-       reader in `shared/liquidationTermsReader.ts` and documented why in a comment
-       block above it. That edit renders NO percentage: it prints a liquidation
-       multiple, a participation word and a participation cap expressed as a
-       MULTIPLE ("2.5x the invested amount"), never a percent, so it creates no new
-       percent site and changes neither of these two figures nor their arithmetic.
-       The fence itself is UNCHANGED - no pattern removed, no vocabulary token
-       removed, no directory excluded, nothing newly allowlisted - and the baseline
-       is still exactly TWO.
-*/
-    /* WAVE 114 re-pin: 2023 -> 2115. SAME SITE, byte-identical text, moved down by
-       the same two Finding 1 / Finding 2 edits described on the entry above. Still
-       the closing-checklist progress figure, still not an ownership share, still
-       unlabelled for the reason recorded below. Baseline remains exactly TWO. */
-    /* WAVE 118 re-pin: 2115 -> 2152. SAME SITE, byte-identical text, moved down 37
-       lines by the same Finding 2 shape restoration described on the entry above.
-       Still the closing-checklist progress figure (`done` of `items.length`), still
-       not an ownership share, still unlabelled for the reason recorded below.
-       Baseline remains exactly TWO. */
-    file: "client/src/pages/founder/RoundDetail.tsx",
-    line: 2152,
-    text: "<span className=\"font-mono text-xs\">{pct.toFixed(0)}%</span>",
-    owner: "W53 (round surface) — fence classification, not a screen edit",
-    why:
-      "ESTABLISHED BY READING THE CODE IN WAVE 52c, where Wave 52b recorded it as unknown: this is the CLOSING CHECKLIST progress figure (`done` of `items.length`, rendered beside a <Progress> bar), NOT an ownership share of a cap table. It therefore has no cap-table denominator to name, and the correct repair is a NON_OWNERSHIP classification in this fence. WAVE 52c did not make it, because widening the fence's exclusion vocabulary is exactly how a fence stops catching what it exists to catch, and that change should land with its own falsification test rather than as a side effect of a labelling pass.",
-  },
+     THE COUNT MUST NEVER RISE. `server/__tests__/w52b_percent_denominator_fence.test.ts`
+     holds the ceiling and is updated in this wave with its reason stated inline;
+     if a future wave needs an entry here, it is adding debt, not paying it.
+     ══════════════════════════════════════════════════════════════════════════ */
 ];
 
 /* ── Scan ────────────────────────────────────────────────────────────────── */

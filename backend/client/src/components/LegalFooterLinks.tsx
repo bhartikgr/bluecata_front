@@ -20,7 +20,14 @@
  * on the actual navigation path rather than parked in a component nobody
  * mounts — the recurring failure mode this wave was told to avoid.
  */
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
+/* WAVE 341 · W335 — see client/src/lib/legalShellScope.ts for the measurement.
+   Inside CollectiveShell these links pointed at the BARE public legal routes,
+   which AppRouter wraps in AppShell — so a Consortium Partner following them
+   landed in the FOUNDER workspace sidebar. The links now carry the shell scope
+   the visitor is already in. Outside the two Collective scopes the scope is the
+   empty string and the href is byte-for-byte what it was. */
+import { legalScopeForLocation, legalHref, LEGAL_PUBLIC_PATHS } from "@/lib/legalShellScope";
 /* WAVE 210 — this component is already mounted inside AppShell and
  * CollectiveShell, i.e. on every authenticated page in every silo. That makes it
  * the honest "next login" surface for the legal-consolidation notice, and it
@@ -31,16 +38,18 @@ import { LegalUpdateNotice } from "@/components/LegalUpdateNotice";
 import { REGISTERED_PARTY_NAME } from "@shared/wave210LegalCorpusVersion";
 
 export function LegalFooterLinks({ className = "" }: { className?: string }) {
+  const [location] = useLocation();
+  const scope = legalScopeForLocation(location);
   return (
     <footer
       className={`px-6 py-4 border-t border-border text-[11px] text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 ${className}`}
       data-testid="legal-footer-links"
     >
       <span>© {new Date().getFullYear()} Capavate</span>
-      <Link href="/terms-of-service" className="underline hover:text-foreground" data-testid="link-terms-of-service">
+      <Link href={legalHref(scope, LEGAL_PUBLIC_PATHS.terms)} className="underline hover:text-foreground" data-testid="link-terms-of-service">
         Terms of Service
       </Link>
-      <Link href="/privacy-policy" className="underline hover:text-foreground" data-testid="link-privacy-policy">
+      <Link href={legalHref(scope, LEGAL_PUBLIC_PATHS.privacy)} className="underline hover:text-foreground" data-testid="link-privacy-policy">
         Privacy Policy
       </Link>
       {/* WAVE 210 — the operating entity, named where the copyright line is. The

@@ -179,6 +179,36 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
         "e8da7f99a1eba63b3ad2099a9cbe5dba9ec3f10ce00d68f7efe4399c10fa8b6a",
       "server/lib/rateLimit.ts":
         "0c2f117299ea503b31356da2f9267f8bd9577345c7d718ad646ebf74b92bccfc",
+      /* WAIVER-9 — WAVE 343 · ITEM 1, OWNER-RATIFIED 2026-09-06. THE TENTH
+       * KNOWN_DRIFT ROW (id -9; WAIVER-1 covers two files, and a WAIVER-10 label
+       * aborts sacred_check.sh with exit 3 on the contiguity check).
+       *
+       * AUTHORITY: the owner's own instruction of 2026-09-06, verbatim "Fix it.
+       * Be very careful!", given on the failing border contrast. NOT an
+       * engineering decision, and NO signature of his is reproduced here.
+       *
+       * WHAT CHANGED: exactly one declaration, line 57 of
+       * client/src/styles/capavate-tokens.css. `--cv-color-border: #ddd9d3`
+       * became `#8a8580`. Measured against WCAG SC 1.4.11's 3:1 non-text
+       * contrast requirement: 1.4056:1 on #ffffff / 1.2037:1 on #f0ede8 BEFORE,
+       * 3.6538:1 / 3.1291:1 AFTER. `--cv-color-border` IS the failing
+       * declaration and IS the prohibited token; the prohibition on new
+       * CONSUMERS is untouched and no consumer was added — a value change adds
+       * none. 93 consumers in 24 files were counted and re-checked; every one
+       * uses it as a border on a light surface, so nothing regressed.
+       *
+       * It lives in WAIVER_1_FROZEN because the path IS one of the base 40
+       * (row 40 of sacred_baseline/SACRED_SHA256.txt), so `ok` falls 40 -> 39
+       * and the `ok + |WAIVER_1_FROZEN| === 40` identity still holds.
+       *
+       * Pre-waiver bytes, retained:
+       * b4346f5a81be40fbd2791e43c8b671f6ab713265f024459d0be278766a88c766
+       * TO DECLINE: restore #ddd9d3 on line 57, delete this entry, the
+       * RATIFIED_HERE entry and the sacred_check.sh WAIVER-9 row, and put the two
+       * counts in wave48_money_floor_waiver5_and_transport_rename.test.ts back
+       * to 9. */
+      "client/src/styles/capavate-tokens.css":
+        "45504dd1572b0c8ee4b31e703fb29d38876d41e6b7f41c26cfee94959bc96c5f",
       // WAIVER-4 (owner-signed 2026-08-11, "Signatures confirmed") — X-C1 / P1-8.
       // SPV limited partners were resolving as cap-table counterparties, so two
       // passive LPs in one vehicle could be revealed to each other by six live
@@ -552,6 +582,10 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     "server/lib/capTableMembership.ts": "WAIVER-4",
     "server/lib/rateLimit.ts": "WAIVER-2",
     "server/db/migrate.ts": "WAIVER-3",
+    /* Ratified 2026-09-06 by the owner's own instruction ("Fix it. Be very
+       careful!") on the failing border contrast — WAVE 343 · ITEM 1. The tenth
+       KNOWN_DRIFT row; the id is -9 for the contiguity reason above. */
+    "client/src/styles/capavate-tokens.css": "WAIVER-9",
     /* Ratified 2026-08-13 by owner ruling R13 (WAVE 48 · ITEM 2). */
     "client/src/pages/founder/Billing.tsx": "WAIVER-5",
     /* Ratified 2026-08-14 — REPAIR WAVE 1 · ITEM 1. The owner was asked directly,
@@ -663,7 +697,24 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
        R70) adds the ninth KNOWN_DRIFT row. The number is asserted rather than
        matched loosely precisely so a waiver cannot be added without a wave
        stating that it did. */
-    expect(out).toContain("9 under KNOWN_DRIFT freeze");
+    /* WAVE 343 · ITEM 1 — 9 → 10. THIS TRIPWIRE FIRED, AND IT WAS RIGHT TO. The
+       wave updated the two counts in
+       wave48_money_floor_waiver5_and_transport_rename.test.ts and this THIRD
+       point went red on the next run, which is exactly the "second-path miss"
+       discipline the WAIVER-4 comment above was written about. It is updated with
+       a stated reason and NOT deleted or loosened.
+       REASON: WAIVER-9 — client/src/styles/capavate-tokens.css — adds the TENTH
+       KNOWN_DRIFT row. The `--cv-color-border` declaration measured 1.4056:1 on
+       #ffffff and 1.2037:1 on #f0ede8 against WCAG SC 1.4.11's 3:1 non-text
+       contrast requirement; it now measures 3.6538:1 and 3.1291:1. The authority
+       is the owner's own instruction of 2026-09-06, verbatim "Fix it. Be very
+       careful!" — not an engineering decision, and no signature of his is
+       reproduced. The id is -9, not -10, because WAIVER-1 covers two files and a
+       WAIVER-10 label aborts sacred_check.sh with exit 3 on the contiguity check
+       (transcript: build_log/ownerband/disarm/controlB_waiver10_label.log).
+       The number stays ASSERTED and EXACT for the same reason it always has. */
+    expect(out).toContain("10 under KNOWN_DRIFT freeze");
+    expect(out).toContain("WAIVER-9 x1");
     expect(out).toContain("WAIVER-6 x1");
     expect(out).toContain("WAIVER-7 x1");
     const listed = execFileSync("bash", [path.join(ROOT, "scripts", "sacred_check.sh"), "--list"], {

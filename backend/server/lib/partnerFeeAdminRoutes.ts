@@ -367,7 +367,18 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
                           (partnerSelfServiceRoutes.ts, GET /api/partner/me/spv-fees),
                           so the two endpoints can no longer disagree about the
                           currency of the same row. */
-                       COALESCE(s.deployment_fee_currency, 'USD') AS currency,
+                       /* WAVE 345 . ITEM 4 SQL SITE 2 - THE COALESCE IS GONE.
+                          It read COALESCE(s.deployment_fee_currency,'USD'). A
+                          row with no recorded denomination was handed to the
+                          aggregator wearing a US-dollar label it never had, and
+                          a referral commission (no spv_fund_id at all, so no
+                          currency anywhere) was ALWAYS labelled USD. On an
+                          admin money screen that is a lie about someone else's
+                          money. The column is now returned AS STORED - null
+                          when nothing is recorded - and the aggregator below
+                          keeps unlabelled money in its own pile instead of
+                          adding it to the dollars. */
+                       s.deployment_fee_currency AS currency,
                        (s.deployment_fee_currency IS NULL) AS currencyIsDefaulted
                 FROM partner_billing_entries pbe
                 LEFT JOIN contacts c ON c.id = pbe.partner_id
@@ -395,19 +406,51 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
      * against it anywhere and the COALESCE default applies. That is the same USD
      * these rows have always been reported in, so nothing shifts — but the count
      * is now stated on screen instead of being an unexamined assumption. */
+    /* WAVE 345 . ITEM 4 SQL SITE 2 - WHAT CHANGED IN THIS LOOP, AND WHY.
+     *
+     * It used to read `String(e.currency || "USD")`. With the COALESCE above
+     * that expression could never even see a null, so every unlabelled row was
+     * silently counted as dollars and then printed with a dollar sign. Two
+     * separate defaults, both invisible, both on an admin money screen.
+     *
+     * Now a row is bucketed by the currency ACTUALLY RECORDED against it.
+     * A row with none is not guessed at and is not dropped either - dropping it
+     * would conceal real money, which is the same sin in the other direction.
+     * It goes into its own pile, counted and totalled, reported separately and
+     * never added to any ISO bucket. NOTHING IS CONVERTED and no rate exists to
+     * convert with.
+     *
+     * THE EMPTY-BUCKET LABEL. The old code passed "USD" to
+     * `singleCurrencyScalar` as the currency to use for an EMPTY bucket, so a
+     * partner with nothing settled saw "$0.00" under Paid whatever currency
+     * they actually bill in. A zero is a true fact and must not be concealed
+     * (rule 12), but its LABEL must not be invented. So an empty sub-bucket
+     * borrows the label of the `all` bucket when that bucket has exactly one
+     * currency, and only then. Otherwise the figure is unavailable and the page
+     * says so - it already knows how to. */
     const buckets: Record<"pending" | "paid" | "all", CurrencyBuckets> = { pending: {}, paid: {}, all: {} };
     let entriesWithoutRecordedCurrency = 0;
+    const unrecordedCurrencyMinor: Record<"pending" | "paid" | "all", number> = { pending: 0, paid: 0, all: 0 };
     for (const e of entries) {
-      const ccy = String(e.currency || "USD");
+      const recorded = typeof e.currency === "string" ? e.currency.trim().toUpperCase() : "";
       const minor = e.commissionMinor || 0;
-      if (e.currencyIsDefaulted) entriesWithoutRecordedCurrency += 1;
-      addToBucket(buckets.all, ccy, minor);
-      if (e.status === "paid") addToBucket(buckets.paid, ccy, minor);
-      else if (e.status === "pending") addToBucket(buckets.pending, ccy, minor);
+      if (recorded === "") {
+        entriesWithoutRecordedCurrency += 1;
+        unrecordedCurrencyMinor.all += minor;
+        if (e.status === "paid") unrecordedCurrencyMinor.paid += minor;
+        else if (e.status === "pending") unrecordedCurrencyMinor.pending += minor;
+        continue;
+      }
+      addToBucket(buckets.all, recorded, minor);
+      if (e.status === "paid") addToBucket(buckets.paid, recorded, minor);
+      else if (e.status === "pending") addToBucket(buckets.pending, recorded, minor);
     }
-    const allScalar = singleCurrencyScalar(buckets.all, "USD");
-    const paidScalar = singleCurrencyScalar(buckets.paid, "USD");
-    const pendingScalar = singleCurrencyScalar(buckets.pending, "USD");
+    /* The `all` bucket is resolved FIRST and with no invented empty label, so
+       the label the sub-buckets may borrow is one this ledger really carries. */
+    const allScalar = singleCurrencyScalar(buckets.all);
+    const emptyBucketLabel = allScalar.available ? allScalar.currency : undefined;
+    const paidScalar = singleCurrencyScalar(buckets.paid, emptyBucketLabel);
+    const pendingScalar = singleCurrencyScalar(buckets.pending, emptyBucketLabel);
     const totals = {
       pending: pendingScalar.available ? pendingScalar.minor : null,
       paid: paidScalar.available ? paidScalar.minor : null,
@@ -445,6 +488,10 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
         pending: bucketsToArray(buckets.pending),
       },
       entriesWithoutRecordedCurrency,
+      /* WAVE 345 . ITEM 4 SQL SITE 2 - the money that has no denomination on
+         record, stated rather than absorbed into the dollars. Minor units only:
+         there is no currency to format it in, and that is the point. */
+      unrecordedCurrencyMinor,
       total: entries.length,
     });
   });

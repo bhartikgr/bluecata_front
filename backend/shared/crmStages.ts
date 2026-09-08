@@ -265,3 +265,51 @@ export function canonicalizeStage(stage: string): PartnerPipelineStageKey {
   }
   return PARTNER_PIPELINE_LEGACY_STAGE_REMAP[stage] ?? PARTNER_PIPELINE_DEFAULT_STAGE;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 339 · W332 — THE CONTACTS CRM GETS A VOCABULARY. NOTHING IS MERGED,
+   NOTHING IS RENAMED, NOTHING IS REORDERED (OWNER RULINGS R266 AND R91).
+
+   THE DEFECT. This platform runs SIX stage vocabularies, and the Contacts CRM
+   was the only one with NO vocabulary at all: `stage` was validated as
+   `z.string().max(60)` and edited through a plain text box. Two partners could
+   type "Committed", "committed" and "Comitted" for the same fact, and the word
+   `committed` ALREADY means three different things across the other five
+   ladders. Contacts could therefore not be compared with anything, including
+   with each other.
+
+   THE FIX IS COMPARABILITY, NOT A MERGE. R266 keeps the CRMs SEPARATE and R91
+   forbids inserting into or reordering any ladder, so this wave adds NO new
+   stage anywhere. Instead the Contacts CRM adopts, VERBATIM, the vocabulary the
+   partner CLIENTS CRM already uses — the same five values, in the same order,
+   with the same labels. That is precedented in this very file: the comment
+   above `PARTNER_CLIENT_STAGES` records that it "reuses the founder-pipeline
+   vocabulary above so the two engines speak the same stage language". A third
+   engine now speaks it too. A partner's people and a partner's companies become
+   directly comparable BECAUSE THEY SHARE A VOCABULARY, not because anything was
+   combined.
+
+   WHY THE VALUES ARE NOT COPIED OUT. `PARTNER_CONTACT_STAGES` IS
+   `PARTNER_CLIENT_STAGES` — the same array object, aliased. Writing the five
+   strings out a second time would create two lists that can drift apart, which
+   is the defect this wave exists to remove.
+
+   WHERE THE CONSTRAINT LIVES, AND WHERE IT DELIBERATELY DOES NOT. In Zod, on
+   the write routes — NEVER in the database. A DB CHECK constraint would reject
+   rows that are ALREADY STORED, taking a live partner's contact list offline to
+   tidy a word. The Zod rule applies to what is being written now.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The Contacts CRM vocabulary. Deliberately the SAME array as
+ *  `PARTNER_CLIENT_STAGES` — see the block above. */
+export const PARTNER_CONTACT_STAGES = PARTNER_CLIENT_STAGES;
+export type PartnerContactStage = PartnerClientStage;
+
+/** The same labels the Clients CRM prints, for the same reason. */
+export const PARTNER_CONTACT_STAGE_LABELS = PARTNER_CLIENT_STAGE_LABELS;
+
+/** A contact stage may be ABSENT — "not yet placed" is a real answer and is not
+ *  the same as any rung. Absent is `null`/`""`; anything else must be a stage. */
+export function isPartnerContactStage(v: unknown): v is PartnerContactStage {
+  return isPartnerClientStage(v);
+}

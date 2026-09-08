@@ -1313,6 +1313,55 @@ function AppRouter() {
         <Route path="/collective/partner/privacy">
           {() => <RequireAuth><CollectiveShell><PrivacyPage /></CollectiveShell></RequireAuth>}
         </Route>
+        {/* WAVE 341 (productgaps2) · W335 — THE LEGAL PAGES SWITCHED THE SIDEBAR
+            TO THE FOUNDER WORKSPACE. This is exactly the defect the precedent
+            immediately above fixed, on the other legal surface, and the fix is
+            the same shape.
+
+            MEASURED, NOT ASSUMED. `/terms`, `/terms-of-service`, `/privacy`,
+            `/privacy-policy` and `/legal/:docId` are registered at :628-637 as
+            bare PUBLIC routes. `AppRouter` (:~1670) ends
+            `return bare ? routes : <AppShell>{routes}</AppShell>`, and
+            `isAuthRoute` (:443) only makes a path bare when it starts with
+            "/collective/" — which none of those five do. `AppShell` then derives
+            its own scope from the URL (AppShell.tsx:~810): /admin, /investor and
+            /founder are matched by prefix and EVERYTHING ELSE FALLS BACK TO THE
+            ROLE IN CONTEXT, whose initial value is "founder". Every Consortium
+            Partner and Collective page lives under /collective/ inside
+            CollectiveShell, which mounts the footer link
+            (CollectiveShell.tsx:787) — so following it dropped the partner out
+            of their own rail and into the Founder workspace sidebar.
+
+            THE FIX. New paths onto the SAME components, inside the shell the
+            visitor is already in. No new page and no second source of truth.
+            The five bare public registrations at :628-637 are UNTOUCHED, so
+            founder, investor, admin and anonymous visitors reach them exactly as
+            they did, and nothing is deleted (R195.5).
+
+            TWO SCOPES, NOT ONE, because CollectiveShell derives its theme from
+            the URL as well (CollectiveShell.tsx:750): data-product is "partner"
+            iff the path starts with "/collective/partner", else "collective".
+            Sending a Collective MEMBER to a /collective/partner alias would
+            silently re-theme their page as a partner page.
+            client/src/lib/legalShellScope.ts picks the matching alias. */}
+        <Route path="/collective/partner/terms-of-service">
+          {() => <RequireAuth><CollectiveShell><LegalTermsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/privacy-policy">
+          {() => <RequireAuth><CollectiveShell><LegalPrivacyPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/legal/:docId">
+          {(params: { docId: string }) => <RequireAuth><CollectiveShell><AdoptedLegalDocumentPage docId={params.docId} /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/terms-of-service">
+          {() => <RequireAuth><CollectiveShell><LegalTermsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/privacy-policy">
+          {() => <RequireAuth><CollectiveShell><LegalPrivacyPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/legal/:docId">
+          {(params: { docId: string }) => <RequireAuth><CollectiveShell><AdoptedLegalDocumentPage docId={params.docId} /></CollectiveShell></RequireAuth>}
+        </Route>
         <Route path="/collective/dashboard">
           {/* v25.48.2 MF7 (Q9) — the member gate now lives inside CollectiveShell
               and wraps ALL member-only routes, so no per-route wrap here. */}

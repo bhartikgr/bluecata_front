@@ -230,6 +230,15 @@ export default function RoundDetail() {
  const [backfillEmail, setBackfillEmail] = useState("");
  const [backfillAmount, setBackfillAmount] = useState("");
  const [backfillShares, setBackfillShares] = useState("");
+ /* QA BLOCKER 1b — the "Withdraw" action for a soft-circle entry.
+    The SERVER CAPABILITY ALREADY EXISTED and had ZERO client callers:
+    `POST /api/rounds/:id/soft-circle/:scId/reject` (server/track1Routes.ts:4734,
+    handler at :4396). It is an UPDATE of the row's own status column — it
+    deletes nothing, it removes nothing from the hash-chained cap-table ledger,
+    and it requires a written reason so the withdrawal is never silent. What was
+    missing was a button. This is that button's state. */
+ const [rejectSoft, setRejectSoft] = useState<{ id: string; name: string } | null>(null);
+ const [rejectReason, setRejectReason] = useState("");
  // v24.3 — wire-transfer instructions (founder publishes; investor reads).
  const [wireDlgOpen, setWireDlgOpen] = useState(false);
  const [wireForm, setWireForm] = useState({
@@ -394,6 +403,31 @@ export default function RoundDetail() {
      emitMutationLocal("round", id, "update");
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/soft-circles`] });
    },
+ });
+
+ /* QA BLOCKER 1b — the caller the existing reject route never had.
+    STATUS CHANGE, NOT DELETION. The server sets `status = 'rejected'` and
+    stamps `rejected_at` / `rejected_reason` on the soft-circle row. The row
+    stays in `soft_circles` and stays auditable. Nothing uses `deleted_at`
+    here, deliberately: every read in `softCircleStore.ts` falls back to the
+    in-memory `memCircles` list, which does NOT filter on `deleted_at`, so a
+    row "archived" that way would silently re-appear the moment a database read
+    failed. (The owner's standing ruling also limits Archive to contacts.) */
+ const rejectSoftCircleMut = useMutation({
+   mutationFn: async (vars: { scId: string; reason: string }) =>
+     (await apiRequest("POST", `/api/rounds/${id}/soft-circle/${vars.scId}/reject`, { reason: vars.reason })).json(),
+   onSuccess: (_d, vars) => {
+     toast({ title: "Soft circle withdrawn", description: "The entry stays on the record, marked withdrawn with your reason." });
+     emitMutationLocal("round", vars.scId, "update");
+     queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/soft-circles`] });
+     queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}`] });
+     setRejectSoft(null);
+     setRejectReason("");
+   },
+   /* The route is now fail-closed: it answers 500 REJECT_PERSIST_FAILED rather
+      than reporting success on a write that did not land. The founder must see
+      that, so the dialog stays open and the entry stays as it was. */
+   onError: (e: Error) => toast({ title: "Could not withdraw this soft circle", description: `Nothing was changed. ${e.message}`, variant: "destructive" }),
  });
 
  // v24.2 Bug 3 — wire-funded action: founder marks a confirmed soft-circle as
@@ -595,7 +629,15 @@ export default function RoundDetail() {
  <>
  <div data-testid="text-round-subscribed">
    <span className="text-2xl font-semibold">{moneyView.money?.subscribedDisplay}</span>{" "}
-   <span className="text-muted-foreground text-sm">subscribed (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
+   {/* QA-B3 FIX 3a - THE HEADLINE NOW SAYS WHAT IT COUNTS.
+       THE ARITHMETIC IS CORRECT AND IS NOT TOUCHED. This figure totals this
+       ROUND'S OWN SUBSCRIPTION BOOK - amounts an investor signed for or funded
+       through this round. Money entered through "Record existing investors"
+       goes straight to the hash-chained cap-table ledger and never opens a book
+       entry, so it is correctly absent here. The label did not say "through
+       this round", so a founder with a live raise read the figure as WRONG when
+       it was only NARROW. Naming the scope is the whole fix. */}
+   <span className="text-muted-foreground text-sm">subscribed through this round&rsquo;s book (committed + funded) of {fmtUSD(r.targetAmount)} target</span>
  </div>
  {subscribedBarPct === null ? (
  <div className="text-sm text-muted-foreground" data-testid="text-round-progress-unavailable">{moneyView.money?.progressBp?.targetNote ?? NOT_ON_RECORD}</div>
@@ -637,6 +679,20 @@ export default function RoundDetail() {
  </div>
  ))}
  </div>
+ {/* QA-B3 FIX 3c — THE LEDGER FIGURE, SURFACED AND DELIBERATELY SET APART.
+     The three cards above are one series and a reader is entitled to add them
+     up. THIS ONE IS NOT PART OF THAT SERIES and must never be read as a fourth
+     bucket, so it is OUTSIDE the grid, full width, on its own top border, in a
+     different visual register, and it states in its own text that it is not to
+     be added. Same reason the amount is labelled by SOURCE ("cap-table
+     ledger") rather than by stage. */}
+ {moneyView.money?.ledgerFunded?.available && moneyView.money.ledgerFunded.ledgerOnlyDisplay && (
+ <div className="mt-3 pt-3 border-t border-dashed border-border" data-testid="card-round-money-ledger-only">
+   <div className="text-xs text-muted-foreground">Recorded on cap-table ledger only — not part of the three figures above</div>
+   <div className="font-semibold" data-testid="text-round-money-ledger-only">{moneyView.money.ledgerFunded.ledgerOnlyDisplay}</div>
+   <div className="text-xs text-muted-foreground">Entered through &ldquo;Record existing investors&rdquo;. Do not add this to the figures above.</div>
+ </div>
+ )}
  <div className="text-xs text-muted-foreground mt-2">
    {ROUND_MONEY_SECTION_LABEL}. A soft circle is not a commitment and a commitment is not cash received; only "Funded" is money that has arrived.
    {moneyView.money && !moneyView.money.ledgerFunded.agreesWithBook && (
@@ -665,6 +721,23 @@ export default function RoundDetail() {
  <div className="text-xs text-muted-foreground mt-2" data-testid="text-round-soft-circle-excluded">
    Soft circles are deliberately excluded from subscribed — an indication of interest, not a signed subscription. They keep their own figure above and are never added into subscribed, so the headline total only ever counts amounts an investor has signed for or funded.
  </div>
+ {/* QA-B3 FIX 3b — THE SECOND EXCLUSION, WHICH WAS NEVER DISCLOSED.
+     The sentence above explains why SOFT CIRCLES are outside subscribed. It
+     says nothing about investors seated straight onto the cap-table ledger,
+     and that was the real gap: a founder saw a headline of $0 beside a ledger
+     reading $425,000 with no sentence connecting them.
+
+     Rendered ONLY when the server actually published a difference. Nothing is
+     summed, nothing is reconciled, and the two figures are NOT made equal —
+     they answer different questions and both remain on screen.
+
+     Written as JSX text, like its sibling above, so the silent-drop guard
+     inventories it as copy. */}
+ {moneyView.money?.ledgerFunded?.ledgerOnlyDisplay && (
+ <div className="text-xs text-muted-foreground mt-2" data-testid="text-round-ledger-only-excluded">
+   {moneyView.money.ledgerFunded.ledgerOnlyDisplay} is recorded on the hash-chained cap-table ledger for this round but was entered through &ldquo;Record existing investors&rdquo;, not through this round&rsquo;s subscription book. It is a historical record of money already received, so it is not counted in subscribed. Both figures are shown because both are true.
+ </div>
+ )}
  </>
  )}
  </div>
@@ -933,6 +1006,14 @@ export default function RoundDetail() {
  {s.status === "confirmed" && (
  <Button size="sm" onClick={() => wireFundedMut.mutate(s.id)} disabled={wireFundedMut.isPending} data-testid={`button-wire-funded-${s.id}`} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
  <Wallet className="h-3.5 w-3.5 mr-1" /> Confirm / mark funded
+ </Button>
+ )}
+ {/* QA BLOCKER 1b — shown for exactly the statuses the server accepts
+     (REJECTABLE_STATUSES at server/track1Routes.ts:4434). Offering it for
+     any other status would be offering an action that answers 422. */}
+ {["intent", "confirmed", "wired"].includes(s.status) && (
+ <Button size="sm" variant="outline" onClick={() => { setRejectSoft({ id: s.id, name: s.investorName }); setRejectReason(""); }} data-testid={`button-reject-sc-${s.id}`} className="border-rose-300 text-rose-700 hover:bg-rose-50">
+ <Ban className="h-3.5 w-3.5 mr-1" /> Withdraw
  </Button>
  )}
  <Button size="sm" variant="ghost" data-testid={`button-view-${s.id}`}><Eye className="h-3.5 w-3.5" /></Button>
@@ -1293,6 +1374,40 @@ export default function RoundDetail() {
  signerEmail={me.data?.identity?.email ?? ""}
  onClose={() => setConfirmSoftId(null)}
  />
+
+ {/* QA BLOCKER 1b — Withdraw-a-soft-circle dialog.
+     The wording below says exactly what happens and does not overstate it: the
+     row is MARKED withdrawn, it is not removed, and the reason is stored
+     alongside it. A reason is required — the server records `rejected_reason`,
+     and an unexplained withdrawal on a funding record is not something this
+     platform should make easy. */}
+ <Dialog open={rejectSoft !== null} onOpenChange={(o) => { if (!o) { setRejectSoft(null); setRejectReason(""); } }}>
+ <DialogContent className="max-w-lg">
+ <DialogHeader>
+ <DialogTitle>Withdraw this soft circle</DialogTitle>
+ </DialogHeader>
+ <div className="space-y-3">
+ <p className="text-sm text-muted-foreground" data-testid="text-reject-sc-explain">
+ This marks {rejectSoft?.name ?? "this entry"}’s soft circle as withdrawn and stops it counting towards this round. The entry stays on the record with your reason and the date — nothing is deleted.
+ </p>
+ <div>
+ <Label>Reason <span className="text-rose-500">*</span></Label>
+ <Input className="mt-1" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="e.g. Investor withdrew; entry created in error" data-testid="input-reject-sc-reason" />
+ </div>
+ </div>
+ <DialogFooter>
+ <Button variant="ghost" onClick={() => { setRejectSoft(null); setRejectReason(""); }} data-testid="button-reject-sc-cancel">Cancel</Button>
+ <Button
+ onClick={() => { if (rejectSoft && rejectReason.trim()) rejectSoftCircleMut.mutate({ scId: rejectSoft.id, reason: rejectReason.trim() }); }}
+ disabled={rejectSoftCircleMut.isPending || !rejectReason.trim()}
+ className="bg-rose-600 hover:bg-rose-700 text-white"
+ data-testid="button-reject-sc-submit"
+ >
+ <Ban className="h-4 w-4 mr-2" /> Mark withdrawn
+ </Button>
+ </DialogFooter>
+ </DialogContent>
+ </Dialog>
 
  {/* v25.55 Q3 — Record existing investors (backfill) dialog */}
  <Dialog open={backfillOpen} onOpenChange={setBackfillOpen}>
@@ -2162,10 +2277,28 @@ export function UseOfProceeds({ round }: { round: Round }) {
  </div>
  </div>
  ))}
+ {/* WAVE 342 · ITEM 4 · W310 — THE DENOMINATOR HERE IS THE FOUNDER'S,
+     NOT THE PLATFORM'S. Every percentage on this card is a figure the
+     founder typed into the round wizard, and the total they are a
+     share of is the total the founder entered there too. Capavate
+     neither derives nor rescales them. Printing a bare "(97%)" reads
+     as a platform computation and it is not one, so the figure now
+     names the denominator on screen and the provenance line below
+     says whose number it is. Where the recorded percentages do not
+     sum to 100 the screen SAYS SO rather than adjusting them —
+     the same honesty standard as the LP export's "Not derivable"
+     cell (`server/partnerExportRoutes.ts:75`), which prints a refusal
+     instead of a figure it cannot stand behind. */}
  <div className="flex justify-between text-sm pt-3 border-t border-border font-semibold">
  <span>Total committed</span>
- <span className="font-mono tabular-nums">{moneyOnRecord(sym, total.toLocaleString())} ({data.reduce((s, r) => s + r.percent, 0)}%)</span>
+ <span className="font-mono tabular-nums" data-testid="uop-total-committed">{moneyOnRecord(sym, total.toLocaleString())} ({data.reduce((s, r) => s + r.percent, 0)}% of the total committed capital as recorded)</span>
  </div>
+ <p className="text-xs text-muted-foreground" data-testid="uop-denominator-provenance">
+ These percentages are the ones recorded on the round wizard, taken as a share of the total committed capital entered there. Capavate does not derive them and does not rescale them. Each was recorded already rounded, so their sum is a total of rounded entries rather than a figure re-computed from the amounts.
+ {data.reduce((s, r) => s + r.percent, 0) !== 100 ? (
+   <span data-testid="uop-sum-not-hundred"> As recorded they add up to {data.reduce((s, r) => s + r.percent, 0)}%, not 100% — shown exactly as recorded rather than adjusted to fit.</span>
+ ) : null}
+ </p>
  </div>
  )}
  </CardContent>
@@ -2226,7 +2359,9 @@ export function TranchePlan({ round }: { round: Round }) {
  );
 }
 
-function ClosingChecklist({ round }: { round: Round }) {
+/* WAVE 342 · ITEM 4 · W310 — exported so a test can assert the RENDERED
+   denominator label, the same reason `ProjectionPanel` above is exported. */
+export function ClosingChecklist({ round }: { round: Round }) {
  const { toast } = useToast();
  const initial = round.closingChecklist ?? [];
  const [items, setItems] = useState<ChecklistRow[]>(initial);
@@ -2246,9 +2381,17 @@ function ClosingChecklist({ round }: { round: Round }) {
  <CardHeader className="pb-3 flex flex-row items-start justify-between space-y-0 gap-3">
  <div className="flex-1 min-w-0">
  <CardTitle className="text-base flex items-center gap-2"><ListChecks className="h-4 w-4 text-emerald-600" />Closing checklist <HelpTip>NVCA-style closing-conditions checklist. All items must be confirmed before the closing is recorded, and the record cannot be altered afterwards.</HelpTip></CardTitle>
+ {/* WAVE 342 · ITEM 4 · W310 — CALLER-SUPPLIED DENOMINATOR. This
+     percentage is `done / items.length`, and `items.length` is the
+     checklist recorded on THIS round — counsel decides what goes on
+     it. A bare "60%" therefore describes the caller's list, not any
+     Capavate-defined standard of completeness, and the screen must
+     say which. The count beside it is kept; the percentage now names
+     the same denominator itself so the figure is not quotable out of
+     context. */}
  <div className="flex items-baseline justify-between text-sm mt-1.5">
  <span className="text-muted-foreground">{done} of {items.length} complete</span>
- <span className="font-mono text-xs">{pct.toFixed(0)}%</span>
+ <span className="font-mono text-xs" data-testid="checklist-pct">{pct.toFixed(0)}% of the total {items.length} item{items.length === 1 ? "" : "s"} on this round&rsquo;s recorded checklist</span>
  </div>
  <Progress value={pct} className="h-2 mt-1" />
  </div>

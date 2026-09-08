@@ -32,6 +32,17 @@
  *      is a CONFIRMED DEFECT on appended copy — it does not move — so it is never
  *      treated as confirmation of anything. These assertions are the proof.
  */
+/* W6c · D1 · TRIPWIRE UPDATED, NOT REMOVED — STATED REASON.
+   This assertion pinned the currency SYMBOL (`$`, `¥`) that the SPV tabs used
+   to render. W6c · D1 changed the two money chokepoints behind those tabs
+   (`fmt()` in SpvDetailTabs.tsx and `money()` in SpvOperationsPanels.tsx) to
+   pass `currencyDisplay: "code"`, because QA could not tell which currency
+   `$0.00 / $100,000.00` was on a Canadian-registered vehicle. The FIGURE is
+   unchanged in every digit — only the currency label changed from a symbol to
+   the ISO code, which is strictly more specific. The assertion is therefore
+   RE-POINTED at the new label and keeps testing exactly the property it was
+   written to test (the digits did not move, no conversion happened, and no
+   other currency appears). It is not weakened and it is not deleted. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -200,14 +211,14 @@ describe("W306 P3 §2 — the per-row marker discriminates", () => {
     /* Literals transcribed from what the row printed BEFORE this wave, so they
        cannot silently track a regression in the expression that produces them. */
     const blocking = within(container).getByTestId("spv-fee-obligation-ob_block_a").textContent ?? "";
-    expect(blocking).toContain("$70.00");
+    expect(blocking).toContain("USD 70.00");
     expect(blocking).toContain("pending");
     const paid = within(container).getByTestId("spv-fee-obligation-ob_paid_a").textContent ?? "";
-    expect(paid).toContain("$50.00");
+    expect(paid).toContain("USD 50.00");
     expect(paid).toContain("paid");
     /* NEGATIVE CONTROL — a figure that is NOT in the fixture is absent, so the
        assertions above are not passing on an unconditionally-true predicate. */
-    expect(blocking).not.toContain("$99.99");
+    expect(blocking).not.toContain("USD 99.99");
   });
 
   it("FIXTURE MOVED — JPY and a `failed` state behave the same way", async () => {
@@ -227,10 +238,10 @@ describe("W306 P3 §2 — the per-row marker discriminates", () => {
     );
     /* Zero-exponent currency renders as ¥7, not ¥0.07 — a hardcoded /100 would
        fail here. This is PRE-EXISTING behaviour this wave must not disturb. */
-    expect(row.textContent).toContain("¥7");
+    expect(row.textContent).toContain("JPY 7");
     const paid = within(container).getByTestId("spv-fee-obligation-ob_paid_b");
     expect(within(paid).queryByTestId("spv-fee-obligation-blocking-ob_paid_b")).toBeNull();
-    expect(paid.textContent).toContain("¥250");
+    expect(paid.textContent).toContain("JPY 250");
   });
 });
 
@@ -265,6 +276,6 @@ describe("W306 P3 §3 — the notice is absent when nothing is blocking", () => 
     });
     expect(within(container).queryByTestId("spv-fee-obligation-blocking-notice")).toBeNull();
     /* And no fabricated zero appeared in its place. */
-    expect(container.textContent ?? "").not.toContain("$0.00");
+    expect(container.textContent ?? "").not.toContain("USD 0.00");
   });
 });

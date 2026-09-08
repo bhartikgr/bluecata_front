@@ -29,7 +29,14 @@
  * acknowledgement endpoint is down the user sees no notice and loses no access.
  */
 import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
 import { ADOPTED_LEGAL_CORPUS_VERSION } from "@shared/wave210LegalCorpusVersion";
+/* WAVE 341 · W335 — these two anchors are plain <a href>, i.e. a FULL page load,
+   and they pointed at the bare public legal routes. Inside CollectiveShell that
+   reloaded the visitor into AppShell and the Founder sidebar. They keep their
+   element, their testids and their words; only the destination now carries the
+   shell scope the visitor is already in. */
+import { legalScopeForLocation, legalHref, LEGAL_PUBLIC_PATHS } from "@/lib/legalShellScope";
 
 const DOC_IDS = ["privacy", "terms", "cookies", "acceptable-use", "disclaimer"];
 
@@ -39,6 +46,9 @@ export function LegalUpdateNotice() {
   const [dismissed, setDismissed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  /* WAVE 341 · W335 — the shell the visitor is already in. */
+  const [legalLocation] = useLocation();
+  const legalScope = legalScopeForLocation(legalLocation);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,10 +117,10 @@ export function LegalUpdateNotice() {
         have seen if you tell us you have read them.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
-        <a className="underline" href="/terms-of-service" data-testid="link-legal-update-terms">
+        <a className="underline" href={legalHref(legalScope, LEGAL_PUBLIC_PATHS.terms)} data-testid="link-legal-update-terms">
           Read the Terms of Service
         </a>
-        <a className="underline" href="/privacy-policy" data-testid="link-legal-update-privacy">
+        <a className="underline" href={legalHref(legalScope, LEGAL_PUBLIC_PATHS.privacy)} data-testid="link-legal-update-privacy">
           Read the Privacy Policy
         </a>
         <button

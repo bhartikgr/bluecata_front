@@ -61,6 +61,19 @@ export interface CaptableSnapshotsResponse {
   pending: {
     hasPending: boolean;
     roundIds: string[];
+    /* ITEM 12 — ADDITIVE. A round id -> round name map for the pending rounds,
+       so the Projected table can print a round NAME on each row instead of a
+       raw id (item 9) and WITHOUT issuing a second query per row.
+
+       A MAP, NOT A PARALLEL ARRAY: two arrays that must stay index-aligned are
+       a silent-corruption hazard the moment either is filtered, and
+       `scopeSnapshotsResponse` filters `roundIds` already.
+
+       An id whose name could not be resolved is SIMPLY ABSENT from the map. It
+       is never given a placeholder name here — the screen decides how to state
+       an absence, and a fabricated name would be indistinguishable from a real
+       one. */
+    roundNames: Record<string, string>;
     positions: SnapshotPosition[];
   };
   /** Last COMMITTED round snapshot (Option A), or null when none exists. */
@@ -241,11 +254,31 @@ export function computeCaptableSnapshots(
     };
   }
 
+  /* ITEM 12 — resolve the pending round names ONCE, here, reusing exactly the
+     best-effort lookup the `previous` branch above has always used. Same
+     fail-soft contract: a lookup that throws leaves the id out of the map and
+     logs, and never changes control flow or any figure. */
+  const pendingRoundNames: Record<string, string> = {};
+  for (const rid of pendingRoundIds) {
+    try {
+      const rnd = getRoundById(rid);
+      const nm = (rnd as any)?.name ?? (rnd as any)?.roundName ?? null;
+      const trimmed = String(nm ?? "").trim();
+      if (trimmed) pendingRoundNames[rid] = trimmed;
+    } catch (err) {
+      log.warn(
+        `[captableSnapshotsStore.pending] round name resolution failed for ${rid}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
   return {
     ok: true,
     pending: {
       hasPending: pendingPositions.length > 0,
       roundIds: Array.from(pendingRoundIds),
+      roundNames: pendingRoundNames,
       positions: pendingPositions,
     },
     previous,
@@ -277,7 +310,7 @@ export function registerCaptableSnapshotsRoutes(app: Express, getSecurities: Sec
       // Fail-soft: empty snapshots never break the existing cap-table page.
       return res.json({
         ok: true,
-        pending: { hasPending: false, roundIds: [], positions: [] },
+        pending: { hasPending: false, roundIds: [], roundNames: {}, positions: [] },
         previous: { hasPrevious: false, roundId: null, roundName: null, committedAt: null, positions: [] },
       } as CaptableSnapshotsResponse);
     }
@@ -312,6 +345,14 @@ export function scopeSnapshotsResponse(
     pending: {
       hasPending: pendingPositions.length > 0,
       roundIds: pendingRoundIds,
+      /* ITEM 12 — scoping narrows WHICH rounds survive, so the name map is
+         narrowed with them. Carrying names for rounds this caller can no
+         longer see would leak round names through a scoped response. */
+      roundNames: Object.fromEntries(
+        pendingRoundIds
+          .filter((rid) => rid in (snapshots.pending?.roundNames ?? {}))
+          .map((rid) => [rid, (snapshots.pending!.roundNames as Record<string, string>)[rid]]),
+      ),
       positions: pendingPositions,
     },
     previous: {

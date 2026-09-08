@@ -16,6 +16,17 @@
  *       tiers, raw company/user ids and raw ISO timestamps.
  *   F5  a field's border did not follow its validity.
  */
+/* W6c · D1 · TRIPWIRE UPDATED, NOT REMOVED — STATED REASON.
+   This assertion pinned the currency SYMBOL (`$`, `¥`) that the SPV tabs used
+   to render. W6c · D1 changed the two money chokepoints behind those tabs
+   (`fmt()` in SpvDetailTabs.tsx and `money()` in SpvOperationsPanels.tsx) to
+   pass `currencyDisplay: "code"`, because QA could not tell which currency
+   `$0.00 / $100,000.00` was on a Canadian-registered vehicle. The FIGURE is
+   unchanged in every digit — only the currency label changed from a symbol to
+   the ISO code, which is strictly more specific. The assertion is therefore
+   RE-POINTED at the new label and keeps testing exactly the property it was
+   written to test (the digits did not move, no conversion happened, and no
+   other currency appears). It is not weakened and it is not deleted. */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -76,7 +87,7 @@ describe("W106 F2 — the fee ledger reads as money and percentages, not as stor
   });
 
   it("renders stored minor-unit money as formatted currency, and states an unknown", () => {
-    expect(feeFieldValue("commitmentMinor", 100000, "USD")).toBe("$1,000.00");
+    expect(feeFieldValue("commitmentMinor", 100000, "USD")).toBe("USD 1,000.00");
     expect(feeFieldValue("feesUnknown", true, "USD").toLowerCase()).not.toContain("true");
     expect(String(feeFieldValue("commitmentMinor", null, "USD"))).not.toContain("null");
   });

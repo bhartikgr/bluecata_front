@@ -84,6 +84,7 @@ const routesSrc = fs.readFileSync(path.join(SRC_DIR, "spvEngineRoutes.ts"), "utf
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "per_deployment", status: "open",
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     signoffLegalName: "Avi Managing", signoffAccepted: true,
     ...extra,
   });

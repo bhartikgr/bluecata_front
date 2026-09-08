@@ -92,7 +92,23 @@
 
   /* BORDERS — Ledger hairline + Grid rule. Was a warm beige, which is what made
    * white cards read as cream boxes. */
-  --cv-color-border: #E5EAF0;          /* was #ddd9d3 — --ds-border-hairline */
+  /* WAVE 345 · ITEM 3 — MEASURED, NOT ASSERTED. #E5EAF0 measured 1.0966:1 on this
+   * scope's own --cv-color-surface-2 (#F1F4F8) against the 3:1 requirement of
+   * WCAG 2.1 SC 1.4.11 (Non-text Contrast, the visible boundary of a UI
+   * component): the hairline was effectively invisible. #838C97 measures
+   * 3.0887:1 on that same worst surface and 3.4073:1 on white. Both numbers come
+   * from build_log/finalmoney/evidence/w345_contrast_measure.py, which validates
+   * itself against black-on-white = 21:1 and white-on-white = 1:1 before it
+   * measures any product colour.
+   *   NO SACRED WAIVER WAS NEEDED OR TAKEN. This declaration is NON-SACRED; the
+   * sacred token lives in capavate-tokens.css:57 and is untouched.
+   *   Every consumer was counted first: 93 product consumptions in 24 files,
+   * 0 of which use the token as a text colour, a background, a fill or a stroke
+   * (all 93 are border-family), so darkening it can only RAISE contrast.
+   *   --cv-color-divider below is DELIBERATELY LEFT at #E5EAF0: a divider inside
+   * a card is decorative rather than a component boundary, so 1.4.11 does not
+   * bind it, and changing it is a third declaration nobody ruled on. */
+  --cv-color-border: #838C97;          /* was #E5EAF0 (1.0966:1 FAIL) / #ddd9d3 — --ds-border-hairline */
   --cv-color-divider: #E5EAF0;         /* was #e8e6e1 */
 
   /* TEXT */

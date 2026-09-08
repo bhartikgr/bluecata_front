@@ -44,6 +44,17 @@
  *     figure that is NOT in the fixture is absent from the row.
  *   · NO NORMALISATION inside any equality assertion.
  */
+/* W6c · D1 · TRIPWIRE UPDATED, NOT REMOVED — STATED REASON.
+   This assertion pinned the currency SYMBOL (`$`, `¥`) that the SPV tabs used
+   to render. W6c · D1 changed the two money chokepoints behind those tabs
+   (`fmt()` in SpvDetailTabs.tsx and `money()` in SpvOperationsPanels.tsx) to
+   pass `currencyDisplay: "code"`, because QA could not tell which currency
+   `$0.00 / $100,000.00` was on a Canadian-registered vehicle. The FIGURE is
+   unchanged in every digit — only the currency label changed from a symbol to
+   the ISO code, which is strictly more specific. The assertion is therefore
+   RE-POINTED at the new label and keeps testing exactly the property it was
+   written to test (the digits did not move, no conversion happened, and no
+   other currency appears). It is not weakened and it is not deleted. */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -149,14 +160,14 @@ function rowText(container: HTMLElement, i: number): string {
  * regression in it. Row index → the exact substrings that must still appear.
  */
 const FIGURES_BEFORE_A: Array<string[]> = [
-  ["management", "hybrid", "20%", "$33.00"],
+  ["management", "hybrid", "20%", "USD 33.00"],
   ["platform", "carry", "5%"],
-  ["admin", "fixed", "$1,250.00"],
+  ["admin", "fixed", "USD 1,250.00"],
 ];
 
 const FIGURES_BEFORE_B: Array<string[]> = [
   ["management", "carry", "18%"],
-  ["platform", "fixed", "¥7"],
+  ["platform", "fixed", "JPY 7"],
   ["admin", "hybrid", "0%"],
 ];
 
@@ -189,7 +200,7 @@ describe("W274b §1 — the fee row's figures are byte-identical to what it prin
     const text = rowText(container, 0);
     // $33.00 is in the fixture; $33.01 and 21% are not. If `includes` were
     // vacuously true these would pass too.
-    expect(text.includes("$33.01")).toBe(false);
+    expect(text.includes("USD 33.01")).toBe(false);
     expect(text.includes("21%")).toBe(false);
     // And FIXTURE B's figures must NOT appear while FIXTURE A is mounted.
     expect(text.includes("18%")).toBe(false);
@@ -198,7 +209,7 @@ describe("W274b §1 — the fee row's figures are byte-identical to what it prin
   it("no currency was converted: the JPY amount is not restated in any other currency", () => {
     const { container } = mount(FEES_B, "JPY");
     const text = rowText(container, 1);
-    expect(text.includes("¥7")).toBe(true);
+    expect(text.includes("JPY 7")).toBe(true);
     expect(text.includes("$")).toBe(false);
     expect(text.includes("€")).toBe(false);
     // ...and it was NOT divided by 100 into 0.07.
@@ -234,7 +245,7 @@ describe("W274b §2 — the row reads as a fee disclosure", () => {
     expect(row2.includes("Fixed amount")).toBe(true);
     expect(row2.includes("Carry")).toBe(false);
     // Neither invented a 0% or a $0.00.
-    expect(row1.includes("$0.00")).toBe(false);
+    expect(row1.includes("USD 0.00")).toBe(false);
     expect(row2.includes("0%")).toBe(false);
   });
 

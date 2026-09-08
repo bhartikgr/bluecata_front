@@ -28,6 +28,9 @@ import {
   WAVE216_CONSENT_SENTENCE,
   WAVE216_BLOCKED_HINT,
   WAVE216_BOUND_NOTICE,
+  /* W6c · D4 — explains the three identifiers the statement recites, without
+     altering a single hashed byte of the statement itself. */
+  WAVE216_IDENTIFIER_LEGEND,
 } from "@shared/wave216SignedStatement";
 /* WAVE 120 · FINDING 2 — the shared committed-capital predicate (one spelling of
    "committed", summed in bigint) and the platform's bigint money formatter. */
@@ -50,6 +53,7 @@ import {
 /* WAVE 164 · ITEM C — the cap-refusal floor, so the page-local translation map
    below cannot drift from the sentence the server and `serverRefusalMessage.ts`
    serve for the same code. */
+import { spvAmountRefusalHeadline } from "@shared/spvAmountRefusalCopy";
 import { SPV_SUBSCRIPTION_REFUSAL_HEADLINE } from "@shared/spvSubscriptionRefusalCopy";
 import { displayCompanyMinor } from "@/lib/money/companyMoneyOnRecord";
 /* WAVE 115 · FINDING 6 — the wave-106 field-refusal helper, reused. */
@@ -276,7 +280,11 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
   INVALID_COMMITMENT: "Commitment must be greater than zero.",
 };
 
-function spvErrorMessage(err: unknown): string {
+/* WAVE 342 · ITEM 2 · W296 — EXPORTED so the sentence a toast actually shows can
+   be asserted directly. The function is otherwise unchanged in visibility terms:
+   nothing outside this module calls it in product code, and the export exists so
+   a test reads the RENDERED TEXT rather than a variable name. */
+export function spvErrorMessage(err: unknown): string {
   const code = (err as { code?: string })?.code;
   const msg = (err as { message?: string })?.message ?? "Something went wrong.";
   /* WAVE 164 · ITEM C · R77 — A SERVER SENTENCE CARRYING THE VEHICLE'S OWN
@@ -290,13 +298,73 @@ function spvErrorMessage(err: unknown): string {
      produce a bare code. */
   const split = (err as { capSplit?: unknown })?.capSplit;
   if (split != null && typeof msg === "string" && msg.trim() && msg !== code) return msg;
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 342 · ITEM 2 · W296 — TWELVE AMOUNT REFUSALS, ONE SENTENCE.
+     ═══════════════════════════════════════════════════════════════════════
+     The `INVALID_AMOUNT` entry in the map above — "Amount must be greater than
+     zero." — was shown for TWELVE different server refusals, because the map
+     lookup below wins over anything the server said. Four of the twelve are not
+     about zero at all (a fraction, a figure past the exact-integer range, a
+     negative field, an amount a currency cannot represent), so the sentence was
+     FALSE for them, and none of the twelve said what to do next.
+
+     `amountError` is present ONLY when the server named which refusal it was
+     (`server/spvEngineRoutes.ts` err(), wave 342), so this carve-out is exact
+     in the same way the `capSplit` one above is meant to be: when the specific
+     words exist they are used, otherwise the static floor is used, and neither
+     branch can put a bare code on screen.
+
+     READ FROM `payload` AS WELL AS THE ERROR OBJECT, DELIBERATELY. `ApiError`
+     (`client/src/lib/queryClient.ts:20-30`) puts the parsed response body on
+     `.payload` and copies NO other body field onto the error, so a body field
+     read as `err.<field>` is undefined for anything thrown by `apiRequest`.
+     REPORTED, NOT SILENTLY WIDENED: that makes the `capSplit` read directly
+     above appear INERT for the same reason, which is a separate finding for its
+     own wave — changing it would change what the cap refusal renders, and that
+     is not this item. This branch reads both places so it works whichever way a
+     caller throws.
+
+     The fallback chain never fabricates: server sentence → this build's copy for
+     the named reason → the static floor. */
+  const payloadObj = (err as { payload?: unknown })?.payload;
+  const amountError =
+    (payloadObj && typeof payloadObj === "object"
+      ? (payloadObj as { amountError?: { reason?: unknown; field?: unknown } }).amountError
+      : undefined) ?? (err as { amountError?: { reason?: unknown; field?: unknown } })?.amountError;
+  if (amountError != null) {
+    /* ORDER MATTERS AND MY FIRST VERSION HAD IT WRONG — my own test caught it.
+       I preferred `msg` (the server sentence) first. But `ApiError.message` is
+       NEVER absent: when a body carries no human sentence, `throwIfResNotOk`
+       substitutes a generic one for the status ("Some of the information was
+       invalid…"), which is non-empty and is not the code, so that branch always
+       won and the specific words were never reached. The local copy is tried
+       FIRST for a reason this build knows — and it is the SAME string the server
+       sends, from the same shared module, so this cannot disagree with the
+       server. A reason from a NEWER server falls through to the server's own
+       sentence, and an unknown reason with no sentence falls to the floor. */
+    const local = spvAmountRefusalHeadline(amountError.reason, amountError.field);
+    if (local) return local;
+    if (typeof msg === "string" && msg.trim() && msg !== code) return msg;
+  }
   if (code && SPV_ERROR_TRANSLATIONS[code]) return SPV_ERROR_TRANSLATIONS[code];
   return msg;
 }
 
+/* W6c · D1 — EVERY MONEY FIGURE ON ALL SIXTEEN TABS NAMES ITS CURRENCY.
+
+   This is the SINGLE chokepoint for money in this component: all 20 call sites
+   go through it, and the only other formatter on this surface is `money()` in
+   SpvOperationsPanels.tsx, changed identically. `currencyDisplay: "code"` turns
+   `$100,000.00` into `USD 100,000.00` and `CA$100,000.00` into
+   `CAD 100,000.00` — unambiguous for every currency rather than only for the
+   ones whose symbol happens to be unique.
+
+   NOTHING IS CONVERTED AND NOTHING IS SUMMED ACROSS CURRENCIES. The vehicle's
+   own `currency` column is the only currency in scope here; this change adds
+   three characters of label to a figure that was already correct. */
 function fmt(minor: number | null | undefined, currency: string) {
   if (minor == null) return "—";
-  return formatMinorLib(minor, currency, { locale: "en-US" });
+  return formatMinorLib(minor, currency, { locale: "en-US", currencyDisplay: "code" });
 }
 
 /* ==========================================================================
@@ -869,7 +937,11 @@ export function SpvDetailTabs({
             <div className="font-medium">Raise progress</div>
             <div className="font-mono" data-testid="spv-detail-raise-figure">
               {committedReported
-                ? `${displayCompanyMinor(committedMinor, currency)}${spv.targetRaiseMinor ? ` / ${fmt(spv.targetRaiseMinor, currency)} target` : ""}`
+                /* W6c · D1 — THIS IS THE LINE QA READ AS `$0.00 / $100,000.00`.
+                   Both halves now name the currency; the raised half goes
+                   through the bigint formatter and the target half through
+                   `fmt()`, and they must agree, so both ask for the ISO code. */
+                ? `${displayCompanyMinor(committedMinor, currency, { currencyDisplay: "code" })}${spv.targetRaiseMinor ? ` / ${fmt(spv.targetRaiseMinor, currency)} target` : ""}`
                 : NOT_ON_RECORD}
             </div>
             {/* WAVE 165 · R130.2 / R139.4 (S7) — "… / $X target" said nothing about
@@ -1028,7 +1100,17 @@ export function SpvDetailTabs({
             "Any" and "None selected" literals are retained, on the branch where
             they are TRUE (a mandate exists and the list is empty). Rule 7. */}
         <div className="text-sm space-y-1" data-testid="spv-detail-mandate">
-          <div><span className="font-medium">Mode:</span> {detail.mandate?.mode ?? "—"}</div>
+          {/* W6c · D5 — the read-only summary printed the raw stored key
+              (`thesis_lp_approval`). The EDIT dropdown a few hundred lines below
+              already renders the ratified label from SPV_MANDATE_MODE_LABELS;
+              this reuses that same map verbatim rather than authoring new copy,
+              so the two surfaces can no longer disagree. An unrecognised key
+              still shows itself rather than being blanked — a mode the platform
+              does not know must not silently read as "no mode". */}
+          <div data-testid="spv-detail-mandate-mode"><span className="font-medium">Mode:</span>{" "}
+            {detail.mandate?.mode
+              ? (SPV_MANDATE_MODE_LABELS[detail.mandate.mode as keyof typeof SPV_MANDATE_MODE_LABELS] ?? detail.mandate.mode)
+              : "—"}</div>
           <div><span className="font-medium">Sectors:</span> {detail.mandate?.sector?.length ? detail.mandate.sector.join(", ") : detail.mandate ? "None selected" : "—"}</div>
           <div><span className="font-medium">Geography:</span> {detail.mandate?.geography?.length ? detail.mandate.geography.join(", ") : detail.mandate ? "Any" : "—"}</div>
           <div><span className="font-medium">Stage:</span> {detail.mandate?.stage?.length ? detail.mandate.stage.join(", ") : detail.mandate ? "Any" : "—"}</div>
@@ -1082,8 +1164,16 @@ export function SpvDetailTabs({
                 ) : null}
                 {f.fixedAmountMinor ? (
                   <span data-testid={`spv-detail-fee-row-${i}-fixed`}>
+                    {/* W6c · D8 — "$20.00" was shown with no basis, so a reader
+                        could not tell whether it was per investor, per year, or
+                        a percentage that had already been worked out for them.
+                        The basis is stated as the fact it is: a flat amount,
+                        not a percentage of anything. Nothing is recalculated. */}
                     <span className="text-[var(--cv-color-text-faint)]">Fixed amount</span>
                     <span className="font-medium">{` ${fmt(f.fixedAmountMinor, currency)}`}</span>
+                    <span className="text-[var(--cv-color-text-faint)]" data-testid={`spv-detail-fee-row-${i}-fixed-basis`}>
+                      {" — a flat charge in this vehicle's own currency, not a percentage of any amount. Capavate records the figure agreed for this vehicle; it does not calculate or verify it."}
+                    </span>
                   </span>
                 ) : null}
                 <span data-testid={`spv-detail-fee-row-${i}-platform-note`}>{f.layer === "platform" ? " (set by Capavate — read-only to you)" : ""}</span>
@@ -1294,7 +1384,10 @@ export function SpvDetailTabs({
 
       {/* ── Documents ────────────────────────────────────────────────────── */}
       <TabsContent value="documents">
-        <Edu testid="spv-edu-reporting">{SPV_EDU.reporting}</Edu>
+        {/* W6c · D2 — this tab rendered SPV_EDU.reporting, the NAV tab's help
+            text about sharing an optional VALUATION update. It is the Documents
+            tab; it now has its own sentence. The NAV tab keeps `reporting`. */}
+        <Edu testid="spv-edu-documents">{SPV_EDU.documents}</Edu>
         <div data-testid="spv-detail-documents" className="text-sm space-y-1">
           {documents.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">no documents yet</div>
@@ -2006,7 +2099,11 @@ function EsignaturePanel({
                 onChange={(e) => setDocKind(e.target.value)}
                 data-testid="spv-esign-document-kind"
               >
-                <option value="lpa">LPA</option>
+                {/* W6c · D4 — the stored VALUE is unchanged (`lpa`); only the
+                    label now spells the acronym out, because "LPA" appeared on
+                    this tab and in the signing statement without ever being
+                    expanded anywhere on the surface. */}
+                <option value="lpa">LPA — Limited Partnership Agreement</option>
                 <option value="subscription_agreement">Subscription agreement</option>
                 <option value="side_letter">Side letter</option>
               </select>
@@ -2047,6 +2144,16 @@ function EsignaturePanel({
               data-testid="spv-esign-pending-statement-bytes"
             >
               {pendingStatement}
+            </div>
+            {/* W6c · D4 — the legend is a SIBLING of the hashed text node, never a
+                child of it, so `spv-esign-pending-statement-bytes` still holds
+                exactly the built statement and the rendered-bytes-are-signed-bytes
+                equality is untouched. It renders unconditionally. */}
+            <div
+              className="mt-2 border-t border-[var(--cv-color-border)] pt-2 text-[10px] leading-snug text-[var(--cv-color-text-muted)]"
+              data-testid="spv-esign-identifier-legend"
+            >
+              {WAVE216_IDENTIFIER_LEGEND}
             </div>
           </div>
         </div>
@@ -2359,7 +2466,19 @@ function CloseWindowPolicyLine({
   return (
     <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-close-window-policy">
       <span data-testid="spv-close-window-days">Rolling-close window: {policy.windowDays} day(s)</span>
-      <span data-testid="spv-close-window-scope"> · policy scope {policy.scopeKind} ({policy.scopeId})</span>
+      {/* W6c · D6 — THE "(*)" WAS NEVER A FOOTNOTE MARKER, WHICH IS WHY NO
+          FOOTNOTE WAS EVER FOUND. It is the stored scope id. Proved from the
+          DDL, not inferred: migrations/0157_wave6_spv_fee_schedule.sql:205-206
+          constrains `scope_kind = 'platform'` to `scope_id = '*'`. So `(*)`
+          means "every vehicle on the platform". A platform-scope policy now
+          says that in words and shows no bare marker at all; any narrower scope
+          still shows its real id, which is a genuine identifier a reader may
+          need to quote to an administrator. */}
+      <span data-testid="spv-close-window-scope">
+        {policy.scopeKind === "platform" && policy.scopeId === "*"
+          ? " · This window is the platform-wide default: it applies to every vehicle, not one set for this vehicle alone."
+          : ` · This window was set at ${policy.scopeKind} level for ${policy.scopeId}, so it applies to that ${policy.scopeKind} rather than platform-wide.`}
+      </span>
     </div>
   );
 }

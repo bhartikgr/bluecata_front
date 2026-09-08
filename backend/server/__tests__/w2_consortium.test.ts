@@ -339,7 +339,7 @@ describe("W2-F — fee > raise guard (fail-closed)", () => {
   it("a fixed fee exceeding the SPV target raise throws FEES_EXCEED_RAISE", () => {
     const spv = spvEngineStore.createSpv(
       PARTNER_A,
-      { name: "Tiny Raise SPV", jurisdiction: "delaware", carryBasis: "whole_spv", targetRaiseMinor: 3000 },
+      { name: "Tiny Raise SPV", jurisdiction: "delaware", carryBasis: "whole_spv", targetRaiseMinor: 3000 , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       MANAGING,
     );
     expect(() =>
@@ -355,7 +355,7 @@ describe("W2-F — fee > raise guard (fail-closed)", () => {
   it("a fixed fee within the target raise is accepted", () => {
     const spv = spvEngineStore.createSpv(
       PARTNER_A,
-      { name: "Ok Raise SPV", jurisdiction: "delaware", carryBasis: "whole_spv", targetRaiseMinor: 100000 },
+      { name: "Ok Raise SPV", jurisdiction: "delaware", carryBasis: "whole_spv", targetRaiseMinor: 100000 , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       MANAGING,
     );
     const fee = spvEngineStore.addFee(
@@ -389,7 +389,7 @@ describe("W2-G — display-name resolver never returns a raw \"u_...\" id", () =
   it("on the REAL lp-roster route, a subscriber with a synthetic id renders a humanised name (never raw)", async () => {
     const spv = spvEngineStore.createSpv(
       PARTNER_A,
-      { name: "Roster Name SPV", jurisdiction: "delaware", carryBasis: "whole_spv" },
+      { name: "Roster Name SPV", jurisdiction: "delaware", carryBasis: "whole_spv" , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       MANAGING,
     );
     spvEngineStore.subscribe(PARTNER_A, spv.id, { investorId: "u_redeemed_9999", commitmentMinor: 100000 }, MANAGING);

@@ -104,7 +104,18 @@
   /* BORDERS — Ledger hairline + Grid rule.  MEASURED before the change: the
    * warm beige #DDD9D3 was painted on 613 visible edges on one Collective
    * screen alone, which is what made every white card read as a cream box. */
-  --cv-color-border: #E5EAF0;          /* was #ddd9d3 — --ds-border-hairline */
+  /* WAVE 345 · ITEM 3 — MEASURED, NOT ASSERTED. #E5EAF0 measured 1.0966:1 on this
+   * scope's own --cv-color-surface-2 (#F1F4F8) against the 3:1 requirement of
+   * WCAG 2.1 SC 1.4.11 (Non-text Contrast). #838C97 measures 3.0887:1 on that
+   * same worst surface and 3.4073:1 on white. Numbers from
+   * build_log/finalmoney/evidence/w345_contrast_measure.py, which validates
+   * itself against black-on-white = 21:1 and white-on-white = 1:1 first.
+   *   NO SACRED WAIVER WAS NEEDED OR TAKEN — this declaration is NON-SACRED.
+   *   93 product consumptions in 24 files were counted and classified; 0 use the
+   * token as text, background, fill or stroke, so darkening it can only RAISE
+   * contrast. --cv-color-divider is deliberately unchanged (decorative, not a
+   * component boundary). */
+  --cv-color-border: #838C97;          /* was #E5EAF0 (1.0966:1 FAIL) / #ddd9d3 — --ds-border-hairline */
   --cv-color-divider: #E5EAF0;         /* was #e8e6e1 */
 
   /* TEXT */

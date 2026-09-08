@@ -30,7 +30,19 @@ import {
 } from "@shared/crmStages";
 /* WAVE 179 · ITEM A · R151.1 — the jurisdiction vocabulary is the canonical engine's
    own, so this panel cannot offer a jurisdiction the vehicle table cannot record. */
-import { SPV_JURISDICTIONS, SPV_JURISDICTION_LABELS } from "@shared/spvEngine";
+import { SPV_JURISDICTIONS, SPV_JURISDICTION_LABELS, SPV_JURISDICTION_COUNTRY, type SpvJurisdiction } from "@shared/spvEngine";
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 345 · ITEM 2 — THE THIRD SPV CREATION DOOR MEETS THE FIRST DOOR'S STANDARD.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `currencyOriginStatement` is IMPORTED, NOT COPIED. It is the sentence builder
+ * the main wizard's Review step already uses, and the wizard's block is
+ * fingerprinted by the silent-drop guard, so it is left exactly where it is and
+ * reused from here. Two doors, one sentence — a second copy would be free to
+ * drift, and drift in permanence disclosure is how a GP ends up with a vehicle
+ * denominated in the wrong currency and no record of being told.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+import { currencyOriginStatement } from "./PartnerSpvEngine";
+import { buildCurrencyOptions, ALL_CURRENCY_CODES } from "@/lib/currencyOptions";
 /* WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form. Options come from the
    wave-175 research per jurisdiction and are EMPTY for the nine jurisdictions whose
    tax treatment does not depend on legal form. */
@@ -148,6 +160,47 @@ function currentVintageYear(): string {
   return String(new Date().getFullYear());
 }
 
+/* ===========================================================================
+   WAVE 345 . ITEM 2 - THE CURRENCY CONTROL ON THE THIRD SPV CREATION DOOR.
+   ===========================================================================
+   WHAT WAS MEASURED. Jurisdiction on this panel is already a proper 16-option
+   <select>. The denomination beside it was a FREE-TEXT <Input> prefilled
+   "USD", with no permanence statement and no per-vehicle confirmation - while
+   the main wizard's Step 3 offers a closed list and its Step 5 states the
+   permanence in words and takes an explicit acknowledgement. The creation
+   itself is NOT unvalidated: the route resolves the code against currency_ref
+   (167 active rows) and REFUSES an unknown one, so this was a disclosure and
+   usability gap, not an open hole. It is fixed as one.
+
+   WHY A BOUND <datalist> AND NOT A <Select>. Precedent, not preference:
+   PartnerPortfolioProfileDialog.tsx had exactly this problem for country of
+   incorporation. A closed <Select> was built there and REJECTED because
+   replacing an <Input> is externally indistinguishable from removing it - the
+   silent-drop guard and drop:restyle both reported disappearances, correctly.
+   So the SAME <Input> is kept, with the SAME data-testid, the SAME handler and
+   the SAME placeholder, and a bound pick-list is added alongside it. ZERO
+   allowlist entries are needed and no gate baseline is touched.
+
+   WHICH LIST. buildCurrencyOptions() / ALL_CURRENCY_CODES from
+   client/src/lib/currencyOptions.ts - the SAME list the main wizard's
+   spv-w-currency control and PartnerSettings.tsx already use. NO NEW LIST IS
+   INVENTED and nothing here converts, infers or suggests a currency.
+
+   TYPING IS STILL ALLOWED; STORING A BAD CODE IS NOT. A code that is not on
+   the list cannot be submitted from this panel, and the panel says so in the
+   client's own words rather than letting them discover it as a server refusal.
+   =========================================================================== */
+const CLIENT_SPV_CURRENCY_LIST_ID = "client-spv-currency-options";
+const CLIENT_SPV_CURRENCY_OPTIONS = buildCurrencyOptions();
+const CLIENT_SPV_CURRENCY_CODES: ReadonlySet<string> = new Set(ALL_CURRENCY_CODES);
+
+/** True when the code is one this platform can account in. Blank is NOT
+    acceptable here: unlike the optional country fields, a vehicle's
+    denomination is required and the server refuses an absent one outright. */
+export function isOfferedSpvCurrencyCode(code: string): boolean {
+  return CLIENT_SPV_CURRENCY_CODES.has(code.trim().toUpperCase());
+}
+
 export default function PartnerClientDetail() {
   const role = useRequirePartnerRole();
   const [, params] = useRoute("/collective/partner/clients/:id");
@@ -177,6 +230,10 @@ export default function PartnerClientDetail() {
     spvName: "",
     jurisdiction: "delaware",
     currency: "USD",
+    /* WAVE 345 · ITEM 2 — the denomination is IMMUTABLE once the vehicle exists,
+       so it is acknowledged per vehicle. Starts FALSE every time the panel is
+       used, and is withdrawn whenever the code changes (see the handler). */
+    currencyConfirmed: false,
     vintage: currentVintageYear(),
     legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
     signoffLegalName: "",
@@ -289,6 +346,11 @@ export default function PartnerClientDetail() {
         spvName: "",
         jurisdiction: "delaware",
         currency: "USD",
+        /* WAVE 345 · ITEM 2 — the reset MUST clear the confirmation too. A form
+           that reopened with the previous vehicle's tick still set would let the
+           next vehicle be created on a denomination nobody confirmed, which is
+           the exact hole this item exists to close. */
+        currencyConfirmed: false,
         vintage: currentVintageYear(),
         legalForm: SPV_LEGAL_FORM_UNSTATED_SENTINEL,
         signoffLegalName: "",
@@ -538,13 +600,34 @@ export default function PartnerClientDetail() {
                         <option key={j} value={j}>{SPV_JURISDICTION_LABELS[j]}</option>
                       ))}
                     </select>
+                    {/* WAVE 345 . ITEM 2 - the SAME control, now BOUND to the
+                        platform's own ISO 4217 list. Changing the code WITHDRAWS
+                        any confirmation already given for the old one: a
+                        confirmation is about one specific denomination, and
+                        carrying it across a change would make the checkbox a
+                        formality instead of a statement. */}
                     <Input
                       value={spvForm.currency}
-                      onChange={(e) => setSpvForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                      list={CLIENT_SPV_CURRENCY_LIST_ID}
+                      onChange={(e) =>
+                        setSpvForm((f) => {
+                          const next = e.target.value.toUpperCase();
+                          return {
+                            ...f,
+                            currency: next,
+                            currencyConfirmed: next === f.currency ? f.currencyConfirmed : false,
+                          };
+                        })
+                      }
                       placeholder="Currency, e.g. USD"
                       className="max-w-[10rem]"
                       data-testid="client-spv-currency"
                     />
+                    <datalist id={CLIENT_SPV_CURRENCY_LIST_ID} data-testid="client-spv-currency-datalist">
+                      {CLIENT_SPV_CURRENCY_OPTIONS.map((c) => (
+                        <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
+                      ))}
+                    </datalist>
                     <Input
                       value={spvForm.vintage}
                       onChange={(e) => setSpvForm((f) => ({ ...f, vintage: e.target.value }))}
@@ -552,6 +635,58 @@ export default function PartnerClientDetail() {
                       className="max-w-[10rem]"
                       data-testid="client-spv-vintage"
                     />
+                  </div>
+
+                  {/* WAVE 345 . ITEM 2 - THE PERMANENCE DISCLOSURE, WORD FOR WORD
+                      FROM THE MAIN WIZARD'S RATIFIED STEP 5. The sentences are not
+                      re-written for this panel: the origin sentence comes from the
+                      EXPORTED currencyOriginStatement() the wizard itself calls, and
+                      the permanence sentence and the acknowledgement wording match
+                      the wizard's ratified text. A vehicle created in the wrong
+                      currency is not something a partner can put right from any
+                      screen in this product. */}
+                  <div
+                    className="text-xs rounded p-2"
+                    style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }}
+                    data-testid="client-spv-currency-confirm-block"
+                  >
+                    <div data-testid="client-spv-currency-confirm-statement">
+                      This vehicle will be denominated in {spvForm.currency || "—"}. Every commitment, fee, distribution and tax
+                      form for it will be recorded in {spvForm.currency || "—"}. The denomination cannot be changed after the
+                      vehicle is created.
+                    </div>
+                    <div className="mt-1" data-testid="client-spv-currency-origin">
+                      {currencyOriginStatement(
+                        SPV_JURISDICTION_COUNTRY[spvForm.jurisdiction as SpvJurisdiction] ?? "",
+                        spvForm.currency,
+                      )}
+                    </div>
+                    {/* An unrecognised code is named HERE, before the client spends a
+                        signature on it. The server would refuse it anyway
+                        (SPV_CURRENCY_UNKNOWN); this only stops the client finding out
+                        the hard way. */}
+                    {spvForm.currency.trim() !== "" && !isOfferedSpvCurrencyCode(spvForm.currency) && (
+                      <div className="mt-1 font-medium" data-testid="client-spv-currency-unknown">
+                        Capavate does not recognise {spvForm.currency} as a currency it can account in, so this vehicle
+                        cannot be recorded in it. Pick the three-letter code from the list — it is the code shown on the
+                        vehicle's formation documents.
+                      </div>
+                    )}
+                    {spvForm.currency.trim() === "" && (
+                      <div className="mt-1 font-medium" data-testid="client-spv-currency-missing">
+                        This vehicle needs a denomination before it can be created. Capavate will not choose one for you.
+                      </div>
+                    )}
+                    <label className="flex items-start gap-2 mt-1">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={spvForm.currencyConfirmed}
+                        onChange={(e) => setSpvForm((f) => ({ ...f, currencyConfirmed: e.target.checked }))}
+                        data-testid="client-spv-currency-confirm"
+                      />
+                      <span>I confirm {spvForm.currency || "—"} is the correct denomination for this vehicle.</span>
+                    </label>
                   </div>
 
                   {/* ══ WAVE 179 · ITEM B · R151.3 — the OPTIONAL legal form ═════ */}
@@ -611,6 +746,11 @@ export default function PartnerClientDetail() {
                         !spvForm.spvName.trim() ||
                         !spvForm.signoffLegalName.trim() ||
                         !spvForm.signoffAccepted ||
+                        /* WAVE 345 . ITEM 2 - the denomination must be one the
+                           platform can account in, AND it must be confirmed.
+                           Neither condition is a nicety: the column is immutable. */
+                        !isOfferedSpvCurrencyCode(spvForm.currency) ||
+                        !spvForm.currencyConfirmed ||
                         createSpvForClient.isPending
                       }
                       onClick={() => createSpvForClient.mutate()}

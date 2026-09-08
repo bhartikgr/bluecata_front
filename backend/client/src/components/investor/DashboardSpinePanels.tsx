@@ -33,6 +33,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fmtUSD, fmtDate } from "@/lib/format";
 import {
+  type DerivedPosition,
+  type PortfolioTotal,
+  totalInvested,
+  totalCurrentValue,
+  investedDisplay,
+  currentValueDisplay,
+  TOTAL_NOT_STATED,
+} from "@/lib/investor/portfolioPositions";
+import {
   useInvestorSpine,
   LADDER_EVENT_LABEL,
   type SpineActivityEvent,
@@ -49,13 +58,25 @@ import { displayName } from "@shared/investorDisplayLabels"; /* WAVE 90 · ITEM 
 /* Typed views over the spine's raw shapes (render-only, no derivation). */
 /* -------------------------------------------------------------------- */
 
-type HoldingView = {
-  companyId: string;
-  company?: string;
-  sector?: string;
-  invested?: number;
-  currentValue?: number;
-};
+/**
+ * QA-B4 - THE LOCAL VIEW TYPE THAT MANUFACTURED $0.
+ *
+ * This file used to declare its own `HoldingView` with `invested?: number` and
+ * `currentValue?: number`. WAVE 183 REMOVED BOTH FIELDS FROM THE WIRE - money
+ * now arrives as `investedMinor` (integer minor units, as a string) beside its
+ * ISO `currency`, and `currentValueMinor` is `null` on this route because no
+ * marks service is attached. This panel was never updated, so it read two
+ * fields that no longer exist, `Number(undefined ?? 0)` gave `0`, and the two
+ * tiles plus every row printed $0 FOR EVERY INVESTOR REGARDLESS OF DATA.
+ *
+ * The compiler could not catch it: the spine's raw row type carries an index
+ * signature, which makes any property name type-legal.
+ *
+ * THE TYPE IS REPLACED BY AN IMPORT, NOT EDITED IN PLACE. A local copy would
+ * drift again the next time the payload changes; an import of the canonical
+ * `DerivedPosition` means the next removal is a compile error here.
+ */
+type HoldingView = DerivedPosition;
 
 /**
  * The REAL M&A intelligence response returned by the existing per-company
@@ -99,7 +120,16 @@ export interface MaIntelResponse {
 
 export function PortfolioStandingPanel() {
   const spine = useInvestorSpine();
-  const holdings = spine.holdings as HoldingView[];
+  /* QA-B4 - ONE cast, at ONE boundary, and it is honest about what it is.
+     `spine.holdings` is typed `RawPositionLike[]` (an index signature over
+     `unknown`), so TypeScript rejects a direct assertion to `DerivedPosition[]`
+     and requires the trip through `unknown`. That is worth stating plainly: THE
+     COMPILER STILL CANNOT VERIFY THIS BOUNDARY. What changed is everything
+     downstream of it - every money field is now read by the canonical helpers
+     in `portfolioPositions`, which are typed against the real payload and which
+     REFUSE rather than return a zero when a field is missing. So if the wire
+     drops a field again, the screen says "Not on record"; it does not say $0. */
+  const holdings = spine.holdings as unknown as HoldingView[];
   const hasFunded = spine.hasFundedPosition;
 
   // WAVE 35 · ROW 7 — SECOND INSTANCE of "Your portfolio is empty".
@@ -110,15 +140,14 @@ export function PortfolioStandingPanel() {
   // two screens cannot contradict each other.
   const lp = useLpVehicleInterests();
 
-  const totals = useMemo(() => {
-    let invested = 0;
-    let currentValue = 0;
-    for (const h of holdings) {
-      invested += Number(h.invested ?? 0);
-      currentValue += Number(h.currentValue ?? 0);
-    }
-    return { invested, currentValue };
-  }, [holdings]);
+  /* QA-B4 - the hand-rolled `+= Number(h.invested ?? 0)` accumulator is gone.
+     Both totals now come from the canonical module, which sums in `bigint`,
+     never crosses a currency, and REFUSES with a stated reason instead of
+     returning a zero it does not hold. Neither branch can produce a figure. */
+  const totals = useMemo(
+    () => ({ invested: totalInvested(holdings), currentValue: totalCurrentValue(holdings) }),
+    [holdings],
+  );
 
   return (
     <Card className="mb-6" data-testid="spine-panel-portfolio">
@@ -208,14 +237,14 @@ export function PortfolioStandingPanel() {
                 value={String(holdings.length)}
                 testid="spine-portfolio-count"
               />
-              <SummaryStat
+              <TotalStat
                 label="Total invested"
-                value={fmtUSD(totals.invested, { compact: true })}
+                total={totals.invested}
                 testid="spine-portfolio-invested"
               />
-              <SummaryStat
+              <TotalStat
                 label="Current value"
-                value={fmtUSD(totals.currentValue, { compact: true })}
+                total={totals.currentValue}
                 testid="spine-portfolio-value"
               />
             </div>
@@ -239,11 +268,16 @@ export function PortfolioStandingPanel() {
                     )}
                   </div>
                   <div className="text-right shrink-0 pl-3">
-                    <div className="text-sm font-mono tabular-nums">
-                      {fmtUSD(Number(h.currentValue ?? 0), { compact: true })}
+                    {/* QA-B4 - the two per-row figures printed $0 for the same
+                        reason the tiles did. `currentValueDisplay` and
+                        `investedDisplay` are the platform's own formatters:
+                        they render the recorded minor-unit amount IN ITS OWN
+                        CURRENCY, and say "Not on record" when there is none. */}
+                    <div className="text-sm font-mono tabular-nums" data-testid={`spine-holding-value-${h.companyId}`}>
+                      {currentValueDisplay(h)}
                     </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {fmtUSD(Number(h.invested ?? 0), { compact: true })} invested
+                    <div className="text-[11px] text-muted-foreground" data-testid={`spine-holding-invested-${h.companyId}`}>
+                      {investedDisplay(h)} invested
                     </div>
                   </div>
                 </li>
@@ -466,7 +500,7 @@ export function MaIntelligencePanel() {
   // Map companyId -> a display name from spine (holdings first, then invites).
   const nameById = useMemo(() => {
     const m = new Map<string, string>();
-    for (const h of spine.holdings as HoldingView[]) {
+    for (const h of spine.holdings as unknown as HoldingView[]) {
       if (h.companyId && h.company) m.set(h.companyId, h.company);
     }
     for (const e of spine.recentActivity) {
@@ -661,6 +695,31 @@ function MaCompanyBlock({
 }
 
 /* -------------------------------- helpers -------------------------------- */
+
+/**
+ * QA-B4 - a total tile that can say "not stated" and explain itself.
+ *
+ * `SummaryStat` below takes a plain string and therefore has no way to refuse;
+ * that is why the old code had to pass it a number, and a number had to be a
+ * zero. This one takes the refusal-or-amount result and renders whichever it
+ * is. THE EXPLANATION IS RENDERED, NOT SWALLOWED: an investor who sees no
+ * figure is told, in the same tile, which fact the platform does not hold.
+ */
+function TotalStat({ label, total, testid }: { label: string; total: PortfolioTotal; testid: string }) {
+  return (
+    <div className="rounded-md border border-border px-3 py-2.5">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid={testid}>
+        {total.kind === "amount" ? total.text : TOTAL_NOT_STATED}
+      </div>
+      {total.kind === "unknown" && (
+        <p className="text-[11px] text-muted-foreground mt-1" data-testid={`${testid}-why`}>
+          {total.note}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function SummaryStat({ label, value, testid }: { label: string; value: string; testid: string }) {
   return (

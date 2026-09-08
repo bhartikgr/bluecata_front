@@ -6,6 +6,7 @@
  * Mandatory fields: name, role/title, email, affiliation (company or fund)
  * Optional: stage, tags, notes
  */
+import { RequiredMark, RequiredFieldsLegend } from "@/components/RedStateCue";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
@@ -117,10 +118,14 @@ export default function InvestorCRMNew() {
           </CardHeader>
           <CardContent className="space-y-5">
             {/* Required fields */}
+            {/* WAVE 342 · W291 — the asterisks were RED AND NOTHING ELSE. The
+                legend gives them their meaning in words; `RequiredMark` adds
+                "(required)" for assistive technology. No colour changed. */}
+            <RequiredFieldsLegend testId="crm-required-legend" />
             <div className="grid md:grid-cols-2 gap-4">
               <div>
                 <Label>
-                  First name <span className="text-destructive">*</span>
+                  First name <RequiredMark />
                 </Label>
                 <Input
                   className="mt-1"
@@ -133,7 +138,7 @@ export default function InvestorCRMNew() {
               </div>
               <div>
                 <Label>
-                  Last name <span className="text-destructive">*</span>
+                  Last name <RequiredMark />
                 </Label>
                 <Input
                   className="mt-1"
@@ -156,7 +161,7 @@ export default function InvestorCRMNew() {
               </div>
               <div>
                 <Label>
-                  Email <span className="text-destructive">*</span>
+                  Email <RequiredMark />
                 </Label>
                 <Input
                   className="mt-1"
@@ -174,7 +179,7 @@ export default function InvestorCRMNew() {
               </div>
               <div>
                 <Label>
-                  Primary Affiliation <span className="text-destructive">*</span>
+                  Primary Affiliation <RequiredMark />
                 </Label>
                 <Input
                   className="mt-1"

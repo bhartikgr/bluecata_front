@@ -742,6 +742,28 @@ export default function AdminInvestors() {
           ) : (
             <>
               <StatCard label="Total contacts" value={stats?.total ?? 0} icon={Users} testId="stat-total" />
+              {/* WAVE 341 (productgaps2) · W308 — THIS LABEL IS WRONG AND IT IS NOT
+                  MINE TO CHANGE. MEASURED: `getContactStats()`
+                  (server/adminContactsStore.ts:816) computes
+                  `byVerification.verified` as
+                  `all.filter(c => c.verification === "verified").length` with NO `kind`
+                  predicate, over a list holding investors, founders AND consortium
+                  partners. The sibling `byKind` block three lines above DOES filter on
+                  kind — the control that proves the omission is real. So this card
+                  asserts an investor count the server never computed, and because the
+                  label div carries `uppercase` an admin reads it as
+                  "VERIFIED INVESTORS 13" directly above rows badged Unverified.
+
+                  WHY THE WORDS WERE NOT CHANGED. "Verified investors" and
+                  "Total contacts" are both primary-functionality copy strings in the
+                  silent-drop-guard baseline. Editing either is a REMOVAL that the guard
+                  fails on (measured: rc=1, "REMOVED copy strings (2)"), and clearing it
+                  needs an allowlist entry carrying an owner approval. The instruction
+                  that opened this wave delegated that approval for ONE named item — the
+                  country dropdown — and no further. I will not sign the owner's name to
+                  a second one. The correction is therefore DISCLOSED on the screen
+                  immediately below the stats bar, which removes nothing and needs no
+                  approval, and the relabel is left OPEN as an owner decision. */}
               <StatCard label="Verified investors" value={stats?.byVerification.verified ?? 0} icon={ShieldCheck} testId="stat-verified" accent="bg-emerald-500" />
               <StatCard label="Founders" value={stats?.byKind.founder ?? 0} icon={Building2} testId="stat-founders" />
               <StatCard label="Consortium partners" value={stats?.byKind.consortium_partner ?? 0} icon={Handshake} testId="stat-partners" />
@@ -749,6 +771,30 @@ export default function AdminInvestors() {
             </>
           )}
         </div>
+
+        {/* WAVE 341 (productgaps2) · W308 — SAYING WHICH POPULATION THESE NUMBERS
+            COVER, because it is NOT the population in the table below.
+
+            MEASURED: the five cards and the four tab counts all come from
+            `GET /api/admin/contacts/stats` → `getContactStats()`
+            (server/adminContactsStore.ts:800-816), which reads ONLY the managed
+            contacts table. The LIST route `GET /api/admin/contacts`
+            (server/adminContactsStore.ts:1744-1800) MERGES read-only rows derived
+            from redeemed round invitations (`derived_inv_…`), which are hard-coded
+            `verification: "unverified"` and exist in no table. They therefore appear
+            as rows and can never appear in any count above them.
+
+            This sentence is the honest disclosure of that gap. It does not change,
+            hide or invent a number (R "never fabricate a zero — and never CONCEAL a
+            true one"); it tells the admin what they are looking at. */}
+        <p className="text-xs text-muted-foreground mb-6" data-testid="text-contact-stats-scope">
+          What these five numbers count: every contact recorded in the admin contact list,
+          of every kind. "Verified investors" above counts verified contacts of all kinds —
+          investors, founders and consortium partners together — not investors alone.
+          Investors added automatically from a redeemed round invitation appear in the table
+          below as read-only rows; they are never counted here, and they always show as
+          Unverified, so the table can list more people than these numbers say.
+        </p>
 
         {/* ── Bulk action bar ───────────────────────────────── */}
         {hasSelection && (

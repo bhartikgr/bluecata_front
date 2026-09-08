@@ -56,6 +56,7 @@ async function makeVehicle(): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name: `W127 Fee Vehicle ${Date.now()}`,
     jurisdiction: "delaware",
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     carryBasis: "whole_spv",
     status: "open",
     minCheckMinor: MIN_CHECK_MINOR,

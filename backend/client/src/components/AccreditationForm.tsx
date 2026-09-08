@@ -59,6 +59,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { ScrollText, ShieldCheck } from "lucide-react";
 import { useCapavateToast } from "./Toast";
+/* WAVE 343 · ITEM 4 — the no-verification sentence is IMPORTED, not retyped.
+   `W211_LP_COMMIT_TICK_3` is the ratified register the platform already uses
+   ("Capavate does not verify this investor's identity, wealth, status,
+   eligibility or source of funds…", shared/wave211MoneyEventAttestation.ts:645,
+   cited as precedent at client/src/pages/auth/AuthShell.tsx:39 and
+   client/src/pages/auth/Login.tsx:90). Importing it means this wave writes NO
+   new legal-sounding copy and cannot drift from the ratified wording. */
+import { W211_LP_COMMIT_TICK_3 } from "@shared/wave211MoneyEventAttestation";
 import { InlineError } from "./InlineError";
 
 export const ACCREDITATION_JURISDICTIONS = [
@@ -186,6 +194,49 @@ export interface AccreditationFormProps {
   }) => void;
 }
 
+/* WAVE 343 · ITEM 4 — THE STRANDED VALIDATION INSTRUCTION, GIVEN A NAME.
+ *
+ * This exact sentence has been unreachable from every production surface since
+ * WAVE 215: the component's only mount is `mode="reference"` with no `onSubmit`
+ * (census asserted `=== 1` in
+ * client/src/components/investor/__tests__/w343_item4_accreditation_message_delivery.test.tsx),
+ * and `submit()` early-returns before reaching it. The owner asked for the
+ * "global best practice investor grade fix" and added "be careful as I do not
+ * want the platform to be too restrictive".
+ *
+ * IT IS NOW DELIVERED AS INFORMATION, NOT AS A GATE. The string is rendered
+ * unconditionally in reference mode, up front, as a description of what the
+ * real declaration page will ask for. It blocks nothing, disables nothing, and
+ * requires nothing. The `setError` path below is UNCHANGED and still exists for
+ * `capture` mode, where a real `onSubmit` makes it reachable and appropriate.
+ *
+ * IT ASSERTS NOTHING ABOUT THE INVESTOR. It is a form-completion instruction:
+ * it says what the next page asks, not what the investor is, was, or has been
+ * found to be. No new claim about whether a declaration was made is introduced
+ * by delivering it. */
+export const BOTH_DECLARATIONS_REQUIRED = "Please confirm both declarations before submitting.";
+
+/* WAVE 343 · ITEM 4 — THE SECOND STRANDED MESSAGE IS **NOT** DELIVERED, AND
+ * THAT IS THE FINDING, NOT AN OMISSION.
+ *
+ * The other unreachable message reads "Accreditation submitted" /
+ * "<jurisdiction> · awaiting compliance review." Delivering it from this panel
+ * is impossible without asserting two things that are not true and not ours to
+ * say: that a submission was recorded (this panel records nothing — WAVE 215
+ * removed exactly that false confirmation), and that the investor's
+ * accreditation is under compliance review, which is a statement about their
+ * regulatory status. The brief's instruction for that case is explicit —
+ * "If the only way to deliver a message is to assert something about the
+ * investor's regulatory status, STOP AND REPORT" — so it is REPORTED in
+ * build_log/ownerband/OWNERBAND_BUILD.md and NOT made reachable. The message
+ * text is left exactly where it is, in the `capture`-mode branch, where a
+ * mount that actually persists would make it true.
+ *
+ * This constant exists so the decision is pinned and testable rather than being
+ * an absence nobody can check. */
+export const W343_UNDELIVERABLE_MESSAGE_REASON =
+  "asserts a submission was recorded and that the investor's accreditation is awaiting compliance review — both are claims about regulatory status this panel has no basis to make";
+
 export function AccreditationForm({ initialJurisdiction = "US", onSubmit, mode = "capture" }: AccreditationFormProps) {
   const toast = useCapavateToast();
   const [jurisdiction, setJurisdiction] = useState<JurisdictionCode>(initialJurisdiction);
@@ -218,7 +269,7 @@ export function AccreditationForm({ initialJurisdiction = "US", onSubmit, mode =
     }
     const decKeys = Object.keys(declarations).filter(k => declarations[k]);
     if (decKeys.length < 2) {
-      setError("Please confirm both declarations before submitting.");
+      setError(BOTH_DECLARATIONS_REQUIRED);
       return;
     }
     onSubmit?.({ jurisdiction, pathway, declarations: decKeys, evidenceRef });
@@ -247,6 +298,21 @@ export function AccreditationForm({ initialJurisdiction = "US", onSubmit, mode =
             . Capavate records your declaration; it does not check it, and it does
             not perform any verification on your behalf. Thresholds shown as
             awaiting confirmation by local counsel state no figure on purpose.
+          </p>
+        )}
+        {/* WAVE 343 · ITEM 4 — SAY MORE, BLOCK LESS. The validation instruction
+            that has been unreachable since WAVE 215 is delivered here as plain
+            information, before the investor touches anything, so they know what
+            the declaration page will ask. It is NOT a gate: nothing below is
+            disabled, no button is blocked, and no tick is required to read,
+            change or leave this panel. The no-verification sentence is the
+            RATIFIED one, imported verbatim — this wave wrote no new legal copy. */}
+        {mode === "reference" && (
+          <p className="text-xs mt-1.5 rounded-md border p-2 leading-relaxed" data-testid="accreditation-form-declaration-requirement-notice" style={{ background: "var(--cv-warn-bg, #fffbeb)", borderColor: "var(--cv-warn-border, #fde68a)", color: "var(--cv-warn-text, #92400e)" }}>
+            What the declaration page asks for: {BOTH_DECLARATIONS_REQUIRED} You
+            can read and change everything on this panel without confirming
+            anything here.{" "}
+            {W211_LP_COMMIT_TICK_3}
           </p>
         )}
       </CardHeader>

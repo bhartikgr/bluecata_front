@@ -56,6 +56,10 @@ import type { Express, Request, Response } from "express";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+/* WAVE 339 · W332 — the Contacts stage vocabulary. See the block above
+   `PARTNER_CONTACT_STAGES` in `shared/crmStages.ts`: it IS the Clients CRM's
+   array, aliased, so the two engines stay comparable and cannot drift. */
+import { PARTNER_CONTACT_STAGES, isPartnerContactStage } from "@shared/crmStages";
 
 import { requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NL5 */
@@ -447,7 +451,15 @@ const crmMeCreateSchema = z.object({
   contact_user_id: z.string().min(1).optional(),
   role: z.string().max(120).optional(),
   org: z.string().max(200).optional(),
-  stage: z.string().max(60).optional(),
+  /* ══ WAVE 339 · W332 — A CONTACT STAGE IS NOW A STAGE, NOT A SENTENCE. ══
+     CREATE is held STRICTLY: a contact created from today onwards must use a
+     value from the shared vocabulary, so no new uncomparable text can enter.
+     There is no legacy risk on a create — the row does not exist yet.
+     Absent stays legal (`.optional()`): "not yet placed" is a real answer.
+     THIS IS THE ONLY PLACE THE RULE LIVES. It is deliberately NOT a database
+     constraint — a CHECK would reject rows already stored and take a live
+     partner's contact list offline to tidy a word. */
+  stage: z.enum(PARTNER_CONTACT_STAGES).optional(),
   company_id: z.string().min(1).max(120).optional(),
   notes: z.string().max(4000).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
@@ -460,6 +472,13 @@ const crmMeUpdateSchema = z.object({
   email: z.string().email().optional(),
   role: z.string().max(120).optional(),
   org: z.string().max(200).optional(),
+  /* ══ WAVE 339 · W332 — UPDATE IS DELIBERATELY LOOSER THAN CREATE. ══
+     A hard enum here would 400 the moment a partner opened an OLD contact and
+     changed its phone number, because the form resends the stage it found. The
+     shape stays permissive and the RULE is applied in the route below
+     (`assertContactStageWritable`), which lets a row keep the stage it already
+     has and refuses only a CHANGE to something outside the vocabulary.
+     `null` clears the stage and is always allowed. */
   stage: z.string().max(60).nullable().optional(),
   company_id: z.string().min(1).max(120).nullable().optional(),
   notes: z.string().max(4000).optional(),
@@ -2484,6 +2503,32 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const parsed = crmMeUpdateSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    /* ══ WAVE 339 · W332 — THE STAGE RULE, APPLIED WHERE THE OLD VALUE IS
+       KNOWN. Three outcomes, and only one of them is a refusal:
+         · clearing the stage (`null`)                     → allowed
+         · a value from the shared vocabulary              → allowed
+         · re-sending the stage the row ALREADY holds      → allowed, even if
+           that value predates this vocabulary. This is what keeps every
+           existing contact editable; without it a partner could not correct a
+           typo in an old contact's email.
+         · anything else                                   → refused, in words,
+           listing what may be used (R77: a code for machines, a sentence for
+           people). */
+    const nextStage = parsed.data.stage;
+    if (
+      typeof nextStage === "string" &&
+      nextStage !== "" &&
+      !isPartnerContactStage(nextStage) &&
+      nextStage !== (row.stage ?? "")
+    ) {
+      res.status(400).json({
+        error: "INVALID_CONTACT_STAGE",
+        message:
+          `"${nextStage}" is not a contact stage. Choose one of: ` +
+          `${PARTNER_CONTACT_STAGES.join(", ")} — or leave the stage blank if you have not placed this contact yet.`,
+      });
       return;
     }
     if (typeof parsed.data.email === "string") {

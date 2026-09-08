@@ -46,6 +46,7 @@ describe("WAVE 3F / ITEM 1 — distribution + carry collection are ONE transacti
     const created = await post("/api/partner/me/spv", MANAGING, {
       name: "W3F atomicity — item 1",
       jurisdiction: "delaware",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       carryBasis: "per_deployment",
       status: "open",
       signoffLegalName: "Avi Managing",

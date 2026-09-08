@@ -36,6 +36,7 @@ import {
   type PartnerPipelineStageKey,
 } from "@shared/crmStages";
 import { describeFailure } from "@/lib/failureMessage";
+import { displayName } from "@shared/investorDisplayLabels"; /* ITEM 9 */
 /* WAVE 213 · R188.4 item 3 — the governing clause, its acknowledgement sentence
    and the quoted agreement section. In `shared/` so the screen and the route that
    enforces it read ONE definition (the `shared/spvAttestation.ts` rule). */
@@ -689,7 +690,15 @@ export default function PartnerPipeline() {
                     const liveInCollective = isCollective && !isDraft;
                     return (
                       <div key={s.id} className="border rounded p-2 text-xs bg-[var(--cv-color-surface-2)]" data-testid={`spv-card-${s.id}`}>
-                        <div className="font-medium">{s.spvName ?? s.name ?? s.id}</div>
+                        {/* ITEM 9 — `?? s.id` printed `spv_e08dcbdd2921a89c` AS
+                            THE CARD TITLE. `displayName` describes what the row
+                            is ("Unnamed vehicle") and returns no part of the
+                            id. The id itself is NOT lost: it stays on the
+                            `title` here, and this card's own `data-testid`
+                            still carries it. */}
+                        <div className="font-medium" title={String(s.id ?? "")} data-testid={`spv-name-${s.id}`}>
+                          {displayName(s.spvName ?? s.name, "vehicle", s.id)}
+                        </div>
                         <div className="text-[var(--cv-color-text-muted)]">{s.spvType ?? s.type ?? "SPV"}</div>
                         {isCollective && (
                           <div className="mt-1">

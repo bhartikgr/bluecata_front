@@ -31,6 +31,34 @@
  * `bigint`. There is deliberately no `moic` helper here: a multiple needs a
  * mark, this payload has none, and a helper would be an invitation to
  * substitute cost for value.
+ *
+ * ---------------------------------------------------------------------------
+ * QA-B4 AMENDMENT - ONE NARROW EXCEPTION, WITH ITS REASON STATED.
+ * ---------------------------------------------------------------------------
+ * The rule above is not being dropped and the sentence above is not deleted; it
+ * is QUALIFIED, because a later wave created a case it did not anticipate.
+ *
+ * `DashboardSpinePanels.tsx` renders an invested TOTAL across the caller's
+ * holdings. This route's payload is per-position: there is no server-side total
+ * on it, and the analytics endpoint that does carry one answers a DIFFERENT
+ * question ("Total committed", `Dashboard.tsx`) and must not be substituted.
+ * With no total on the wire the panel invented one - and, reading two fields
+ * this payload no longer carries, it produced a hardcoded $0 for EVERY investor.
+ *
+ * So ONE summing helper lives here, `totalInvested`, and it exists BECAUSE of
+ * the rule above rather than in spite of it:
+ *   - It sums in `bigint`, never `Number`, so no precision is lost.
+ *   - IT REFUSES FAR MORE OFTEN THAN IT ADDS. More than one currency, any
+ *     missing amount, any missing currency, any out-of-safe-range value - each
+ *     returns a REFUSAL carrying the ratified sentence that explains it. It is
+ *     a refusal with an addition in the last branch.
+ *   - IT NEVER RETURNS ZERO FOR AN ABSENCE. A genuinely recorded zero still
+ *     renders as zero; an unknown renders as the refusal. Never fabricate a
+ *     zero, and never conceal a true one.
+ *   - IT NEVER CONVERTS CURRENCY. This platform holds no exchange rate and this
+ *     helper does not invent one.
+ * Anything beyond a same-currency sum - multiples, marks, valuations, returns -
+ * remains the server's job. Do not widen this exception without a stated reason.
  */
 import { formatMinor, MONEY_NOT_ON_RECORD } from "@/lib/currency";
 import { ApiError } from "@/lib/queryClient";
@@ -95,6 +123,14 @@ export const PORTFOLIO_UNKNOWN_COPY: Record<PortfolioUnknown, string> = {
  *  platform-wide wording in `MONEY_NOT_ON_RECORD`. */
 export const FIELD_NOT_ON_RECORD = "Not on record";
 
+/** QA-B4. Two sentences for two absences a TOTAL can have that a single
+ *  position cannot. Plain statements in the same register as the ratified set
+ *  above: they name the missing fact and they do not ask anyone to retry. */
+export const NO_POSITIONS_COPY =
+  "No funded positions are on record, so no invested total is stated.";
+export const AMOUNT_MISSING_COPY =
+  "At least one holding has no invested amount on record, so no total is stated. A total that left it out would understate what is held.";
+
 export function hasUnknown(p: DerivedPosition, u: PortfolioUnknown): boolean {
   return Array.isArray(p.unknown) && p.unknown.indexOf(u) !== -1;
 }
@@ -126,6 +162,105 @@ export function investedDisplay(p: DerivedPosition): string {
  *  without a second code path being written. */
 export function currentValueDisplay(p: DerivedPosition): string {
   return renderMinor(p.currentValueMinor, p.currency, false);
+}
+
+/* ==========================================================================
+   QA-B4 - THE INVESTED TOTAL, AND THE CURRENT-VALUE TOTAL THAT REFUSES.
+   ========================================================================== */
+
+/**
+ * The result of asking this payload for a total.
+ *
+ * `null` is NOT one of the cases. A caller must be handed either an amount it
+ * can print or a SENTENCE saying why there is none - which is what stops the
+ * next implementer from writing `?? 0` at the call site and re-creating the
+ * exact defect this replaces.
+ */
+export type PortfolioTotal =
+  | { kind: "amount"; text: string; currency: string }
+  | { kind: "unknown"; note: string };
+
+/** The absence wording shown in a figure slot, distinct from the explanation. */
+export const TOTAL_NOT_STATED = MONEY_NOT_ON_RECORD;
+
+/**
+ * Sum `investedMinor` across positions - or refuse, with the reason.
+ *
+ * REFUSES when: there are no positions; any position carries no currency; the
+ * positions span more than one currency; any amount is missing, non-integer, or
+ * flagged beyond safe range. ADDS only when every position is present, integral
+ * and in the SAME currency. The addition is `bigint`, so a large book is exact.
+ */
+export function totalInvested(positions: DerivedPosition[]): PortfolioTotal {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return { kind: "unknown", note: NO_POSITIONS_COPY };
+  }
+
+  /* Currency first. Mixing is the one failure that would silently produce a
+     plausible wrong number, so it is rejected before any addition happens. */
+  const currencies: string[] = [];
+  for (const p of positions) {
+    if (p.currency === null || String(p.currency).trim() === "") {
+      return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.CURRENCY_NOT_ON_RECORD };
+    }
+    if (currencies.indexOf(p.currency) === -1) currencies.push(p.currency);
+  }
+  if (currencies.length > 1) {
+    return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.INVESTED_SPANS_CURRENCIES };
+  }
+
+  let sum = 0n;
+  for (const p of positions) {
+    if (p.investedExceedsSafeRange === true) {
+      return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.CURRENCY_NOT_ON_RECORD };
+    }
+    if (p.investedMinor === null || !/^-?\d+$/.test(p.investedMinor)) {
+      return { kind: "unknown", note: AMOUNT_MISSING_COPY };
+    }
+    sum += BigInt(p.investedMinor);
+  }
+
+  /* Format through the SAME gate every single figure goes through, so a total
+     can never be rendered by a path a single position would have refused. */
+  const text = renderMinor(sum.toString(), currencies[0], false);
+  if (text === MONEY_NOT_ON_RECORD) {
+    return { kind: "unknown", note: AMOUNT_MISSING_COPY };
+  }
+  return { kind: "amount", text, currency: currencies[0] };
+}
+
+/**
+ * The current-value total.
+ *
+ * On this route `currentValueMinor` is `null` for every position because no
+ * marks service is attached, so in practice this always refuses. It is written
+ * as a real function rather than a constant so that the day marks arrive it
+ * totals them correctly instead of a second code path being invented.
+ */
+export function totalCurrentValue(positions: DerivedPosition[]): PortfolioTotal {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return { kind: "unknown", note: NO_POSITIONS_COPY };
+  }
+  const currencies: string[] = [];
+  for (const p of positions) {
+    if (p.currentValueMinor === null || !/^-?\d+$/.test(p.currentValueMinor)) {
+      return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.CURRENT_VALUE_NO_MARK_RECORDED };
+    }
+    if (p.currency === null || String(p.currency).trim() === "") {
+      return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.CURRENCY_NOT_ON_RECORD };
+    }
+    if (currencies.indexOf(p.currency) === -1) currencies.push(p.currency);
+  }
+  if (currencies.length > 1) {
+    return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.INVESTED_SPANS_CURRENCIES };
+  }
+  let sum = 0n;
+  for (const p of positions) sum += BigInt(p.currentValueMinor as string);
+  const text = renderMinor(sum.toString(), currencies[0], false);
+  if (text === MONEY_NOT_ON_RECORD) {
+    return { kind: "unknown", note: PORTFOLIO_UNKNOWN_COPY.CURRENT_VALUE_NO_MARK_RECORDED };
+  }
+  return { kind: "amount", text, currency: currencies[0] };
 }
 
 export function sharesDisplay(p: DerivedPosition): string {

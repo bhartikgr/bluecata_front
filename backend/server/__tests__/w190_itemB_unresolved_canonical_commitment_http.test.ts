@@ -344,6 +344,7 @@ describe("W190 B-d — settling capital already committed still works", () => {
     const create = await post("/api/partner/me/spv", {
       name: "W190 Bd Settlement While Closed",
       jurisdiction: "delaware",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       carryBasis: "whole_spv",
       status: "open",
       signoffLegalName: "Avi Managing",

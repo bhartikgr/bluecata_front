@@ -43,7 +43,11 @@ interface SnapshotPosition {
 }
 interface SnapshotsResponse {
   ok: boolean;
-  pending: { hasPending: boolean; roundIds: string[]; positions: SnapshotPosition[] };
+  /* ITEM 12 — `roundNames` is ADDITIVE and arrives from
+     `server/captableSnapshotsStore.ts`. Optional here so an older cached
+     response, or a fail-soft empty payload, renders the honest refusal below
+     rather than crashing. */
+  pending: { hasPending: boolean; roundIds: string[]; roundNames?: Record<string, string>; positions: SnapshotPosition[] };
   previous: {
     hasPrevious: boolean; roundId: string | null; roundName: string | null;
     committedAt: string | null; positions: SnapshotPosition[];
@@ -67,7 +71,34 @@ function fmtShares(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: string | null }) {
+/* ITEM 12 — the Projected table had no round column, so a founder with two open
+   rounds could not tell which round a projected row came from. The round is
+   named, never printed as an id (item 9), and an unresolved round states its
+   absence rather than rendering a blank cell or a bare dash. */
+export const SNAPSHOT_ROUND_NOT_RECORDED = "Round not recorded";
+
+export function snapshotRoundLabel(
+  roundId: string | null | undefined,
+  roundNames: Record<string, string> | undefined,
+): string {
+  const rid = String(roundId ?? "").trim();
+  if (!rid) return SNAPSHOT_ROUND_NOT_RECORDED;
+  const name = String(roundNames?.[rid] ?? "").trim();
+  /* NEVER fall back to the id. An id is not a name. */
+  return name || SNAPSHOT_ROUND_NOT_RECORDED;
+}
+
+function PositionRows({
+  positions,
+  sym,
+  roundNames,
+}: {
+  positions: SnapshotPosition[];
+  sym: string | null;
+  /* Omitted by the `previous` table, which is a single committed round and does
+     not need a per-row round column. */
+  roundNames?: Record<string, string>;
+}) {
   if (positions.length === 0) {
     return <p className="text-xs text-muted-foreground px-1 py-2">No positions in this snapshot.</p>;
   }
@@ -77,6 +108,9 @@ function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: 
         <thead>
           <tr className="text-muted-foreground border-b border-border">
             <th className="text-left font-medium px-2 py-1.5">Holder</th>
+            {roundNames !== undefined && (
+              <th className="text-left font-medium px-2 py-1.5" data-testid="snapshot-col-round">Round</th>
+            )}
             <th className="text-left font-medium px-2 py-1.5">Instrument</th>
             <th className="text-right font-medium px-2 py-1.5">Shares</th>
             <th className="text-right font-medium px-2 py-1.5">Invested</th>
@@ -86,6 +120,11 @@ function PositionRows({ positions, sym }: { positions: SnapshotPosition[]; sym: 
           {positions.map((p) => (
             <tr key={p.id} className="border-b border-border/50" data-testid={`snapshot-row-${p.id}`}>
               <td className="px-2 py-1.5">{holderLabel(p.holderName, p.investorId ?? null)}</td>
+              {roundNames !== undefined && (
+                <td className="px-2 py-1.5" data-testid={`snapshot-row-round-${p.id}`}>
+                  {snapshotRoundLabel(p.roundId, roundNames)}
+                </td>
+              )}
               <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[10px]">{p.instrument}</Badge></td>
               <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtShares(p.shares)}</td>
               <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtMoney(sym, p.investmentAmount)}</td>
@@ -173,7 +212,33 @@ export default function CapTableSnapshots({ companyId, sym = null }: { companyId
                 the engine commits the reconciled positions to the immutable ledger.
               </span>
             </div>
-            <PositionRows positions={pending!.positions} sym={sym} />
+            {/* ITEM 12 — SIBLING SENTENCE. The banner above is ratified copy and
+                is NOT edited: it discloses that the figures are provisional and
+                that a close commits them. It says nothing about OTHER open
+                rounds, which is the omission a founder actually hit.
+
+                CONDITIONAL ON MORE THAN ONE OPEN ROUND. Shown to a
+                single-round company it would be a new false statement, so the
+                gate is the point of this block, not an optimisation.
+
+                THE ARITHMETIC IS CORRECT AND IS NOT TOUCHED. This explains the
+                figures; it does not change them. */}
+            {(pending!.roundIds?.length ?? 0) > 1 && (
+              <div
+                className="flex items-start gap-2 p-3 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground"
+                data-testid="snapshot-pending-cross-round-banner"
+              >
+                <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
+                <span>
+                  This company has <span className="font-medium text-foreground">more than one open round</span>.
+                  Recording an investor in any open round changes the projected ownership shown for every other
+                  open round, because each projection divides by the same total share count. These figures are
+                  correct and they will move again as other rounds record investors.{" "}
+                  <span className="font-medium text-foreground">Only a close commits them.</span>
+                </span>
+              </div>
+            )}
+            <PositionRows positions={pending!.positions} sym={sym} roundNames={pending!.roundNames ?? {}} />
           </CardContent>
         </Card>
       )}

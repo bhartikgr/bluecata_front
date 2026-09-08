@@ -464,8 +464,17 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
         /* v25.32 final — join in `soft_circles.currency` so the UI no longer
          * hardcodes USD when partner deals are multi-currency. The source
          * row already has currency; partner_billing_entries doesn't replicate
-         * it, so we LEFT JOIN at read time. Falls back to 'USD' only if the
-         * source row is missing currency (legacy data). */
+         * it, so we LEFT JOIN at read time.
+         *
+         * WAVE 345 . ITEM 4 SQL SITE 3 — THE 'USD' FALLBACK IS GONE. The
+         * sentence that used to end this comment said the join "falls back to
+         * 'USD' only if the source row is missing currency (legacy data)". That
+         * fallback was the defect: a legacy row with no recorded denomination
+         * arrived on a partner's own money screen wearing a US-dollar label
+         * nobody had ever recorded, and there was no way for the partner to tell
+         * which of their figures were labelled and which were guessed. The
+         * column is now returned AS STORED — null when nothing is recorded — and
+         * the reader states the absence instead of covering it. */
         const entries = db.prepare(`
           SELECT
             pbe.id,
@@ -477,7 +486,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
             pbe.commission_minor AS commissionMinor,
             pbe.status,
             pbe.paid_at         AS paidAt,
-            COALESCE(sc.currency, 'USD') AS currency
+            sc.currency AS currency
           FROM partner_billing_entries pbe
           LEFT JOIN soft_circles sc ON sc.id = pbe.deal_ref
           WHERE pbe.partner_id = ?
@@ -504,16 +513,85 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           commissionMinor: number;
           status: "pending" | "paid";
           paidAt: string | null;
-          currency: string;
+          /* WAVE 345 . ITEM 4 SQL SITE 3 — null when the source deal records no
+             denomination. The type now admits what the column always could. */
+          currency: string | null;
         }>;
 
-        // Totals by status
-        const totalsByStatus: Record<string, number> = {};
+        /* ═══════════════════════════════════════════════════════════════════
+           WAVE 345 . ITEM 4 SQL SITE 3 — THE TOTAL THAT WAS ADDING UP
+           DIFFERENT CURRENCIES.
+           ═══════════════════════════════════════════════════════════════════
+           What was here:
+
+             for (const e of entries)
+               totalsByStatus[e.status] = (totalsByStatus[e.status] ?? 0)
+                                        + e.commissionMinor;
+
+           No currency key anywhere. A partner with a 1,200.00 CAD commission and
+           a 500.00 USD commission was sent `pending: 170000`, which is not an
+           amount of money in any currency that exists. This platform holds no
+           exchange rate and must never sum across currencies.
+
+           `totalsByStatus` IS KEPT — removing a key from a shipped response is a
+           silent drop, and something downstream may still read it. It is made
+           TRUE instead: a status total is a NUMBER only when every row behind it
+           shares one recorded currency, and `null` otherwise. `null` here means
+           "not one figure", never zero. The per-currency truth is carried
+           alongside it in `totalsByStatusAndCurrency`, and money with no
+           recorded denomination is carried in its own pile rather than being
+           absorbed into someone else's dollars.
+           ═══════════════════════════════════════════════════════════════════ */
+        const perStatusPerCurrency: Record<string, Record<string, number>> = {};
+        const unrecordedCurrencyMinorByStatus: Record<string, number> = {};
+        let entriesWithoutRecordedCurrency = 0;
         for (const e of entries) {
-          totalsByStatus[e.status] = (totalsByStatus[e.status] ?? 0) + e.commissionMinor;
+          const recorded = typeof e.currency === "string" ? e.currency.trim().toUpperCase() : "";
+          const minor = e.commissionMinor || 0;
+          if (recorded === "") {
+            entriesWithoutRecordedCurrency += 1;
+            unrecordedCurrencyMinorByStatus[e.status] =
+              (unrecordedCurrencyMinorByStatus[e.status] ?? 0) + minor;
+            continue;
+          }
+          const byCcy = (perStatusPerCurrency[e.status] ??= {});
+          byCcy[recorded] = (byCcy[recorded] ?? 0) + minor;
+        }
+        /* One scalar per status, and ONLY when it is honestly one scalar. A
+           status whose rows span two currencies, or whose money is partly
+           unlabelled, has no single figure and says so with null. */
+        const totalsByStatus: Record<string, number | null> = {};
+        const totalsByStatusCurrency: Record<string, string | null> = {};
+        for (const status of new Set([
+          ...Object.keys(perStatusPerCurrency),
+          ...Object.keys(unrecordedCurrencyMinorByStatus),
+        ])) {
+          const codes = Object.keys(perStatusPerCurrency[status] ?? {});
+          const hasUnlabelled = (unrecordedCurrencyMinorByStatus[status] ?? 0) !== 0
+            || Object.prototype.hasOwnProperty.call(unrecordedCurrencyMinorByStatus, status);
+          if (codes.length === 1 && !hasUnlabelled) {
+            totalsByStatus[status] = perStatusPerCurrency[status]![codes[0]!]!;
+            totalsByStatusCurrency[status] = codes[0]!;
+          } else {
+            totalsByStatus[status] = null;
+            totalsByStatusCurrency[status] = null;
+          }
+        }
+        const totalsByStatusAndCurrency: Record<string, Array<{ currency: string; minor: number }>> = {};
+        for (const [status, byCcy] of Object.entries(perStatusPerCurrency)) {
+          totalsByStatusAndCurrency[status] = Object.keys(byCcy)
+            .sort()
+            .map((currency) => ({ currency, minor: byCcy[currency]! }));
         }
 
-        res.json({ entries, totalsByStatus });
+        res.json({
+          entries,
+          totalsByStatus,
+          totalsByStatusCurrency,
+          totalsByStatusAndCurrency,
+          unrecordedCurrencyMinorByStatus,
+          entriesWithoutRecordedCurrency,
+        });
       } catch (err) {
         res.status(500).json({ error: "BILLING_QUERY_FAILED", message: (err as Error).message });
       }

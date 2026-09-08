@@ -32,6 +32,15 @@ export const SPV_EDU = {
     "When the company returns money (dividend or exit), it usually happens offline. Record the distribution here and confirm it — we'll compute each investor's share from your terms and update their capital accounts.",
   reporting:
     "You can share an optional valuation update with your investors. Early-stage startups often have no valuation for a while — that's normal, and we'll show investors 'not yet reported' rather than a misleading number.",
+  /* W6c · D2 — THE DOCUMENTS TAB HAD NO COPY OF ITS OWN.
+     It rendered `reporting` — "You can share an optional valuation update…" —
+     which is the NAV tab's sentence and says nothing about documents. That key
+     is unchanged and still serves the NAV tab. This sentence describes what the
+     Documents tab actually does, and states the limit of what Capavate holds,
+     because the e-signature surface elsewhere in this journey depends on the
+     reader understanding that Capavate does not keep the file's own contents. */
+  documents:
+    "Every document recorded against this vehicle is listed here — subscription agreements, the LPA (Limited Partnership Agreement), side letters and anything else you add. Capavate records that a document exists, its type and its title; it does not hold or check the document's own contents. Adding a document here does not send it to anyone — use the E-signature tab when you want a signature.",
   filings:
     "Depending on your jurisdiction, there may be regulatory notices (e.g. a US 'Form D'). We list them as a helpful checklist — completing them is up to you and your lawyer; it never blocks anything here.",
   windDown:

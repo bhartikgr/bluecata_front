@@ -179,7 +179,26 @@ function exponentFor(currency: string): number {
  *  `server/`, so it cannot be imported into the browser bundle.
  *
  *  This is FORMATTING, not derivation. It changes no value. */
-export function displayCompanyMinor(minor: bigint, currency: string): string {
+/* W6c · D1 — THE THIRD MONEY FORMATTER ON THE SPV SURFACE.
+
+   The SPV Overview tile builds its raised-vs-target line from TWO different
+   formatters: this one for the raised half (a bigint sum) and `fmt()` for the
+   target half. That line is the literal `$0.00 / $100,000.00` QA reported, so
+   naming the currency in only one of the two would have left the defect half
+   fixed — which is exactly what a sweep across all sixteen tabs caught.
+
+   `opts.currencyDisplay: "code"` returns the `plain` string this function ALREADY
+   builds as its own Intl fallback: `${currency} ${grouped}.${fraction}`,
+   constructed digit by digit with no division and no parsing, which is the whole
+   point of this module. No new formatting logic is introduced here — an existing,
+   already-tested branch is simply made reachable on request.
+
+   The parameter is OPTIONAL and every existing caller is byte-for-byte unchanged. */
+export function displayCompanyMinor(
+  minor: bigint,
+  currency: string,
+  opts: { currencyDisplay?: "symbol" | "code" } = {},
+): string {
   const exp = exponentFor(currency);
   const negative = minor < BigInt(0);
   const digits = (negative ? -minor : minor).toString().padStart(exp + 1, "0");
@@ -187,6 +206,9 @@ export function displayCompanyMinor(minor: bigint, currency: string): string {
   const fraction = exp > 0 ? digits.slice(digits.length - exp) : "";
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   const plain = `${negative ? "-" : ""}${currency} ${grouped}${fraction ? "." + fraction : ""}`;
+  /* W6c · D1 — the ISO-code rendering IS `plain`. Returned before the Intl shell
+     is consulted at all, so the code path cannot pick up a symbol or a U+00A0. */
+  if (opts.currencyDisplay === "code") return plain;
   try {
     const parts = new Intl.NumberFormat(undefined, {
       style: "currency",

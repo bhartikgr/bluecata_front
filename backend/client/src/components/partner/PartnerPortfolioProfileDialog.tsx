@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { INDUSTRY_OPTIONS } from "@/lib/profile/data/enums";
+import { COUNTRIES } from "@/lib/profile/data/countries";
 import { useToast } from "@/hooks/use-toast";
 import { describeFailure } from "@/lib/failureMessage";
 
@@ -51,6 +52,60 @@ const STEPS = [
 /* Radix SelectItem forbids an empty value, so "cleared" rides a sentinel that
    the change handler maps back to null (industryEnum accepts null, not ""). */
 const INDUSTRY_NONE = "__none__";
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 341 (productgaps2) · N18 — THE TWO COUNTRY FIELDS WERE FREE TEXT.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * WHAT WAS WRONG. `Country code (e.g. US)` (step 2) and `Country of
+ * incorporation code` (step 3) accepted and STORED anything typed: `usa`,
+ * `U.S.`, `Amerika`, a typo. The country of incorporation is read for
+ * jurisdiction and for tax/KYC purposes, so a free-text value there is a
+ * compliance defect, not a tidiness one.
+ *
+ * WHICH LIST. `COUNTRIES` (`client/src/lib/profile/data/countries.ts`), the
+ * 250-entry ISO-3166 alpha-2 list the platform already uses for exactly this,
+ * including on the sibling partner screen `PartnerSettings.tsx:276`. NO NEW
+ * LIST IS INVENTED. The SPV wizard's `SPV_TOP_JURISDICTION_COUNTRIES` was
+ * measured and REJECTED: it holds 15 country NAMES, these two fields hold
+ * CODES, and 15 entries cannot express a company incorporated anywhere else.
+ *
+ * WHY A BOUND `<datalist>` + A SAVE BLOCK, AND NOT A CLOSED `<Select>`.
+ * A closed `<Select>` was built and proved in WAVE 339 and is parked at
+ * `build_log/partnerband_vocab/patches/`. It REPLACES the `<Input>`, and a
+ * replaced control is externally indistinguishable from a removed one: the
+ * silent-drop guard reported 6 disappearances and `drop:restyle` reported 2
+ * BARE disappearances. Both gates are behaving correctly. `drop:restyle` has
+ * no register for a replacement — its only clearing action is re-cutting its
+ * baseline, which is forbidden here and which its own header calls "not
+ * evidence of anything". So the control is KEPT and BOUND instead: same
+ * element, same `data-testid`, same handler, same placeholder — plus a bound
+ * pick-list and a hard stop on save. The user-visible outcome is the one the
+ * ruling asked for (you pick a country; a value that is not a country cannot
+ * be stored) with nothing removed and no gate baseline touched.
+ *
+ * NOTHING IS TAKEN OFFLINE. A row that already holds an off-list legacy value
+ * still LOADS and still DISPLAYS it; the block is on saving a NEW bad value.
+ * A blank field stays legal — these fields are optional. */
+const COUNTRY_LIST_ADDRESS = "pf-country-options-address";
+const COUNTRY_LIST_LEGAL = "pf-country-options-legal";
+const COUNTRY_CODES: ReadonlySet<string> = new Set(COUNTRIES.map((c) => c.code));
+const COUNTRY_HELP =
+  "Pick a country from the list. It is stored as its two-letter ISO code, in capitals — for example US.";
+
+/** Blank is legal (the field is optional). Anything else must be an ISO code. */
+export function isAcceptableCountryCode(v: string): boolean {
+  return v.trim() === "" || COUNTRY_CODES.has(v);
+}
+
+function CountryOptions({ id }: { id: string }) {
+  return (
+    <datalist id={id} data-testid={`${id}-datalist`}>
+      {COUNTRIES.map((c) => (
+        <option key={c.code} value={c.code}>{c.name}</option>
+      ))}
+    </datalist>
+  );
+}
 
 const TX_STATUS = [
   "not_pursuing", "exploring", "outbound", "inbound", "active_negotiation",
@@ -137,6 +192,14 @@ export function PartnerPortfolioProfileDialog({
     k: string,
   ) => (e: { target: { value: string } }) => setter((prev) => ({ ...prev, [k]: e.target.value }));
 
+  /* WAVE 341 · N18 — a value that is not a country cannot be saved. Evaluated on
+     the LIVE form state, not on the loaded row, so an off-list value already on
+     the record still loads and still displays; it only blocks the save while it
+     is on screen, which is the moment the partner can fix it. */
+  const addressCountryOk = isAcceptableCountryCode(str(address, "countryCode"));
+  const legalCountryOk = isAcceptableCountryCode(str(legal, "countryOfIncorporationCode"));
+  const countryFieldsOk = addressCountryOk && legalCountryOk;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="portfolio-profile-modal">
@@ -200,14 +263,28 @@ export function PartnerPortfolioProfileDialog({
                 <Input disabled={!canEdit} placeholder="Street" value={str(address, "street")} onChange={setField(setAddress, "street")} data-testid="pf-address-street" />
                 <Input disabled={!canEdit} placeholder="City" value={str(address, "city")} onChange={setField(setAddress, "city")} data-testid="pf-address-city" />
                 <Input disabled={!canEdit} placeholder="State / Province" value={str(address, "stateProvince")} onChange={setField(setAddress, "stateProvince")} data-testid="pf-address-state" />
-                <Input disabled={!canEdit} placeholder="Country code (e.g. US)" value={str(address, "countryCode")} onChange={setField(setAddress, "countryCode")} data-testid="pf-address-country" />
+                <Input list={COUNTRY_LIST_ADDRESS} aria-invalid={!addressCountryOk} disabled={!canEdit} placeholder="Country code (e.g. US)" value={str(address, "countryCode")} onChange={setField(setAddress, "countryCode")} data-testid="pf-address-country" />
+                <CountryOptions id={COUNTRY_LIST_ADDRESS} />
+                {!addressCountryOk && (
+                  <p className="text-xs text-[var(--cv-color-danger)]" role="alert" data-testid="pf-address-country-error">
+                    <span aria-hidden="true">⚠ </span>
+                    Country: “{str(address, "countryCode")}” is not a country we recognise. {COUNTRY_HELP}
+                  </p>
+                )}
                 <Input disabled={!canEdit} placeholder="Postal code / Zip" value={str(address, "postalCode")} onChange={setField(setAddress, "postalCode")} data-testid="pf-address-postal" />
               </>
             )}
             {step === 3 && (
               <>
                 <Input disabled={!canEdit} placeholder="Legal entity name" value={str(legal, "legalEntityName")} onChange={setField(setLegal, "legalEntityName")} data-testid="pf-legal-name" />
-                <Input disabled={!canEdit} placeholder="Country of incorporation code" value={str(legal, "countryOfIncorporationCode")} onChange={setField(setLegal, "countryOfIncorporationCode")} data-testid="pf-legal-country" />
+                <Input list={COUNTRY_LIST_LEGAL} aria-invalid={!legalCountryOk} disabled={!canEdit} placeholder="Country of incorporation code" value={str(legal, "countryOfIncorporationCode")} onChange={setField(setLegal, "countryOfIncorporationCode")} data-testid="pf-legal-country" />
+                <CountryOptions id={COUNTRY_LIST_LEGAL} />
+                {!legalCountryOk && (
+                  <p className="text-xs text-[var(--cv-color-danger)]" role="alert" data-testid="pf-legal-country-error">
+                    <span aria-hidden="true">⚠ </span>
+                    Country of incorporation: “{str(legal, "countryOfIncorporationCode")}” is not a country we recognise. {COUNTRY_HELP}
+                  </p>
+                )}
                 <Input disabled={!canEdit} placeholder="Type of entity" value={str(legal, "entityType")} onChange={setField(setLegal, "entityType")} data-testid="pf-legal-entity" />
                 <Textarea disabled={!canEdit} placeholder="Registered office address" rows={2} value={str(legal, "registeredOfficeAddress")} onChange={setField(setLegal, "registeredOfficeAddress")} data-testid="pf-legal-office" />
               </>
@@ -245,7 +322,7 @@ export function PartnerPortfolioProfileDialog({
           {canEdit && (
             <Button
               data-testid="portfolio-save"
-              disabled={saveMut.isPending || profileQ.isLoading}
+              disabled={saveMut.isPending || profileQ.isLoading || !countryFieldsOk}
               onClick={() => saveMut.mutate()}
             >
               {saveMut.isPending ? "Saving…" : "Save profile"}

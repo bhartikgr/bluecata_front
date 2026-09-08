@@ -72,7 +72,13 @@ function money(minor: number | null | undefined, currency: string): string {
      unknown-money wording, imported so a future rename cannot leave this panel
      behind. The guard itself is unchanged, so a genuine 0 still formats. */
   if (minor == null || !Number.isFinite(Number(minor))) return MONEY_UNAVAILABLE;
-  return formatMinor(Number(minor), currency, { locale: "en-US" });
+  /* W6c · D1 — the second of the two money chokepoints behind the sixteen SPV
+     tabs (the first is `fmt()` in SpvDetailTabs.tsx), changed identically so a
+     figure cannot name its currency on one panel and stay silent on another.
+     `currencyDisplay: "code"` renders `USD 100,000.00` / `CAD 100,000.00`.
+     No conversion; no cross-currency arithmetic; the vehicle's own currency is
+     the only currency this panel has ever had in scope. */
+  return formatMinor(Number(minor), currency, { locale: "en-US", currencyDisplay: "code" });
 }
 
 /* WAVE 127 · FINDING 2 — STRICT MINOR-UNIT PARSE FOR A TYPED AMOUNT: RETIRED BY
@@ -636,6 +642,44 @@ export function useSpvCapitalAccounts(
   return { rows, source: "endpoint", isLoading: q.isLoading };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   W6c · D3 — PLAIN LABELS FOR THE AUTHORITATIVE CLOSE STATEMENT.
+   ══════════════════════════════════════════════════════════════════════════════
+   The six field names come from the server's close-summary payload; the shape is
+   declared in SpvDetailTabs.tsx (`confirmedCount`, `confirmedMinor`,
+   `targetMinor`, `underTarget`, `shortfallMinor`, `suggestedTargetMinor`).
+   These are DISPLAY labels only — no key is renamed, dropped or reordered, and
+   an unlisted key renders as itself so a newly added server field can never go
+   invisible on a statement that calls itself authoritative.
+
+   "Minor" is the word that was never defined anywhere on this surface: it means
+   the currency's smallest unit (cents for USD). The panel already formats every
+   `…Minor` value through `money()`, so the reader sees a currency amount and
+   never the raw integer — which is exactly why the raw key was so confusing
+   sitting beside it. The legend states this once, below the rows, and D1 puts
+   the currency code on the figures themselves.
+   ══════════════════════════════════════════════════════════════════════════════ */
+export const CLOSE_SUMMARY_FIELD_LABELS: Record<string, string> = {
+  confirmedCount: "Investors confirmed as funded",
+  confirmedMinor: "Amount confirmed as funded",
+  targetMinor: "Target raise",
+  underTarget: "Below the target raise?",
+  shortfallMinor: "Amount still short of the target",
+  suggestedTargetMinor: "Suggested revised target",
+};
+
+/** A stored field name, in words, or the field name itself if unrecognised. */
+export function closeSummaryFieldLabel(key: string): string {
+  return CLOSE_SUMMARY_FIELD_LABELS[key] ?? key;
+}
+
+export const CLOSE_SUMMARY_LEGEND =
+  "Amounts above are shown in this vehicle's own currency, which is named beside " +
+  "each figure. Being below the target raise does not stop a close — you can close " +
+  "and deploy the confirmed amount, or revise the target. Capavate reports what has " +
+  "been recorded and confirmed here; it does not independently verify that the money " +
+  "has moved.";
+
 /* ── ORP-030 (c) — authoritative close summary ───────────────────────────── */
 export function SpvCloseSummaryPanel({ spvId, currency }: { spvId: string; currency: string }) {
   const q = useQuery<{ summary?: Record<string, unknown> } & Record<string, unknown>>({
@@ -655,11 +699,31 @@ export function SpvCloseSummaryPanel({ spvId, currency }: { spvId: string; curre
       <div className="text-xs">
         {entries.map(([k, v]) => (
           <div key={k} className="grid grid-cols-2 gap-2 py-0.5" data-testid={`spv-close-summary-${k}`}>
-            <div className="text-[var(--cv-color-text-faint)]">{k}</div>
-            <div className="font-mono">{typeof v === "number" && /Minor$/.test(k) ? money(v, currency) : String(v ?? "—")}</div>
+            {/* W6c · D3 — THIS BLOCK IS TITLED "AUTHORITATIVE", SO IT IS THE ONE A
+                GP SCREENSHOTS FOR A LAWYER. It was printing the server's own
+                field names (`confirmedMinor`, `underTarget`, `shortfallMinor`)
+                and a bare `true`. Both are now translated for display ONLY —
+                the key still drives the testid and the money detection below, so
+                nothing about WHICH value is shown, or how it is formatted, has
+                changed. An unknown key falls through to itself rather than being
+                hidden: a field this panel does not recognise must still appear
+                on a statement that calls itself authoritative. */}
+            <div className="text-[var(--cv-color-text-faint)]">{closeSummaryFieldLabel(k)}</div>
+            <div className="font-mono">
+              {typeof v === "number" && /Minor$/.test(k)
+                ? money(v, currency)
+                : typeof v === "boolean"
+                  ? (v ? "Yes" : "No")
+                  : String(v ?? "—")}
+            </div>
           </div>
         ))}
       </div>
+      {entries.length > 0 && (
+        <div className="mt-2 text-[10px] leading-snug text-[var(--cv-color-text-muted)]" data-testid="spv-close-summary-legend">
+          {CLOSE_SUMMARY_LEGEND}
+        </div>
+      )}
     </PanelFrame>
   );
 }
@@ -767,7 +831,10 @@ export function SpvEligibilityPanel({ spvId, canWrite }: { spvId: string; canWri
             id={`elig-${spvId}`}
             value={companyId}
             onChange={(e) => setCompanyId(e.target.value)}
-            placeholder="co_…"
+            /* W6c · D7 — the placeholder was the raw storage prefix `co_…`,
+               which tells a GP nothing about what to type. It now names the
+               thing being asked for. */
+            placeholder="Company ID (for example co_9f2a…)"
             data-testid="spv-eligibility-company-input"
           />
         </div>

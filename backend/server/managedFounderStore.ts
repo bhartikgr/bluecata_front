@@ -910,7 +910,19 @@ export const managedFounderStore = {
         carryBasis: data.carryBasis,
         spvType: data.spvType,
         targetRaiseMinor: data.targetRaiseMinor ?? null,
-        currency: data.currency ?? "USD",
+        /* ══ WAVE 306 · WAVE 2 — was `data.currency ?? "USD"`. ════════════════
+           A SECOND default sat here, on the on-behalf door, so even after the
+           sink stopped defaulting THIS caller would have kept substituting US
+           dollars — a partner creating a vehicle FOR a founder, with no
+           denomination stated, would have had one invented for them and made
+           permanent. The value is now passed through untouched and
+           `resolveSpvCurrencyOrThrow` in the sink decides: a real code is
+           accepted, anything else is refused before a row exists.
+
+           NOT a second rule: nothing is validated here. There is exactly one
+           vocabulary check, in the sink both this door and the HTTP route
+           reach. */
+        currency: data.currency,
         targetCompanyId: data.companyId,
         terms: data.terms ?? null,
       },

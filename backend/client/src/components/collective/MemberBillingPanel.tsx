@@ -35,6 +35,7 @@
  * NOT CLAIMED: nothing here charges anything. The quote endpoint is quote-only by
  * construction (`quoteOnly: true`, `note` at `:167`) and the copy says so.
  */
+import { OverdueCue, VoidCue } from "@/components/RedStateCue";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -163,6 +164,22 @@ function quoteErrorCopy(error: unknown): string {
   return QUOTE_ERROR_COPY.tier_unavailable;
 }
 
+/* WAVE 342 · ITEM 3 · W291 — THE NON-COLOUR CUE FOR THE RED BADGES.
+   `overdue` and `void` are BOTH painted with the destructive variant by
+   `statusVariant` below, and they mean opposite things: one is money still owed
+   and late, the other is a charge that was cancelled and is NOT owed. A reader
+   who does not perceive the colour got nothing from it, and a reader who does
+   perceive it got the SAME red for both. Each now carries its own glyph and its
+   own screen-reader word, in front of the status word the badge already shows.
+   NO VARIANT AND NO CLASS IS CHANGED — the colour question is not settled here,
+   because `statusVariant` is shared and re-colouring it is a restyle. What is
+   settled is that the two states are now distinguishable without colour. */
+function redBadgeCue(status: string) {
+  if (status === "overdue") return <OverdueCue testId={`badge-cue-overdue`} />;
+  if (status === "void") return <VoidCue testId={`badge-cue-void`} />;
+  return null;
+}
+
 function statusVariant(status: string): "positive" | "secondary" | "destructive" | "outline" {
   /* WAVE 101 - `paid` returned "default", which is the brand red: a settled
      charge was painted the same colour as `overdue`/`void` below.  Colour
@@ -287,7 +304,7 @@ export function MemberBillingPanel() {
                     </span>
                   </span>
                   <span className="flex items-center gap-2">
-                    <Badge variant={statusVariant(e.status)}>{e.status}</Badge>
+                    <Badge variant={statusVariant(e.status)}>{redBadgeCue(e.status)}{e.status}</Badge>
                     <span className="font-medium">{formatMinor(e.amountMinor, e.currency)}</span>
                   </span>
                 </li>
@@ -333,7 +350,7 @@ export function MemberBillingPanel() {
                     </span>
                   </span>
                   <span className="flex items-center gap-2">
-                    <Badge variant={statusVariant(inv.status)}>{inv.status}</Badge>
+                    <Badge variant={statusVariant(inv.status)}>{redBadgeCue(inv.status)}{inv.status}</Badge>
                     <span className="font-medium">{formatMinor(inv.totalMinor, inv.currency)}</span>
                   </span>
                 </li>

@@ -57,10 +57,16 @@ const fields: Array<keyof CompanyProfile> = [
   "name", "legalName", "sector", "hqCountry", "hqCity", "entityType", "description",
 ];
 
-const TIPS: { icon: typeof Sparkles; title: string; body: string }[] = [
+export const TIPS: { icon: typeof Sparkles; title: string; body: string }[] = [
   { icon: Sparkles, title: "Dual-engine math gate",   body: "Every cap-table commit is independently verified by two engines — your totals always reconcile." },
   { icon: Briefcase, title: "Soft-circle first",       body: "Investors can soft-circle before legal — fewer surprises at the close." },
-  { icon: FileText, title: "Watermarked previews",     body: "Dataroom files are watermarked per-viewer. No raw downloads unless you explicitly allow them." },
+  /* ITEM 7 — THE MOST IMPORTANT OF THE THREE CORRECTIONS, because this is a
+     marketing claim on an onboarding screen and it is the sentence a paying
+     client will quote back. Both halves were untrue in this tree: the mark is
+     not per-viewer (it carries no viewer identity — only fixed text and
+     today's date), and downloads serve the original bytes. Replaced with a
+     capability the product genuinely has. */
+  { icon: FileText, title: "Dataroom access control",  body: "Grant dataroom access per investor, and every view, download and permission change is written to an audit trail." },
   { icon: Users,    title: "Cap-table communication",  body: "Open a thread to your entire cap table from the dashboard — one click." },
 ];
 

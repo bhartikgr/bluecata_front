@@ -92,6 +92,26 @@ export function emitSync<T>(opts: {
   req?: Request;
   tenantId?: string;
   actorUserId?: string;
+  /**
+   * WAVE 342 · W295 defect 1 — the name the FORENSIC record should use, when
+   * that differs from the KPI firehose's event type.
+   *
+   * `paymentStore.chargeOrIdempotent()` emits one telemetry type,
+   * `payment_charged`, for every payment kind it handles — including
+   * `kind: "refund"`. The audit action was derived from that type, so a refund
+   * was filed in the tamper-evident ledger under `telemetry.payment_charged`:
+   * money going out, recorded under a name that says money came in. All four
+   * historical money rows in `data.db` show it.
+   *
+   * `payment_charged` is ALSO a published peer-contract type
+   * (`bridgeStore.ALL_OUTBOUND_EVENT_TYPES`), pinned by count in seven test
+   * files. Renaming it is a peer-contract change and an owner-scale decision,
+   * so it is NOT made here. This parameter separates the two concerns: the
+   * firehose and the peer keep the declared type, and the audit row gets the
+   * true name of the event. See the honest limitation recorded in
+   * build_log/productgaps3/PROGRESS_NOTES.md.
+   */
+  auditEventType?: string;
 }): SyncEnvelope<T> {
   const env: SyncEnvelope<T> = {
     eventId: `evt_${randomBytes(8).toString("hex")}`,
@@ -149,7 +169,10 @@ export function emitSync<T>(opts: {
     appendAdminAudit(
       env.actor.userId,
       `${env.aggregateKind}:${env.aggregateId}`,
-      `telemetry.${env.eventType}`,
+      /* WAVE 342 · W295 defect 1 — the audit action names the event that
+         actually happened. Defaults to the telemetry type, so every one of the
+         other emitSync call sites is byte-identical in behaviour. */
+      `telemetry.${opts.auditEventType ?? env.eventType}`,
       { eventId: env.eventId, payload: env.payload },
       env.tenantId,
     );

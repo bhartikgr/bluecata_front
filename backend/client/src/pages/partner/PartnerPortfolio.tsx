@@ -16,6 +16,7 @@
 import { useMemo, useState } from "react";
 /* WAVE 115 · FINDING 1 sweep — a row must not be identified by a raw storage key. */
 import { partyReferenceLabel } from "@/lib/partnerDisplay";
+import { displayName } from "@shared/investorDisplayLabels"; /* ITEM 9 */
 import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { PartnerSurfaceGuide } from "@/components/partner/PartnerSurfaceGuide"; /* WAVE C · ITEM 10a */
@@ -103,8 +104,20 @@ export default function PartnerPortfolio() {
           <table className="w-full text-sm" data-testid="portfolio-table">
             <thead className="bg-[var(--cv-color-surface-2)]">
               <tr>
+                {/* ITEM 9 — the column header said "Company ID", which reads as
+                    a fact about the company rather than as an internal
+                    reference. The VALUE was already routed through
+                    `partyReferenceLabel`, so only the header was left. Renamed
+                    to "Internal ID": this is a PARTNER OPERATIONS screen and an
+                    operator may legitimately need to quote the reference, so
+                    the column is KEPT rather than removed.
+
+                    STOP AND REPORT: whether the column should exist at all is a
+                    product decision for the owner, not an engineering one. It
+                    is recorded in the owner report and has NOT been decided
+                    here. */}
                 <th className="text-left p-3">Company</th>
-                <th className="text-left p-3">Company ID</th>
+                <th className="text-left p-3">Internal ID</th>
                 <th className="text-left p-3">Last updated</th>
                 <th className="text-right p-3">Profile</th>
               </tr>
@@ -117,7 +130,17 @@ export default function PartnerPortfolio() {
               )}
               {filtered.map((r) => (
                 <tr key={r.companyId} className="border-t" data-testid={`portfolio-row-${r.companyId}`}>
-                  <td className="p-3 font-medium">{r.companyName ?? r.companyId}</td>
+                  {/* ITEM 9 — `?? r.companyId` printed `co_d294747574f5` IN THE
+                      NAME SLOT. An id is not a name: it tells the reader
+                      nothing and leaks the schema. `displayName` describes what
+                      the row IS when there is no name, and returns no part of
+                      the id. NOTHING BECOMES UNREACHABLE: the id is still on
+                      this row, in its own labelled column beside this one, and
+                      is also on the `title` here for anyone who was using the
+                      name cell to read it. */}
+                  <td className="p-3 font-medium" title={partyReferenceLabel(r.companyId)}>
+                    {displayName(r.companyName, "company", r.companyId)}
+                  </td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">{partyReferenceLabel(r.companyId)}</td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">
                     {r.updatedAt ? new Date(r.updatedAt).toLocaleDateString() : "—"}

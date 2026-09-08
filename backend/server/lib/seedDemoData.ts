@@ -709,6 +709,24 @@ export async function seedDemoData(db: Db): Promise<{
     status: "forming" | "fundraising" | "active" | "wound_down";
     targetMinor: number;
     gpUserId: string | null;
+    /* ══ WAVE 306 · WAVE 1 — THE FOURTH DOOR: IT SENT NOTHING AT ALL. ════════
+       This seed reached `spvEngineStore.createSpv` with NO `currency` key, so
+       the old `data.currency ?? "USD"` chose one for it. MEASURED in the dev
+       database, not inferred: every row of "Keiretsu Canada NovaPay SPV 2026"
+       carries `jurisdiction = canadian_lp` and
+       `terms_json.legacyTerms.currency = "CAD"` — and `currency = USD`.
+       The platform silently mis-denominated its own Canadian demo vehicle,
+       which is the whole defect this wave closes, visible in a stored row.
+
+       So the denomination is now a FIRST-CLASS, REQUIRED field of the seed
+       rather than a fact buried in free-text `terms`. It is REQUIRED (not
+       optional with a default) precisely so a future seed entry cannot go back
+       to saying nothing and being handed US dollars.
+
+       NO EXISTING ROW IS TOUCHED (R195.5). The six already-seeded USD rows are
+       left exactly as they are; this governs NEW writes only, and the seed
+       skips names it has already created. */
+    currency: string;
     terms: Record<string, unknown>;
   }> = [
     {
@@ -721,6 +739,11 @@ export async function seedDemoData(db: Db): Promise<{
       // $250,000 CAD target (cents): 250_000 * 100
       targetMinor: 25_000_000,
       gpUserId: "u_aisha_patel",
+      /* CAD, stated explicitly — the same value `terms.currency` below has
+         always carried, and the same one the `targetMinor` comment above
+         describes ("$250,000 CAD"). Nothing is converted; the figure is
+         unchanged and is simply no longer recorded in the wrong unit. */
+      currency: "CAD",
       terms: {
         currency: "CAD",
         managementFeeBps: 200,    // 2.00%
@@ -770,6 +793,9 @@ export async function seedDemoData(db: Db): Promise<{
           spvType: engineSpvType,
           status: engineStatus,
           targetRaiseMinor: seed.targetMinor,
+          /* WAVE 306 · WAVE 1 — the seed now STATES its denomination. See the
+             note on the `currency` field of DEMO_SPV_SEED above. */
+          currency: seed.currency,
           targetCompanyId: seed.leadCompanyId ?? null,
           gpUserId: seed.gpUserId ?? null,
           // Preserve the original free text at the TOP level of terms as well as

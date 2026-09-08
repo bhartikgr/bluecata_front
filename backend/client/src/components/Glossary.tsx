@@ -29,7 +29,11 @@ export type GlossaryEntry = {
  | "Investor Rights"
  | "Regulatory"
  | "ESOP & Vesting"
- | "Cap Table Views";
+ | "Cap Table Views"
+ /* ITEM 6 — the investor dashboard shows MOIC, IRR, TVPI and DPI and the
+    glossary defined none of them. None of the six existing categories fits a
+    return ratio, so a seventh is added rather than misfiling them. */
+ | "Performance & Returns";
  definition: string;
  technicalDefinition?: string;
  example?: string;
@@ -210,6 +214,36 @@ export const ENTRIES: GlossaryEntry[] = [
  definition: "Counts all issued shares PLUS options reserved (granted + ungranted pool) PLUS warrants outstanding. Excludes SAFEs/notes which haven't yet converted." },
  { term: "As Converted", category: "Cap Table Views",
  definition: "Fully Diluted PLUS SAFEs and Notes converted to Common at their effective conversion price. The most permissive view — used when modelling 'what if everything turned into common today'." },
+
+ // ── Performance & Returns ──────────────────────────────────────────────────
+ // ITEM 6. ADDITIVE ONLY: five records appended, nothing above is edited.
+ // Each definition states the platform's real behaviour, including where a
+ // figure is REFUSED rather than approximated, because a glossary that implies
+ // these ratios are always computable would contradict the tiles beside it.
+ { term: "MOIC", alt: ["Multiple on Invested Capital"], category: "Performance & Returns",
+  definition: "Multiple on Invested Capital. Total value — what has been returned to you plus what your remaining holdings are currently valued at — divided by the capital you invested. A gross multiple: it ignores how long the money was at work, so a 2x over one year and a 2x over ten years look identical.",
+  technicalDefinition: "(realised proceeds + unrealised value) ÷ invested capital. Capavate never converts between currencies and never sums across them, so a MOIC is only produced where every amount involved is in ONE currency. On a mixed-currency portfolio the total is refused rather than estimated.",
+  example: "You invested 100,000. You have received 40,000 back and your remaining stake is currently valued at 180,000. MOIC = (40,000 + 180,000) ÷ 100,000 = 2.2x." },
+
+ { term: "IRR", alt: ["Internal Rate of Return"], category: "Performance & Returns",
+  definition: "Internal Rate of Return. The annualised rate at which your dated cash flows net to zero — the time-weighted counterpart to MOIC. Unlike MOIC it does account for WHEN money went out and came back.",
+  technicalDefinition: "IRR needs dated cash flows, which a position payload does not carry. It is suppressed rather than approximated. Capavate computes XIRR on an ACT/365F day count at PORTFOLIO level; there is no canonical producer of a per-company IRR, so a single holding will not show one.",
+  example: "Two positions can both show a 2.0x MOIC while their IRRs differ sharply, because one doubled in eighteen months and the other took nine years." },
+
+ { term: "TVPI", alt: ["Total Value to Paid-In"], category: "Performance & Returns",
+  definition: "Total Value to Paid-In. Everything the investment is worth — distributions already received plus the residual value still held — divided by the capital actually paid in. It answers 'what is this worth in total, per unit of cash I have actually put in?'",
+  technicalDefinition: "(distributions + residual value) ÷ paid-in capital (PIC). Because it is a sum, it is only produced within a single currency; Capavate refuses a total across currencies rather than converting.",
+  example: "Paid in 500,000; distributions to date 150,000; remaining holdings valued at 600,000. TVPI = 750,000 ÷ 500,000 = 1.5x." },
+
+ { term: "DPI", alt: ["Distributions to Paid-In", "Realisation multiple"], category: "Performance & Returns",
+  definition: "Distributions to Paid-In. Cash actually returned to you, divided by the capital actually paid in. It counts only money you have really received — nothing that is still on paper.",
+  technicalDefinition: "distributions ÷ paid-in capital (PIC). Where no distribution has been recorded, Capavate shows an UNDEFINED DPI, not a DPI of zero: an unrecorded distribution history and a genuine zero return are different facts, and the platform will not present one as the other.",
+  example: "Paid in 500,000 and received 150,000 back: DPI = 0.3x. Nothing distributed yet and no distribution record on file: DPI is undefined, not 0." },
+
+ { term: "PIC", alt: ["Paid-In Capital"], category: "Performance & Returns",
+  definition: "Paid-In Capital. The capital that has actually been called and paid — the denominator of both TVPI and DPI. It is NOT the same as your commitment: a commitment is what you have agreed to fund, while paid-in is what has genuinely left your account.",
+  technicalDefinition: "Committed capital that has been drawn down and settled. Capavate keeps committed and paid-in as separate records, so a ratio computed against paid-in will not silently use a commitment that has not been funded.",
+  example: "You commit 1,000,000 to a vehicle and 400,000 has been called and wired. PIC = 400,000; your commitment is still 1,000,000." },
 ];
 
 export const CATEGORY_ORDER = [
@@ -219,6 +253,11 @@ export const CATEGORY_ORDER = [
  "Regulatory",
  "ESOP & Vesting",
  "Cap Table Views",
+ /* ITEM 6 — APPENDED, so no existing section moves. `:296` filters
+    `CATEGORY_ORDER.filter((c) => grouped.has(c))`, which means a category
+    string that does not match the entries EXACTLY makes the whole section
+    vanish silently. The test beside this file asserts the section RENDERS. */
+ "Performance & Returns",
 ] as const;
 
 export const CATEGORY_COLORS: Record<string, string> = {
@@ -228,6 +267,11 @@ export const CATEGORY_COLORS: Record<string, string> = {
  "Regulatory": "bg-blue-100 text-blue-800 border-blue-300/40",
  "ESOP & Vesting": "bg-emerald-100 text-emerald-800 border-emerald-300/40",
  "Cap Table Views": "bg-violet-100 text-violet-800 border-violet-300/40",
+ /* ITEM 6 — MANDATORY AND NOT COMPILER-CHECKED. This map is declared
+    `Record<string, string>`, not `Record<GlossaryEntry["category"], string>`,
+    so omitting this line would compile silently and render an unstyled badge
+    with `undefined` in its class list. The test asserts the badge class. */
+ "Performance & Returns": "bg-sky-100 text-sky-800 border-sky-300/40",
 };
 
 export function GlossaryDialog({ trigger }: { trigger: React.ReactNode }) {

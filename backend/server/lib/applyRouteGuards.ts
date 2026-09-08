@@ -35,6 +35,19 @@ const PUBLIC_API_EXACT_PATHS = new Set<string>([
   // server/publicPricingRoutes.ts) and intentionally available before sign-in;
   // without this bypass the global default-deny guard returns 401.
   "/api/pricing-public",
+  /* WAVE 344 · ITEM 3 — the marketing-consent REQUEST TEXT, read-only.
+
+     The consent box must appear on the signup form, where nobody is signed in
+     yet, so the wording has to be readable without a session. This is an EXACT
+     path and it is a GET-only handler that returns the public text of the request
+     (purposes, who is asking, the postal address, the withdrawal statement) and
+     no personal state whatsoever — there is no user in scope in that handler.
+
+     The WRITE path, POST /api/consent/marketing, is deliberately a DIFFERENT path
+     and is NOT listed here, because this allowlist matches on path and not on
+     method: listing the write path's own path would have let anybody record a
+     consent decision for anybody. */
+  "/api/consent/marketing-request",
 ]);
 
 const PUBLIC_API_PREFIXES = [

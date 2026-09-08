@@ -130,6 +130,7 @@ async function createSpv(name: string): Promise<string> {
   const r = await post("/api/partner/me/spv", {
     name,
     jurisdiction: "delaware",
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     carryBasis: "whole_spv",
     status: "open",
     signoffLegalName: "Avi Managing",

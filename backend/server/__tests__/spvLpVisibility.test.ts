@@ -57,6 +57,7 @@ function get(p: string, user: string) {
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", minCheckMinor: 1000,
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
   });
   expect(r.status).toBe(201);
@@ -160,6 +161,7 @@ describe("SPV LP-visibility — founder NEVER sees roster; GP sees full", () => 
   it("invalid lp_visibility on create → 400 INVALID_LP_VISIBILITY", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Bad Vis SPV", jurisdiction: "delaware", carryBasis: "whole_spv", lpVisibility: "everyone",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
@@ -172,6 +174,7 @@ describe("SPV LP-visibility — founder NEVER sees roster; GP sees full", () => 
   it("WAVE 173: creating an SPV without a typed legal name is still REFUSED", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Unattested SPV", jurisdiction: "delaware", carryBasis: "whole_spv",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("SIGNOFF_LEGAL_NAME_REQUIRED");
@@ -180,6 +183,7 @@ describe("SPV LP-visibility — founder NEVER sees roster; GP sees full", () => 
   it("WAVE 173: a typed name without acceptance is still REFUSED", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Unaccepted SPV", jurisdiction: "delaware", carryBasis: "whole_spv",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       signoffLegalName: "Avi Managing", signoffAccepted: false,
     });
     expect(r.status).toBe(400);

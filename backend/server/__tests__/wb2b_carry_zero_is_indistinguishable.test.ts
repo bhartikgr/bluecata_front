@@ -27,6 +27,17 @@
  *
  * NOTHING HERE ASSERTS THE SCHEMA SHOULD CHANGE. The `NOT NULL DEFAULT 0`
  * default is deliberately left alone and referred to the owner.
+ *
+ * ── WAVE 340 · ITEM 2 — THE OWNER ANSWERED. ──────────────────────────────────
+ * On 2026-09-06 the owner ruled that the default must become NULL, not zero.
+ * Migration 0233 adds the nullable companion `carry_bps_recorded`. EVERY
+ * ASSERTION IN THIS FILE STILL HOLDS, unchanged, because `carry_bps` keeps its
+ * declaration and keeps receiving exactly the value it used to receive — that is
+ * what makes the change additive. What is no longer true is the CONCLUSION drawn
+ * from CLAIM 2: the two cases are still indistinguishable IN THIS COLUMN, but
+ * they are now distinguishable in the row, via the new column. That is asserted
+ * in server/__tests__/w340_angel_chapter_carry_not_set.test.ts §3b, which reads
+ * BOTH columns on the same two rows this file creates.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { applyMfcrmSchema } from "../lib/mfcrmSchema";
@@ -129,7 +140,17 @@ describe("WB·2b — a defaulted carry of zero, read back out of the database", 
     expect(rows.length).toBeGreaterThan(0);
     const keys = Object.keys(rows[0]).sort();
     /* If a timestamp is ever added here, this fails and the ambiguity note on the
-       screen should be revisited — deliberately, not by accident. */
-    expect(keys).toEqual(["activeCount", "carryBps", "chapterId", "engagementCount", "name", "region"]);
+       screen should be revisited — deliberately, not by accident.
+
+       WAVE 340 · ITEM 2 — THIS TRIPWIRE FIRED, AND IT IS BEING ANSWERED, NOT
+       SILENCED. `carryBpsRecorded` was added to the projection because the owner
+       ruled on 2026-09-06 that a carry nobody agreed must store NULL rather than
+       0. It is NOT a timestamp and it is NOT a proxy: it is the actual recorded
+       value, NULL when no rate was recorded, and it is what lets the screen show a
+       deliberate 0% as 0.00% while a blank reads "Not set". The projection still
+       carries NO timestamp, which is what this control exists to police, and that
+       half of the assertion is unchanged. */
+    expect(keys).toEqual(["activeCount", "carryBps", "carryBpsRecorded", "chapterId", "engagementCount", "name", "region"]);
+    expect(keys.some((k) => /_at$|At$|time|Time/.test(k))).toBe(false);
   });
 });

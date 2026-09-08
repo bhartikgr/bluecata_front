@@ -76,6 +76,7 @@ const createOnBehalf = () =>
       engagementId,
       name: "K7 On-Behalf SPV",
       jurisdiction: "delaware",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       carryBasis: "whole_spv",
     });
 

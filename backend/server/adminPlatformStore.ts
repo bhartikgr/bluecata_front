@@ -1582,6 +1582,24 @@ export function reAnchorRefusalMessage(r: AuditChainReAnchorResult): string {
 }
 
 
+/**
+ * WAVE 342 · W295 defect 2 — the subject id for the indexed `target_id` column.
+ *
+ * Audit entities are written as a packed `kind:id` string (`investor:cust_7`,
+ * `spv:spv_3`). The indexed column wants the id, not the packed pair. An entity
+ * with no colon is stored whole; an entity whose id half is empty falls back to
+ * the whole string rather than writing `""`, because an empty string is not a
+ * subject and would defeat the `target_id = ?` filter just as a NULL did.
+ */
+export function auditTargetIdOf(entity: string): string | null {
+  const raw = (entity ?? "").trim();
+  if (raw.length === 0) return null;
+  const colon = raw.indexOf(":");
+  if (colon < 0) return raw;
+  const id = raw.slice(colon + 1).trim();
+  return id.length > 0 ? id : raw;
+}
+
 function appendAudit(
   actor: string,
   entity: string,
@@ -1656,8 +1674,26 @@ function appendAudit(
           tenantId,
           actorId: actor,
           action: eventType,
-          target: entity, // packed entity is acceptable per audit §3.8 (no target_id column).
-          targetId: null,
+          target: entity, // packed entity is acceptable per audit §3.8.
+          /* WAVE 342 · W295 defect 2 — `targetId` was hard-coded `null` on
+             EVERY audit row, with a comment claiming there is "no target_id
+             column". There is: `shared/schema.ts:514` declares it and TWO read
+             paths already depend on it —
+               · server/lib/adminUsersRoutes.ts:359 filters
+                 `target_id = ? OR target = ? OR target LIKE ?`, so the exact
+                 match arm could never fire; and
+               · server/collectiveWaveAStore.ts:219 computes activeDeals as
+                 `COUNT(DISTINCT target_id) … WHERE action LIKE 'round.%'`,
+                 which was therefore structurally 0 — a fabricated zero.
+             `entity` is a packed `kind:id` string. The id half is what belongs
+             in the indexed column; an unpacked entity is stored whole.
+             FIX FORWARD ONLY: historical rows keep their NULL. Nothing is
+             rewritten and no destructive SQL is issued.
+             THE HASH IS UNAFFECTED: `auditHashBody()` (above) signs
+             version/prevHash/id/eventType/entity/ts/payloadStr/actorId. It does
+             not include target_id, so every pre-existing chain hash still
+             verifies byte-identically. */
+          targetId: auditTargetIdOf(entity),
           payloadJson: payloadStr,
           prevHash,
           hash,

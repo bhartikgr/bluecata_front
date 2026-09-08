@@ -111,10 +111,26 @@ export const MONEY_NOT_ON_RECORD = "Not on record";
  * of fraction digits for the currency's ISO 4217 exponent (NOT a hardcoded
  * `/100`). Falls back to a plain `CODE 1.23` string if Intl throws on an
  * unknown currency. */
+/* ══════════════════════════════════════════════════════════════════════════════
+   W6c · D1 — NAMING THE CURRENCY, WITHOUT CHANGING ANY EXISTING SURFACE.
+   ══════════════════════════════════════════════════════════════════════════════
+   QA read `$0.00 / $100,000.00` on a Canadian-registered vehicle's SPV tabs and
+   could not tell which currency it was. MEASURED, not assumed: Intl under
+   `en-US` spells CAD as `CA$`, so a BARE `$` proves the vehicle's `currency`
+   column is USD, not CAD (Wave 127 already pinned the CAD case as `CA$`). The
+   figure was therefore not mis-formatted — it was simply never NAMED, and a
+   reader in Canada reasonably read `$` as Canadian dollars.
+
+   `currencyDisplay` is ADDITIVE and defaults to `undefined`, which is Intl's
+   own default (`"symbol"`). Every existing caller is byte-for-byte unchanged;
+   only a caller that explicitly asks for `"code"` sees `USD 100,000.00`.
+   Nothing here converts and nothing here sums — this function has only ever
+   formatted a single amount in a single stated currency.
+   ══════════════════════════════════════════════════════════════════════════════ */
 export function formatMinor(
   minor: number,
   currency: string,
-  opts: { locale?: string } = {},
+  opts: { locale?: string; currencyDisplay?: "symbol" | "code" | "name" | "narrowSymbol" } = {},
 ): string {
   // v25.38 round-2 (per GPT-5.5): default `locale` to `undefined` (caller's
   // runtime locale via Intl) so this drop-in replacement preserves prior
@@ -154,12 +170,29 @@ export function formatMinor(
   const major = asNumber / Math.pow(10, exp);
   const locale = opts.locale; // undefined => runtime default (matches legacy)
   try {
-    return new Intl.NumberFormat(locale, {
+    /* W6c · D1 — THE INVISIBLE CHARACTER Intl PUTS IN A `code` RENDERING.
+
+       MEASURED, not assumed: with `currencyDisplay: "code"` Intl separates the
+       code from the digits with U+00A0 NO-BREAK SPACE, not U+0020. The code
+       points are `55 53 44 a0 31 …`. On screen the two are indistinguishable,
+       so a figure looks right, reads right, and then compares UNEQUAL to the
+       same string typed by a human — in a test, in a spreadsheet cell, in a
+       search box, in an email a GP pastes it into. That is a defect that hides
+       itself, and this platform has been bitten by that class before.
+
+       It is normalised to an ordinary space ONLY on the `code` path, so no
+       existing symbol-rendered figure anywhere in the tree is touched. The
+       trade is a permitted line break between the code and the amount, which
+       is worth far less than a money string that can be compared and pasted. */
+    const out = new Intl.NumberFormat(locale, {
       style: "currency",
       currency,
+      /* Absent => Intl's own default ("symbol"), i.e. the legacy rendering. */
+      ...(opts.currencyDisplay ? { currencyDisplay: opts.currencyDisplay } : {}),
       minimumFractionDigits: exp,
       maximumFractionDigits: exp,
     }).format(major);
+    return opts.currencyDisplay === "code" ? out.replace(/\u00A0/g, " ") : out;
   } catch {
     return `${currency} ${major.toFixed(exp)}`;
   }

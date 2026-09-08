@@ -27,6 +27,10 @@ import { useToast } from "@/hooks/use-toast";
 import { formatMinor } from "@/lib/currency";
 import PartnerCsvDownloadButton from "@/components/partner/PartnerCsvDownloadButton"; /* WAVE 179 · ITEM C · R151.2 */
 import { describeFailure } from "@/lib/failureMessage";
+/* WAVE 339 · W332 — the shared contact vocabulary. Imported from the same
+   module the Clients CRM reads, so the picker below can never drift from what
+   the server accepts. */
+import { PARTNER_CONTACT_STAGES, PARTNER_CONTACT_STAGE_LABELS } from "@shared/crmStages";
 
 /* w-partner F6 — the editable subset of crmMeUpdateSchema, mapped to the
    snake_case keys the server validates. Only CHANGED keys are sent, so an
@@ -571,12 +575,46 @@ export default function PartnerContacts() {
                 {EDITABLE_FIELDS.map((f) => (
                   <label key={f.key} className="block">
                     <span className="text-xs text-[var(--cv-color-text-muted)]">{f.label}</span>
-                    <input
-                      value={edit[f.key] ?? ""}
-                      onChange={(e) => setEdit((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                      className="mt-0.5 w-full rounded-md border border-[var(--cv-color-border)] px-2 py-1 text-sm"
-                      data-testid={`contacts-edit-${f.key}`}
-                    />
+                    {/* WAVE 339 · W332 — STAGE IS A CHOICE, NOT A SENTENCE.
+                        Every other field keeps the exact input it always had;
+                        only `stage` becomes a picker, from the shared
+                        vocabulary the Clients CRM already uses, so a partner's
+                        people and companies can be compared. The className is
+                        the string the inputs already carry, unchanged.
+
+                        THE HONEST FALLBACK: if this contact holds a stage from
+                        before this vocabulary existed, that value is offered as
+                        its own option and stays selected. The screen never
+                        silently re-files a contact under a stage nobody chose,
+                        and the partner can still save an unrelated edit. */}
+                    {f.key === "stage" ? (
+                      <select
+                        value={edit[f.key] ?? ""}
+                        onChange={(e) => setEdit((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                        className="mt-0.5 w-full rounded-md border border-[var(--cv-color-border)] px-2 py-1 text-sm"
+                        data-testid={`contacts-edit-${f.key}`}
+                      >
+                        <option value="">Not placed yet</option>
+                        {PARTNER_CONTACT_STAGES.map((sv) => (
+                          <option key={sv} value={sv}>
+                            {PARTNER_CONTACT_STAGE_LABELS[sv]}
+                          </option>
+                        ))}
+                        {(edit[f.key] ?? "") !== "" &&
+                        !(PARTNER_CONTACT_STAGES as readonly string[]).includes(edit[f.key] ?? "") ? (
+                          <option value={edit[f.key] ?? ""}>
+                            {humanizeMachineKey(edit[f.key] ?? "")} (recorded earlier)
+                          </option>
+                        ) : null}
+                      </select>
+                    ) : (
+                      <input
+                        value={edit[f.key] ?? ""}
+                        onChange={(e) => setEdit((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                        className="mt-0.5 w-full rounded-md border border-[var(--cv-color-border)] px-2 py-1 text-sm"
+                        data-testid={`contacts-edit-${f.key}`}
+                      />
+                    )}
                   </label>
                 ))}
                 <button

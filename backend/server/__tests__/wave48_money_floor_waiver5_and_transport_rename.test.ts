@@ -343,11 +343,24 @@ describe("WAVE 48 · ITEM 2 — WAIVER-5 ratification is recorded everywhere it 
        rendered `100.00%` on a brand-new company's dashboard, now computed from the
        engine) raised it 8 -> 9. Both places the operator-facing count is asserted
        were updated in the same wave, which is the point of duplicating it. */
-    expect(out).toContain("9 under KNOWN_DRIFT freeze");
+    /* WAVE 343 · ITEM 1 (2026-09-06): WAIVER-9 — client/src/styles/capavate-tokens.css,
+       the `--cv-color-border` declaration that measured 1.2037:1 at worst against a
+       3:1 non-text-contrast requirement and now measures 3.1291:1 at worst — raised
+       the frozen row count 9 -> 10. This is the TENTH KNOWN_DRIFT ROW; its waiver ID
+       is -9 because WAIVER-1 covers two files, and a row labelled WAIVER-10 aborts
+       sacred_check.sh with exit 3 on the contiguity check (measured transcript:
+       build_log/ownerband/disarm/controlB_waiver10_label.log). The count is RAISED
+       DELIBERATELY here, not loosened: the assertion is still an exact string, so a
+       waiver can still neither vanish from nor be smuggled into what the operator
+       reads. Authority for the underlying edit is the owner's instruction of
+       2026-09-06 ("Fix it. Be very careful!"), recorded in full on the WAIVER-9 row
+       in scripts/sacred_check.sh. Both places the operator-facing count is asserted
+       were updated in this same wave, which is the point of duplicating it. */
+    expect(out).toContain("10 under KNOWN_DRIFT freeze");
     expect(out).toContain("WAIVER-6 x1");
     expect(out).toContain("WAIVER-7 x1");
     /* NOW RATIFIED — and the old pending language is gone. */
-    expect(out).toContain("all 9 waivers OWNER-RATIFIED");
+    expect(out).toContain("all 10 waivers OWNER-RATIFIED");
     expect(out).not.toContain("PENDING OWNER RATIFICATION");
     const json = JSON.parse(
       execFileSync("bash", [SH, "--json"], { encoding: "utf8", cwd: ROOT }).trim(),

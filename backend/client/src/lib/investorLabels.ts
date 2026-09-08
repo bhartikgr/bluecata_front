@@ -48,6 +48,45 @@ export function kycVariantLabel(variant: string | null | undefined): string {
   return KYC_VARIANT_LABELS[variant] ?? titleCase(variant);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   INTERNATIONAL CORRECTION — THE BADGE MUST NOT TURN AN ABSENCE INTO A REGIME.
+   ═══════════════════════════════════════════════════════════════════════════════
+   `kycVariantForCountry` falls back to `"generic"`, whose label reads
+   "Other — generic KYC + AML". That single fallback is reached from TWO
+   completely different situations:
+
+     (a) a country IS on record and it is outside the nine jurisdictions the
+         platform offers a declaration for (say Brazil), and
+     (b) NO country of tax residency is on record at all.
+
+   Rendering (b) as "Other" states a conclusion about the investor's jurisdiction
+   that nobody reached — the same error as printing a currency symbol for an
+   unknown currency, or a zero for an unknown number. It also asserts a
+   "KYC + AML" process as though the platform performed one.
+
+   This function does not decide a regime, does not add a jurisdiction and does
+   not gate anything. It only distinguishes "not recorded" from "recorded and
+   outside the nine", and says which one it is. The supported set is read from
+   `ACCREDITATION_JURISDICTION_CODES` in `shared/accreditationClause.ts` — the
+   registry that already exists. No second list is introduced here.
+
+   The voice is taken from the SPV Compliance tab and the K-1 tab, which are the
+   platform's existing precedent for scoping to a jurisdiction and stating
+   plainly what is not shown and why. */
+export function kycVariantBadgeText(
+  variant: string | null | undefined,
+  countryOfTaxResidencyCode: string | null | undefined,
+): string {
+  const country = (countryOfTaxResidencyCode ?? "").trim();
+  if (variant === "generic" || !variant) {
+    if (country === "") {
+      return "Country of tax residency not on record — no jurisdiction-specific regime applied";
+    }
+    return `Recorded country ${country.toUpperCase()} is outside the jurisdictions this platform offers a declaration for — no jurisdiction-specific regime applied`;
+  }
+  return kycVariantLabel(variant);
+}
+
 /* ---------------- BUG-09/10/19/20 round + empty-guard helpers ---------------- */
 
 /**

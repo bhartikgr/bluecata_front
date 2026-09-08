@@ -38,7 +38,14 @@ describe("company profile — region derivation", () => {
   it("deriveLegalFields produces region + KYC variant + attribution together", () => {
     const us = deriveLegalFields("US");
     expect(us.region).toBe("US");
-    expect(us.kycVariant).toBe("us_reg_d_506c");
+    /* UPDATED, WITH A REASON — NOT RELAXED. This assertion previously pinned
+       `us_reg_d_506c`. The US mapping was changed to `us_reg_d` because the
+       506(c) value was rendered on every US profile as "Reg D 506(c)
+       third-party verification", a verification standard the platform does not
+       perform and has no integration to perform. The legacy value is retained
+       in KYC_VARIANT_OPTIONS so already-stored profiles still parse; it is
+       simply no longer written. The assertion is still exact. */
+    expect(us.kycVariant).toBe("us_reg_d");
     expect(us.engineAttribution).toBe("Computed by US-default v1.0.0");
     const india = deriveLegalFields("IN");
     expect(india.region).toBe("IN");

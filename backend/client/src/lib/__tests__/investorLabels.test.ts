@@ -17,6 +17,9 @@ import {
   safeMemberName,
   looksLikeEmail,
 } from "../investorLabels";
+/* The shipped options list itself, so the sweep below reads the real table the
+   badge renders from rather than a copy of it. */
+import { KYC_VARIANT_OPTIONS } from "../profile/data/enums";
 
 describe("notificationKindLabel (BUG-28)", () => {
   it("humanizes known enum chips", () => {
@@ -36,7 +39,36 @@ describe("kycVariantLabel (BUG-24)", () => {
     expect(kycVariantLabel("generic")).toBe("Other — generic KYC + AML");
   });
   it("humanizes a jurisdiction-specific variant", () => {
-    expect(kycVariantLabel("us_reg_d_506c")).toBe("US — Reg D 506(c) third-party verification");
+    /* UPDATED, WITH A REASON — AND STRENGTHENED, NOT RELAXED.
+       This assertion previously pinned the exact string
+       "US — Reg D 506(c) third-party verification", which is what every US
+       investor's profile badge rendered. The platform performs no third-party
+       verification and has no integration that could — its own prohibition
+       fence records "No third-party verification integration exists in this
+       tree." The label is now the canonical regime name, reused verbatim from
+       `ACCREDITATION_JURISDICTIONS_V0_3` in `shared/accreditationClause.ts`.
+
+       Both the current value and the RETAINED LEGACY value are asserted, so a
+       profile stored before the correction cannot render the old claim either. */
+    expect(kycVariantLabel("us_reg_d")).toBe("United States — Regulation D, Rule 501(a)");
+    expect(kycVariantLabel("us_reg_d_506c")).toBe("United States — Regulation D, Rule 501(a)");
+  });
+
+  /* TRIPWIRE. Not a restatement of the assertion above: it sweeps EVERY label in
+     the shipped options list, so a future wave adding a twelfth regime cannot
+     reintroduce a verification claim on a surface nobody thought to re-check.
+     The count is asserted exactly so the sweep cannot pass over an empty list. */
+  it("no KYC variant label claims a verification the platform does not perform", () => {
+    const labels = KYC_VARIANT_OPTIONS.map((o) => o.label);
+    expect(labels.length).toBe(12);
+    for (const label of labels) {
+      expect(label, `label claims verification: ${label}`).not.toMatch(/verif/i);
+      expect(label, `label claims 506(c): ${label}`).not.toMatch(/506\s*\(?c\)?/i);
+    }
+    /* Negative control on the sweep itself — if the matcher cannot see the words
+       it exists to catch, every assertion above is inert. */
+    expect("US — Reg D 506(c) third-party verification").toMatch(/verif/i);
+    expect("US — Reg D 506(c) third-party verification").toMatch(/506\s*\(?c\)?/i);
   });
   it("title-cases unknown variants instead of leaking the raw enum", () => {
     expect(kycVariantLabel("mars_special")).toBe("Mars Special");

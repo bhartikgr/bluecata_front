@@ -36,6 +36,7 @@ function get(path: string, user: string) {
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open",
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     // 1c sign-off gate (added by a later wave) — required on every create.
     signoffLegalName: "Avi Managing", signoffAccepted: true,
     ...extra,

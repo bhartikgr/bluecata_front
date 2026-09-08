@@ -62,6 +62,7 @@ async function commitLp(spvId: string, investorId: string, commitmentMinor: numb
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;

@@ -120,6 +120,81 @@ function fmtMoney(amount: number | null, currency: string): string {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   WAVE 346 · ITEM 2 — "TOTAL INVESTED" NO LONGER BORROWS THE FIRST HOLDER'S
+   CURRENCY, AND NEVER INVENTS US DOLLARS.
+   ═══════════════════════════════════════════════════════════════════════════════
+   WHAT WAS HERE. Both places that print the cap-table PDF's "Total invested"
+   figure — the Summary block and the Total row of the holders table — asked for
+   the currency like this: `data.entries[0]?.currency || "USD"`. Two separate
+   wrong answers came out of that one expression:
+
+     1. MIXED CURRENCIES WERE LABELLED WITH ROW ONE'S. If holders were recorded
+        in more than one currency, the already-summed total was stamped with
+        whatever currency the FIRST holder happened to have. A cap table with a
+        CAD holder listed first printed a Canadian-dollar total that included
+        euro and dollar amounts. This is a document an investor keeps on disk.
+     2. NO HOLDERS AT ALL MEANT US DOLLARS. With an empty entry list there is no
+        currency on record, and the `|| "USD"` invented one.
+
+   WHAT IT DOES NOW. `capTableTotalCurrency()` reads the currency actually
+   recorded on every holder and answers one of four ways. Exactly one stated
+   currency — the ordinary case — is STATABLE and prints precisely what it printed
+   before, so nothing an investor sees today changes. More than one currency, or
+   any holder whose currency is blank, is NOT statable, and the document says so
+   in words instead of showing a number under a borrowed label. This platform has
+   no exchange-rate source and never converts between currencies, so "not
+   derivable" is the only true answer available; the CSV company export already
+   prints exactly that phrase for the same situation, and this now agrees with it.
+
+   THE ONE CASE DELIBERATELY LEFT ALONE, AND WHY. An empty cap table whose total
+   is exactly zero still prints as it did before. Zero is zero in every currency,
+   so no figure is misstated, and suppressing it would replace a true zero with a
+   refusal — which the standing rule forbids just as firmly as inventing a number.
+   The residual `USD` symbol on that one empty-table line is reported, not hidden.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+export type CapTableTotalCurrency =
+  | { statable: true; currency: string }
+  | { statable: false; reason: "no_holders" | "currency_not_stated" | "mixed_currency"; currencies: string[] };
+
+export function capTableTotalCurrency(entries: readonly CapTableEntry[]): CapTableTotalCurrency {
+  const codes = new Set<string>();
+  let blank = false;
+  for (const e of entries ?? []) {
+    const c = String(e?.currency ?? "").trim().toUpperCase();
+    if (c) codes.add(c);
+    else blank = true;
+  }
+  const currencies = Array.from(codes).sort();
+  if ((entries?.length ?? 0) === 0) return { statable: false, reason: "no_holders", currencies };
+  if (blank) return { statable: false, reason: "currency_not_stated", currencies };
+  if (currencies.length > 1) return { statable: false, reason: "mixed_currency", currencies };
+  return { statable: true, currency: currencies[0] as string };
+}
+
+/**
+ * The exact text printed for "Total invested". Exported so a test can assert the
+ * RENDERED SENTENCE rather than the branch that produced it.
+ */
+export function capTableTotalInvestedText(data: CapTableData): string {
+  const decision = capTableTotalCurrency(data.entries);
+  if (decision.statable) return fmtMoney(data.totals.totalInvested, decision.currency);
+  /* A genuine zero on an empty table is still a true figure — see the note above. */
+  if (decision.reason === "no_holders" && Number(data.totals.totalInvested) === 0) {
+    return fmtMoney(0, "USD");
+  }
+  if (decision.reason === "no_holders") {
+    return "Not derivable — no holders are recorded, so there is no currency to state this total in.";
+  }
+  if (decision.reason === "currency_not_stated") {
+    return "Not derivable — at least one holder's currency is not on record, so this total cannot be stated in any currency.";
+  }
+  return (
+    `Not derivable — holders are recorded in more than one currency (${decision.currencies.join(", ")}), ` +
+    "and this platform never converts between currencies. See the per-holder amounts below."
+  );
+}
+
 function fmtPct(pct: number): string {
   if (!isFinite(pct)) return "—";
   return `${pct.toFixed(3)}%`;
@@ -335,7 +410,7 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
   doc.fontSize(11);
   doc.font("Helvetica-Bold").text("Total shares: ", { continued: true }).font("Helvetica").text(fmtNumber(data.totals.totalShares));
   doc.font("Helvetica-Bold").text("Total invested: ", { continued: true }).font("Helvetica").text(
-    fmtMoney(data.totals.totalInvested, data.entries[0]?.currency || "USD"),
+    capTableTotalInvestedText(data),
   );
   doc.font("Helvetica-Bold").text("Holders: ", { continued: true }).font("Helvetica").text(String(data.totals.holderCount));
   doc.moveDown(1);
@@ -411,12 +486,30 @@ export function streamCapTablePdf(res: Response, data: CapTableData): void {
     );
     doc.fontSize(10).fillColor("#000");
   }
+  /* WAVE 346 · ITEM 2 — the Total row of the holders table. The refusal sentence
+     is long and this cell is 80pt wide, so when the currency cannot be stated the
+     cell shows an em-dash and the full sentence is printed underneath at full
+     width. The number is never shown under a borrowed currency, and the reason is
+     never hidden from the reader. */
+  const investedDecision = capTableTotalCurrency(data.entries);
+  const investedStatable =
+    investedDecision.statable ||
+    (investedDecision.reason === "no_holders" && Number(data.totals.totalInvested) === 0);
   doc.text(
-    fmtMoney(data.totals.totalInvested, data.entries[0]?.currency || "USD"),
+    investedStatable ? capTableTotalInvestedText(data) : "\u2014",
     colInvested,
     y + 8,
     { width: 80, align: "right" },
   );
+  if (!investedStatable) {
+    doc.font("Helvetica").fontSize(8).fillColor("#666").text(
+      `Total invested: ${capTableTotalInvestedText(data)}`,
+      50,
+      y + 40,
+      { width: 500 },
+    );
+    doc.fontSize(10).fillColor("#000").font("Helvetica-Bold");
+  }
   doc.font("Helvetica");
 
   /* WAVE 73 · ITEM 9 — when the ratio does not exist for at least one holder,

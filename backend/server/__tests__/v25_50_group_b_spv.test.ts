@@ -44,6 +44,7 @@ function get(p: string, user: string) {
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", ...extra,
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;
@@ -134,7 +135,7 @@ describe("B3 — LP commit writes ONE sacred ledger line + projects the roster",
   it("cross-partner lp-commit → 404 (no existence leak), NO ledger write", async () => {
     const bSpv = spvEngineStore.createSpv(
       PARTNER_B,
-      { name: "Partner B SPV", jurisdiction: "cayman", carryBasis: "whole_spv" },
+      { name: "Partner B SPV", jurisdiction: "cayman", carryBasis: "whole_spv" , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       "u_b_gp",
     );
     const before = ledgerLinesFor(bSpv.id);
@@ -194,7 +195,7 @@ describe("B4 — roster authz is fail-closed (VERIFICATION; no code change)", ()
   it("GP roster refuses a cross-partner id → 404 (no existence leak)", async () => {
     const bSpv = spvEngineStore.createSpv(
       PARTNER_B,
-      { name: "Partner B Roster SPV", jurisdiction: "bvi", carryBasis: "whole_spv" },
+      { name: "Partner B Roster SPV", jurisdiction: "bvi", carryBasis: "whole_spv" , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       "u_b_gp",
     );
     const r = await get(`/api/partner/me/spv/${bSpv.id}/lp-roster`, MANAGING);

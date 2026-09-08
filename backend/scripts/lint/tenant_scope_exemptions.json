@@ -95,6 +95,40 @@
         "expressible."
       ],
       "provenAfterChange": "server/__tests__/w316_cross_tenant_reporting_scope.test.ts proves tenant A sees A's OWN marks first, then that A cannot see B's, over real HTTP."
+    },
+    {
+      "key": "W344_ARCHIVE_AUDIT_REGISTRY_IS_CROSS_TENANT",
+      "file": "server/recordArchiveStore.ts",
+      "function": "listArchiveRegistry",
+      "table": "record_archive",
+      "ruling": "WAVE 344 ITEM 2, owner brief: 'Archived records REMAIN VISIBLE in audit and admin views. Hiding from a working view is not hiding from the record.'",
+      "reason": [
+        "This is the audit and administrator view of archiving decisions. Its whole",
+        "purpose is that an archived record cannot vanish from the record, and an",
+        "audit view that can only see one tenant at a time cannot answer 'has",
+        "anything been archived' for the platform the owner is responsible for.",
+        "The function DOES accept an optional tenantId and applies it when given, so",
+        "a scoped read is available; the unscoped read is the deliberate audit case.",
+        "Nothing here is a customer record. The table holds ARCHIVING DECISIONS",
+        "ONLY: which kind of thing, which id, archived or restored, when, by whom,",
+        "and a free-text reason. It carries no name, no email, no note, no stage, no",
+        "money and no hash anchor, because it is a separate registry table and not a",
+        "column added to the records themselves."
+      ],
+      "countervailingControl": [
+        "The route is gated requireAuth + requireAdmin, and its response is labelled",
+        "surface: 'archive-decisions-only' so an operator reading it is not left to",
+        "assume it is a record viewer.",
+        "Owner rulings R285/R289 — an administrator may read founder CONTACT DETAILS",
+        "but NOT founder CRM RECORDS. That boundary is enforced by the table shape",
+        "above and guarded by server/__tests__/w344_item3_admin_founder_crm_boundary.test.ts,",
+        "which archives a contact carrying a private marker note and FAILS if that",
+        "note, or the contact's name or email, appears anywhere in the admin",
+        "response. It also asserts the stored row has exactly 10 columns and that",
+        "every one of them is an archiving-decision field.",
+        "The single-row read in the same module (readRow) is tenant-scoped and takes",
+        "no exemption, so this entry covers the audit listing and nothing else."
+      ]
     }
   ]
 }

@@ -93,20 +93,56 @@ export type DRFile = {
  * key (e.g. legacy seeded rows from before object-storage was wired). This is a
  * real application/pdf document a browser PDF viewer can render — NOT the old
  * text/plain "Sprint 11 preview" stub that LIVE-12/LIVE-13 flagged. */
-function minimalPdf(title: string): Buffer {
-  const safe = (title || "Document").replace(/[()\\]/g, "_").slice(0, 80);
-  const text = `${safe} \u2014 preview unavailable`;
+/* ITEM 7b/7c — TWO MEASURED BUGS IN THIS FUNCTION, both fixed here.
+ *
+ * (a) THE MOJIBAKE. `\u2014` (EM DASH) serialises to THREE UTF-8 bytes
+ *     `e2 80 94`. It sat inside a PDF content-stream string literal drawn with
+ *     `/BaseFont /Helvetica` and NO `/Encoding`. A PDF *simple* font is
+ *     SINGLE-BYTE, so each of those bytes is looked up as its own glyph and
+ *     `0xe2` renders as `â` — exactly the character QA read. Any non-ASCII
+ *     filename (Turkish, Korean, an accented name) hit the same bug, so the
+ *     whole string is now reduced to printable ASCII rather than just the dash.
+ *
+ * (b) THE INVALID `/Length`. It was declared as `44 + text.length`, where
+ *     `text.length` counts JS UTF-16 code units while the stream is written as
+ *     bytes. MEASURED for QA's exact filename
+ *     ("1. Certificate of Incorporation.pdf"): declared 101, actual stream 88
+ *     characters / 90 bytes — OVER-DECLARED BY 11. A strict PDF consumer may
+ *     reject the object. The stream is now BUILT FIRST AND MEASURED, so the
+ *     declared length cannot drift from the content again.
+ *
+ * NEITHER CHANGE CAN REGRESS A WORKING FILE: this function only ever runs when
+ * the real bytes are absent. */
+/* ITEM 7 — EXPORTED (additive) so the produced BYTES can be asserted directly.
+   Nothing else changes: every existing caller is unaffected. */
+export function minimalPdf(title: string): Buffer {
+  const safe = (title || "Document")
+    .replace(/[()\\]/g, "_")
+    /* Everything outside printable ASCII becomes "?" — a visible, honest
+       placeholder rather than a byte the viewer will mis-decode into a
+       different letter. */
+    .replace(/[^\x20-\x7e]/g, "?")
+    .slice(0, 80);
+  /* ASCII hyphen, not an em dash. A stub page does not need typography. */
+  const text = `${safe} - preview unavailable`;
+  /* BUILD THE STREAM, THEN MEASURE IT. */
+  const streamContent = `BT /F1 18 Tf 72 700 Td (${text}) Tj ET`;
+  const streamLength = Buffer.byteLength(streamContent, "latin1");
   const body = [
     "%PDF-1.4",
     "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
     "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
     "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj",
-    `4 0 obj << /Length ${44 + text.length} >> stream\nBT /F1 18 Tf 72 700 Td (${text}) Tj ET\nendstream endobj`,
+    `4 0 obj << /Length ${streamLength} >> stream\n${streamContent}\nendstream endobj`,
     "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
     "trailer << /Root 1 0 R >>",
     "%%EOF",
   ].join("\n");
-  return Buffer.from(body, "utf8");
+  /* `latin1` matches the single-byte model the PDF simple font actually uses,
+     and it is what `streamLength` was measured with. After the ASCII
+     reduction above the two encodings agree byte for byte; using the same one
+     in both places means they cannot disagree even if that changes. */
+  return Buffer.from(body, "latin1");
 }
 
 export type Permission = {

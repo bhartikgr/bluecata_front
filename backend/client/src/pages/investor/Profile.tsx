@@ -14,6 +14,7 @@
  * `investor.kyc.uploaded` events to the outbox per the Capavate ↔
  * Collective sync schema (see `capavate_collective_sync_schema.md` §4).
  */
+import { RED_STATE_GLYPH, RequiredFieldsLegend } from "@/components/RedStateCue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -34,7 +35,7 @@ import {
   AlertTriangle, ArrowLeft, ArrowRight, Briefcase, Building2, Check, CheckCircle2,
   Eye, FileText, Save, Shield, ShieldCheck, Target, Upload, User,
 } from "lucide-react";
-import { kycVariantLabel } from "@/lib/investorLabels";
+import { kycVariantBadgeText } from "@/lib/investorLabels";
 import { fmtDateTime } from "@/lib/format";
 import { CountryPicker, PhoneCountryPicker } from "@/components/profile/CountryPicker";
 import { CountryStateCityPicker } from "@/components/profile/CountryStateCityPicker";
@@ -141,6 +142,19 @@ export const W227_SUPERSEDED_COPY_COUNT = W227_RETAINED_SUPERSEDED_COPY.length;
  * away, and deleting investor-facing copy is not a delegated decision.
  */
 const W227_RENDER_SUPERSEDED_COPY = false;
+
+/* QA BLOCKER 5 — the human label for a DECLARED accreditation status, read from
+   the SAME list the dropdown renders (`ACCREDITED_STATUS_OPTIONS`, imported
+   above and used at the Select). Deriving it from one source is the point: a
+   second hand-written copy of "Yes — Accredited" could drift away from the
+   option the investor actually chose and put a word in their mouth. If the value
+   is not one of the options, the raw value is NOT printed — the badge falls back
+   to the neutral phrase rather than showing a stored code to a human. */
+function accreditedStatusLabel(status: string | null | undefined): string {
+  if (!status) return "not recorded";
+  const opt = ACCREDITED_STATUS_OPTIONS.find((o) => o.value === status);
+  return opt ? opt.label : "not recorded";
+}
 
 const STEPS = [
   { id: 1, title: "Contact Info", icon: User, description: "Name, role, contact" },
@@ -342,12 +356,59 @@ function InvestorWizard({
         breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { label: "Profile" }]}
         actions={
           <div className="flex items-center gap-2">
-            <Badge variant="outline" data-testid="badge-kyc-variant">KYC: {kycVariantLabel(coreProfile.kycVariant)}</Badge>
+            <Badge variant="outline" data-testid="badge-kyc-variant">
+              {/* INTERNATIONAL CORRECTION — this badge is read by investors in
+                  all nine jurisdictions. When no country of tax residency is on
+                  record it now says exactly that, instead of labelling the
+                  investor "Other — generic KYC + AML", which would state a
+                  jurisdiction conclusion nobody reached. */}
+              KYC: {kycVariantBadgeText(coreProfile.kycVariant, coreProfile.countryOfTaxResidencyCode)}
+            </Badge>
             {coreProfile.accreditationVerified ? (
               <Badge className="bg-emerald-500/15 text-emerald-700 border-emerald-300/40" data-testid="badge-accred-verified">
                 <ShieldCheck className="h-3 w-3 mr-1" /> Accredited status recorded
               </Badge>
+            ) : coreProfile.accreditedStatus ? (
+              /* ────────────────────────────────────────────────────────────────
+                 QA BLOCKER 5 — THE BADGE NAMED THE WRONG FIELD.
+
+                 THIS IS NOT A CONTRADICTION AND IT IS NOT A POLICY CHANGE. There
+                 are TWO DIFFERENT COLUMNS here and both were always correct:
+                 `accreditedStatus` is WHAT THE INVESTOR DECLARED, and
+                 `accreditationVerified` is a separate boolean flag. The badge read
+                 the flag and printed the words of the declaration, so an investor
+                 who had just chosen "Yes — Accredited" in the dropdown eighteen
+                 inches away was told "Accredited status not recorded". That
+                 sentence was FALSE ABOUT THE FIELD IT NAMED. The defect is the
+                 WORDING; nothing else.
+
+                 WHAT THIS DOES NOT DO, deliberately and for counsel:
+                   · It does NOT change `accreditationVerified`, and adds no writer
+                     for it. The reset in `server/profileStore.ts` is untouched.
+                   · It does NOT render the green `badge-accred-verified` branch
+                     from the declaration. A green shield beside "Accredited status
+                     recorded" reads as CAPAVATE ATTESTING, which this platform
+                     refuses to do. That was the tempting fix and it is the
+                     dangerous one.
+                   · It makes NO new claim and introduces NO new legal-sounding
+                     copy. The second clause is the RATIFIED REGISTER, reused
+                     verbatim in substance from `shared/accreditationClause.ts`:
+                     "Capavate records it; Capavate does not confirm it".
+                   · It contains no form of the word "verif…", because
+                     `w227_profile_verified_copy.test.tsx` forbids the affirmative
+                     forms outright across all three steps. The spec's suggested
+                     phrasing "not verified by Capavate" WOULD HAVE BROKEN that
+                     test; the ratified register says the same thing and does not.
+
+                 The test id is unchanged, so the code contract survives the copy
+                 change — the same label-versus-value distinction Wave 227 drew.
+                 ──────────────────────────────────────────────────────────────── */
+              <Badge variant="outline" data-testid="badge-accred-pending" className="font-normal">
+                Self-declared: {accreditedStatusLabel(coreProfile.accreditedStatus)} · Capavate records it; Capavate does not confirm it
+              </Badge>
             ) : (
+              /* Nothing declared at all — at which point the original sentence is
+                 simply true, and is kept exactly as it was. */
               <Badge variant="outline" data-testid="badge-accred-pending">Accredited status not recorded</Badge>
             )}
             {/* Defect 49: use profile.id not hardcoded string */}
@@ -613,10 +674,21 @@ function Step1Contact({
             onChange={(e) => setR("screenName", e.target.value || null)}
             placeholder="e.g. GreenwoodCap"
             data-testid="input-screen-name"
+            /* WAVE 342 · W291 — the red ring was the ONLY signal that this
+               control was rejected. `aria-invalid` states it programmatically,
+               and the message below now carries the ⚠ cue. The class list is
+               unchanged: a cue was added, nothing was restyled. */
+            aria-invalid={!!(snParse && !snParse.success)}
             className={snParse && !snParse.success ? "border-destructive ring-1 ring-destructive" : ""}
           />
           {snParse && !snParse.success && (
-            <div className="text-xs text-rose-600" data-testid="text-screen-name-error">
+            <div
+              className="text-xs text-rose-600"
+              role="alert"
+              data-red-state="error"
+              data-testid="text-screen-name-error"
+            >
+              <span aria-hidden="true">{RED_STATE_GLYPH.error} </span>
               {snParse.error.issues[0].message}
             </div>
           )}
@@ -716,13 +788,17 @@ function Step1Contact({
       <Card>
         <CardHeader><CardTitle className="text-sm flex items-center gap-2"><User className="h-4 w-4" /> Section B — Contact Information</CardTitle></CardHeader>
         <CardContent className="space-y-5">
+          {/* WAVE 342 · W291 — the asterisks beside First and Last Name were red
+              and nothing else. This legend says in words what the asterisk
+              means, so the requirement survives with no colour perceived. */}
+          <RequiredFieldsLegend testId="profile-contact-required-legend" />
           <div className="grid md:grid-cols-2 gap-5">
             <div className="space-y-1.5">
-              <Label className="flex items-center gap-1">First Name <span className="text-rose-500">*</span></Label>
+              <Label className="flex items-center gap-1">First Name <span className="text-rose-500" aria-hidden="true">*</span><span className="sr-only"> (required)</span></Label>
               <Input value={contact.firstName} onChange={(e) => setC("firstName", e.target.value)} data-testid="input-first-name" />
             </div>
             <div className="space-y-1.5">
-              <Label className="flex items-center gap-1">Last Name <span className="text-rose-500">*</span></Label>
+              <Label className="flex items-center gap-1">Last Name <span className="text-rose-500" aria-hidden="true">*</span><span className="sr-only"> (required)</span></Label>
               <Input value={contact.lastName} onChange={(e) => setC("lastName", e.target.value)} data-testid="input-last-name" />
             </div>
             <div className="space-y-1.5">
@@ -883,7 +959,7 @@ function Step2Profile({
             <div className="space-y-1.5">
               <Label>Country of Tax Residency</Label>
               <CountryPicker value={value.countryOfTaxResidencyCode} onChange={(c) => set("countryOfTaxResidencyCode", c)} testId="picker-tax-residency" />
-              <div className="text-[11px] text-muted-foreground">KYC variant: <span className="font-medium" data-testid="text-kyc-variant">{kycVariantLabel(value.kycVariant)}</span></div>
+              <div className="text-[11px] text-muted-foreground">KYC variant: <span className="font-medium" data-testid="text-kyc-variant">{kycVariantBadgeText(value.kycVariant, value.countryOfTaxResidencyCode)}</span></div>
             </div>
             <div className="space-y-1.5">
               <Label>Tax ID / National ID</Label>
@@ -944,7 +1020,7 @@ function Step2Profile({
             {value.accreditationVerified ? <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5" /> : <Shield className="h-4 w-4 text-muted-foreground mt-0.5" />}
             <div className="text-xs">
               {value.accreditationVerified ? (
-                <>Accredited status recorded · last updated {value.accreditationVerifiedAt?.slice(0, 10)} · Variant: {kycVariantLabel(value.kycVariant)}</>
+                <>Accredited status recorded · last updated {value.accreditationVerifiedAt?.slice(0, 10)} · Variant: {kycVariantBadgeText(value.kycVariant, value.countryOfTaxResidencyCode)}</>
               ) : (
                 <>Accredited status not recorded on this profile. Recording it is not a check by Capavate.</>
               )}

@@ -47,7 +47,12 @@ describe("investor profile — accreditation transitions", () => {
   });
 
   it("kyc variant follows country of tax residency", () => {
-    expect(deriveInvestorKycVariant("US")).toBe("us_reg_d_506c");
+    /* UPDATED, WITH A REASON — NOT RELAXED. Was `us_reg_d_506c`. The US mapping
+       now yields `us_reg_d` because the 506(c) value was rendered to every US
+       investor as "Reg D 506(c) third-party verification" — a standard the
+       platform does not perform. The legacy value is retained in the options
+       list so stored profiles still parse. */
+    expect(deriveInvestorKycVariant("US")).toBe("us_reg_d");
     expect(deriveInvestorKycVariant("DE")).toBe("eu_gdpr_professional");
     expect(deriveInvestorKycVariant("IN")).toBe("in_fema_kyc");
     expect(deriveInvestorKycVariant("BR")).toBe("generic"); // not in supported list

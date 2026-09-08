@@ -87,6 +87,8 @@ import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth"
 import { requireSignedAgreement } from "./requireSignedAgreement";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
+/* WAVE 345 · ITEM 1 — the partner-scoped read of `spv_deployment_fee_billing`. */
+import { listPartnerDeploymentFeeObligations } from "./partnerDeploymentFeeObligations";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
 /* GROUP C (C3) — the partner's OWN checkout amount honors an admin-set per-partner
  * price override (incl explicit $0) that supersedes the tier; absent an override it
@@ -285,26 +287,116 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
                     pbe.paid_at            AS paidAt,
                     pbe.created_at         AS createdAt,
                     s.name                 AS spvName,
-                    COALESCE(s.deployment_fee_currency, 'USD') AS currency
+                    -- WAVE 345 . ITEM 4 . SQL SITE 1 of 3 (PARTNER BILLING SURFACE).
+                    -- The replaced COALESCE default is quoted, and explained, in the
+                    -- block comment above the next handler in this file. It is NOT
+                    -- repeated here: this is a SQL comment inside a template literal,
+                    -- so it is NOT stripped by a source assertion's comment stripper,
+                    -- and a tombstone here would read as live code to the very test
+                    -- that pins the default's removal.
+                    s.deployment_fee_currency AS currency,
+                    CASE WHEN s.deployment_fee_currency IS NULL OR s.deployment_fee_currency = ''
+                         THEN 1 ELSE 0 END AS currencyIsUnknown
              FROM partner_billing_entries pbe
              LEFT JOIN spvs s ON s.id = pbe.spv_fund_id
              WHERE pbe.partner_id = ?
                AND pbe.entry_kind IN ('spv_deployment_fee', 'spv_management_fee', 'spv_closing_bonus')
              ORDER BY pbe.created_at DESC`,
           )
-          .all(pid) as Array<{ status: string; feeMinor: number; currency: string }>;
+          .all(pid) as Array<{ status: string; feeMinor: number; currency: string | null }>;
 
-        // Per-currency totals by status (multi-currency aware).
+        /* ═══ WAVE 345 · ITEM 4 — THE AGGREGATION HALF OF THE SAME DEFECT ═══
+         * WAS: `const ccy = e.currency || "USD";`
+         *
+         * Fixing only the SELECT would have moved the lie one line down: every
+         * unknown-currency row would have been bucketed UNDER "USD" and SUMMED
+         * with genuine USD fees, producing a total that is not a quantity of any
+         * currency at all. That is the "never sum across currencies" rule, and
+         * `|| "USD"` here was breaking it silently.
+         *
+         * Unknown-currency rows are now COUNTED in their own field and excluded
+         * from every bucket. They are still returned in `entries`, so nothing is
+         * hidden — only the arithmetic refuses to pretend. */
         const totals: Record<string, { pending: number; paid: number }> = {};
+        let unknownCurrencyEntries = 0;
         for (const e of entries) {
-          const ccy = e.currency || "USD";
+          const ccy = e.currency ? String(e.currency) : null;
+          if (!ccy) {
+            unknownCurrencyEntries += 1;
+            continue;
+          }
           if (!totals[ccy]) totals[ccy] = { pending: 0, paid: 0 };
           if (e.status === "paid") totals[ccy].paid += e.feeMinor || 0;
           else totals[ccy].pending += e.feeMinor || 0;
         }
-        res.json({ entries, totalsByCurrency: totals });
+        res.json({ entries, totalsByCurrency: totals, unknownCurrencyEntries });
       } catch (err) {
         res.status(500).json({ error: "PARTNER_SPV_FEES_QUERY_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   * GET /api/partner/me/spv-deployment-fee-obligations
+   * WAVE 345 · ITEM 1 — THE MISSING PARTNER READ.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `spv_deployment_fee_billing` records "this vehicle owes a deployment fee".
+   * Before this wave it had exactly THREE readers, all of them admin routes in
+   * server/spvEngineRoutes.ts (:3102, :3111, :3133) — counted by hand in this
+   * wave, not inherited from a note. The GP who owes the money had no route at
+   * all, and the tab they DO have reads `partner_billing_entries`, which only
+   * gains a row after a charge SUCCEEDS. A raised-but-uncollected fee was
+   * therefore structurally invisible to the person billed for it.
+   *
+   * SIDE-EFFECT-FREE. This handler reads. It does not charge, does not retry,
+   * does not touch the frozen payment gateway (whose 503 is a deliberate correct
+   * refusal) and does not call the admin reconciliation route. The GP gets
+   * visibility; collection stays exactly where it already lives.
+   *
+   * WHY IT RETURNS `readOk` AS WELL AS `rows`. An empty list and a failed query
+   * must not look the same on a money screen. See the long note in
+   * server/lib/partnerDeploymentFeeObligations.ts.
+   *
+   * Auth: `managing_partner`, the same subrole as every other financial read in
+   * this file. The partner id comes from the authenticated context and never
+   * from the request.
+   *
+   * ──────────────────────────────────────────────────────────────────────
+   * ALSO IN THIS FILE, WAVE 345 · ITEM 4 · SQL SITE 1 of 3 — the GET
+   * /api/partner/me/spv-fees query above no longer writes
+   * `COALESCE(s.deployment_fee_currency, 'USD')`.
+   *
+   * WHY THAT WAS WRONG. It is a READ on a money screen. When
+   * `spvs.deployment_fee_currency` is NULL the platform does not know the
+   * denomination, and the COALESCE did not fill in a missing value — it INVENTED
+   * one and printed it beside a real number. A partner whose vehicle is
+   * denominated in CAD was shown a USD figure. A display default is a lie on
+   * screen. The column is now returned AS STORED, NULL included, with a
+   * `currencyIsUnknown` flag the client can branch on, and the per-currency
+   * totals below COUNT unknown-currency rows separately instead of summing them
+   * in under "USD". No amount changed, no row is filtered, nothing is converted.
+   * ═══════════════════════════════════════════════════════════════════════════ */
+  app.get(
+    "/api/partner/me/spv-deployment-fee-obligations",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      try {
+        const result = listPartnerDeploymentFeeObligations(pid);
+        /* A read that could not run is a 200 carrying `readOk: false` rather than
+         * a 500: the tab around it still renders, and the panel says in words that
+         * the platform could not check. A 500 would blank a billing screen that
+         * has other true things on it. The distinction is preserved in the
+         * payload, which is the part that must never lie. */
+        res.json(result);
+      } catch (err) {
+        /* Belt and braces: the module converts its own failures into
+         * `readOk: false`, so reaching here means something unforeseen. Still not
+         * an empty success. */
+        res
+          .status(500)
+          .json({ error: "PARTNER_DEPLOYMENT_FEE_OBLIGATIONS_FAILED", message: sanitizeErrorMessage(err) });
       }
     },
   );

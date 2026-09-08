@@ -448,12 +448,20 @@ describe("wave232 · the progress percentage discloses what it mixes", () => {
     expect(unsupportedTotal).toBe(1);
     expect(selfTotal).toBe(8);
 
-    /* THE STRUCTURAL CLAIM: no item is dropped from the breakdown and none is
-       counted twice. The denominator comes from the badge, which is computed by
-       the untouched `progress` memo over CHECKLIST.length. */
+    /* THE STRUCTURAL CLAIM: no item is dropped from the BREAKDOWN and none is
+       counted twice. That claim is unchanged — the three buckets still account for
+       all ten items.
+
+       WAVE 340 · ITEM 1 CHANGED WHAT THE BADGE DENOMINATOR IS, and this test had
+       to follow. On the owner's ruling of 6 September 2026 the denominator holds
+       only steps that CAN be completed, so the one `not_supported` step is outside
+       it: badge total is now 9, not 10. Both facts are asserted separately below
+       so neither can drift unnoticed — the buckets still sum to the full ten, and
+       the badge equals the ten minus the unsupported ones. */
     const badgeTotal = Number(txt("badge-progress").split(" / ")[1].split(" ")[0]);
-    expect(badgeTotal).toBe(CHECKLIST_KEYS_IN_ORDER.length);
-    expect(recordedTotal + selfTotal + unsupportedTotal).toBe(badgeTotal);
+    expect(recordedTotal + selfTotal + unsupportedTotal).toBe(CHECKLIST_KEYS_IN_ORDER.length);
+    expect(badgeTotal).toBe(CHECKLIST_KEYS_IN_ORDER.length - unsupportedTotal);
+    expect(badgeTotal).toBe(9);
   }, 30_000);
 
   it("PROV8: nothing on the screen calls any of this 'verified', and the rejected state name is absent from the source", async () => {

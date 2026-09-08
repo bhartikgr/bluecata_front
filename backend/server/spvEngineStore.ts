@@ -26,6 +26,7 @@
  */
 /* WAVE 198 · ITEM C · R166.2 — the ONE length discipline for refusal headlines. */
 import { fitToGate, boundedFragment, NAME_FRAGMENT_BUDGETS } from "../shared/refusalHeadlineGate";
+import { spvAmountRefusalThrowMessage } from "../shared/spvAmountRefusalCopy";
 import { createHash, randomBytes } from "crypto";
 import { recordFeeHydration, feeStateUnknown, probeFeeRowCount } from "./lib/spvFeeHydrationState";
 /* WAVE 166 · BATCH 3 ITEM D (D-4) — alias-aware viewer identity for the LP
@@ -92,6 +93,17 @@ export interface GpOfflineConfirmation {
 }
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+/* WAVE 306 · WAVE 1 — the currency vocabulary and its refusal codes. The
+   vocabulary lives in `currency_ref` and is read by the function below; the
+   codes and their investor-facing sentences live in `shared/currencyDomain.ts`
+   so the route mapper and the client can reach the same words (R77). */
+import { isValidCurrencyCode } from "./lib/wave0Migration";
+import {
+  SPV_CURRENCY_REQUIRED_CODE,
+  SPV_CURRENCY_UNKNOWN_CODE,
+  SPV_CURRENCY_UNVERIFIABLE_CODE,
+  SPV_CURRENCY_DETAIL_SEPARATOR,
+} from "../shared/currencyDomain";
 /* WAVE 181 · ITEM B — four SPV lifecycle events emitted a bridge envelope but
    were never AUDITED. A bridge envelope is a delivery-queue message (drained,
    dead-letterable, pruned by clearBridgeOutbox) and `/admin/audit-log` does not
@@ -148,7 +160,20 @@ import {
   type CommitmentStatus,
   type DistributionType,
 } from "./spvFundStore";
-import { partnerSpvStore, partnerFundsStore } from "./partnerWorkspaceStore";
+import {
+  partnerSpvStore,
+  partnerFundsStore,
+  /* WAVE 339 · R266 RULE 3 — the partner deal-pipeline writer and its ORDERED
+     stage ladder. Added to an import that ALREADY EXISTS on this line, so no new
+     module edge is created: `partnerWorkspaceStore.ts:80` imports this file and
+     this line imports that one; the cycle is pre-existing, documented there as
+     cycle-safe ("neither side touches the other at module-evaluation time"), and
+     `partnerPipelineStore` is likewise only ever read inside a function body.
+     A lazy `require()` was REJECTED: this file's own note at :143-151 records
+     that the lazy pattern is bundle-fragile and "undefined under `tsx` ESM". */
+  partnerPipelineStore,
+  ALL_PIPELINE_STAGES,
+} from "./partnerWorkspaceStore";
 import { listForCompany as listSubscriptionsForCompany } from "./subscriptionStore";
 import { getCompanyProfile } from "./companyProfileStore";
 import { hasActiveOrLiveRound, getRoundsForCompany, ACTIVE_LIVE_ROUND_STATES } from "./roundsStore";
@@ -598,29 +623,140 @@ function nodeMatches(node: MandateRuleTree | MandateLeaf, facts: CompanyEligibil
  * being closed at that price. `updateSpv` remains exactly as it was. No existing
  * row is read, re-checked, rejected or altered by this wave.
  */
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 306 · BAND "MONEY & CURRENCY" · WAVE 1 — THE SERVER LEARNS WHAT A
+   CURRENCY IS.
+   ═══════════════════════════════════════════════════════════════════════════
+   MEASURED, not assumed: before this wave `createSpv` persisted
+   `data.currency ?? "USD"` and NOTHING anywhere validated the value. Three
+   creation doors reach this sink; one of them (`PartnerClientDetail.tsx:542`,
+   a paying client's own record page) posted a FREE-TEXT box, and the platform
+   accepted `NOTACURRENCY123` into an IMMUTABLE column.
+
+   The vocabulary already existed and is NOT re-implemented here:
+   `currency_ref` (167 active rows, migration `0121_wave0_currency_ref.sql`,
+   immutable + no-delete triggers) and `isValidCurrencyCode` in
+   `server/lib/wave0Migration.ts:267`. This function is the DECISION, not a
+   second copy of the list.
+
+   WHY A SEPARATE READINESS PROBE — `isValidCurrencyCode` wraps its own query
+   in `try { … } catch { return false }`. Through that function alone a
+   database failure is INDISTINGUISHABLE from "unknown code", which would
+   report a 503-class server fault to a paying client as a 400 telling them to
+   fix a value that was perfectly correct. So readiness is asked FIRST, in its
+   own try/catch, and only then is the vocabulary question delegated. Two
+   queries; still exactly one vocabulary rule.
+
+   FAIL CLOSED, ALWAYS. Every branch either returns a code that is present and
+   active in `currency_ref`, or throws. There is NO path through this function
+   that returns a default. That is the entire point of the wave.
+
+   NO CONVERSION and NO INFERENCE (rule 10): nothing here reads the
+   jurisdiction, and nothing suggests a replacement code.
+   ═══════════════════════════════════════════════════════════════════════════ */
+export function resolveSpvCurrencyOrThrow(raw: string | null | undefined): string {
+  /* An absent, non-string or blank denomination is REQUIRED, never "USD".
+     `seedDemoData.ts` used to reach `createSpv` with no currency at all and
+     received US dollars silently; it now states its own code explicitly. */
+  const stated = typeof raw === "string" ? raw.trim() : "";
+  if (stated === "") throw new Error(SPV_CURRENCY_REQUIRED_CODE);
+  const code = stated.toUpperCase();
+
+  /* READINESS FIRST — see the header. A throw here is OUR fault, not the
+     caller's, and must not be dressed up as a bad request. */
+  let db: ReturnType<typeof rawDb>;
+  try {
+    db = rawDb();
+    const probe = db
+      .prepare(`SELECT COUNT(*) AS n FROM currency_ref WHERE is_active = 1`)
+      .get() as { n?: number } | undefined;
+    /* An empty or unreadable reference table is UNVERIFIABLE, not "every code
+       is unknown". Refusing every currency on a converged-but-empty table
+       would be a truthful zero reported as a client error. */
+    if (!probe || typeof probe.n !== "number" || probe.n <= 0) {
+      throw new Error(SPV_CURRENCY_UNVERIFIABLE_CODE);
+    }
+  } catch (e) {
+    if ((e as Error).message === SPV_CURRENCY_UNVERIFIABLE_CODE) throw e;
+    throw new Error(SPV_CURRENCY_UNVERIFIABLE_CODE);
+  }
+
+  /* THE VOCABULARY QUESTION — delegated to the function that already owns it. */
+  if (!isValidCurrencyCode(db, code)) {
+    throw new Error(`${SPV_CURRENCY_UNKNOWN_CODE}${SPV_CURRENCY_DETAIL_SEPARATOR}${code}`);
+  }
+  return code;
+}
+
+/**
+ * WAVE 306 · WAVE 3 — THE VOCABULARY CHECK FOR A DENOMINATION THAT IS ALLOWED
+ * TO BE ABSENT, AND ALLOWED TO DIFFER FROM THE VEHICLE'S.
+ *
+ * WHY `addFee` DOES NOT GET THE EQUALITY GUARD, measured rather than assumed.
+ * A separate fee denomination is a RATIFIED, SHIPPED FEATURE, not an oversight:
+ * `client/src/pages/partner/PartnerSpvEngine.tsx` presents TWO independent
+ * `<select>` controls — `spv-w-fee-currency` (step 2, `w.feeCurrency`) and
+ * `spv-w-currency` (step 3, `w.currency`) — the launch payload sends the fee one
+ * to `addFee`, the review step prints a distinct "Fee currency" row, and the
+ * source states the fee currency is "a SEPARATE selection from the SPV currency
+ * … shown when it can differ". Applying an equality guard to `addFee` would
+ * therefore have BROKEN a deliberate capability, refused a legitimate
+ * configuration the wizard actively offers, and been a destructive change
+ * dressed as a fix. So `addFee` is held to the question it CAN be held to: is
+ * the stated code a currency at all?
+ *
+ * ABSENT IS LEGAL. `addFee`'s two other callers pass the vehicle's own currency
+ * and many callers pass nothing, in which case `?? s.currency` applies exactly
+ * as before. This refuses a STATED value that is not a currency, and nothing
+ * else — no default is invented here and none is removed.
+ */
+export function assertStatedCurrencyIsRealIfPresent(raw: string | null | undefined): void {
+  /* Silence is not an error on this path — that is the whole distinction
+     between this function and `resolveSpvCurrencyOrThrow`. */
+  if (typeof raw !== "string") return;
+  const stated = raw.trim();
+  if (stated === "") return;
+  /* Delegates to the SAME resolver, so there is one vocabulary and one set of
+     refusal codes. Its return value is deliberately discarded: this function
+     answers a question, it does not choose the value that gets written. */
+  resolveSpvCurrencyOrThrow(stated);
+}
+
+
 function assertValidSpvMoney(data: {
   targetRaiseMinor?: number | null;
   minCheckMinor?: number | null;
   capMinor?: number | null;
 }): void {
   /** Mirrors `normaliseMinor`'s RULE. Returns the value; never converts it. */
-  const check = (v: unknown, label: string): number | null => {
+  /* WAVE 342 · W296 — THE FOUR REFUSALS BELOW USED TO BE INDISTINGUISHABLE.
+     Each threw the bare code `INVALID_AMOUNT`, so all four arrived at the
+     general partner as one sentence — "Amount must be greater than zero." — and
+     for three of the four that sentence is FALSE. The code is unchanged in the
+     response body (`server/spvEngineRoutes.ts` strips the suffix, so anything
+     keying on `INVALID_AMOUNT` is byte-for-byte unaffected); the suffix names
+     WHICH refusal and WHICH field so the route can attach that refusal's own
+     words. Copy lives in `shared/spvAmountRefusalCopy.ts`, never here.
+
+     `field` also puts the previously-DEAD `label` argument to work: it was
+     computed at the three call sites below and never read. */
+  const check = (v: unknown, field: "target_raise" | "minimum_check" | "cap"): number | null => {
     if (v === undefined || v === null) return null;
     // NO COERCION. A string is not an amount.
     if (typeof v !== "number" || !Number.isFinite(v)) {
-      throw new Error("INVALID_AMOUNT");
+      throw new Error(spvAmountRefusalThrowMessage("not_a_number", field));
     }
-    if (!Number.isInteger(v)) throw new Error("INVALID_AMOUNT");
-    if (v < 0) throw new Error("INVALID_AMOUNT");
+    if (!Number.isInteger(v)) throw new Error(spvAmountRefusalThrowMessage("fractional", field));
+    if (v < 0) throw new Error(spvAmountRefusalThrowMessage("negative", field));
     // MAX_SAFE_INTEGER gate: past this, a value cannot be trusted to be the
     // integer it appears to be.
-    if (!Number.isSafeInteger(v)) throw new Error("INVALID_AMOUNT");
+    if (!Number.isSafeInteger(v)) throw new Error(spvAmountRefusalThrowMessage("too_large", field));
     return v;
   };
 
-  const targetRaiseMinor = check(data.targetRaiseMinor, "Target raise");
-  const minCheckMinor = check(data.minCheckMinor, "Minimum check");
-  const capMinor = check(data.capMinor, "Cap");
+  const targetRaiseMinor = check(data.targetRaiseMinor, "target_raise");
+  const minCheckMinor = check(data.minCheckMinor, "minimum_check");
+  const capMinor = check(data.capMinor, "cap");
 
   /* THE COHERENCE RULE, copied from spvTemplateStore.ts:521 verbatim in meaning,
      including its null handling: a missing cap or a missing target is NOT a
@@ -668,6 +804,19 @@ export const spvEngineStore = {
     assertValidSpvMoney(data);
   },
 
+  /* ══ WAVE 306 · WAVE 1 — THE DENOMINATION CHECK, FOR THE PRE-FLIGHT ═══════
+     The ROUTE calls this ABOVE `recordSignoff` (its first write); `createSpv`
+     below calls the SAME `resolveSpvCurrencyOrThrow`. One rule, two call
+     sites, no drift — exactly the arrangement `validateCreateMoney` above
+     established for the money fields in wave 237.
+
+     Why the route needs its own call: in `server/spvEngineRoutes.ts`
+     `recordSignoff` runs BEFORE `createSpv`, so a store-only throw would
+     leave an ORPHANED sign-off row behind on every currency refusal. */
+  validateCreateCurrency(data: { currency?: string | null }): string {
+    return resolveSpvCurrencyOrThrow(data.currency);
+  },
+
   /* ---- SPV core ---- */
   createSpv(
     partnerId: string,
@@ -697,6 +846,10 @@ export const spvEngineStore = {
     assertValidMandateDescription(data.terms);
     // WAVE 237 — NEW WRITES ONLY. See assertValidSpvMoney's header.
     assertValidSpvMoney(data);
+    /* WAVE 306 · WAVE 1 — the denomination is decided BEFORE the row is built,
+       so `currency` below can never be a default. Same function the route
+       pre-flight calls via `validateCreateCurrency`. */
+    const resolvedCurrency = resolveSpvCurrencyOrThrow(data.currency);
     const now = nowIso();
     const s: SpvDTO = {
       id: newId("spv"),
@@ -710,7 +863,11 @@ export const spvEngineStore = {
       targetRaiseMinor: data.targetRaiseMinor ?? null,
       minCheckMinor: data.minCheckMinor ?? null,
       capMinor: data.capMinor ?? null,
-      currency: data.currency ?? "USD",
+      /* WAVE 306 · WAVE 1 — was `data.currency ?? "USD"`. This field is
+         IMMUTABLE; a default here was a permanent untruth. Now the only value
+         that can reach it is one `resolveSpvCurrencyOrThrow` confirmed is
+         present and active in `currency_ref`. */
+      currency: resolvedCurrency,
       carryBasis: data.carryBasis,
       lpVisibility,
       targetCompanyId: data.targetCompanyId ?? null,
@@ -1182,6 +1339,11 @@ export const spvEngineStore = {
   ): SpvFeeDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* WAVE 306 · WAVE 3 — see `assertStatedCurrencyIsRealIfPresent` above for
+       why this sink gets the VOCABULARY question and not the equality guard the
+       other three money writes received. A fee may legitimately be denominated
+       differently from the vehicle; it may not be denominated in a non-currency. */
+    assertStatedCurrencyIsRealIfPresent(data.currency);
     /* WAVE 86B · ITEM 2 — ONE definition of a valid fee row. These five refusals
        were lifted VERBATIM into `validateFeeDraft` above so the launch pre-flight
        runs the IDENTICAL rules BEFORE anything is written. Same names, same order,
@@ -2320,8 +2482,71 @@ export const spvEngineStore = {
         currency: sub.currency,
       });
     }
+    /* ═══════════════════════════════════════════════════════════════════════
+       WAVE 339 · R266 RULE 3 — SOFT-CIRCLING ADVANCES THE PARTNER'S CRM STAGE.
+       ═══════════════════════════════════════════════════════════════════════
+       AFTER the durable write (`_persistSub`, above), BEFORE the `emit` below,
+       and — like the WAVE 164 · R130 block it sits beside — UNABLE TO FAIL THE
+       WRITE (R135.3). A CRM courtesy must never be the reason a subscription
+       refuses.
+
+       WHY HERE AND NOT IN THE ROUTE. Three route call sites reach this one
+       function (`spvEngineRoutes.ts:1674` gp-confirm, `:1718` gp-confirm's
+       commit, `:1798` the generic subscription PATCH) and the soft-circle route
+       is only one door into `soft_circled`. Written in a route, the stage would
+       move on one path and silently not on the others — "one quantity, two
+       derivations", the failure this platform keeps repeating. One writer, one
+       place.
+
+       WHICH CRM, AND WHY IT IS THE ONLY POSSIBLE ANSWER. R266 keeps the CRMs
+       SEPARATE, and R91 forbids inserting into or reordering any stage ladder.
+       Of the six live vocabularies exactly ONE contains a `soft_circle` rung —
+       `ALL_PIPELINE_STAGES` on the partner deal pipeline. The Clients ladder
+       (`prospect…longterm`) has no such rung and the Contacts stage has no
+       vocabulary at all, so expressing this on either would REQUIRE inventing a
+       stage, which R91 prohibits. Nothing is merged and nothing is renamed.
+
+       FORWARD ONLY, AND NEVER OVER A STAGE WE DO NOT RECOGNISE.
+       • a deal already at or beyond `soft_circle` is left ALONE — which is also
+         what makes this idempotent: soft-circling twice writes once;
+       • a deal whose stored stage is NOT in the ladder (legacy data) is left
+         ALONE, because rewriting a value we cannot place is a silent edit;
+       • a vehicle with no `targetCompanyId` matches no deal and writes nothing.
+       There is no branch here that moves a stage backwards. */
+    if (to === "soft_circled") {
+      this._advancePipelineOnSoftCircle(partnerId, spvId, sub.investorId ?? "");
+    }
     emit("spv.subscription_advanced", spvId, { partnerId, spvId, subscriptionId, to });
     return sub;
+  },
+
+  /** WAVE 339 · R266 RULE 3 — the single writer. Exported on the store object so
+   *  the acceptance suite can call it (and `advanceSubscription`) with NO route
+   *  in the picture, which is the assertion that fails if this logic is ever
+   *  moved back into a route.
+   *
+   *  Every failure is swallowed and logged: this runs after a durable write that
+   *  has already succeeded, and rethrowing would report a stored subscription as
+   *  a failed one. */
+  _advancePipelineOnSoftCircle(partnerId: string, spvId: string, actor: string): void {
+    try {
+      const companyId = spvById.get(spvId)?.targetCompanyId ?? null;
+      if (!companyId) return;
+      const target = ALL_PIPELINE_STAGES.indexOf("soft_circle");
+      if (target < 0) return;
+      for (const deal of partnerPipelineStore.listByPartner(partnerId)) {
+        if (deal.companyId !== companyId) continue;
+        const at = ALL_PIPELINE_STAGES.indexOf(deal.stage);
+        if (at < 0) continue;      // unrecognised legacy stage — never rewritten
+        if (at >= target) continue; // already there or past it — never backwards, and idempotent
+        partnerPipelineStore.update(partnerId, deal.id, { stage: "soft_circle" }, actor);
+      }
+    } catch (err) {
+      log.warn(
+        "[spvEngineStore] WAVE 339 · R266 rule 3 pipeline advance failed (non-fatal, the subscription is written):",
+        (err as Error).message,
+      );
+    }
   },
 
   /** B3 — PROJECTION of an authoritative LP cap-table commit.
@@ -2894,8 +3119,38 @@ export const spvEngineStore = {
   ): SpvDeploymentDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 306 · WAVE 3 — THE MONEY WRITE CHECKS ITS OWN DENOMINATION.
+       ══════════════════════════════════════════════════════════════════════
+       `createDeployment` persisted `currency: data.currency ?? s.currency` further down
+       with NO equality check, so a caller could state ANY currency and it was
+       written verbatim onto a money row belonging to a vehicle denominated in
+       something else. The result is a row that reads as real money in a
+       currency the vehicle does not hold — and because R156.2/R10 forbid ever
+       converting or summing across currencies, such a row does not produce a
+       wrong total, it makes the total UNCOMPUTABLE. One mistyped code silently
+       takes a figure off the GP's screen for good.
+
+       THIS IS NOT A NEW ERROR CODE AND NOT A NEW RULE. It is a call to the
+       guard that already exists and already carries its own 400 mapping and its
+       own investor-facing sentence: `assertSubscriptionCurrencyMatchesVehicle`,
+       already called by `subscribe` and `projectLpCommitted`. Reusing it is
+       what keeps ONE spelling of the rule across every money sink.
+
+       SAFE FOR EVERY LIVE CALLER — verified, not assumed. The client sends the
+       vehicle's own currency here (`client/src/pages/partner/SpvDetailTabs.tsx:2811`),
+       so a correct caller is byte-for-byte unaffected. An ABSENT currency is
+       still accepted: the guard returns early on a non-string or empty value
+       and `?? s.currency` supplies the vehicle's own denomination exactly as
+       before. This refuses a STATED MISMATCH only. */
+    assertSubscriptionCurrencyMatchesVehicle(data.currency, s.currency);
     if (!data.companyId || !data.companyRoundId) throw new Error("COMPANY_AND_ROUND_REQUIRED");
-    if (!Number.isFinite(data.amountMinor) || data.amountMinor <= 0) throw new Error("INVALID_AMOUNT");
+    /* WAVE 342 · W296 — names the field and the reason so the deploy dialog can
+       say "The deployment amount must be greater than zero. Nothing has been
+       recorded." instead of a sentence about a different field. */
+    if (!Number.isFinite(data.amountMinor) || data.amountMinor <= 0) {
+      throw new Error(spvAmountRefusalThrowMessage("not_positive", "deployment_amount"));
+    }
     // Blocker 5 — verify mandate/round/funding readiness BEFORE opening a money
     // path. Every check is FAIL CLOSED (a missing fact rejects, never matches).
     const instrument = this._assertDeploymentReadiness(partnerId, spvId, data.companyId, data.companyRoundId, data.amountMinor);
@@ -3067,6 +3322,31 @@ export const spvEngineStore = {
   ): SpvDistributionDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 306 · WAVE 3 — THE MONEY WRITE CHECKS ITS OWN DENOMINATION.
+       ══════════════════════════════════════════════════════════════════════
+       `recordDistribution` persisted `currency: data.currency ?? s.currency` further down
+       with NO equality check, so a caller could state ANY currency and it was
+       written verbatim onto a money row belonging to a vehicle denominated in
+       something else. The result is a row that reads as real money in a
+       currency the vehicle does not hold — and because R156.2/R10 forbid ever
+       converting or summing across currencies, such a row does not produce a
+       wrong total, it makes the total UNCOMPUTABLE. One mistyped code silently
+       takes a figure off the GP's screen for good.
+
+       THIS IS NOT A NEW ERROR CODE AND NOT A NEW RULE. It is a call to the
+       guard that already exists and already carries its own 400 mapping and its
+       own investor-facing sentence: `assertSubscriptionCurrencyMatchesVehicle`,
+       already called by `subscribe` and `projectLpCommitted`. Reusing it is
+       what keeps ONE spelling of the rule across every money sink.
+
+       SAFE FOR EVERY LIVE CALLER — verified, not assumed. The client sends the
+       vehicle's own currency here (`client/src/pages/partner/SpvDetailTabs.tsx:3619`),
+       so a correct caller is byte-for-byte unaffected. An ABSENT currency is
+       still accepted: the guard returns early on a non-string or empty value
+       and `?? s.currency` supplies the vehicle's own denomination exactly as
+       before. This refuses a STATED MISMATCH only. */
+    assertSubscriptionCurrencyMatchesVehicle(data.currency, s.currency);
     /* ══ WAVE 26 / S-3 SECOND PATH — THE MONEY WRITE. ══
      * This is the sink the Wave 5 fix did not reach. `recordDistribution`
      * carries NO fee gate (`hasUnsettledFixedFees` guards advanceSubscription,
@@ -4128,6 +4408,31 @@ export const spvEngineStore = {
   ): SpvTransferDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 306 · WAVE 3 — THE MONEY WRITE CHECKS ITS OWN DENOMINATION.
+       ══════════════════════════════════════════════════════════════════════
+       `createTransfer` persisted `currency: data.currency ?? s.currency` further down
+       with NO equality check, so a caller could state ANY currency and it was
+       written verbatim onto a money row belonging to a vehicle denominated in
+       something else. The result is a row that reads as real money in a
+       currency the vehicle does not hold — and because R156.2/R10 forbid ever
+       converting or summing across currencies, such a row does not produce a
+       wrong total, it makes the total UNCOMPUTABLE. One mistyped code silently
+       takes a figure off the GP's screen for good.
+
+       THIS IS NOT A NEW ERROR CODE AND NOT A NEW RULE. It is a call to the
+       guard that already exists and already carries its own 400 mapping and its
+       own investor-facing sentence: `assertSubscriptionCurrencyMatchesVehicle`,
+       already called by `subscribe` and `projectLpCommitted`. Reusing it is
+       what keeps ONE spelling of the rule across every money sink.
+
+       SAFE FOR EVERY LIVE CALLER — verified, not assumed. The client sends the
+       vehicle's own currency here (`client/src/pages/partner/SpvDetailTabs.tsx:3531`),
+       so a correct caller is byte-for-byte unaffected. An ABSENT currency is
+       still accepted: the guard returns early on a non-string or empty value
+       and `?? s.currency` supplies the vehicle's own denomination exactly as
+       before. This refuses a STATED MISMATCH only. */
+    assertSubscriptionCurrencyMatchesVehicle(data.currency, s.currency);
     if (!data.fromInvestorId || !data.toInvestorId) throw new Error("TRANSFER_PARTIES_REQUIRED");
     /* ── WAVE 25 / FE-4 — THE TRANSFER GUARD, AT THE SINK ──────────────────
      *
@@ -4161,7 +4466,10 @@ export const spvEngineStore = {
      * `n > 1 ? n/100 : n` coercion is forbidden project-wide, so a value above
      * 1 is rejected rather than silently reinterpreted. */
     if (hasAmount && (!Number.isSafeInteger(data.amountMinor) || (data.amountMinor as number) < 0)) {
-      throw new Error("INVALID_AMOUNT");
+      /* WAVE 342 · W296 — a transfer refusal now states that NOTHING HAS BEEN
+         TRANSFERRED, which is the fact a general partner most needs and could
+         not previously see. */
+      throw new Error(spvAmountRefusalThrowMessage("transfer_not_whole_or_negative", "transfer_amount"));
     }
     if (hasUnits && (!Number.isFinite(data.unitsPct) || (data.unitsPct as number) <= 0 || (data.unitsPct as number) > 1)) {
       throw new Error("INVALID_UNITS_PCT");

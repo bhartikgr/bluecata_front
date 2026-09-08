@@ -1936,20 +1936,24 @@
       "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
     },
     {
-      "key": "server/lib/partnerFeeAdminRoutes.ts::contacts::a4935915e2d2",
+      "key": "server/lib/partnerFeeAdminRoutes.ts::contacts::1818c35b016b",
       "file": "server/lib/partnerFeeAdminRoutes.ts",
       "line": 356,
       "function": "seatRaw",
       "table": "contacts",
-      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
+      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it.",
+      "previousKeyBeforeW345": "server/lib/partnerFeeAdminRoutes.ts::contacts::a4935915e2d2",
+      "w345Note": "WAVE 345 \u00b7 KEY RE-HASHED, AMNESTY NOT WIDENED. This entry's key contains a hash of the statement text, so wave 345's currency-default fix (removing COALESCE(...,'USD') from the SELECT list) invalidated the OLD key by design and the fence correctly reported it stale. The key and line are updated to the statement as it now reads. NOTHING ABOUT THE READ'S SCOPE CHANGED: the same statement reads the same table with the same absent tenant_id predicate, so this is the SAME known unscoped read, not a new one, and the total is unchanged at 423. The entry was UPDATED rather than DELETED because deleting it would silently drop a known finding."
     },
     {
-      "key": "server/lib/partnerFeeAdminRoutes.ts::spvs::a4935915e2d2",
+      "key": "server/lib/partnerFeeAdminRoutes.ts::spvs::1818c35b016b",
       "file": "server/lib/partnerFeeAdminRoutes.ts",
       "line": 356,
       "function": "seatRaw",
       "table": "spvs",
-      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
+      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it.",
+      "previousKeyBeforeW345": "server/lib/partnerFeeAdminRoutes.ts::spvs::a4935915e2d2",
+      "w345Note": "WAVE 345 \u00b7 KEY RE-HASHED, AMNESTY NOT WIDENED. This entry's key contains a hash of the statement text, so wave 345's currency-default fix (removing COALESCE(...,'USD') from the SELECT list) invalidated the OLD key by design and the fence correctly reported it stale. The key and line are updated to the statement as it now reads. NOTHING ABOUT THE READ'S SCOPE CHANGED: the same statement reads the same table with the same absent tenant_id predicate, so this is the SAME known unscoped read, not a new one, and the total is unchanged at 423. The entry was UPDATED rather than DELETED because deleting it would silently drop a known finding."
     },
     {
       "key": "server/lib/partnerFeeAdminRoutes.ts::contacts::1b40c9dbbd1d",
@@ -2040,12 +2044,14 @@
       "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
     },
     {
-      "key": "server/lib/partnerSelfServiceRoutes.ts::spvs::9f60abe5a0ae",
+      "key": "server/lib/partnerSelfServiceRoutes.ts::spvs::17d8a328c5ae",
       "file": "server/lib/partnerSelfServiceRoutes.ts",
-      "line": 277,
+      "line": 279,
       "function": "registerPartnerSelfServiceRoutes",
       "table": "spvs",
-      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
+      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it.",
+      "previousKeyBeforeW345": "server/lib/partnerSelfServiceRoutes.ts::spvs::9f60abe5a0ae",
+      "w345Note": "WAVE 345 \u00b7 KEY RE-HASHED, AMNESTY NOT WIDENED. This entry's key contains a hash of the statement text, so wave 345's currency-default fix (removing COALESCE(...,'USD') from the SELECT list) invalidated the OLD key by design and the fence correctly reported it stale. The key and line are updated to the statement as it now reads. NOTHING ABOUT THE READ'S SCOPE CHANGED: the same statement reads the same table with the same absent tenant_id predicate, so this is the SAME known unscoped read, not a new one, and the total is unchanged at 423. The entry was UPDATED rather than DELETED because deleting it would silently drop a known finding."
     },
     {
       "key": "server/lib/requireCollectiveMember.ts::users::6a1b8244480b",
@@ -2608,12 +2614,14 @@
       "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
     },
     {
-      "key": "server/partnerConsortiumRoutes.ts::soft_circles::7d64ba2221be",
+      "key": "server/partnerConsortiumRoutes.ts::soft_circles::26bfe644ba0a",
       "file": "server/partnerConsortiumRoutes.ts",
-      "line": 469,
+      "line": 478,
       "function": "month",
       "table": "soft_circles",
-      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it."
+      "reason": "PRE-EXISTING AND NOT INDIVIDUALLY REVIEWED. Enumerated by the first run of the W316 tenant scope fence, 2026-09-05, against v26.43.0. THIS IS NOT A JUDGEMENT THAT THE READ IS SAFE. It is the honest statement that this platform has 423 unscoped reads of tenant-scoped tables in server/**, that W316 fixed the reporting readers it was asked to fix, and that the rest are now WRITTEN DOWN so that the number can only go down. A new one fails the build; editing this statement invalidates its own entry, because the key contains a hash of the statement text. Hand-enumeration failed three times; this file is what replaces it.",
+      "previousKeyBeforeW345": "server/partnerConsortiumRoutes.ts::soft_circles::7d64ba2221be",
+      "w345Note": "WAVE 345 \u00b7 KEY RE-HASHED, AMNESTY NOT WIDENED. This entry's key contains a hash of the statement text, so wave 345's currency-default fix (removing COALESCE(...,'USD') from the SELECT list) invalidated the OLD key by design and the fence correctly reported it stale. The key and line are updated to the statement as it now reads. NOTHING ABOUT THE READ'S SCOPE CHANGED: the same statement reads the same table with the same absent tenant_id predicate, so this is the SAME known unscoped read, not a new one, and the total is unchanged at 423. The entry was UPDATED rather than DELETED because deleting it would silently drop a known finding."
     },
     {
       "key": "server/partnerConsortiumRoutes.ts::soft_circles::c1667201bee0",

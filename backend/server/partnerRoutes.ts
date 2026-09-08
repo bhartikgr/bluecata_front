@@ -81,6 +81,9 @@ import { getAllContacts, listContacts, updateContact, createContact, upsertConso
 import { registerPersona, getUserContextForId } from "./lib/userContext";
 import { resolveDisplayNames } from "./lib/displayNameResolver"; /* W2-G — shared userId->name resolver */
 import { isPartnerTitle } from "../shared/partnerTitles"; /* 2a — display title enum (distinct from permission tier) */
+/* WAVE 306 · WAVE 1 — the denomination refusal sentences, so this legacy create
+   route can attach words to a code instead of shipping the code naked (R77). */
+import { spvCurrencyRefusalCopy } from "../shared/currencyDomain";
 import { recordSignoff, linkSignoffToSpv } from "./spvLaunchSignoffStore"; /* 1c — durable launch sign-off (also gates the legacy /spvs create path) */
 /* WAVE 22 · ITEM 2 (REVIEW B F-3) — legacy SPV-create sign-off `ip` was the raw
  * forwarded header. One shared hardened resolver, not a second local copy. */
@@ -2992,6 +2995,40 @@ export function registerPartnerRoutes(app: Express): void {
         });
       }
       const attributableTargetCompanyId = targetGate.companyId;
+      /* ══════════════════════════════════════════════════════════════
+         WAVE 306 · WAVE 1 — THE VOCABULARY CHECK, ON THE DOOR A PAYING CLIENT
+         ACTUALLY USES.
+         ══════════════════════════════════════════════════════════════
+         MEASURED, and it corrected a premise. This is the PLURAL route,
+         `/api/partner/me/spvs`, and it is NOT the canonical wizard route
+         `/api/partner/me/spv` — two routes whose names differ by one letter.
+         `client/src/pages/partner/PartnerClientDetail.tsx` (the "Create SPV for
+         this client" form on a paying client's own record page) posts HERE.
+
+         `isISOCurrency` above is SHAPE-ONLY — `/^[A-Z]{3}$/`. It correctly
+         refuses `NOTACURRENCY123`, an absent key and a number, which is why the
+         live audit's typed garbage could not actually create a vehicle. What it
+         cannot refuse is any OTHER three upper-case letters: `ZZZ`, `QQQ`, and
+         the withdrawn codes `HRK` and `ZWL` all pass a shape check and none of
+         them can denominate a vehicle for the rest of its life.
+
+         WHY HERE AND NOT ONLY IN THE STORE: `recordSignoff` immediately below
+         is this route's FIRST WRITE, exactly as on the canonical route. A
+         store-only refusal would leave a signed ESIGN/UETA attestation behind
+         for a vehicle that was never created. Same function the store calls, so
+         there is one rule and it cannot drift. */
+      try {
+        spvEngineStore.validateCreateCurrency({ currency: currency as string });
+      } catch (e) {
+        const copy = spvCurrencyRefusalCopy((e as Error).message);
+        /* Not one of ours — rethrow rather than swallow an unrelated failure. */
+        if (!copy) throw e;
+        return res.status(copy.status).json({
+          error: (e as Error).message,
+          message: copy.headline,
+          guidance: copy.guidance,
+        });
+      }
       let legacySignoff;
       try {
         legacySignoff = recordSignoff({

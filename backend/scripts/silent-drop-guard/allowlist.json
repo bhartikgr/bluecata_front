@@ -1098,6 +1098,36 @@
       "reason": "WAVE 246 (R218.1) — A FALSE SENTENCE REPLACED BY A TRUE ONE, not a feature removed. Exactly the WAVE 152 · G-C5 shape. The <p className=\"mt-3 text-xs\"> element, its position as the last child of the same data-testid=\"text-forgot-done\" div, and the <Link href=\"/auth/forgot\">request a new one</Link> child are all unchanged; only the sentence inside it changed. OLD: \"Magic links expire in 15 minutes. If your link expires you can …\" NEW: \"Password reset links stay valid for {passwordResetLinkExpiryPhrase()} — the same window the email states. If your link expires you can …\". WHY THE OLD SENTENCE COULD NOT STAY: POST /api/auth/forgot mints a token whose expires_at is now + PASSWORD_RESET_TOKEN_TTL_MS = 24 hours (server/lib/authRoutes.ts), and the reset email states 24 hours in both its text and html bodies. \"15 minutes\" was false by a factor of 96 about the only token this page can produce. It was not misplaced copy about a different mechanism either: an exhaustive search for a 15-minute link TTL found none — every 15-minute constant in the tree is an auth lockout window, a worker interval, a notification digest window or a fee-settlement authorisation, and every other thing this platform calls a magic link is longer (partner invite 14 days, round invitation 30 days, accountant fill 7 days, partner team invite 7 days, admin invites 14 days/24 hours; the shortest link TTL anywhere is a 10-minute pitch-deck view link this page cannot mint). QA had prescribed changing the EMAIL to 15 minutes; that would have made the email lie and would have shortened nothing, so the email is deliberately untouched. The alternatives to this entry were all worse: keep rendering a false statement (the defect), wrap it in {false && …} (reads as a SUPPRESSION to drop:restyle and is barred), re-baseline the guard (destroys the evidence), or shorten the token to 15 minutes (shrinks a real user's reset window — refused under R190.10). The page gained information rather than losing it: the new sentence names WHICH link it is describing and derives its duration from the same @shared/passwordResetLinkExpiry constant the minting route imports, so screen and token can never diverge again and no second literal for the number exists. `npm run drop:restyle` independently confirms the element survived: the disappearance is PAIRED, not bare, with no per-file count decrease for this file.",
       "approvedBy": "Ozan (R218.1 in spec/OWNER_RULINGS_2026_08_13.md — validated evidence that the email is right and the screen is wrong; decisions delegated to lead developer for this batch)",
       "date": "2026-08-31"
+    },
+    {
+      "id": "client/src/pages/founder/CRM.tsx\ttext\tInvested",
+      "reason": "QA BLOCKER ITEM 10 — RELABEL, NOT REMOVAL. The tile counted investors at BOTH the 'invested' and the long-term-relationship stages, but was labelled only 'Invested', so its number did not match the label and read as a wrong count. The brief is explicit: BOTH COUNTERS ARE CORRECT; RELABEL ONE; DO NOT TOUCH THE ARITHMETIC. The string is now 'Invested + long-term'. The tile, its testid and its number are unchanged. ENFORCED BY client/src/pages/founder/__tests__/qab_item10_invested_tile_label.test.tsx (5/5), which asserts the rendered label and that the count is unchanged; disarming the label produced 2 RED.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/pages/founder/Dataroom.tsx\tdescription\tFolders, permissions, audit events. Drag-drop upload with watermarking.",
+      "reason": "QA BLOCKER ITEM 7 — AN UNTRUE CLAIM WITHDRAWN. Re-measured across server/, client/src/ and shared/: NOTHING IN THIS TREE MODIFIES FILE BYTES. There is no PDF library, no image compositing and no per-viewer stamping; the `watermark` column is a boolean that drove one CSS overlay, and the download route streams the original file. The page description promised watermarking on upload, which the product does not do. It now reads 'Folders, permissions, audit events. Drag-drop upload.' RESTORING THIS STRING WOULD RESTORE A FALSE STATEMENT TO A PAYING CLIENT.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/pages/founder/Dataroom.tsx\ttext\tWatermark on",
+      "reason": "QA BLOCKER ITEM 7 — same finding as the Dataroom description above. The preview badge said 'Watermark on' for a file whose bytes are never modified. Replaced with 'Preview marked · file not modified', which is what the flag actually does. ENFORCED BY client/src/pages/founder/__tests__/qab_item7_watermark_badge_tells_the_truth.test.tsx (7/7); disarming the badge copy produced 1 RED.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/pages/founder/Dataroom.tsx\ttext\tWatermarked",
+      "reason": "QA BLOCKER ITEM 7 — THE BADGE WAS THE DEFECT, and this is the badge. QA opened a file badged 'Watermarked' and found no watermark; the inference was correct. Replaced with 'Preview marked · file not modified'. A further finding recorded in build_log/qablockers: the in-app preview modal that carried the only overlay IS UNREACHABLE (setPreviewFile is never called with a file), so the eye button opens the ORIGINAL BYTES in a new tab. Restoring this word would restore a promise the product cannot keep.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/pages/partner/PartnerPortfolio.tsx\ttext\tCompany ID",
+      "reason": "QA BLOCKER ITEM 9 — HEADER RENAMED, COLUMN KEPT. Raw ids were rendering in name slots. The name slots now use displayName() from @shared/investorDisplayLabels with the id preserved on the title attribute. THE COLUMN ITSELF WAS DELIBERATELY NOT REMOVED — removing it is a product decision and was escalated, not taken. The header now reads 'Internal ID', which is what the column contains. ENFORCED BY client/src/pages/partner/__tests__/qab_item9_no_raw_ids_in_name_slots.test.tsx (4/4).",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
     }
   ],
   "removedEvents": [
@@ -1443,6 +1473,48 @@
       "reason": "WAVE 118 - FINDING 2. NOT A REMOVAL AT ALL: GUARD IDENTITY CHURN OF THE SAME KIND ALREADY RATIFIED FOR RoundDetail.tsx Card at=RoundLifecycleProgress:#1 IN THIS REGISTER. The ownership cell is the 4th <td> at that structural path. Wave 113 gave it a stable attribute - `<td className=\"py-2.5 text-right font-mono tabular-nums\" data-testid=\"cell-investor-ownership\" data-ownership-percent={r.ownershipPercent ?? \"\"}>{ownershipPercentCellText(r.ownershipPercent)}%</td>` at client/src/pages/investor/InvitationDetail.tsx:1053 - and containerIdentity() prefers data-testid over the positional `at=...#ord` fallback, so the SAME container now records under `data-testid=cell-investor-ownership` instead of `at=...>tbody>tr#4`. Verified by extracting both inventories: the td count at that path is 14 in the baseline and 14 now (13 positional + 1 attribute-keyed), and the new key carries the identical body records child={expr}#1 / childorder={expr}. The cell renders on every row of the table. WHAT WAVE 113 ACTUALLY DELETED HERE IS A DIFFERENT THING AND IS CORRECT: the float division `ownership: (x.shares / totalShares) * 100` that used to fill this cell (see the comment at :610-637), which disagreed with the founder's engine by up to 11.91 percentage points and printed a real ~5% SAFE holder as 0. The cell now prints the shared engine's own decimal string via ownershipPercentCellText, or the engine's refusal sentence instead of a number. Restoring the division is forbidden by R6 and by wave 113's ruling; there is nothing else to restore.",
       "approvedBy": "Ozan (delegated to lead developer, 2026-08-22)",
       "date": "2026-08-22"
+    },
+    {
+      "id": "client/src/components/founder/CapTableSnapshots.tsx\ttd\tat=PositionRows:div>table>tbody>tr#2\tchild=Badge#1",
+      "reason": "QA BLOCKER ITEM 12 — AN INDEX SHIFT, NOT A REMOVAL. A new 'Round' column was ADDED to the Projected (pending) table so a reader can see which round each dilution row belongs to. Every pre-existing cell is still rendered; the guard's positional ids renumber because a sibling was inserted before them. NOTHING WAS DELETED. ENFORCED BY client/src/components/founder/__tests__/qab_item12_cross_round_dilution_is_stated.test.tsx (7/7), which asserts the existing cells AND the new column render together.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/components/founder/CapTableSnapshots.tsx\ttd\tat=PositionRows:div>table>tbody>tr#3\tchild={expr}#1",
+      "reason": "QA BLOCKER ITEM 12 — same index shift from the added 'Round' column. See the entry above. Nothing removed.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/components/founder/CapTableSnapshots.tsx\tth\tat=PositionRows:div>table>thead>tr#2\tchild=#text#1",
+      "reason": "QA BLOCKER ITEM 12 — same index shift from the added 'Round' header cell. See above. Nothing removed.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/components/founder/CapTableSnapshots.tsx\ttd\tat=PositionRows:div>table>tbody>tr#3\tchildorder={expr}",
+      "reason": "QA BLOCKER ITEM 12 — same index shift from the added 'Round' column; this id records child ORDER within the row, which necessarily changes when a column is inserted. Nothing removed.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/components/investor/DashboardSpinePanels.tsx\tCardContent\tat=PortfolioStandingPanel:Card#1\tinner=SummaryStat#2",
+      "reason": "QA BLOCKER B4 — A FABRICATED ZERO REPLACED BY AN HONEST ABSENCE. Two of these tiles printed a confident $0 total when the underlying positions were missing, or were in more than one currency and therefore CANNOT BE SUMMED (rule: never convert currency, never sum across currencies). The panel now returns TOTAL_NOT_STATED and renders a stated absence instead of a number, so the SummaryStat node is legitimately not emitted in that state. THE ZERO WAS THE DEFECT. ENFORCED BY client/src/lib/investor/__tests__ (10/10) and the DashboardSpinePanels render test (4/4); one disarm reproduced the forbidden cross-currency sum.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/components/investor/DashboardSpinePanels.tsx\tCardContent\tat=PortfolioStandingPanel:Card#1\tinner=SummaryStat#3",
+      "reason": "QA BLOCKER B4 — the second of the two tiles described in the entry above. Same reason: a fabricated zero was replaced by a stated absence. Nothing was removed from the working case.",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
+    },
+    {
+      "id": "client/src/pages/partner/PartnerPortfolio.tsx\ttd\tat=PartnerPortfolio:PartnerShell>div>table>tbody>tr#2\tchild={expr}#1",
+      "reason": "QA BLOCKER ITEM 9 — the cell still exists; its CONTENT changed from a bare `?? id` expression to displayName(...), which the guard records as a different child expression. The id is preserved on the title attribute, so no information is lost. ENFORCED BY client/src/pages/partner/__tests__/qab_item9_spv_card_title_is_not_an_id.test.tsx (3/3).",
+      "approvedBy": "Delegated build brief for this wave (owner away, decisions delegated). Each entry below is a DELIBERATE relabel or honest-absence change specified in preflight/QA_BLOCKER_ENGINEERING_DOC.md and re-verified before the edit. NOTHING WAS DELETED FOR CONVENIENCE.",
+      "date": "2026-09-07"
     }
   ],
   "removedRouteTargets": [

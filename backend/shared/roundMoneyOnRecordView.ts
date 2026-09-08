@@ -114,6 +114,25 @@ export interface RoundMoneyOnRecord {
     count: number;
     agreesWithBook: boolean;
     note: string;
+    /* ── QA-B3, ADDITIVE. Nothing above changes. ────────────────────────────
+       THE LEDGER-ONLY POPULATION: money on the cap-table ledger for this round
+       that never passed through the round's subscription book. It is exactly
+       `ledgerMinor - funded`, it was ALREADY COMPUTED, and it was simply never
+       named on screen - which is the whole of blocker B3.
+
+       These fields exist so a founder can be told WHERE the difference comes
+       from instead of being shown two numbers and left to guess. THEY ARE NOT
+       A THIRD TOTAL AND THEY MUST NEVER BE ADDED TO SUBSCRIBED: in the normal
+       flow a soft circle reaches funded AND gets a ledger row, so summing the
+       two double-counts every ordinary investor. That is precisely why
+       `agreesWithBook` tests the IDENTITY `ledger === funded` rather than
+       adding them.
+
+       `null` when there is nothing to explain - the ledger is unreadable, or
+       it does not exceed the book. A zero here would be a figure; null is an
+       absence, and this is an absence. */
+    ledgerOnlyMinor: string | null;
+    ledgerOnlyDisplay: string | null;
   };
   /** Progress against the round's target, in BASIS POINTS (1% = 100bp), or null
    *  when there is no usable target to divide by. Basis points because the

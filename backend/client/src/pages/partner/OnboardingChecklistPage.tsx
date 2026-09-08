@@ -208,6 +208,46 @@ export function progressProvenanceOf(item: {
   return "self_attested";
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 340 · ITEM 1 — OWNER RULING, 6 SEPTEMBER 2026: "The onboarding should be
+ * able to reach 100%."
+ *
+ * WHAT WAS WRONG. `progress` divided by `CHECKLIST.length`, which included
+ * `sso_configured`. That item's own `support` sentence says, on screen, that it
+ * "cannot be completed on the platform". A denominator containing a step that
+ * cannot be completed means the bar can never read 100% for any partner, however
+ * much work they do. The bar was therefore measuring the platform's roadmap, not
+ * the partner's progress.
+ *
+ * THE CHANGE, and its exact limits.
+ *   · The DENOMINATOR now contains only COMPLETABLE steps — provenance
+ *     `not_supported` is excluded from BOTH `done` and `total`. 9 of 9 is
+ *     reachable.
+ *   · Excluded steps are NOT removed (R135.6). They still render, still tick,
+ *     still carry their support sentence, and are still counted in their own
+ *     provenance bucket line, which now says plainly that they sit outside the
+ *     percentage.
+ *   · Derived from `progressProvenanceOf`, never from a hardcoded 9. If SSO is
+ *     ever implemented, deleting its support sentence returns it to the
+ *     denominator with no further edit.
+ *
+ * AND THE HONESTY REQUIREMENT, WHICH IS A SEPARATE THING. Reaching 100% and
+ * being TRUE are different requirements. 100% here means "every completable step
+ * is recorded as done" — it does NOT mean Capavate checked them. Eight of the
+ * nine are partner toggles that no server process verifies, so each one now
+ * carries a visible SELF-ATTESTED label, and the percentage's own provenance
+ * note says which kinds of evidence it is now made of.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/** A step the platform states cannot be completed is not part of the score. */
+export function isCompletableChecklistItem(item: { key: string; support?: string }): boolean {
+  return progressProvenanceOf(item) !== "not_supported";
+}
+
+/** Rendered beside every step whose tick the platform cannot verify. */
+export const SELF_ATTESTED_LABEL =
+  "Self-attested \u2014 your own record. Capavate does not verify this step.";
+
 /* ── WAVE 219 · ITEM 3 — THE RETENTION LINK, AND A CORRECTION TO THE SPEC ──────
  * The build document says the retention acknowledgement links to `/settings/privacy`
  * "which does not exist", and `spec/OWNER_RULINGS_2026_08_13.md:9652` says the same.
@@ -417,9 +457,12 @@ export default function PartnerOnboardingChecklistPage() {
     [state, agreementSigned],
   );
 
+  /* WAVE 340 · ITEM 1 — the denominator holds COMPLETABLE steps only, so 100% is
+     reachable. See the block comment above `isCompletableChecklistItem`. */
   const progress = useMemo(() => {
-    const done = CHECKLIST.filter((i) => isItemDone(i.key)).length;
-    const total = CHECKLIST.length;
+    const completable = CHECKLIST.filter(isCompletableChecklistItem);
+    const done = completable.filter((i) => isItemDone(i.key)).length;
+    const total = completable.length;
     return { done, total, pct: total === 0 ? 0 : Math.round((done / total) * 100) };
   }, [isItemDone]);
 
@@ -519,8 +562,9 @@ export default function PartnerOnboardingChecklistPage() {
               data-testid="text-progress-provenance"
             >
               <div data-testid="text-progress-provenance-lead">
-                What that percentage is made of. It mixes three kinds of evidence,
-                so it counts steps recorded — not steps Capavate has checked.
+                What that percentage is made of. It counts only the steps that can
+                be completed, so 100% is reachable — but it counts steps recorded,
+                not steps Capavate has checked.
               </div>
               <div data-testid="text-progress-provenance-recorded">
                 Recorded by Capavate — {provenance.recorded_by_capavate.total}{" "}
@@ -540,8 +584,9 @@ export default function PartnerOnboardingChecklistPage() {
                 Capavate cannot do at all — {provenance.not_supported.total}{" "}
                 {provenance.not_supported.total === 1 ? "step" : "steps"}:{" "}
                 {provenance.not_supported.done} ticked. There is nothing on the
-                platform to perform, so a tick records only your own note. It still
-                counts toward the percentage.
+                platform to perform, so a tick records only your own note. These
+                steps are outside the percentage above and cannot hold it below
+                100%.
               </div>
             </div>
           </CardContent>
@@ -647,6 +692,22 @@ export default function PartnerOnboardingChecklistPage() {
                           >
                             {ITEM_ROUTES[it.key].label}
                           </a>
+                        )}
+                        {/* WAVE 340 · ITEM 1 — APPENDED AS THE LAST SIBLING, after
+                            every existing child, so nothing above changes position.
+                            The owner asked for a reachable 100%; that makes it more
+                            important, not less, that a partner can see which ticks
+                            are their own word and which Capavate holds a record of.
+                            Rendered for self-attested steps only: the agreement step
+                            IS held on record, and the unsupported step already says
+                            something stronger in its own support line. */}
+                        {progressProvenanceOf(it) === "self_attested" && (
+                          <div
+                            className="mt-0.5 text-xs text-muted-foreground"
+                            data-testid={`selfattested-${it.key}`}
+                          >
+                            {SELF_ATTESTED_LABEL}
+                          </div>
                         )}
                       </div>
                     </li>

@@ -13,7 +13,11 @@ import { kycVariantForCountry } from "../data/enums";
 
 describe("country → region → engine → KYC propagation", () => {
   it.each([
-    ["US", "US", "us_reg_d_506c", "us_nvca_seed"],
+    /* UPDATED, WITH A REASON — NOT RELAXED. Was `us_reg_d_506c`; the US mapping
+       now yields `us_reg_d`. The 506(c) value was rendered to every US investor
+       as a third-party verification standard the platform does not perform. The
+       legacy value stays in KYC_VARIANT_OPTIONS so stored profiles still parse. */
+    ["US", "US", "us_reg_d", "us_nvca_seed"],
     ["IN", "IN", "in_fema_kyc",   "in_pvt_seed"],
     ["GB", "UK", "uk_self_certified", "uk_bvca_seed"],
     ["JP", "JP", "jp_qii",        "jp_kk_seed"],

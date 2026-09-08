@@ -56,6 +56,7 @@ function get(path: string, user: string) {
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
     name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open",
+    currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
   });
   expect(r.status).toBe(201);
@@ -116,6 +117,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
          contract; every assertion below is unchanged (R98). See
          `build_log/wave173/W173_SIGNOFF_VERDICT.md`. */
       name: "Alpha SPV", jurisdiction: "delaware", carryBasis: "per_deployment",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(201);
@@ -127,6 +129,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("carry_basis is REQUIRED (no default) → 400 CARRY_BASIS_REQUIRED", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "No Carry SPV", jurisdiction: "delaware",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
@@ -136,6 +139,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("invalid jurisdiction → 400 INVALID_JURISDICTION", async () => {
     const r = await post("/api/partner/me/spv", MANAGING, {
       name: "Bad Juris", jurisdiction: "atlantis", carryBasis: "whole_spv",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       signoffLegalName: "Avi Managing", signoffAccepted: true,
     });
     expect(r.status).toBe(400);
@@ -145,6 +149,7 @@ describe("SPV Engine — GP CRUD + sub-role gating", () => {
   it("viewer CANNOT create an SPV → 403", async () => {
     const r = await post("/api/partner/me/spv", VIEWER, {
       name: "Viewer SPV", jurisdiction: "delaware", carryBasis: "whole_spv",
+      currency: "USD", /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
     });
     expect(r.status).toBe(403);
   });
@@ -170,7 +175,7 @@ describe("SPV Engine — cross-partner isolation (ADVERSARIAL)", () => {
     // Partner B owns an SPV created directly in the store.
     const bSpv = spvEngineStore.createSpv(
       PARTNER_B,
-      { name: "Partner B SPV", jurisdiction: "cayman", carryBasis: "whole_spv" },
+      { name: "Partner B SPV", jurisdiction: "cayman", carryBasis: "whole_spv" , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       "u_b_gp",
     );
     const r = await get(`/api/partner/me/spv/${bSpv.id}`, MANAGING);
@@ -181,7 +186,7 @@ describe("SPV Engine — cross-partner isolation (ADVERSARIAL)", () => {
   it("a GP cannot mutate another partner's SPV → 404", async () => {
     const bSpv = spvEngineStore.createSpv(
       PARTNER_B,
-      { name: "Partner B SPV 2", jurisdiction: "bvi", carryBasis: "whole_spv" },
+      { name: "Partner B SPV 2", jurisdiction: "bvi", carryBasis: "whole_spv" , currency: "USD" }, /* WAVE 306 W1 — stated, not defaulted: preserves this fixture's prior behaviour exactly. */
       "u_b_gp",
     );
     const r = await patch(`/api/partner/me/spv/${bSpv.id}`, MANAGING, { name: "hijack" });

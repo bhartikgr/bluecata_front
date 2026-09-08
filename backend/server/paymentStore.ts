@@ -256,8 +256,17 @@ export function chargeOrIdempotent(input: z.infer<typeof paymentChargeSchema>): 
       // Continue with the local entry; the chain/emit below are best-effort.
     }
     paymentChain.append({ id, intentId: entry.intentId, kind: entry.kind, amountCents: entry.amountCents, state: entry.state, ts: entry.ts });
+    /* WAVE 342 · W295 defect 1 — a refund is not a charge.
+       This function handles every PAYMENT_KIND, `refund` among them, and it
+       emitted the single type `payment_charged` for all of them, which is the
+       name the audit row inherited. The KPI/peer type is unchanged (it is a
+       published contract); the forensic action now says what happened.
+       INTERNATIONAL: no amount is converted and nothing is summed — the sign of
+       this one event's own minor units is read, in its own currency. */
+    const isRefund = entry.kind === "refund" || Number(entry.amountCents) < 0;
     emitSync({
       eventType: "payment_charged",
+      auditEventType: isRefund ? "payment_refunded" : "payment_charged",
       aggregateId: entry.customerId,
       aggregateKind: "investor",
       payload: { id, kind: entry.kind, state: entry.state, amountCents: entry.amountCents, currency: entry.currency, invoiceId: entry.invoiceId },

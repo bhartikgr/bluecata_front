@@ -71,7 +71,17 @@ import type { MfcrmCapability } from "@/lib/partner/mfcrmPersona";
 /** The exact sentence the owner objected to. Written out in full so that a
  *  future edit which re-introduces any part of it is caught. */
 const THE_FALSE_ASSERTION = "the carry each one earns";
-const NOT_CONFIRMED = "No carry rate confirmed";
+/* WAVE 340 · ITEM 2 — THIS SENTINEL CHANGED, AND WHY.
+   Wave B rendered EVERY stored zero as "No carry rate confirmed" because the
+   schema could not distinguish "no arrangement" from "an agreed 0%". The owner
+   ruled on 2026-09-06 that the default must become NULL, and migration 0233 adds
+   the nullable `carry_bps_recorded`, so the two ARE now distinguishable:
+     no rate recorded   -> "Not set"   (the owner's words)
+     an agreed 0%       -> "0.00%"     (a real term; Wave B hid it)
+   The §2 tests below therefore assert the NEW label for a not-recorded rate, and
+   a NEW test (§2d) pins the case Wave B could not express. Nothing about §0, §1
+   or §3 changes. */
+const NOT_SET = "Not set";
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
@@ -178,8 +188,8 @@ describe("WB·2b §0 CONTROL — a recorded rate still renders as a rate", () =>
     const reportCell = await screen.findByTestId("mfcrm-angel-report-carry-mfch_1");
     expect(cell.textContent).toBe("12.5%");
     expect(reportCell.textContent).toBe("12.5%");
-    expect(cell.textContent).not.toContain(NOT_CONFIRMED);
-    expect(reportCell.textContent).not.toContain(NOT_CONFIRMED);
+    expect(cell.textContent).not.toContain(NOT_SET);
+    expect(reportCell.textContent).not.toContain(NOT_SET);
   });
 
   it("a 3-basis-point rate is not swallowed either — the sentinel is keyed to EXACTLY zero", async () => {
@@ -187,7 +197,7 @@ describe("WB·2b §0 CONTROL — a recorded rate still renders as a rate", () =>
     renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
     await screen.findByTestId("mfcrm-persona-angel");
     const cell = await screen.findByTestId("mfcrm-angel-chapter-carry-mfch_1");
-    expect(cell.textContent).not.toBe(NOT_CONFIRMED);
+    expect(cell.textContent).not.toBe(NOT_SET);
     expect(cell.textContent).toContain("0.03");
   });
 });
@@ -254,7 +264,7 @@ describe("WB·2b §1 — the screen must not claim a chapter EARNS a carry", () 
 /* ============================================== §2 THE MANUFACTURED ZERO */
 
 describe("WB·2b §2 — a stored zero is not presented as a measured rate", () => {
-  it("carry_bps 0 renders the not-confirmed sentinel, NOT a percentage", async () => {
+  it("carry_bps 0 with NOTHING recorded renders \"Not set\", NOT a percentage", async () => {
     routeGets(chapterFixture(0));
     renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
     await screen.findByTestId("mfcrm-persona-angel");
@@ -262,10 +272,11 @@ describe("WB·2b §2 — a stored zero is not presented as a measured rate", () 
     const cell = await screen.findByTestId("mfcrm-angel-chapter-carry-mfch_1");
     const reportCell = await screen.findByTestId("mfcrm-angel-report-carry-mfch_1");
 
-    expect(cell.textContent).toBe(NOT_CONFIRMED);
-    expect(reportCell.textContent).toBe(NOT_CONFIRMED);
-    /* The literal forms the old code produced. Any of them reappearing means a
-       defaulted zero is being shown as if it had been measured. */
+    expect(cell.textContent).toBe(NOT_SET);
+    expect(reportCell.textContent).toBe(NOT_SET);
+    /* The literal forms the pre-Wave-B code produced. Any of them reappearing for
+       a row with NOTHING recorded means a defaulted zero is being shown as if it
+       had been measured. §2d asserts the opposite direction. */
     for (const bad of ["0%", "0.00%", "0.0%"]) {
       expect(cell.textContent).not.toContain(bad);
       expect(reportCell.textContent).not.toContain(bad);
@@ -277,8 +288,13 @@ describe("WB·2b §2 — a stored zero is not presented as a measured rate", () 
     renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
     await screen.findByTestId("mfcrm-persona-angel");
     const text = (screen.getByTestId("mfcrm-angel-chapters-carry-meaning").textContent ?? "").replace(/\s+/g, " ");
-    expect(text).toContain(NOT_CONFIRMED);
-    expect(text).toContain("cannot be told apart from a chapter that has no carry arrangement");
+    expect(text).toContain(NOT_SET);
+    /* WAVE 340 · ITEM 2 — the note no longer describes an ambiguity the schema has
+       stopped having. It states the RULE the storage now follows: a blank is not
+       recorded as a nought, and a real 0% is shown. */
+    expect(text).toContain("we do not record a nought on your behalf");
+    expect(text).toContain("it will be shown as 0.00%");
+    expect(text).not.toContain("cannot be told apart");
   });
 
   it("a NULL carry value is treated as the same ambiguity as a stored zero, not as a rate", async () => {
@@ -291,13 +307,50 @@ describe("WB·2b §2 — a stored zero is not presented as a measured rate", () 
     });
     renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
     await screen.findByTestId("mfcrm-persona-angel");
-    /* `Number(null) === 0`, so a null lands in the SAME bucket as a stored zero.
-       That is deliberate and it is the honest answer: a null carry is no more a
-       measured rate than a defaulted zero is. It must NOT read as "0%". The next
-       test pins the other direction — a genuinely unparseable value keeps the
-       em dash the page already used. */
+    /* A NULL legacy value with nothing recorded is the same answer as a defaulted
+       zero: no rate is recorded, so the cell reads "Not set". It must NOT read
+       "0%". The next test pins the other direction — a value that is PRESENT but
+       unreadable keeps the em dash, because "Not set" would be a claim the data
+       does not support. */
     const cell = await screen.findByTestId("mfcrm-angel-chapter-carry-mfch_1");
-    expect(cell.textContent).toBe(NOT_CONFIRMED);
+    expect(cell.textContent).toBe(NOT_SET);
+  });
+
+  it("§2d a RECORDED 0% renders 0.00% — the case Wave B could not express", async () => {
+    /* THE POINT OF THE WHOLE ITEM. A GP who genuinely agreed zero carry now has
+       that term shown. Under Wave B this row was indistinguishable from a blank
+       and was displayed as "No carry rate confirmed", i.e. the platform hid a real
+       commercial term. `carry_bps_recorded: 0` is what migration 0233 stores when
+       somebody types 0. */
+    routeGets({
+      "/api/partner/me/mfcrm/capability": { capability: ANGEL() },
+      "/api/partner/me/mfcrm/angel/chapters": {
+        chapters: [{ id: "mfch_1", name: "Toronto", region: "CA-ON", carry_bps: 0, carry_bps_recorded: 0, status: "active" }],
+      },
+      "/api/partner/me/mfcrm/angel/carry-report": {
+        report: [{ chapterId: "mfch_1", name: "Toronto", region: "CA-ON", carryBps: 0, carryBpsRecorded: 0, engagementCount: 1, activeCount: 1 }],
+      },
+    });
+    renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
+    await screen.findByTestId("mfcrm-persona-angel");
+    const cell = await screen.findByTestId("mfcrm-angel-chapter-carry-mfch_1");
+    const reportCell = await screen.findByTestId("mfcrm-angel-report-carry-mfch_1");
+    expect(cell.textContent).toContain("0");
+    expect(cell.textContent).not.toBe(NOT_SET);
+    expect(reportCell.textContent).not.toBe(NOT_SET);
+    expect(cell.textContent).toBe(reportCell.textContent);
+  });
+
+  it("§2e a PRE-MIGRATION rate is still shown — this wave hides nothing", async () => {
+    /* `carry_bps_recorded` is NULL on every row that existed before 0233. A row
+       whose legacy rate is 1250 must still read 12.5%; if it read "Not set" the
+       wave would have DELETED information from the screen. */
+    routeGets(chapterFixture(1250));
+    renderAt("/collective/partner/persona-tools", <PartnerMfcrmPersonas />);
+    await screen.findByTestId("mfcrm-persona-angel");
+    const cell = await screen.findByTestId("mfcrm-angel-chapter-carry-mfch_1");
+    expect(cell.textContent).toBe("12.5%");
+    expect(cell.textContent).not.toBe(NOT_SET);
   });
 
   it("a NaN-shaped carry value keeps the em dash", async () => {

@@ -24162,6 +24162,78 @@ var init_lpIdentityBinding = __esm({
   }
 });
 
+// server/lib/wave0Migration.ts
+var _LEGACY_SOURCE_TABLES, _LEGACY_MONEY_COLUMNS, _LEGACY_PARENT_SPV_FK, _KNOWN_TABLES, NAMED_DEFERRALS;
+var init_wave0Migration = __esm({
+  "server/lib/wave0Migration.ts"() {
+    "use strict";
+    _LEGACY_SOURCE_TABLES = Object.freeze([
+      "spvs",
+      "spv_commitments",
+      "spv_capital_calls",
+      "spv_distributions",
+      "spv_positions"
+    ]);
+    _LEGACY_MONEY_COLUMNS = Object.freeze({
+      spvs: Object.freeze(["target_minor", "committed_minor", "called_minor", "distributed_minor"]),
+      spv_commitments: Object.freeze(["amount_minor"]),
+      spv_capital_calls: Object.freeze(["amount_minor"]),
+      spv_distributions: Object.freeze(["total_minor"]),
+      spv_positions: Object.freeze(["basis_minor"])
+    });
+    _LEGACY_PARENT_SPV_FK = Object.freeze({
+      spvs: null,
+      spv_commitments: "spv_id",
+      spv_capital_calls: "spv_id",
+      spv_distributions: "spv_id",
+      spv_positions: "spv_id"
+    });
+    _KNOWN_TABLES = Object.freeze(/* @__PURE__ */ new Set([..._LEGACY_SOURCE_TABLES, "spv"]));
+    NAMED_DEFERRALS = Object.freeze([
+      "WAVE0-DEF-CUTOVER-MACHINERY",
+      "WAVE0-DEF-ROLLBACK-TRIGGERS",
+      "WAVE0-DEF-QUARANTINE-TABLE",
+      "WAVE0-DEF-DUAL-READ-RECONCILE",
+      "WAVE0-DEF-CANONICAL-DETECTOR-REFINE",
+      "WAVE0-DEF-SILENT-DEFAULT-BROADENING"
+    ]);
+  }
+});
+
+// shared/currencyDomain.ts
+var SPV_CURRENCY_REQUIRED_CODE, SPV_CURRENCY_UNKNOWN_CODE, SPV_CURRENCY_UNVERIFIABLE_CODE, SPV_CURRENCY_REQUIRED_HEADLINE, SPV_CURRENCY_REQUIRED_GUIDANCE, SPV_CURRENCY_UNKNOWN_HEADLINE, SPV_CURRENCY_UNKNOWN_GUIDANCE, SPV_CURRENCY_UNVERIFIABLE_HEADLINE, SPV_CURRENCY_UNVERIFIABLE_GUIDANCE, COPY;
+var init_currencyDomain = __esm({
+  "shared/currencyDomain.ts"() {
+    "use strict";
+    SPV_CURRENCY_REQUIRED_CODE = "SPV_CURRENCY_REQUIRED";
+    SPV_CURRENCY_UNKNOWN_CODE = "SPV_CURRENCY_UNKNOWN";
+    SPV_CURRENCY_UNVERIFIABLE_CODE = "SPV_CURRENCY_UNVERIFIABLE";
+    SPV_CURRENCY_REQUIRED_HEADLINE = "This vehicle needs a denomination before it can be created.";
+    SPV_CURRENCY_REQUIRED_GUIDANCE = "Every commitment, fee, distribution and tax form for this vehicle will be recorded in a single currency, and that currency cannot be changed after the vehicle is created. Capavate will not choose one for you and will not fall back to US dollars. Select the denomination that appears on the vehicle's formation documents and create the vehicle again.";
+    SPV_CURRENCY_UNKNOWN_HEADLINE = "Capavate does not recognise that currency code, so this vehicle was not created.";
+    SPV_CURRENCY_UNKNOWN_GUIDANCE = "A vehicle's denomination has to be a currency Capavate can account in for the life of the vehicle, and it cannot be changed afterwards, so an unrecognised code is refused rather than stored. Use the three-letter ISO 4217 code shown on the vehicle's formation documents \u2014 for example USD, EUR or GBP. Withdrawn codes (currencies that no longer exist) are also refused. Nothing has been created or charged.";
+    SPV_CURRENCY_UNVERIFIABLE_HEADLINE = "Capavate cannot confirm currency codes right now, so this vehicle was not created.";
+    SPV_CURRENCY_UNVERIFIABLE_GUIDANCE = "This is a fault on Capavate's side, not a problem with what you submitted. A vehicle's denomination is permanent, so Capavate refuses to record one it cannot verify rather than assuming US dollars. Nothing has been created or charged. Please try again shortly; if it keeps happening, contact Capavate.";
+    COPY = {
+      [SPV_CURRENCY_REQUIRED_CODE]: {
+        headline: SPV_CURRENCY_REQUIRED_HEADLINE,
+        guidance: SPV_CURRENCY_REQUIRED_GUIDANCE,
+        status: 400
+      },
+      [SPV_CURRENCY_UNKNOWN_CODE]: {
+        headline: SPV_CURRENCY_UNKNOWN_HEADLINE,
+        guidance: SPV_CURRENCY_UNKNOWN_GUIDANCE,
+        status: 400
+      },
+      [SPV_CURRENCY_UNVERIFIABLE_CODE]: {
+        headline: SPV_CURRENCY_UNVERIFIABLE_HEADLINE,
+        guidance: SPV_CURRENCY_UNVERIFIABLE_GUIDANCE,
+        status: 503
+      }
+    };
+  }
+});
+
 // server/lib/spvLifecycleAudit.ts
 var init_spvLifecycleAudit = __esm({
   "server/lib/spvLifecycleAudit.ts"() {
@@ -26054,6 +26126,13 @@ CREATE INDEX IF NOT EXISTS idx_sdfb_partner ON spv_deployment_fee_billing (partn
   }
 });
 
+// server/lib/spvSubscriptionDisplayNameSchema.ts
+var init_spvSubscriptionDisplayNameSchema = __esm({
+  "server/lib/spvSubscriptionDisplayNameSchema.ts"() {
+    "use strict";
+  }
+});
+
 // server/lib/requirePartnerAuth.ts
 var init_requirePartnerAuth = __esm({
   "server/lib/requirePartnerAuth.ts"() {
@@ -26470,12 +26549,15 @@ var init_spvEngineStore = __esm({
     init_lpIdentityBinding();
     init_connection();
     init_logger2();
+    init_wave0Migration();
+    init_currencyDomain();
     init_spvLifecycleAudit();
     init_ilpaCashflowLedger();
     init_bridgeStore();
     init_spvEngineDeploymentFeeHook();
     init_spvDeploymentFeeSource();
     init_applyWave50MoneyDefectSchema();
+    init_spvSubscriptionDisplayNameSchema();
     init_spvFundStore();
     init_partnerWorkspaceStore();
     init_subscriptionStore();

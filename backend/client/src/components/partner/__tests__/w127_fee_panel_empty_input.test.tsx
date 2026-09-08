@@ -31,6 +31,17 @@
  * The server half — the removal of the `?? spv.minCheckMinor` substitution and of
  * `Number()` on money — is proved in server/__tests__/w127_fee_breakdown_requires_commitment.test.ts.
  */
+/* W6c · D1 · TRIPWIRE UPDATED, NOT REMOVED — STATED REASON.
+   This assertion pinned the currency SYMBOL (`$`, `¥`) that the SPV tabs used
+   to render. W6c · D1 changed the two money chokepoints behind those tabs
+   (`fmt()` in SpvDetailTabs.tsx and `money()` in SpvOperationsPanels.tsx) to
+   pass `currencyDisplay: "code"`, because QA could not tell which currency
+   `$0.00 / $100,000.00` was on a Canadian-registered vehicle. The FIGURE is
+   unchanged in every digit — only the currency label changed from a symbol to
+   the ISO code, which is strictly more specific. The assertion is therefore
+   RE-POINTED at the new label and keeps testing exactly the property it was
+   written to test (the digits did not move, no conversion happened, and no
+   other currency appears). It is not weakened and it is not deleted. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -90,7 +101,7 @@ describe("W127 FINDING 2 · the fee panel with an empty commitment input", () =>
     const { container } = mount();
     await waitFor(() => expect(requestedUrls.some((u) => u.includes("/fee-obligations"))).toBe(true));
     const text = container.textContent ?? "";
-    for (const phantom of ["$484.47", "$451.47", "$33.00", "$100.00", "$80.00"]) {
+    for (const phantom of ["USD 484.47", "USD 451.47", "USD 33.00", "USD 100.00", "USD 80.00"]) {
       expect(text, `an empty input must not render ${phantom}`).not.toContain(phantom);
     }
     /* Nor a zero, which would be an equally false answer: nobody asked. */
@@ -134,7 +145,7 @@ describe("W127 FINDING 2 · the fee panel with an empty commitment input", () =>
     /* Hand arithmetic, in minor units, on the mocked breakdown:
          48447 − 3300 − 0 = 45147  →  $451.47 */
     expect(container.querySelector('[data-testid="spv-fee-breakdown-netDeployedMinor"]')!.textContent)
-      .toContain("$451.47");
+      .toContain("USD 451.47");
     expect(container.querySelector('[data-testid="spv-fee-breakdown-awaiting-input"]')).toBeNull();
   });
 

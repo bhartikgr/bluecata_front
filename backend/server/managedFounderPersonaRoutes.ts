@@ -85,7 +85,11 @@ export function registerMfcrmPersonaRoutes(app: Express): void {
     const pid = req.partnerContext!.partnerId;
     const body = req.body ?? {};
     try {
-      const c = mfcrmAngelStore.setChapterCarry(pid, String(req.params.chapterId), Number(body.carryBps));
+      /* WAVE 340 - ITEM 2: `Number(body.carryBps)` used to turn an absent rate into
+         0, i.e. into a claim that 0% carry was agreed. The value is now passed
+         THROUGH unconverted; the store's `recordedCarryBpsFromInput` is the single
+         place that decides what counts as "no rate recorded" (and stores NULL). */
+      const c = mfcrmAngelStore.setChapterCarry(pid, String(req.params.chapterId), body.carryBps ?? null);
       res.json({ chapter: c });
     } catch (e) { sendError(res, e); }
   });

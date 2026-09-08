@@ -215,6 +215,38 @@ export const WAVE216_BLOCKED_HINT =
   "Tick the confirmation above before recording a signature. A signature with no " +
   "recorded intent is a weaker record, so the platform will not store one.";
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   W6c · D4 — THE THREE IDENTIFIERS IN THE STATEMENT, EXPLAINED BESIDE IT.
+   ══════════════════════════════════════════════════════════════════════════════
+   QA read the "What you are signing" box and found three strings it could not
+   interpret: `spv_24e2f7d0e2d54c5d`, `lpa` in lower case while the dropdown two
+   inches above says "LPA", and `esign-statement-v1`. "LPA" itself is never
+   spelled out on the surface.
+
+   THESE ARE NOT FIXED BY EDITING THE STATEMENT. The statement's bytes are
+   hashed and stored with the signature, and the whole point of this module is
+   that the bytes rendered === the bytes hashed. Rewording them would change the
+   digest of every future signature and break the equality with every stored one
+   — the file header already says "Bump — never mutate". A copy defect must not
+   become a data-integrity defect.
+
+   So the identifiers stay EXACTLY as they are, and a legend rendered NEXT TO the
+   statement (never inside the hashed text node) says what each one is. This is
+   additive: it explains three terms that were not explained anywhere, and it
+   changes no signed byte.
+   ══════════════════════════════════════════════════════════════════════════════ */
+export const WAVE216_IDENTIFIER_LEGEND =
+  "About the lines above. \"Vehicle\" is Capavate's own internal reference for this " +
+  "SPV — an identifier, not a registered company number. \"Document type\" is the " +
+  "category the document was filed under; \"lpa\" is the Limited Partnership " +
+  "Agreement, the contract between the general partner running this vehicle and " +
+  "the limited partners investing in it. \"Statement version\" identifies the " +
+  "wording of this signing statement itself, so a later change to the wording can " +
+  "be told apart from this one; it says nothing about the version of your " +
+  "document. These lines are shown exactly as they are stored because they are " +
+  "part of what is hashed with your signature, and changing how they read would " +
+  "change that record.";
+
 /** Shown when this envelope carries a stored statement hash. */
 export const WAVE216_BOUND_NOTICE =
   "The statement above is bound to this envelope by a SHA-256 digest of these " +

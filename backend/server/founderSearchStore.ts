@@ -93,7 +93,18 @@ export function searchFounderWorkspace(companyIds: string[], rawQuery: string): 
         id: c.id,
         title: c.name ?? "(unnamed contact)",
         subtitle: [c.affiliation, c.email].filter(Boolean).join(" · ") || "Investor contact",
-        href: `/founder/investor-crm`,
+        /* ITEM 11 — AN API PATH IN A UI SLOT. `href` is where the browser is
+           sent when the founder clicks a search result, and `/founder/investor-crm`
+           is NOT a route: `client/src/App.tsx` registers `/founder/crm` (:742)
+           and `/founder/crm/new` (:739), and nothing else. The string looked
+           plausible because `/api/founder/investor-crm` IS the API path these
+           rows come from — the server path was pasted into the client slot, so
+           every contact hit led to a dead page.
+
+           THE PREMISE THAT FAILED, recorded so it is not re-investigated: the
+           finding also claimed global search does not index CRM contacts. IT
+           DOES — that is what this very block is. Nothing was built for it. */
+        href: `/founder/crm`,
       });
     }
   } catch (err) {

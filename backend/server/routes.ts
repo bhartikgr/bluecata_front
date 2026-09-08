@@ -146,6 +146,13 @@ import { registerReportsRoutes, listAllReportsFromDb as reportsStoreGetAll } fro
 // company through the SAME rule as the live scoped handler instead of its own
 // unchecked, caller-supplied version. Do not reimplement that resolution.
 import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered, resolveFounderCompanyIdForCaller } from "./founderCrmStore";
+/* WAVE 344 · ITEM 2 — the archive registry's administrator and audit view. */
+import { registerRecordArchiveRoutes } from "./recordArchiveStore";
+/* WAVE 344 · ITEM 3 — express consent for marketing email. Deliberately NOT
+   imported by the signup handler: the consent decision is a separate request made
+   after the account exists, which is what makes signup structurally unable to
+   depend on it. */
+import { registerMarketingConsentRoutes } from "./marketingConsentStore";
 // WAVE 28 ITEM 2 / CP-CRM-04 — admin queue for the crm_dedup_review table that
 // migration 0097 has been filling since v25.52 with no reader anywhere.
 import { registerCrmDedupReviewRoutes } from "./crmDedupReviewStore";
@@ -553,6 +560,18 @@ import { registerWave190PaymentGatewayRoutes } from "./lib/wave190PaymentGateway
    See `server/lib/wave192PlatformTruthSurface.ts` for the whole argument. */
 import { registerWave192PlatformTruthRoutes } from "./lib/wave192PlatformTruthRoutes";
 import { healthzBypassFields } from "./lib/wave192PlatformTruthSurface";
+/* WAVE 342 · W300 — the migration-ledger state on the PUBLIC `/api/healthz`.
+   The install check reads this endpoint on every install and it said nothing
+   about whether the numbered migrations had actually been applied to the
+   database it had just connected to, so `ok: true` / `dbConnected: true` was
+   reported on a database nineteen migration ids behind the code being served.
+   Numbers and booleans only, per this endpoint's standing rule; the migration
+   FILENAMES stay on the admin-gated `db:doctor` surface. Read-only; the frozen
+   `server/db/migrate.ts` is not touched. */
+import {
+  readMigrationLedgerHealthFromConnection,
+  migrationLedgerDegradedCodes,
+} from "./lib/healthzMigrationLedger";
 /* v25.34 Collective Payment Model — parallel/additive to v25.33. Admin CRUD +
    member quote-only self-service. Separate files; touches no Avi write path. */
 import { registerCollectivePaymentAdminRoutes } from "./lib/collectivePaymentAdminRoutes";
@@ -1371,6 +1390,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerCompanyLogoRoutes(app);
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
+  /* WAVE 344 · ITEM 2 — GET /api/admin/archive. Archived records REMAIN VISIBLE
+     to an administrator and to audit; hiding a record from a working list is not
+     hiding it from the record. What is returned is the archive DECISION only
+     (kind, id, when, by whom, why) and never a field of the record itself, which
+     is what keeps that visibility compatible with owner rulings R285/R289. */
+  registerRecordArchiveRoutes(app);
+  /* WAVE 344 · ITEM 3 — GET and POST /api/consent/marketing. One endpoint for
+     giving permission and for withdrawing it, so withdrawal is exactly as easy as
+     giving it. Service, security, transactional and platform messages are not
+     represented here and are never gated behind this choice. */
+  registerMarketingConsentRoutes(app);
   registerCrmDedupReviewRoutes(app); /* WAVE 28 / CP-CRM-04 — CRM duplicate-contact review queue (admin) */
   /* WAVE 52c · B1 + B2 — BEFORE the sacred commit routes, deliberately. The
      reader is the SAME projection the /api/companies/:id/securities screen is
@@ -2164,6 +2194,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        stays on the admin-gated `GET /api/admin/platform-truth`. */
     let bypassFields: ReturnType<typeof healthzBypassFields> | null = null;
     try { bypassFields = healthzBypassFields(); } catch { /* never let telemetry break the healthcheck */ }
+    /* WAVE 342 · W300 — MIGRATION-LEDGER STATE. Highest applied vs highest on
+       disk, plus one boolean for whether they agree. The reader never throws and
+       returns `measured: false` rather than an agreement it did not measure, but
+       it is wrapped anyway: the standing rule on this handler is that telemetry
+       never breaks the healthcheck. An unreadable ledger becomes
+       `migration_ledger_unmeasured` in `degraded` — never a silent pass. */
+    let migrationLedger: ReturnType<typeof readMigrationLedgerHealthFromConnection> | null = null;
+    try { migrationLedger = readMigrationLedgerHealthFromConnection(); } catch { migrationLedger = null; }
     /* WAVE 242 — the real email backlog, or `null` when it cannot be read.
        Never a hardcoded zero. Wrapped because the rule above still holds:
        never let telemetry break the healthcheck. */
@@ -2182,6 +2220,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     else if (emailOutboxBacklog > 0) degraded.push("email_outbox_backlog");
     if (bypassFields === null) degraded.push("dev_bypass_state_unmeasured");
     else if (bypassFields.devIdentityBypassActive) degraded.push("dev_identity_bypass_active");
+    /* WAVE 342 · W300 — appended AFTER every pre-existing `degraded` push, so
+       the existing entries keep their order for anything matching on index. */
+    if (migrationLedger === null) degraded.push("migration_ledger_unmeasured");
+    else for (const code of migrationLedgerDegradedCodes(migrationLedger)) degraded.push(code);
     /* ══ WAVE 242 ═══════════════════════════════════════════════════════════
        `ok` USED TO BE THE LITERAL `true`, eight lines below a comment
        complaining that this endpoint "reported `ok: true` the whole time" while
@@ -2246,6 +2288,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
          which is a measurement, not a default: every entry is pushed from a real
          signal above. A monitor alerts on this; the install check reads `ok`. */
       degraded,
+      /* == WAVE 342 · W300 — THE MIGRATION LEDGER, APPENDED ==================
+         THE INSTALL CHECK'S MISSING FACT. Three things at a glance:
+         `migrationLedgerHighestApplied` (what this DATABASE has),
+         `migrationLedgerHighestOnDisk` (what this BUILD ships), and
+         `migrationLedgerAgree` (whether those two are the same number).
+
+         NO EXISTING FIELD IS RENAMED, REORDERED OR REMOVED — the runbook reads
+         them by name. Everything here is new and sits after `degraded`.
+
+         `…Agree` is NEVER true on an unmeasured read: when the ledger cannot be
+         read, `migrationLedgerMeasured` is false, both ids are `null` and
+         `…Agree` is false. An unknown must not read as an agreement.
+
+         IDS, NOT FILENAMES. This endpoint is PUBLIC. A migration basename names
+         internal work; the ids and the boolean are what the install check needs.
+         `npm run db:doctor` prints the names, admin-side. */
+      migrationLedgerMeasured: migrationLedger?.measured ?? false,
+      migrationLedgerUnmeasuredReason:
+        migrationLedger === null ? "healthz_probe_threw" : migrationLedger.reason,
+      migrationLedgerPresent: migrationLedger?.ledgerPresent ?? null,
+      migrationLedgerHighestApplied: migrationLedger?.highestApplied ?? null,
+      migrationLedgerHighestOnDisk: migrationLedger?.highestOnDisk ?? null,
+      migrationLedgerAgree: migrationLedger?.agree ?? false,
+      migrationLedgerIdsBehind: migrationLedger?.idsBehind ?? null,
+      migrationLedgerAppliedCount: migrationLedger?.appliedCount ?? null,
+      migrationLedgerFileCount: migrationLedger?.fileCount ?? null,
+      migrationLedgerPendingCount: migrationLedger?.pendingCount ?? null,
     });
   });
 

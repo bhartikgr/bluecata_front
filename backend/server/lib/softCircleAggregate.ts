@@ -108,7 +108,7 @@ export interface DurableSoftCircleTotal {
   durableCount: number;
   /** The set of durable soft-circle ids, so a caller can detect seed-only rows. */
   durableIds: Set<string>;
-  reason?: "no_id" | "read_error" | "mixed_currency" | "non_usd";
+  reason?: "no_id" | "read_error" | "mixed_currency" | "non_usd" | "currency_not_stated";
 }
 
 /**
@@ -138,11 +138,47 @@ export function readDurableSoftCircleTotal(
       .all(id) as { id?: string; amount?: number; currency?: string | null }[];
     const durableIds = new Set<string>();
     const currencies = new Set<string>();
+    /* WAVE 346 · ITEM 2 — AN UNSTATED CURRENCY IS NO LONGER READ AS US DOLLARS.
+
+       WHAT WAS HERE. One line did `String(r.currency ?? "USD").trim().toUpperCase()
+       || "USD"`, so a soft-circle row whose currency was absent or an empty string
+       was folded into the `USD` bucket. The consequence was NOT a cosmetic label:
+       because the very next lines decide `mixed_currency` / `non_usd` from the
+       CONTENTS of that bucket, an empty currency made the round look like a clean
+       single-currency USD round, and this function then returned a REAL NUMBER as
+       `totalUsd` — a dollar total the platform had no basis to state. On an
+       international product that is a wrong number in front of a member.
+
+       WHY THE `?? "USD"` HALF WAS ALREADY DEAD. `soft_circles.currency` is declared
+       `TEXT NOT NULL DEFAULT 'USD'`, so SQLite cannot hand this loop a NULL and the
+       `??` branch was unreachable. The `|| "USD"` half was NOT dead: `NOT NULL`
+       permits the EMPTY STRING, and an empty string is precisely a currency that was
+       never stated. That is the case handled below.
+
+       WHAT IT DOES NOW. A stated code goes into the set exactly as before. An
+       absent or blank code sets a flag and enters NO bucket, and the function then
+       withholds the total with the reason `currency_not_stated` — the same shape it
+       already uses for `mixed_currency` and `non_usd`, which the collective route
+       already renders as an honest unavailability rather than a number.
+
+       WHAT DELIBERATELY DID NOT CHANGE — THE DOCUMENTED TRAP. Every row carrying a
+       real currency code behaves identically to before, byte for byte: an all-`USD`
+       round still returns the same `totalUsd`, and the tile that renders it still
+       renders the same figure. Bucketing an unknown under a placeholder would have
+       flipped the single-currency check and BLANKED a tile that shows a true number
+       today; a flag outside the bucket cannot do that. The disarm test proves both
+       halves: the all-USD control is unchanged, and only a blank currency withholds. */
+    let currencyNotStated = false;
     let total = 0;
     for (const r of rows) {
       if (r.id) durableIds.add(String(r.id));
-      currencies.add(String(r.currency ?? "USD").trim().toUpperCase() || "USD");
+      const stated = String(r.currency ?? "").trim().toUpperCase();
+      if (stated) currencies.add(stated);
+      else currencyNotStated = true;
       total += Number(r.amount ?? 0);
+    }
+    if (currencyNotStated) {
+      return { totalUsd: null, durableCount: rows.length, durableIds, reason: "currency_not_stated" };
     }
     if (currencies.size > 1) {
       return { totalUsd: null, durableCount: rows.length, durableIds, reason: "mixed_currency" };

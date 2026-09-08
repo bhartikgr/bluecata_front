@@ -427,11 +427,50 @@ export type InvestmentInterestValue = typeof INVESTMENT_INTEREST_OPTIONS[number]
 
 /**
  * Maps an investor's `country_of_tax_residency_code` to the accreditation
- * regime that applies. Production reads this to choose which evidence the
- * investor must upload and which third-party verification flow is invoked.
+ * regime that applies in that country.
+ *
+ * WHAT THIS MAP ACTUALLY DOES, AND IT IS THE WHOLE LIST: it produces a display
+ * label, shown on three investor-profile surfaces. It reads nothing, chooses
+ * nothing, requires nothing and invokes nothing.
+ *
+ * THE SUPERSEDED DOCSTRING, RETAINED HERE SO THE CORRECTION IS VISIBLE RATHER
+ * THAN SILENT, AND NEVER RENDERED:
+ *   "Production reads this to choose which evidence the investor must upload
+ *    and which third-party verification flow is invoked."
+ * Both halves of that sentence were FALSE. No caller reads this map to choose
+ * evidence — the only consumers are `kycVariantLabel` (a label lookup) and the
+ * zod enum in `../types.ts`. And there is no third-party verification flow of
+ * any kind in this tree; the platform's own fence records the finding in its
+ * own words: "No third-party verification integration exists in this tree."
+ * (`scripts/lint-prohibition-fence.mjs`).
+ *
+ * THE RATIFIED REGISTER, quoted verbatim from `shared/accreditationClause.ts`
+ * (v0.3 clause, paragraph 5) because it is the position this map must not
+ * contradict:
+ *   "Capavate records it; Capavate does not confirm it, does not assess whether
+ *    it is correct, and does not perform any verification on my behalf."
  */
 export const KYC_VARIANT_OPTIONS = opts([
-  { value: "us_reg_d_506c",         label: "US — Reg D 506(c) third-party verification" },
+  /* The United States entry, and why there are two of them.
+
+     `us_reg_d` is the value written from today. Its label is reused VERBATIM
+     from the canonical jurisdiction registry `ACCREDITATION_JURISDICTIONS_V0_3`
+     in `shared/accreditationClause.ts` — no new wording was invented here.
+
+     `us_reg_d_506c` is RETAINED, NOT DELETED. It is the value every US investor
+     profile written before this correction already carries inside
+     `profilestore_investor_profile.profile_json`; removing it from this list
+     would remove it from the zod enum in `../types.ts` and every one of those
+     stored profiles would stop parsing. It carries the same honest label, so a
+     profile written under the old value no longer displays a claim either.
+
+     WHAT CHANGED AND WHY: the old label read "US — Reg D 506(c) third-party
+     verification", and it was computed automatically from country of tax
+     residency, so EVERY US investor's profile badge asserted a 506(c)
+     third-party verification standard. The platform does not perform it, has no
+     integration that could perform it, and has not adopted 506(c) at launch. */
+  { value: "us_reg_d",              label: "United States — Regulation D, Rule 501(a)" },
+  { value: "us_reg_d_506c",         label: "United States — Regulation D, Rule 501(a)" },
   { value: "eu_gdpr_professional",  label: "EU — Professional client opt-in (GDPR-aware)" },
   { value: "uk_self_certified",     label: "UK — Self-certified Sophisticated / High-net-worth" },
   { value: "ca_ni_45_106",          label: "Canada — NI 45-106 accredited investor" },
@@ -447,7 +486,10 @@ export type KycVariantValue = typeof KYC_VARIANT_OPTIONS[number]["value"];
 
 export function kycVariantForCountry(countryCode: string): KycVariantValue {
   const map: Record<string, KycVariantValue> = {
-    US: "us_reg_d_506c",
+    /* Was `us_reg_d_506c`. Changed because this single line was the mechanism by
+       which every US investor was labelled with a verification standard the
+       platform does not perform. See the note on KYC_VARIANT_OPTIONS above. */
+    US: "us_reg_d",
     GB: "uk_self_certified",
     CA: "ca_ni_45_106",
     SG: "sg_accredited",

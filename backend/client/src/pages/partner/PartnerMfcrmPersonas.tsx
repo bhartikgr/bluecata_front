@@ -79,6 +79,15 @@ import { formatPercentValue } from "@/lib/percentDisplay";
    headed "Company", plus `doc_ref`, `doc_type`, `status`. The platform already
    owns the two helpers this needs; nothing new is written here. */
 import { partyReferenceLabel, humanizeMachineKey } from "@/lib/partnerDisplay";
+/* WAVE 340 - ITEM 2: the ONE spelling of "is a carry rate actually recorded?".
+   Imported from shared/ rather than restated here, because the server's carry
+   report applies the same rule and a rule stated twice is a rule that drifts. */
+import {
+  ANGEL_CHAPTER_CARRY_NOT_SET_LABEL,
+  carryValueIsUnreadable,
+  recordedCarryBps,
+  type AngelChapterCarryFields,
+} from "@shared/angelChapterCarry";
 import {
   MFCRM_PERSONAS,
   capabilityLabel,
@@ -189,6 +198,19 @@ function SectionCard({ title, description, testId, children }: { title: string; 
 /** Chapter carry, basis points → percent. `carry_bps` is an integer count of
  *  hundredths of a percent, so 2000 bps is 20%. This is a UNIT conversion with
  *  a known source unit, not a magnitude guess. */
+/** A typed percent string to BASIS POINTS, or `null` when nothing usable was
+ *  typed. NULL is the honest answer for a blank box: rounding "" to 0 is how the
+ *  fabricated zero got into the database in the first place. Rounding a typed
+ *  RATE to the nearest basis point is not the forbidden "round a per-party
+ *  share" - no amount is being apportioned - and it is what makes a typed 12.5%
+ *  land on 1250 rather than 1249. */
+function carryPctToBpsOrNull(pct: string): number | null {
+  if (typeof pct !== "string" || pct.trim() === "") return null;
+  const n = Number(pct);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100);
+}
+
 function carryBpsToPercentText(bps: unknown): string {
   const n = typeof bps === "number" ? bps : Number(bps);
   if (!Number.isFinite(n)) return "—";
@@ -196,33 +218,39 @@ function carryBpsToPercentText(bps: unknown): string {
 }
 
 /**
- * WAVE B · ITEM 2b — A STORED ZERO IS NOT A MEASURED RATE.
+ * WAVE B - ITEM 2b, SUPERSEDED BY WAVE 340 - ITEM 2. KEPT AS THE HISTORY.
  *
- * The owner's point: "a chapter does not necessarily have a 'carry' unless it is
- * a fund." The column behind these two cells is `carry_bps INTEGER NOT NULL
- * DEFAULT 0`, and BOTH writers coerce a missing or unparseable value to 0
- * (`createChapter`, `setChapterCarry`). So a chapter with NO carry arrangement
- * at all and a chapter where a carry of exactly 0% was agreed are stored
- * IDENTICALLY, as the integer 0.
+ * The owner's point was: "a chapter does not necessarily have a 'carry' unless
+ * it is a fund." The column behind these two cells was `carry_bps INTEGER NOT
+ * NULL DEFAULT 0`, and BOTH writers coerced a missing value to 0, so a chapter
+ * with NO carry arrangement and a chapter where exactly 0% was agreed were
+ * stored IDENTICALLY. Wave B could not tell them apart, so it rendered EVERY
+ * stored zero as "No carry rate confirmed" - which was honest about the
+ * ambiguity but ALSO HID A REAL, DELIBERATELY AGREED 0%.
  *
- * THE TWO CASES CANNOT BE TOLD APART FROM THE DATA WE HOLD. There is no
- * "carry agreed" flag on the row; the create form's blank box and a typed "0"
- * both persist 0; and the carry-report projection returns no timestamps at all,
- * so the two screens could not even agree with each other if a timestamp were
- * pressed into service as a proxy. Rather than invent a distinction the data
- * does not support, a stored zero is rendered as an explicit "not confirmed"
- * and the ambiguity is stated in words on the card.
+ * WAVE 340 - ITEM 2 removes the ambiguity at the source instead of describing
+ * it. The owner ruled on 2026-09-06 that the default must be NULL, not zero.
+ * Migration 0233 adds `carry_bps_recorded`, nullable and with NO default, and
+ * both writers now store NULL when nobody supplied a rate. So:
  *
- * NO ARITHMETIC IS CHANGED. Every non-zero rate — and every unreadable value —
- * is handed straight to `carryBpsToPercentText` above, unmodified. The schema
- * default is NOT changed here: that is a money-field schema decision and is
- * referred to the owner.
+ *   recorded = 20%   ->  "20.00%"    (unchanged)
+ *   recorded = 0%    ->  "0.00%"     (NEW: a real agreed zero is now SHOWN)
+ *   nothing recorded ->  "Not set"   (the owner's words)
+ *
+ * The combining rule lives in shared/angelChapterCarry.ts, ONCE, because the
+ * server's carry report needs the same rule and a rule stated twice drifts.
+ * A row written before migration 0233 whose `carry_bps` is non-zero still shows
+ * that rate - NOTHING IS HIDDEN by the change.
+ *
+ * NO ARITHMETIC IS CHANGED. Every rate that renders is still handed to
+ * `carryBpsToPercentText` above, unmodified.
  */
-const CHAPTER_CARRY_NOT_CONFIRMED = "No carry rate confirmed";
-
-function chapterCarryText(bps: unknown): string {
-  const n = typeof bps === "number" ? bps : Number(bps);
-  if (Number.isFinite(n) && n === 0) return CHAPTER_CARRY_NOT_CONFIRMED;
+function chapterCarryText(row: AngelChapterCarryFields | null | undefined): string {
+  /* An unreadable stored value keeps the em dash it has always had. "Not set" is
+     a claim that nobody recorded a rate, and that claim is not available here. */
+  if (carryValueIsUnreadable(row)) return carryBpsToPercentText(Number.NaN);
+  const bps = recordedCarryBps(row);
+  if (bps === null) return ANGEL_CHAPTER_CARRY_NOT_SET_LABEL;
   return carryBpsToPercentText(bps);
 }
 
@@ -234,17 +262,21 @@ function ChapterCarryMeaningNote({ testId }: { testId: string }) {
     <p className="mt-3 text-xs text-[var(--cv-color-text-muted)]" data-testid={testId}>
       A carry rate is something you record here for your own reference. Capavate stores and
       shows it; Capavate does not calculate, accrue, invoice or pay carry from it, and a
-      chapter is not a fund. Where the recorded rate is zero we show &quot;No carry rate
-      confirmed&quot;, because a stored zero cannot be told apart from a chapter that has no
-      carry arrangement at all.
+      chapter is not a fund. A chapter with no agreed rate reads &quot;Not set&quot; - we do
+      not record a nought on your behalf. If you do agree a rate of exactly 0%, record it and
+      it will be shown as 0.00%, because that is a real term and not a blank.
     </p>
   );
 }
 
 /* =========================================================== ANGEL persona */
 
-interface ChapterRow { id: string; name: string; region: string | null; carry_bps: number; status: string }
-interface CarryReportRow { chapterId: string; name: string; region: string | null; carryBps: number; engagementCount: number; activeCount: number }
+/* WAVE 340 - ITEM 2: `carry_bps_recorded` / `carryBpsRecorded` are the honest
+   fields (NULL = no rate recorded). The legacy `carry_bps` / `carryBps` are kept
+   because pre-migration rows still hold their rate there and it must keep
+   showing. */
+interface ChapterRow { id: string; name: string; region: string | null; carry_bps: number; carry_bps_recorded: number | null; status: string }
+interface CarryReportRow { chapterId: string; name: string; region: string | null; carryBps: number; carryBpsRecorded: number | null; engagementCount: number; activeCount: number }
 
 function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersonaDef; capability: MfcrmCapability | null; canWrite: boolean }) {
   const qc = useQueryClient();
@@ -278,8 +310,10 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
        * is being apportioned here; the server itself truncates to an integer
        * (`Math.trunc`, mfcrmAngelStore.ts:63), so rounding first is what makes
        * a typed 12.5% land on 1250 rather than 1249. */
-      const pct = Number(carryPct);
-      const carryBps = Number.isFinite(pct) ? Math.max(0, Math.round(pct * 100)) : 0;
+      /* WAVE 340 - ITEM 2: a blank (or unusable) Carry box sends NULL, not 0. It
+         used to send 0 - `Number("")` is 0 and `Number.isFinite(0)` is true - so
+         leaving the box alone stored a claim that 0% carry had been agreed. */
+      const carryBps = carryPctToBpsOrNull(carryPct);
       return (await apiRequest("POST", "/api/partner/me/mfcrm/angel/chapters", {
         name, region: region.trim() ? region.trim() : null, carryBps,
       })).json();
@@ -290,8 +324,9 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
 
   const carryM = useMutation({
     mutationFn: async (v: { chapterId: string; pct: string }) => {
-      const pct = Number(v.pct);
-      const carryBps = Number.isFinite(pct) ? Math.max(0, Math.round(pct * 100)) : 0;
+      /* WAVE 340 - ITEM 2: saving an empty box CLEARS the rate back to "Not set"
+         instead of recording 0%. */
+      const carryBps = carryPctToBpsOrNull(v.pct);
       return (await apiRequest("PATCH", `/api/partner/me/mfcrm/angel/chapters/${encodeURIComponent(v.chapterId)}/carry`, { carryBps })).json();
     },
     onSuccess: () => { invalidate(); toast({ title: "Carry updated" }); },
@@ -329,7 +364,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
                 <tr key={c.id} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-angel-chapter-${c.id}`}>
                   <td className="py-1.5">{c.name}</td>
                   <td className="py-1.5">{c.region ?? "—"}</td>
-                  <td className="py-1.5" data-testid={`mfcrm-angel-chapter-carry-${c.id}`}>{chapterCarryText(c.carry_bps)}</td>
+                  <td className="py-1.5" data-testid={`mfcrm-angel-chapter-carry-${c.id}`}>{chapterCarryText(c)}</td>
                   <td className="py-1.5">{humanizeMachineKey(c.status)}</td>
                   <td className="py-1.5 text-right">
                     {canWrite && personaActionState(act("angel-chapter-carry"), capability).allowed && (
@@ -362,7 +397,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
           <div className="grid gap-2 sm:grid-cols-4">
             <div><Label htmlFor="mfcrm-ch-name">Name</Label><Input id="mfcrm-ch-name" data-testid="mfcrm-angel-create-name" value={name} onChange={(e) => setName(e.target.value)} /></div>
             <div><Label htmlFor="mfcrm-ch-region">Region</Label><Input id="mfcrm-ch-region" data-testid="mfcrm-angel-create-region" value={region} onChange={(e) => setRegion(e.target.value)} /></div>
-            <div><Label htmlFor="mfcrm-ch-carry">Carry %</Label><Input id="mfcrm-ch-carry" data-testid="mfcrm-angel-create-carry" inputMode="decimal" value={carryPct} onChange={(e) => setCarryPct(e.target.value)} /><span className="mt-1 block text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-angel-create-carry-hint">Leave this blank if you have not agreed a carry rate for this chapter.</span></div>
+            <div><Label htmlFor="mfcrm-ch-carry">Carry %</Label><Input id="mfcrm-ch-carry" data-testid="mfcrm-angel-create-carry" inputMode="decimal" value={carryPct} onChange={(e) => setCarryPct(e.target.value)} /><span className="mt-1 block text-xs text-[var(--cv-color-text-muted)]" data-testid="mfcrm-angel-create-carry-hint">Leave this blank if you have not agreed a carry rate. A blank box is stored as no rate at all and shown as &quot;Not set&quot; - it is not stored as 0%.</span></div>
             <div className="flex items-end">
               <Button data-testid="mfcrm-angel-create-submit" disabled={createM.isPending || !name.trim()} onClick={() => createM.mutate()}>
                 {createM.isPending ? "Creating…" : "Create chapter"}
@@ -412,7 +447,7 @@ function AngelPersona({ persona, capability, canWrite }: { persona: MfcrmPersona
               {(reportQ.data?.report ?? []).map((r) => (
                 <tr key={r.chapterId} className="border-t border-[var(--cv-color-border)]" data-testid={`mfcrm-angel-report-${r.chapterId}`}>
                   <td className="py-1.5">{r.name}</td>
-                  <td className="py-1.5" data-testid={`mfcrm-angel-report-carry-${r.chapterId}`}>{chapterCarryText(r.carryBps)}</td>
+                  <td className="py-1.5" data-testid={`mfcrm-angel-report-carry-${r.chapterId}`}>{chapterCarryText(r)}</td>
                   <td className="py-1.5">{r.engagementCount}</td>
                   <td className="py-1.5">{r.activeCount}</td>
                 </tr>

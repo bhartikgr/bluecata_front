@@ -895,8 +895,8 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  </div>
  <Stat label="Min ticket" v={moneyMajorOrNotProvided(inv.minTicket, inv.currency, { compact: true })} />
  {/* DEF-025 fix: source liquidation pref + pro-rata from round data */}
- <Stat label="Liquidation pref" v={(myInv?.round as any)?.terms?.liquidationPref ?? "Per round terms"} />
- <Stat label="Pro-rata" v={(myInv?.round as any)?.terms?.proRataMinimum ?? "Per round terms"} />
+ <Stat label="Liquidation pref" v={(inv.round as any)?.terms?.liquidationPref ?? "Per round terms"} />
+ <Stat label="Pro-rata" v={(inv.round as any)?.terms?.proRataMinimum ?? "Per round terms"} />
  </div>
  </CardContent>
  </Card>

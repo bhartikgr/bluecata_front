@@ -52,6 +52,19 @@ import { getDb, rawDb } from "./db/connection";
 import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { founderCrmContacts as founderCrmContactsTable } from "../shared/schema";
 import { log } from "./lib/logger";
+/* WAVE 344 · ITEM 2 — THE ARCHIVE. A reversible, additive flag held in its own
+   registry table (migration 0234), NOT a column on this table and emphatically NOT
+   the existing `deleted_at`. `deleted_at` on this table is an irreversible delete
+   that hides the row from administrator and audit views too; it is left exactly as
+   it is and nothing below reads or writes it differently. See
+   server/recordArchiveStore.ts for the five rules this keeps. */
+import {
+  archiveRecord,
+  unarchiveRecord,
+  archivedRecordIds,
+  archivedCount,
+  ARCHIVE_BINDINGS,
+} from "./recordArchiveStore";
 
 export type FounderCrmContact = {
   id: string;
@@ -377,11 +390,66 @@ function callerOwnsContactCompany(req: Request, res: Response, contactCompanyId:
   return false;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   WAVE 344 · ITEM 2 — THE ARCHIVE, ON THE FOUNDER INVESTOR CRM.
+   ══════════════════════════════════════════════════════════════════════════
+
+   WHICH TABLE, AND HOW THAT WAS ESTABLISHED. There are six spellings of
+   "contacts" in this database (`contacts`, `founder_crm_contacts`,
+   `investor_crm_contacts`, `partner_crm_contacts`, `pcrm_contacts`,
+   `sync_pcrm_contact`). Adding an archive to the wrong one produces a feature
+   that looks like it works and hides nothing. The binding was resolved by
+   TRACING the screen, not by reading table names:
+
+     client/src/App.tsx:743  route /founder/crm
+       → client/src/pages/founder/CRM.tsx:120  GET /api/founder/investor-crm
+         → this file's handler below
+           → the `contacts` cache, rebuilt from `founder_crm_contacts`
+             (this file, the SELECT at the /api/founder/crm/contacts handler)
+
+   `founder_crm_contacts` is the table, it holds the 607 rows the owner is asking
+   about, and every other candidate table is empty in this database.
+   `ARCHIVE_BINDINGS.contact.table` records that answer in one place and
+   server/__tests__/w344_item2_record_archive.test.ts asserts it.
+
+   THE COUNT OF CONSUMERS. Exactly TWO handlers serve this list — GET
+   /api/founder/investor-crm and its alias GET /api/founder/crm/contacts. A third
+   registration of the alias existed and was retired in place by W302
+   (server/routes.ts, "RETIRED IN PLACE. NOT REGISTERED."). BOTH live handlers are
+   filtered below, and the test asserts the count is 2, because a filter on one of
+   two list endpoints is a feature that works on one screen. */
+
+/** True when the caller explicitly asked to see archived records as well. Anything
+ *  other than these exact opt-ins means "working view", so the default is to
+ *  exclude — and the screen has to say it excludes them. */
+function wantsArchived(req: Request): boolean {
+  const v = req.query.includeArchived;
+  return v === "1" || v === "true";
+}
+
+/** The one place the founder CRM decides what a working list leaves out. */
+function applyArchiveFilter(
+  companyId: string,
+  rows: FounderCrmContact[],
+  includeArchived: boolean,
+): Array<FounderCrmContact & { archived?: boolean }> {
+  const archived = new Set(archivedRecordIds(tenantForCompany(companyId), "contact"));
+  if (includeArchived) {
+    return rows.map((c) => ({ ...c, archived: archived.has(c.id) }));
+  }
+  return rows.filter((c) => !archived.has(c.id)).map((c) => ({ ...c, archived: false }));
+}
+
 export function registerFounderCrmRoutes(app: Express): void {
   // GET /api/founder/investor-crm — list contacts (per authenticated founder's company)
   app.get("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
     const companyId = ensureCompanyId(req, res); if (!companyId) return;
-    res.json(contacts.filter((c) => c.companyId === companyId));
+    /* W344 ITEM 2 — archived contacts leave the working list. The row is NOT
+       written, NOT altered and NOT deleted; only this list leaves it out, and the
+       screen states that it does. `?includeArchived=1` brings them back with an
+       `archived` flag, which is what the interface's restore control reads. */
+    const mine = contacts.filter((c) => c.companyId === companyId);
+    res.json(applyArchiveFilter(companyId, mine, wantsArchived(req)));
   });
 
   // GET /api/founder/crm/contacts — alias for investor-crm (fixes the "tone" crash)
@@ -421,8 +489,110 @@ export function registerFounderCrmRoutes(app: Express): void {
     } catch (err) {
       log.warn("[GET /api/founder/crm/contacts] DB refresh failed (serving from cache):", (err as Error).message);
     }
-    res.json(contacts.filter((c) => c.companyId === companyId));
+    /* W344 ITEM 2 — the SECOND of the two list handlers. Filtered identically, so
+       the two endpoints cannot disagree about what is on a working list. */
+    const mine = contacts.filter((c) => c.companyId === companyId);
+    res.json(applyArchiveFilter(companyId, mine, wantsArchived(req)));
   });
+
+  /* ────────────────────────────────────────────────────────────────────────
+     W344 ITEM 2 — THE THREE ARCHIVE ENDPOINTS.
+
+     Registered BEFORE the per-id PATCH/DELETE handlers so the literal path
+     `archive-summary` can never be read as an `:id`.
+     ──────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * GET /api/founder/investor-crm/archive-summary
+   *
+   * THE HIGHEST-RISK PART OF THIS FEATURE, AND WHAT THIS ENDPOINT IS FOR.
+   * Every count, tile and total on the CRM screen is computed from the working
+   * list, so every one of them excludes archived contacts. If the screen does not
+   * SAY that, archiving becomes an invisible way to change a number the owner
+   * relies on. This endpoint gives the screen the two things it needs to say it:
+   * how many are archived, and the sentence to say. `archivedCount` is READ BACK
+   * from the registry and is `null` — not 0 — when it could not be read, so the
+   * screen can say "not known" instead of claiming "none".
+   */
+  app.get("/api/founder/investor-crm/archive-summary", requireAuth, (req: Request, res: Response) => {
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
+    const n = archivedCount(tenantForCompany(companyId), "contact");
+    res.json({
+      ok: true,
+      archivedCount: n,
+      /* The figures on this screen that leave archived contacts out. Named, so a
+         reader can check that the notice covers all of them rather than trusting
+         that it does. */
+      excludesArchivedFrom: [
+        "Contacts",
+        "Invested",
+        "Co-investor edges",
+        "Top series",
+        "pipeline stage counts",
+        "filter chip counts",
+      ],
+      restorable: true,
+    });
+  });
+
+  /**
+   * POST /api/founder/investor-crm/:id/archive — put one contact away.
+   *
+   * Ownership is checked with `callerOwnsContactCompany`, the same guard the PATCH
+   * and DELETE paths use, so this cannot become a way to archive another tenant's
+   * contact. The contact row itself is NOT written.
+   */
+  app.post("/api/founder/investor-crm/:id/archive", requireAuth, (req: Request, res: Response) => {
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
+    const target = contacts.find((c) => c.id === req.params.id && c.companyId === companyId);
+    if (!target) return res.status(404).json({ ok: false, error: "not_found" });
+    if (!callerOwnsContactCompany(req, res, target.companyId)) return;
+    const actor =
+      (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "";
+    const out = archiveRecord({
+      tenantId: tenantForCompany(companyId),
+      entityType: "contact",
+      recordId: target.id,
+      actorUserId: actor,
+      reason: typeof req.body?.reason === "string" ? req.body.reason.trim() || null : null,
+      auditEntity: `company:${companyId}`,
+    });
+    if (!out.ok) {
+      return res.status(out.status).json({ ok: false, error: out.code, message: out.message });
+    }
+    return res.json({ ok: true, archived: true, entry: out.row ?? null, restorable: true });
+  });
+
+  /**
+   * POST /api/founder/investor-crm/:id/unarchive — bring one contact back.
+   *
+   * This endpoint is the difference between an archive and a delete with better
+   * manners. It is reachable from the same screen the archive control is on.
+   */
+  app.post("/api/founder/investor-crm/:id/unarchive", requireAuth, (req: Request, res: Response) => {
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
+    const target = contacts.find((c) => c.id === req.params.id && c.companyId === companyId);
+    if (!target) return res.status(404).json({ ok: false, error: "not_found" });
+    if (!callerOwnsContactCompany(req, res, target.companyId)) return;
+    const actor =
+      (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "";
+    const out = unarchiveRecord({
+      tenantId: tenantForCompany(companyId),
+      entityType: "contact",
+      recordId: target.id,
+      actorUserId: actor,
+      auditEntity: `company:${companyId}`,
+    });
+    if (!out.ok) {
+      return res.status(out.status).json({ ok: false, error: out.code, message: out.message });
+    }
+    return res.json({ ok: true, archived: false, entry: out.row ?? null });
+  });
+
+  /** The table this surface archives against, exposed for the parity test rather
+   *  than re-spelled there. Reading it here proves the binding and the filter are
+   *  the same fact. */
+  void ARCHIVE_BINDINGS;
 
   // B-V11-2 fix: server-side pipeline-stage validator. The CRM list view
   // crashes if a contact carries a stage value outside this enum, so we

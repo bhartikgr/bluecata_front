@@ -385,6 +385,19 @@ export function aggregateRoundMoneyOnRecord(input: AggregateRoundMoneyInput): Ro
   const determined = refusal === null;
 
   const ledgerAgrees = ledgerAvailable && ledgerUnreadable === 0 ? ledgerMinor === totals.funded : false;
+
+  /* QA-B3 - THE DIFFERENCE, NAMED. Money on the cap-table ledger for this round
+     that never passed through the round's subscription book: `commitFunded()`
+     wrote a `captable_commits` row ("Record existing investors") and no
+     `soft_circles` row exists for it, so it is correctly absent from every
+     bucket above.
+
+     SUBTRACTION ONLY, IN bigint, AND ONLY WHERE IT IS MEANINGFUL. No total
+     above changes; nothing is added to anything. Computed only when the ledger
+     was actually read cleanly AND exceeds the book - otherwise there is nothing
+     to explain and the answer is `null`, an absence, never a zero. */
+  const ledgerReadable = ledgerAvailable && ledgerUnreadable === 0;
+  const ledgerOnly = ledgerReadable && ledgerMinor > totals.funded ? ledgerMinor - totals.funded : null;
   const ledgerNote = !ledgerAvailable
     ? "Cap-table ledger not read for this projection; the funded figure above comes from the round's book only."
     : ledgerUnreadable > 0
@@ -420,6 +433,8 @@ export function aggregateRoundMoneyOnRecord(input: AggregateRoundMoneyInput): Ro
       count: ledgerCount,
       agreesWithBook: ledgerAgrees,
       note: ledgerNote,
+      ledgerOnlyMinor: ledgerOnly === null ? null : ledgerOnly.toString(),
+      ledgerOnlyDisplay: ledgerOnly === null ? null : displayMinor(ledgerOnly, currency),
     },
   };
 }

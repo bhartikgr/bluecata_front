@@ -4442,22 +4442,56 @@ function handleSoftCircleReject(req: Request, res: Response): void {
 
   const rejectedAt = nowIso();
 
-  // Update in memory cache
+  /* ────────────────────────────────────────────────────────────────────────
+   * QA BLOCKER 1b — PERSIST FIRST, FAIL CLOSED.
+   *
+   * This block previously updated the in-memory cache, then attempted the DB
+   * write, then SWALLOWED any failure with the comment "Don't fail — in-memory
+   * updated; DB write best-effort on this column" and returned `ok: true`
+   * regardless. The founder was told the entry was withdrawn; after a restart
+   * the row was `intent` again and the $0 line was back. A response that says
+   * a thing was recorded when it was not is the failure mode this platform
+   * refuses everywhere else.
+   *
+   * The order is now the same order `softCircleStore.createSoftCircle` already
+   * uses ('v25.34 FAIL-CLOSED: persist first; on failure throw (do NOT touch
+   * cache)'): the durable write happens FIRST, and the cache is only mutated
+   * once the row is known to have changed on disk.
+   *
+   * `changes < 1` is treated as a failure, not a success. A better-sqlite3
+   * `UPDATE` that matches no row raises no exception — it simply reports zero
+   * changes — which is precisely the silent-empty this programme keeps finding:
+   * a query that "worked" and did nothing. Because `createSoftCircle` is itself
+   * fail-closed, a soft circle present in the cache is always present in
+   * `soft_circles`, so zero changes means the write did not land and must not
+   * be reported as if it had.
+   *
+   * NOTHING IS DELETED. This is the same single `UPDATE` on the row's own
+   * status column; no row is removed from `soft_circles` or from any
+   * hash-chained table.
+   * ──────────────────────────────────────────────────────────────────────── */
+  try {
+    const db = rawDb();
+    const info = db.prepare(
+      `UPDATE soft_circles SET status = 'rejected', rejected_at = ?, rejected_reason = ?, updated_at = ? WHERE id = ?`
+    ).run(rejectedAt, reason, rejectedAt, scId);
+    const changed = Number((info as { changes?: number } | undefined)?.changes ?? 0);
+    if (changed < 1) {
+      log.error("[track1/sc-reject] DB update changed no rows for", scId);
+      res.status(500).json({ ok: false, error: "REJECT_PERSIST_FAILED" });
+      return;
+    }
+  } catch (err) {
+    log.error("[track1/sc-reject] DB update failed:", (err as Error).message);
+    res.status(500).json({ ok: false, error: "REJECT_PERSIST_FAILED" });
+    return;
+  }
+
+  // The row is durably 'rejected'. Only now does the in-memory cache follow.
   scAny.status = "rejected" as unknown as string;
   scAny.rejectedAt = rejectedAt;
   scAny.rejectedReason = reason;
   scAny.updatedAt = rejectedAt;
-
-  // Persist to DB
-  try {
-    const db = rawDb();
-    db.prepare(
-      `UPDATE soft_circles SET status = 'rejected', rejected_at = ?, rejected_reason = ?, updated_at = ? WHERE id = ?`
-    ).run(rejectedAt, reason, rejectedAt, scId);
-  } catch (err) {
-    log.error("[track1/sc-reject] DB update failed:", (err as Error).message);
-    // Don't fail — in-memory updated; DB write best-effort on this column
-  }
 
   emitBridge("softCircle.rejected", roundId, "round", { scId, roundId, reason, rejectedAt, investorName: scAny.investorName });
 

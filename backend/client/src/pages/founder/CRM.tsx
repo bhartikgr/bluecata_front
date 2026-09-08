@@ -116,9 +116,106 @@ export default function FounderInvestorCRM() {
   const [pendingDelete, setPendingDelete] = useState<CrmContact | null>(null);
   const [warmIntroTarget, setWarmIntroTarget] = useState<{ id: string; name: string } | null>(null);
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     WAVE 344 · ITEM 2 — ARCHIVE. The owner asked how to put test contacts away
+     without deleting them. Archiving hides a contact from this working list and
+     leaves the contact, its history and its seals completely untouched, and it
+     can be undone from this screen.
+
+     THE PART THAT MATTERS MOST ON THIS SCREEN: every figure below — the four
+     Network reach figures, the seven pipeline stage counts and the six filter
+     chip counts — is computed from this list, so every one of them leaves
+     archived contacts out. Each of those seventeen figures therefore carries a
+     line of its own saying so. Without that, archiving would be an invisible way
+     to change a number the owner relies on.
+     ══════════════════════════════════════════════════════════════════════════ */
+  const [showArchived, setShowArchived] = useState(false);
+
   const contactsQ = useQuery<CrmContact[]>({
-    queryKey: ["/api/founder/investor-crm", companyId],
-    queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
+    queryKey: ["/api/founder/investor-crm", companyId, showArchived],
+    queryFn: async () =>
+      (
+        await apiRequest(
+          "GET",
+          `/api/founder/investor-crm?companyId=${companyId}${showArchived ? "&includeArchived=1" : ""}`,
+        )
+      ).json(),
+  });
+
+  /** How many contacts are put away. Read from the server, never assumed. */
+  const archiveSummaryQ = useQuery<{ archivedCount: number | null }>({
+    queryKey: ["/api/founder/investor-crm/archive-summary", companyId],
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/founder/investor-crm/archive-summary?companyId=${companyId}`)).json(),
+  });
+
+  /**
+   * THE SENTENCE EVERY AFFECTED FIGURE CARRIES.
+   *
+   * Four cases, and none of them is silence:
+   *  - showing the working list and some are put away  → says how many are left out
+   *  - showing the working list and none are put away  → says none are put away,
+   *    rather than saying nothing, so the owner never has to wonder whether a
+   *    figure is complete
+   *  - the count could not be read                     → says it is not known.
+   *    It does NOT print "0", because a fabricated zero is the failure this
+   *    programme has been bitten by
+   *  - showing archived as well                        → says they are included
+   */
+  const archivedCount = archiveSummaryQ.data?.archivedCount;
+  const exclusionNote: string = showArchived
+    ? "Includes archived contacts"
+    : archiveSummaryQ.isLoading
+      ? "Excludes archived contacts — checking how many"
+      : archivedCount === null || archivedCount === undefined
+        ? "Excludes archived contacts — how many is not known"
+        : archivedCount === 0
+          ? "Excludes archived contacts — none are archived"
+          : `Excludes archived contacts — ${archivedCount} archived`;
+
+  /** Renders that sentence under one figure. `figure` names the figure it belongs
+   *  to so a test can prove the line exists for each one individually. */
+  const ExcludesArchived = ({ figure }: { figure: string }) => (
+    <div
+      className="text-[9px] leading-tight text-muted-foreground mt-0.5"
+      data-testid={`excludes-archived-${figure}`}
+    >
+      {exclusionNote}
+    </div>
+  );
+
+  const archiveContact = useMutation({
+    mutationFn: async (id: string) =>
+      (await apiRequest("POST", `/api/founder/investor-crm/${id}/archive`, {})).json(),
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId, showArchived] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm/archive-summary", companyId] });
+      if (r?.ok === false) {
+        /* A refusal is shown to the person, in their words, and NOTHING is
+           hidden. An archive that silently hides nothing is the trap. */
+        toast({ title: "Not archived", description: String(r?.message ?? ""), variant: "destructive" });
+      } else {
+        toast({ title: "Contact archived", description: "It is out of your working list and can be brought back at any time." });
+      }
+    },
+    onError: () =>
+      toast({ title: "Not archived", description: "Nothing has changed. Please try again.", variant: "destructive" }),
+  });
+
+  const unarchiveContact = useMutation({
+    mutationFn: async (id: string) =>
+      (await apiRequest("POST", `/api/founder/investor-crm/${id}/unarchive`, {})).json(),
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId, showArchived] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm/archive-summary", companyId] });
+      if (r?.ok === false) {
+        toast({ title: "Not restored", description: String(r?.message ?? ""), variant: "destructive" });
+      } else {
+        toast({ title: "Contact restored", description: "It is back in your working list." });
+      }
+    },
+    onError: () =>
+      toast({ title: "Not restored", description: "Nothing has changed. Please try again.", variant: "destructive" }),
   });
 
   // Sprint 18 Phase 2 — T6.1 enrich each contact with insight markers used by chips.
@@ -402,11 +499,42 @@ export default function FounderInvestorCRM() {
                 <span className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Network reach</span>
               </div>
               <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-                <div><div className="text-[10px] uppercase text-muted-foreground">Contacts</div><div className="text-xl font-semibold" data-testid="reach-total">{reach.total}</div></div>
-                <div><div className="text-[10px] uppercase text-muted-foreground">Invested</div><div className="text-xl font-semibold" data-testid="reach-invested">{reach.invested}</div></div>
-                <div><div className="text-[10px] uppercase text-muted-foreground">Co-investor edges</div><div className="text-xl font-semibold" data-testid="reach-edges">{reach.coInvestorEdges}</div></div>
-                <div><div className="text-[10px] uppercase text-muted-foreground">Top series</div><div className="text-sm font-medium truncate" data-testid="reach-top-series">{reach.series[0]?.[0] ?? "—"}</div></div>
+                {/* W344 ITEM 2 — each of these four figures counts only the working
+                    list, so each one says that it leaves archived contacts out. */}
+                <div><div className="text-[10px] uppercase text-muted-foreground">Contacts</div><div className="text-xl font-semibold" data-testid="reach-total">{reach.total}</div><ExcludesArchived figure="reach-total" /></div>
+                {/* ITEM 10 — TWO TILES SAID "INVESTED" AND BOTH COUNTERS WERE
+                    CORRECT. This one counts contacts at stage `invested` OR
+                    `longterm` (see the `reach` memo above); the pipeline strip
+                    below has a tile counting stage `invested` ALONE. The founder
+                    saw two different numbers under the same word and had no way
+                    to tell which was which. ONLY THE LABEL CHANGED. The
+                    arithmetic, the filter and the test id are untouched — the
+                    label now names the two stages it actually adds up, and it
+                    uses the same words the stage list itself uses ("Invested",
+                    "Long-term Partner"), so the two surfaces cannot drift apart
+                    in the reader's head. */}
+                <div><div className="text-[10px] uppercase text-muted-foreground">Invested + long-term</div><div className="text-xl font-semibold" data-testid="reach-invested">{reach.invested}</div><ExcludesArchived figure="reach-invested" /></div>
+                <div><div className="text-[10px] uppercase text-muted-foreground">Co-investor edges</div><div className="text-xl font-semibold" data-testid="reach-edges">{reach.coInvestorEdges}</div><ExcludesArchived figure="reach-edges" /></div>
+                <div><div className="text-[10px] uppercase text-muted-foreground">Top series</div><div className="text-sm font-medium truncate" data-testid="reach-top-series">{reach.series[0]?.[0] ?? "—"}</div><ExcludesArchived figure="reach-top-series" /></div>
               </div>
+            </div>
+
+            {/* W344 ITEM 2 — the archive control panel, on the same screen as the
+                figures it affects, and the restore is right next to it because an
+                archive you cannot undo is a delete with better manners. */}
+            <div className="mt-3 pt-3 border-t flex flex-wrap items-center gap-3" data-testid="archive-panel">
+              <button
+                type="button"
+                onClick={() => setShowArchived((v) => !v)}
+                className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-[hsl(0_100%_40%)]/40"
+                data-testid="button-toggle-archived"
+              >
+                {showArchived ? "Hide archived contacts" : "Show archived contacts"}
+              </button>
+              <span className="text-[11px] text-muted-foreground" data-testid="archive-panel-note">
+                {exclusionNote}. Archiving keeps the contact and everything recorded
+                about it, and you can bring it back at any time.
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -422,6 +550,8 @@ export default function FounderInvestorCRM() {
             >
               <div className="text-xs uppercase tracking-wide text-muted-foreground">{s.label}</div>
               <div className="text-2xl font-semibold mt-0.5">{counts[s.key]}</div>
+              {/* W344 ITEM 2 — every stage count is a working-list count. */}
+              <ExcludesArchived figure={`stage-${s.key}`} />
             </button>
           ))}
         </div>
@@ -452,6 +582,8 @@ export default function FounderInvestorCRM() {
                 <span className={`ml-1.5 ${active ? "text-white/80" : "text-muted-foreground"}`}>
                   {chipCounts[chip.key as keyof typeof chipCounts]}
                 </span>
+                {/* W344 ITEM 2 — every chip count is a working-list count. */}
+                <ExcludesArchived figure={`chip-${chip.key}`} />
               </button>
             );
           })}
@@ -583,6 +715,34 @@ export default function FounderInvestorCRM() {
                       {/* v23.4.5 BUG 010 / v23.4.7 Phase 5 BUG 025 — wire Delete
                           button to DELETE /api/founder/investor-crm/:id behind
                           an accessible AlertDialog confirmation. */}
+                      {/* W344 ITEM 2 — archive and restore, side by side with the
+                          delete, so the reversible choice is the easy one and the
+                          reversal is never harder than the action. */}
+                      {(c as any).archived ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="Bring this contact back into your working list"
+                          aria-label={`Restore contact ${c.name}`}
+                          onClick={() => unarchiveContact.mutate(c.id)}
+                          disabled={unarchiveContact.isPending}
+                          data-testid={`button-unarchive-${c.id}`}
+                        >
+                          Restore
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="Archive this contact — it is kept and can be brought back"
+                          aria-label={`Archive contact ${c.name}`}
+                          onClick={() => archiveContact.mutate(c.id)}
+                          disabled={archiveContact.isPending}
+                          data-testid={`button-archive-${c.id}`}
+                        >
+                          Archive
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"

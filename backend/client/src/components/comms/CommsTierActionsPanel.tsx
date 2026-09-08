@@ -609,7 +609,16 @@ export function CommsTierActionsPanel({
             <Input
               value={participantsRaw}
               onChange={(e) => setParticipantsRaw(e.target.value)}
-              placeholder="New group participants (comma-separated user ids)"
+              /* ITEM 9 (INTERIM — STOP AND REPORT). The placeholder read
+                 "comma-separated user ids", which is an internal instruction
+                 leaked into the interface: it asks an operator to type primary
+                 keys. THE CORRECT FIX IS A PARTICIPANT PICKER, which is a new
+                 control and is OUT OF SCOPE for this pass; it is recorded in
+                 the owner report as outstanding. This wording change does NOT
+                 fix the defect — it only stops the screen from reading as a
+                 developer note while the picker is outstanding. The field still
+                 accepts exactly what it accepted before. */
+              placeholder="Add participants — one account reference per line or separated by commas"
               data-testid="comms-tier-create-input"
             />
             <Button size="sm" onClick={() => void createGroup()} disabled={creating} data-testid="comms-tier-create-submit">

@@ -20,6 +20,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, CheckCircle2, Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { serverRefusalText } from "@/lib/serverRefusalMessage"; /* WAVE 73 · ITEM 1 */
+/* WAVE 344 · ITEM 3 — the marketing email choice, changeable here. The owner asked
+   that people be able to change their choice in their settings area, and the
+   regulator requires that withdrawing be as easy as giving. It is the SAME
+   component as the one on the signup form, so the wording somebody can withdraw is
+   word for word the wording they agreed to. */
+import { MarketingConsentChoice } from "@/components/MarketingConsentChoice";
 
 /* ---------------------------- helpers ---------------------------- */
 
@@ -352,6 +358,38 @@ export default function PrivacyPage() {
             </table>
           </CardContent>
         </Card>
+
+        {/* WAVE 344 · ITEM 3 — MARKETING EMAIL.
+
+            PLACED LAST, DELIBERATELY, AND THIS IS NOT A COSMETIC CHOICE. The
+            project's silent-drop guard identifies each panel by its POSITION under
+            PageBody. Inserting this card first renumbered every card below it, and
+            the guard correctly reported three baseline panels as having disappeared
+            even though nothing had been removed. Appending it leaves every existing
+            position untouched. If this card is ever moved up, that guard will fail
+            again and the reason will be this, not a real loss.
+
+            The person still finds it easily: it is the only control on this screen
+            about email, and it is one click either way — no confirmation step, no
+            warning, and no attempt to talk anybody out of switching it off. */}
+        {/* WAVE 344 · ITEM 3 — MARKETING EMAIL. Placed FIRST, above the export and
+            deletion controls, because it is the one thing on this screen a person
+            is likely to have come here to change. One click either way; there is
+            no confirmation step, no warning, and no attempt to talk anybody out of
+            switching it off. */}
+        <Card className="mb-4" data-testid="card-marketing-consent">
+          <CardContent className="py-4">
+            <div className="text-sm font-medium mb-1">Marketing email</div>
+            <div className="text-xs text-muted-foreground mb-3">
+              This is entirely optional and you can change it here whenever you like,
+              in one step. Messages we have to send you about your account — signing
+              in, security, signature requests, receipts — are always delivered and
+              are not affected by this choice.
+            </div>
+            <MarketingConsentChoice channel="settings" />
+          </CardContent>
+        </Card>
+
       </PageBody>
     </>
   );

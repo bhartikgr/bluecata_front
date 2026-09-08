@@ -253,8 +253,35 @@ export function SpvK1Panel({
      replacing an existing sibling. */
   const yearSourceNote = useMemo(() => {
     if (!yearsQ.data) return "Checking which years this vehicle has recorded activity in…";
-    const { years, suggestedTaxYear } = yearsQ.data;
-    if (suggestedTaxYear !== null) {
+    /* ═════════════════════════════════════════════════════════════════════
+       W6c — A PROVABLE WHITE SCREEN ON THE K-1 TAB. FOUND BY RENDERING.
+       ═════════════════════════════════════════════════════════════════════
+       The declared response type says `years: number[]`, so TypeScript is
+       satisfied and this error appears NOWHERE in the type-error baseline. But
+       the type is a claim about a JSON body that arrives at runtime, and when
+       the body does not carry `years` — an older server, a partial response, a
+       proxy that trimmed it — `years.join(", ")` throws inside a `useMemo`
+       during render. React unmounts the tree: the GP gets a white screen on the
+       K-1 tab, the exact shape that white-screened an investor before.
+
+       This was not looked for. It was caught by MOUNTING all sixteen tabs.
+
+       THE FIX DOES NOT FABRICATE AN EMPTY LIST. `years = []` would have made
+       the crash disappear while causing the panel to state "This vehicle has no
+       recorded activity" — a false claim about the vehicle, made confidently,
+       which is worse than the crash because nobody would ever notice it. An
+       unusable answer is reported as unusable instead. */
+    const rawYears = (yearsQ.data as { years?: unknown }).years;
+    if (!Array.isArray(rawYears)) {
+      return (
+        "The list of years with recorded activity did not arrive in the expected form, " +
+        "so no year is suggested here. Showing last year by default — check the year " +
+        "below before generating anything."
+      );
+    }
+    const years = rawYears as number[];
+    const { suggestedTaxYear } = yearsQ.data;
+    if (suggestedTaxYear !== null && suggestedTaxYear !== undefined) {
       return `Showing the most recent closed tax year with recorded activity (${suggestedTaxYear}). Recorded activity: ${years.join(", ")}.`;
     }
     if (years.length > 0) {

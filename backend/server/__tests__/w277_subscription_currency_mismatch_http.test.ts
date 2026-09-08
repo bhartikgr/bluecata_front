@@ -585,16 +585,76 @@ describe("W277 §7 — the wave's own change introduces no conversion and no coe
     expect(body).toContain("toUpperCase()");
     expect(body).not.toMatch(/Number\(|parseInt|parseFloat/);
     expect(body).not.toMatch(/\brate\b|convert|multiplier|\bfx\b/i);
-    /* BOTH call sites sit ABOVE their own first write, which is the whole point.
-       Position is asserted, not existence. */
+    /* ══════════════════════════════════════════════════════════════════════
+       WAVE 306 · WAVE 3 — THIS ASSERTION WAS VACUOUS AND IS NOW REPAIRED.
+       ══════════════════════════════════════════════════════════════════════
+       IT WAS WRONG BEFORE, and it is recorded rather than quietly replaced. The
+       old loop did `src.indexOf("this._persistSub(", at)` on the WHOLE FILE and
+       asserted the result was greater than `at`. Searching forward from a
+       position can only ever return a later position, so the comparison was
+       TRUE BY CONSTRUCTION — it would have held for a call site with no write
+       after it at all, and it held for any call placed anywhere above the last
+       `_persistSub` in a 5,700-line file. It proved nothing about ordering.
+
+       IT IS ALSO NO LONGER THE RIGHT QUESTION. Wave 306 added this same guard
+       to three further money sinks, and those write `spv_fee`, deployments,
+       distributions and transfers — NOT `_persistSub`. A file-wide search for
+       one subscription-specific write would have "passed" for all three by
+       finding some unrelated subscription write hundreds of lines away.
+
+       THE REPAIR: bound the search to the ENCLOSING FUNCTION, and require the
+       guard to precede that function's OWN currency write. Both facts are
+       asserted per call site and the count is asserted exactly.
+       ══════════════════════════════════════════════════════════════════════ */
     const calls = [...src.matchAll(/assertSubscriptionCurrencyMatchesVehicle\(data\.currency/g)].map(
       (m) => m.index ?? -1,
     );
-    expect(calls.length).toBe(2);
+    /* COUNT IT, EXACTLY. Two call sites shipped in W277 (`subscribe`,
+       `projectLpCommitted`); Wave 306 added `createDeployment`,
+       `recordDistribution` and `createTransfer`. Five, and a sixth appearing
+       without this number being updated is a change nobody reviewed. */
+    expect(calls.length).toBe(5);
+
+    /* The store's methods are two-space-indented members of one object
+       literal, so the next `\n  <name>(` after a call site is the start of the
+       NEXT method and therefore the end of the enclosing one. */
+    const enclosingFunctionEnd = (at: number): number => {
+      const m = /\n  [A-Za-z_][A-Za-z0-9_]*\(/.exec(src.slice(at));
+      /* NEVER FABRICATE A BOUND. If no following method is found the slice
+         would silently become "rest of file" and re-open the vacuity this
+         repair exists to close. */
+      expect(m).not.toBeNull();
+      return at + (m!.index ?? 0);
+    };
+
+    const namesGuarded: string[] = [];
     for (const at of calls) {
-      const nextWrite = src.indexOf("this._persistSub(", at);
-      expect(nextWrite).toBeGreaterThan(at);
+      /* Which method is this? Read the nearest preceding member declaration so
+         the failure message names the sink rather than a byte offset. */
+      const before = src.slice(0, at);
+      const declMatches = [...before.matchAll(/\n  ([A-Za-z_][A-Za-z0-9_]*)\(/g)];
+      const fnName = declMatches[declMatches.length - 1]?.[1] ?? "<unknown>";
+      namesGuarded.push(fnName);
+
+      const scope = src.slice(at, enclosingFunctionEnd(at));
+      /* THE ORDERING CLAIM, SCOPED. The guard must sit above the currency write
+         BELONGING TO THIS SAME METHOD. A guard placed after its own write would
+         refuse a mismatch only once the row already existed. */
+      expect(
+        `${fnName}: guard precedes its own currency write = ${scope.includes("currency: data.currency ?? s.currency")}`,
+      ).toBe(`${fnName}: guard precedes its own currency write = true`);
     }
+
+    /* NAME-SET DIFF, BOTH SIDES NON-EMPTY. Asserting the SET means a guard
+       silently moved from one sink to another cannot pass on count alone. */
+    expect(namesGuarded.length).toBeGreaterThan(0);
+    expect([...namesGuarded].sort()).toEqual([
+      "createDeployment",
+      "createTransfer",
+      "projectLpCommitted",
+      "recordDistribution",
+      "subscribe",
+    ]);
     /* And the route-level gate runs before the sacred ledger write. */
     const routes = fs.readFileSync("server/spvEngineRoutes.ts", "utf8");
     const gate = routes.indexOf("assertSubscriptionCurrencyMatchesVehicle(currency, spv.currency)");

@@ -113,8 +113,55 @@ export const FEE_BASIS_DIMENSION_LABELS: Record<FeeBasisDimension, string> = {
  * (`shared/refusalHeadlineGate.ts:LOOKS_HUMAN_MAX_LENGTH`); the wave-207 test measures them
  * rather than trusting this comment.
  */
+/* ══════════════════════════════════════════════════════════════════════════════
+ * WAVE 339 · THE FEE SCHEDULE SENTENCE WAS FALSE. IT NAMED ONE TRIGGER AND THE
+ * CODE HAS TWO. CORRECTED IN PLACE, KEEPING ONE SOURCE.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * WHAT IT SAID. "Charged once per vehicle, WHEN THIS VEHICLE IS MARKED
+ * DEPLOYED." A partner reading that would expect no charge until the day they
+ * deploy.
+ *
+ * WHAT THE CODE DOES — counted, not assumed. `chargeEngineSpvDeploymentFee` is
+ * invoked from exactly THREE places outside tests:
+ *   1. `server/spvEngineStore.ts:3232` — `markDeployed`. The one the old
+ *      sentence named.
+ *   2. `server/spvEngineStore.ts:1036` — `updateSpv`, guarded by
+ *      `isPushToLiveTransition(prevStatus, s.status)`. That predicate is
+ *      `!isLiveSpvStatus(prev) && isLiveSpvStatus(next)`, and
+ *      `NON_LIVE_SPV_STATUSES` is `["draft", "wound_down"]`. So it fires the
+ *      moment a vehicle leaves DRAFT for `open`, `closed`, `deployed` OR
+ *      `distributing` — that is, WHEN THE VEHICLE IS FIRST PUBLISHED, which is
+ *      normally long before anything is deployed.
+ *   3. `server/lib/spvEngineDeploymentFeeHook.ts:340` —
+ *      `retryEngineSpvDeploymentFee`, an ADMIN retry of a charge that was
+ *      already attempted and left `pending`. That is not a third occasion on
+ *      which a partner is billed; it completes the first. It is therefore not
+ *      named in a partner-facing sentence.
+ *
+ * SO A PARTNER WAS BILLED AT PUBLICATION AND TOLD THEY WOULD BE BILLED AT
+ * DEPLOYMENT. The new sentence names both occasions and says which one counts.
+ *
+ * "NEVER CHARGED TWICE" IS NOT A PROMISE THIS SENTENCE INVENTS. The hook
+ * documents three independent idempotency layers (a `charged` billing row, an
+ * existing `partner_billing_entries` row for the SPV, and a non-NULL
+ * `spv.deployment_fee_minor` stamp), so a vehicle that is published and later
+ * deployed is billed once in total.
+ *
+ * NOTHING ABOUT THE TRIGGER, THE AMOUNT OR THE BASIS IS CHANGED — R133.2 rules
+ * the trigger unchanged and this wave obeys that. The defect was the WORDS.
+ *
+ * WHY THE CONSTANT IS EDITED RATHER THAN JOINED BY A SIBLING. Wave 207 added a
+ * sibling record to avoid disturbing sentences that were merely incomplete.
+ * This one is FALSE, and a false sentence that stays exported can still be
+ * rendered somewhere. One source, corrected, cannot drift. The partner Fee
+ * Schedule and the admin fee screens both read this constant, so both become
+ * true together. The wave-207 DOM tests compare the RENDERED text to this
+ * constant rather than to a literal, so they follow the correction.
+ *
+ * The 240-character `looksHuman` ceiling still applies and is still measured by
+ * the wave-207 test rather than trusted from this comment. */
 export const W207_VEHICLE_FEE_WHEN =
-  "Charged once per vehicle, when this vehicle is marked Deployed. The amount does not vary with the capital confirmed in the vehicle, with whether any investment is made, or with the amount raised.";
+  "Charged once per vehicle, at whichever comes first: it leaves draft, or it is marked Deployed. Never charged twice. The amount does not vary with the capital confirmed, with whether any investment is made, or with the amount raised.";
 
 export const W207_VEHICLE_FEE_BASIS =
   "A flat amount for the vehicle. Any future banding may only count investors, jurisdictions, documents or duration — never capital, so the amount cannot follow the size of the raise.";

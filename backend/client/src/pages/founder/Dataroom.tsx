@@ -144,7 +144,9 @@ export default function Dataroom() {
     <>
       <PageHeader
         title="Dataroom"
-        description="Folders, permissions, audit events. Drag-drop upload with watermarking."
+        /* ITEM 7 — this said "Drag-drop upload with watermarking", which the
+           product does not do. Corrected to what the page actually offers. */
+        description="Folders, permissions, audit events. Drag-drop upload."
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Dataroom" }]}
         actions={
           <>
@@ -260,7 +262,14 @@ export default function Dataroom() {
                               <td className="px-5 py-3 flex items-center gap-3">
                                 <div className="h-8 w-8 rounded bg-secondary flex items-center justify-center"><FileText className="h-4 w-4 text-muted-foreground" /></div>
                                 <span className="font-medium">{f.name}</span>
-                                {f.watermark && <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">Watermarked</Badge>}
+                                {/* ITEM 7 — THE BADGE WAS THE DEFECT. The badge said "Watermarked",
+                                    but NOTHING IN THIS TREE MODIFIES FILE BYTES: there is no
+                                    PDF library, no image compositing and no per-viewer
+                                    stamping. The `watermark` column is a boolean that drives
+                                    a CSS overlay on the in-app preview and nothing else, and
+                                    the download route streams the ORIGINAL bytes. The badge
+                                    now names what the flag really does. */}
+                                {f.watermark && <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700" data-testid={`badge-preview-marked-${f.id}`}>Preview marked · file not modified</Badge>}
                               </td>
                               <td className="px-3 py-3 text-muted-foreground">{f.uploadedBy}</td>
                               <td className="px-3 py-3 text-muted-foreground">{timeAgo(f.uploadedAt)}</td>
@@ -309,20 +318,12 @@ export default function Dataroom() {
                   <div className="px-4 py-2 border-b border-border flex items-center justify-between">
                     <span className="font-medium text-sm">{previewFile.name}</span>
                     <div className="flex items-center gap-2">
-                      {previewFile.watermark && <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">Watermark on</Badge>}
+                      {/* ITEM 7 — same correction as the list badge above. */}
+                      {previewFile.watermark && <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700" data-testid="badge-preview-marked">Preview marked · file not modified</Badge>}
                       <Button size="sm" variant="ghost" onClick={() => setPreviewFile(null)} data-testid="button-close-preview">Close</Button>
                     </div>
                   </div>
                   <div className="relative h-[calc(85vh-49px)] bg-secondary/30 flex items-center justify-center overflow-hidden">
-                    {previewFile.watermark && (
-                      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                        <div className="text-[hsl(0_100%_40%)]/10 text-3xl font-bold rotate-[-30deg] select-none whitespace-pre-wrap text-center leading-tight" data-testid="watermark-overlay">
-                          Confidential — Provided to Authorized Recipient
-                          {"\n"}
-                          {new Date().toISOString().slice(0, 10)}
-                        </div>
-                      </div>
-                    )}
                     {previewFile.mime.startsWith("image/") ? (
                       /* v23.4.7 Phase 12 / BUG 027: preview surfaces use inline disposition so the browser renders the asset instead of triggering a download prompt. */
                       <img src={`/api/founder/dataroom/files/${previewFile.id}/download?disposition=inline`} alt={previewFile.name} className="max-h-full max-w-full" />
@@ -333,6 +334,38 @@ export default function Dataroom() {
                         <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-2" />
                         <p className="text-sm text-muted-foreground mb-3">Preview not available for this file type.</p>
                         <Button asChild><a href={`/api/founder/dataroom/files/${previewFile.id}/download`}><Download className="h-4 w-4 mr-2" /> Download</a></Button>
+                      </div>
+                    )}
+                    {/* ITEM 7 (step 4) — THE OVERLAY MOVED, AND IT IS STILL NOT
+                        A WATERMARK. Three independent reasons it was invisible:
+                          1. it was an EARLIER SIBLING of the <img>/<iframe> in
+                             the same stacking context with no z-index, so the
+                             asset painted over it;
+                          2. `/10` is 10% opacity;
+                          3. AN <iframe> CANNOT BE MARKED FROM THE PARENT
+                             DOCUMENT AT ALL, so for every PDF — most of a
+                             dataroom — no parent DOM node can ever appear
+                             inside it.
+                        Reasons 1 and 2 are fixed here (moved after the asset,
+                        z-10, readable opacity). REASON 3 IS NOT FIXABLE THIS
+                        WAY, so the mark is rendered ONLY for image previews and
+                        the PDF branch carries an explicit statement instead.
+                        THIS DOES NOT RE-LEGITIMISE THE OLD BADGE: the badge copy
+                        was corrected in the same change, deliberately, so a
+                        visible mark on images cannot be mistaken for real
+                        byte-level watermarking. */}
+                    {previewFile.watermark && previewFile.mime.startsWith("image/") && (
+                      <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
+                        <div className="text-[hsl(0_100%_40%)]/40 text-3xl font-bold rotate-[-30deg] select-none whitespace-pre-wrap text-center leading-tight" data-testid="watermark-overlay">
+                          Confidential — Provided to Authorized Recipient
+                          {"\n"}
+                          {new Date().toISOString().slice(0, 10)}
+                        </div>
+                      </div>
+                    )}
+                    {previewFile.watermark && previewFile.mime === "application/pdf" && (
+                      <div className="absolute bottom-0 inset-x-0 z-10 bg-background/95 border-t border-border px-3 py-2 text-[11px] text-muted-foreground" data-testid="text-pdf-not-marked">
+                        This PDF is shown exactly as it was uploaded. Capavate does not add a mark to PDF files, and a download will be the original, unmarked document.
                       </div>
                     )}
                   </div>

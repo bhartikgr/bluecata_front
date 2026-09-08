@@ -132,7 +132,19 @@ describe("W237 §0 — comment stripping is real", () => {
     expect(STORE_CODE.includes("parseFloat")).toBe(false);
     // A literal under test SURVIVES.
     expect(STORE_CODE.includes('"CAP_BELOW_TARGET"')).toBe(true);
-    expect(STORE_CODE.includes('"INVALID_AMOUNT"')).toBe(true);
+    /* WAVE 342 · ITEM 2 · W296 — UPDATED, WITH A REASON, NOT DELETED.
+       This asserted that the bare literal `"INVALID_AMOUNT"` appears in the
+       store's code. It no longer does, and that is the FIX, not a regression:
+       W296 required each of the twelve amount refusals to be distinguishable, so
+       the store now throws `INVALID_AMOUNT:<reason>:<field>`, built by
+       `spvAmountRefusalThrowMessage` in `shared/spvAmountRefusalCopy.ts` where
+       the one spelling of the code lives. The RESPONSE BODY still carries
+       exactly `INVALID_AMOUNT` in `error` (the route strips the suffix), which
+       §2 below asserts over real HTTP.
+       What this line was FOR — proving the stripper keeps string literals — is
+       preserved by using a literal the money checker still contains. */
+    expect(STORE_CODE.includes('"not_a_number"')).toBe(true);
+    expect(STORE_CODE.includes("spvAmountRefusalThrowMessage")).toBe(true);
   });
 
   it("negative control — the technique can fail", () => {
@@ -340,20 +352,46 @@ describe("W237 §2 — refusals over POST /api/partner/me/spv", () => {
     expect(headline.length).toBeLessThan(SPV_SUBSCRIPTION_REFUSAL_HEADLINE_MAX_CHARS);
   });
 
-  it("INVALID_AMOUNT is STILL unexplained — pinned as a known gap, not claimed as fixed", async () => {
-    // Honesty fence. This wave did NOT write copy for INVALID_AMOUNT: it has nine
-    // throwers across the server and doing so would change the response on eight
-    // paths this wave has no business touching. Pinned so the report cannot drift
-    // from the behaviour, and so a later wave that DOES fix it is told to update
-    // this expectation deliberately.
+  it("INVALID_AMOUNT IS NOW EXPLAINED — wave 342 · W296 closed the gap this test pinned", async () => {
+    /* WAVE 342 · ITEM 2 · W296 — UPDATED, WITH A REASON, NOT DELETED.
+       ═══════════════════════════════════════════════════════════════════════
+       THE ORIGINAL, PRESERVED SO THE CHANGE IS READABLE: this test pinned that
+       INVALID_AMOUNT arrived with NO words — `incidentCode` a string (it fell
+       through the mapper's tail), `message` undefined — and W237 said so
+       plainly: "This wave did NOT write copy for INVALID_AMOUNT: it has nine
+       throwers across the server and doing so would change the response on
+       eight paths this wave has no business touching. Pinned so the report
+       cannot drift from the behaviour, and so a later wave that DOES fix it is
+       told to update this expectation deliberately."
+
+       This is that later wave, and this is that deliberate update. The census
+       was re-counted by hand: TWELVE sites produce this code, not nine (four in
+       `spvTemplateStore.ts`, six in `spvEngineStore.ts`, two in
+       `spvEngineRoutes.ts`). Each refusal now carries its own sentence.
+
+       WHAT DID NOT CHANGE, asserted below: the code in `error` is still exactly
+       `INVALID_AMOUNT`, and the status is still 400. Only words were ADDED. */
     const r = await post(
       "/api/partner/me/spv",
-      createBody({ name: "W237 Unexplained Gap", targetRaiseMinor: -1 }),
+      createBody({ name: "W237 Explained Gap", targetRaiseMinor: -1 }),
     );
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("INVALID_AMOUNT");
-    expect(typeof r.body.incidentCode).toBe("string"); // fell through to the tail
-    expect(r.body.message).toBeUndefined();
+    // No longer falls through to the generic tail, so no incident reference.
+    expect(r.body.incidentCode).toBeUndefined();
+    // The words a person reads, naming the FIELD and what to do.
+    expect(typeof r.body.message).toBe("string");
+    expect(r.body.message).toContain("target raise");
+    expect(r.body.message).toContain("cannot be negative");
+    expect(typeof r.body.guidance).toBe("string");
+    // The machine-readable half, so a control can point at the input.
+    expect(r.body.amountError).toEqual({ reason: "negative", field: "target_raise" });
+    // NOTHING INTERNAL: no code, no table, no id, no path in what is read.
+    expect(`${r.body.message} ${r.body.guidance}`).not.toMatch(/[A-Z][A-Z0-9]*_[A-Z0-9_]+/);
+    /* The subscription registry is still not where this copy lives — it is in
+       `shared/spvAmountRefusalCopy.ts`, because these refusals are per-field and
+       per-reason and the subscription registry is keyed by bare code. Kept as an
+       assertion so a later wave cannot double-spell the sentence. */
     expect(SPV_SUBSCRIPTION_REFUSAL_HEADLINE.INVALID_AMOUNT).toBeUndefined();
   });
 

@@ -161,6 +161,26 @@ function renderPage() {
   );
 }
 
+/* ===========================================================================
+   WAVE 345 . ITEM 2 - THIS HELPER IS UPDATED, NOT WEAKENED, AND NOT DELETED.
+   ===========================================================================
+   WHY IT HAD TO CHANGE. Until wave 345 this panel took no acknowledgement of
+   the vehicle's DENOMINATION, which is an immutable column: the currency was a
+   free-text box prefilled "USD" and the submit button did not care whether the
+   client had ever looked at it. Wave 345 brought this door up to the standard
+   the main wizard's ratified Step 5 already sets - a permanence statement, an
+   origin statement, and a per-vehicle confirmation - and the submit button is
+   now gated on that confirmation and on the code being one the platform can
+   actually account in.
+
+   So POLES B/C and D of this file started failing, CORRECTLY: a helper that
+   submitted without confirming a denomination was asserting behaviour the
+   product deliberately no longer has. The ruling is newer than the tripwire.
+   Rather than relax the product or delete the poles, the helper now performs
+   the step a real managing partner performs, and it FIRST asserts that the
+   gate is real - so this change can never quietly become a way of submitting
+   an unconfirmed denomination again.
+   =========================================================================== */
 async function fillAndSubmit() {
   fireEvent.click(await screen.findByTestId("client-spv-create-toggle"));
   fireEvent.change(await screen.findByTestId("client-spv-name"), {
@@ -170,6 +190,18 @@ async function fillAndSubmit() {
     target: { value: "Ada Managing" },
   });
   fireEvent.click(await screen.findByTestId("client-spv-signoff-accept"));
+  /* THE GATE IS REAL. Everything else is filled in; only the denomination is
+     unconfirmed, and the button refuses. If this expectation ever passes
+     vacuously the click below would be meaningless. */
+  expect(
+    (await screen.findByTestId("client-spv-create-submit")).hasAttribute("disabled"),
+    "submit should be blocked until the denomination is confirmed",
+  ).toBe(true);
+  fireEvent.click(await screen.findByTestId("client-spv-currency-confirm"));
+  expect(
+    (await screen.findByTestId("client-spv-create-submit")).hasAttribute("disabled"),
+    "submit should be available once the denomination is confirmed",
+  ).toBe(false);
   fireEvent.click(await screen.findByTestId("client-spv-create-submit"));
 }
 

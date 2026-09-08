@@ -377,9 +377,17 @@ describe("WAVE F · item 3a — THE SSO ITEM: the brief's premise corrected, and
     expect(sso, "the SSO row renders no toggle").not.toBeNull();
     expect(sso!.hasAttribute("disabled")).toBe(false);
 
-    /* AND HERE IS WHAT THE BRIEF'S PREMISE WAS ACTUALLY POINTING AT, MEASURED.
+    /* WAVE 340 · ITEM 1 UPDATED THIS ASSERTION, AND WHY. The owner ruled that the
+       denominator must contain only steps that CAN be completed, so
+       `sso_configured` — whose own support line says on screen that it cannot be
+       completed on the platform — left the denominator. Ten became nine. The
+       figures below moved from 9 / 10 · 90% to 8 / 9 · 89% for that reason and no
+       other. THE POINT THIS TEST MAKES IS UNCHANGED and is re-asserted below: the
+       row that holds the percentage under 100 is the AGREEMENT, not SSO.
+
+       AND HERE IS WHAT THE BRIEF'S PREMISE WAS ACTUALLY POINTING AT, MEASURED.
        With all ten items ticked but no signed agreement ON RECORD, the badge
-       reads 9 / 10 · 90% — because the agreement row is not a checkbox at all: it
+       reads 8 / 9 · 89% — because the agreement row is not a checkbox at all: it
        is overlaid from the durable signature record (`GET /api/partner/me/
        agreement`, OnboardingChecklistPage.tsx:351) and renders a non-interactive
        span. So the item that can stop the percentage reaching 100 is the
@@ -390,7 +398,12 @@ describe("WAVE F · item 3a — THE SSO ITEM: the brief's premise corrected, and
     cleanup();
     agreementSignedOnRecord = false;
     const unsigned = await mountReady();
-    expect(unsigned.querySelector('[data-testid="badge-progress"]')!.textContent ?? "").toContain("90%");
+    expect(unsigned.querySelector('[data-testid="badge-progress"]')!.textContent ?? "").toContain("89%");
+    /* The denominator itself is asserted, so a future silent change to the
+       completable set cannot leave this test passing on a coincidence. */
+    expect(unsigned.querySelector('[data-testid="badge-progress"]')!.textContent ?? "").toContain(
+      "8 / 9",
+    );
     expect(unsigned.querySelector('[data-testid="toggle-signed_partner_agreement"]')).toBeNull();
 
     cleanup();
@@ -417,9 +430,14 @@ describe("WAVE F · item 3a — THE SSO ITEM: the brief's premise corrected, and
     expect(unsupported).not.toBeNull();
     const unsupportedText = unsupported!.textContent ?? "";
     expect(unsupportedText).toContain("Capavate cannot do at all");
-    /* AND IT DOES NOT PRETEND THE TICK IS WORTHLESS EITHER — the honest position
-       is that it counts, and that Capavate did not observe it. */
-    expect(unsupportedText).toMatch(/counts toward the percentage/i);
+    /* WAVE 340 · ITEM 1 — the old wording said the tick "still counts toward the
+       percentage". After the owner's ruling that is FALSE, so the sentence had to
+       move with the arithmetic; leaving it would have been a false sentence on a
+       paying screen. It still does not pretend the tick is worthless: it says the
+       tick is recorded, and says plainly where it sits relative to the score. */
+    expect(unsupportedText).toMatch(/outside the percentage above/i);
+    expect(unsupportedText).toMatch(/records only your own note/i);
+    expect(unsupportedText).not.toMatch(/counts toward the percentage/i);
     expect(text.length).toBeGreaterThan(200);
   });
 

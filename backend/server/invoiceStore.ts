@@ -680,7 +680,24 @@ export function generateInvoicePdf(invoice: Invoice): Buffer {
   const stream = contentParts.join("\n");
 
   bodyLines.push("5 0 obj");
-  bodyLines.push(`<< /Length ${stream.length} >>`);
+  /* ═══════════════════════════════════════════════════════════════════════════
+     AN INVALID `/Length` — THE SAME BUG CLASS ALREADY FIXED IN dataroomStore.ts.
+     ═══════════════════════════════════════════════════════════════════════════
+     `stream.length` is a count of JavaScript UTF-16 code units. `/Length` must
+     be a count of BYTES, and this file is serialised as UTF-8 (see the closing
+     `Buffer.from(…, "utf8")`). For pure ASCII the two numbers agree, which is
+     why this survived — but this invoice is neither pure ASCII nor US-only:
+
+       • the payment-method line above renders `••••` (U+2022), THREE bytes each
+         in UTF-8 but ONE UTF-16 unit — so every card-paid invoice already
+         under-declares `/Length` by 8 bytes, today, in production;
+       • `formatMoney` emits `£`, `€`, `¥` for a platform that holds vehicles in
+         several currencies — two bytes each, one unit each.
+
+     A short `/Length` truncates the content stream in a strict PDF reader, so
+     the invoice opens blank or damaged. A client's accountant is the person who
+     finds that. `Buffer.byteLength` counts the bytes actually written. */
+  bodyLines.push(`<< /Length ${Buffer.byteLength(stream, "utf8")} >>`);
   bodyLines.push("stream");
   bodyLines.push(stream);
   bodyLines.push("endstream");

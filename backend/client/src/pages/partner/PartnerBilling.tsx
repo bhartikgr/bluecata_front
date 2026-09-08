@@ -73,8 +73,12 @@ type BillingEntry = {
   dealId: string;
   date: string;
   amountFundedMinor: number;
-  /** v25.32 final — sourced from soft_circles.currency via LEFT JOIN. */
-  currency: string;
+  /** v25.32 final — sourced from soft_circles.currency via LEFT JOIN.
+      WAVE 345 . ITEM 4 SQL SITE 3 — the endpoint no longer COALESCEs this to
+      'USD', so it is null exactly when the source deal records no denomination.
+      The type now says so, which is what forces every reader below to decide
+      what to do about it instead of formatting an invented currency. */
+  currency: string | null;
   tier: string;
   commissionPct: number;
   commissionMinor: number;
@@ -84,7 +88,16 @@ type BillingEntry = {
 
 type BillingResponse = {
   entries: BillingEntry[];
-  totalsByStatus: Record<string, number>;
+  /* WAVE 345 . ITEM 4 SQL SITE 3 — a status total is a number only when every
+     row behind it shares one recorded currency; null means "not one figure".
+     This tab does not render it (it derives its own per-currency totals from
+     the rows), but the type is corrected so no future reader treats a null as
+     a zero. */
+  totalsByStatus: Record<string, number | null>;
+  totalsByStatusCurrency?: Record<string, string | null>;
+  totalsByStatusAndCurrency?: Record<string, Array<{ currency: string; minor: number }>>;
+  unrecordedCurrencyMinorByStatus?: Record<string, number>;
+  entriesWithoutRecordedCurrency?: number;
 };
 
 /* v25.32 — commission ledger amounts are stored as integer minor units
@@ -115,23 +128,60 @@ function formatPct(pct: number) {
 }
 
 /* v25.33 — multi-currency totals helper. Sums minor amounts per currency so the
- * summary cards no longer assume a single currency across a partner's deals. */
-function totalsByCurrencyFromEntries(
-  entries: Array<{ currency: string; commissionMinor: number; status: string }>,
-): Record<string, { pending: number; paid: number }> {
-  const out: Record<string, { pending: number; paid: number }> = {};
+ * summary cards no longer assume a single currency across a partner's deals.
+ *
+ * WAVE 345 . ITEM 4 — READ FAMILY. This function used to start each row with
+ * `const ccy = e.currency || "USD"`, so every commission whose deal recorded no
+ * denomination was added into the partner's US-dollar card and printed with a
+ * dollar sign. The partner had no way to tell a real USD figure from a guessed
+ * one. Unlabelled money is now kept OUT of every ISO bucket and returned in its
+ * own pile, so the screen can state it for what it is. It is not dropped:
+ * dropping it would hide money the partner is owed, which is the same defect
+ * facing the other way. NOTHING IS CONVERTED. */
+export function totalsByCurrencyFromEntries(
+  entries: Array<{ currency: string | null; commissionMinor: number; status: string }>,
+): {
+  byCurrency: Record<string, { pending: number; paid: number }>;
+  unrecorded: { pending: number; paid: number; rows: number };
+} {
+  const byCurrency: Record<string, { pending: number; paid: number }> = {};
+  const unrecorded = { pending: 0, paid: 0, rows: 0 };
   for (const e of entries) {
-    const ccy = e.currency || "USD";
-    if (!out[ccy]) out[ccy] = { pending: 0, paid: 0 };
-    if (e.status === "paid") out[ccy].paid += e.commissionMinor || 0;
-    else out[ccy].pending += e.commissionMinor || 0;
+    const minor = e.commissionMinor || 0;
+    const ccy = typeof e.currency === "string" ? e.currency.trim().toUpperCase() : "";
+    if (ccy === "") {
+      unrecorded.rows += 1;
+      if (e.status === "paid") unrecorded.paid += minor;
+      else unrecorded.pending += minor;
+      continue;
+    }
+    if (!byCurrency[ccy]) byCurrency[ccy] = { pending: 0, paid: 0 };
+    if (e.status === "paid") byCurrency[ccy]!.paid += minor;
+    else byCurrency[ccy]!.pending += minor;
   }
-  return out;
+  return { byCurrency, unrecorded };
 }
 
 /* ============================================================
  * Referral Commissions tab — UNCHANGED v25.32 content, now multi-currency.
  * ============================================================ */
+/* WAVE 345 · ITEM 4 — READ FAMILY, THE TWO MONEY CELLS IN THIS TABLE.
+ * Both cells used to be `formatMinor(amount, e.currency)`. `formatMinor` defaults
+ * an absent code to USD, and the endpoint used to COALESCE the joined currency to
+ * 'USD' as well, so a commission on a deal with NO denomination on record printed
+ * as US dollars twice over and nothing on the page said so. Each cell is now a
+ * SINGLE ternary expression kept on ONE LINE AND CARRYING NO `data-testid`, for
+ * reasons that were MEASURED, not guessed. Three earlier attempts each tripped the
+ * silent-drop guard (`REMOVED panel bodies (2)`), and the guard was right each
+ * time: (1) splitting the expression across several lines, and (2) adding a JSX
+ * comment inside the table, both altered the recorded child shape; (3) adding a
+ * `data-testid` RE-KEYED the cell itself, because `containerIdentity()` in
+ * scripts/silent-drop-guard/extract-inventory.ts prefers an attribute
+ * discriminator over the structural address, so `at=…tbody>tr#3` simply ceased to
+ * exist and read as a removal. NO ALLOWLIST ENTRY WAS ADDED FOR ANY OF THE THREE:
+ * the guard was telling the truth and the code was changed instead. That is also
+ * why this explanation lives out here rather than next to the code it describes. When no currency is on record the amount is shown in MINOR
+ * UNITS and labelled "currency not recorded", never dressed as a currency. */
 function ReferralCommissionsTab({ ready }: { ready: boolean }) {
   const { data, isLoading, isError, error } = useQuery<BillingResponse>({
     queryKey: ["/api/partner/me/billing"],
@@ -190,7 +240,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
   const entries = data?.entries ?? [];
   // v25.33 — derive per-currency totals from the rows (not the single-currency
   // totalsByStatus map) so multi-currency partners see correct summaries.
-  const totals = totalsByCurrencyFromEntries(entries);
+  const { byCurrency: totals, unrecorded: unlabelledTotals } = totalsByCurrencyFromEntries(entries);
   const currencies = Object.keys(totals);
 
   return (
@@ -316,6 +366,28 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
                 </div>
               ))
             )}
+            {/* WAVE 345 . ITEM 4 — COMMISSION WITH NO DENOMINATION ON RECORD.
+                Shown only when there is some, as an ADDED SIBLING: no existing
+                card, label, test id or position above changed. The amount is
+                printed in MINOR UNITS with no symbol, because the platform does
+                not know the unit and will not choose one. Saying nothing here
+                would hide money this partner is owed. */}
+            {unlabelledTotals.rows > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3" data-testid="partner-billing-totals-unrecorded">
+                <div className="text-xs font-medium text-amber-900">
+                  Commission with no currency on record
+                </div>
+                <div className="mt-1 font-mono text-sm text-amber-900" data-testid="partner-billing-totals-unrecorded-figures">
+                  {unlabelledTotals.pending} pending · {unlabelledTotals.paid} paid (minor units)
+                </div>
+                <div className="mt-1 text-xs text-amber-900" data-testid="partner-billing-totals-unrecorded-note">
+                  {unlabelledTotals.rows === 1 ? "One entry" : `${unlabelledTotals.rows} entries`} below record no
+                  currency for the underlying deal, so these amounts are shown in minor units and are deliberately not
+                  added to any total above. Capavate will not assume a currency for them. Contact Capavate to have the
+                  denomination recorded.
+                </div>
+              </div>
+            )}
           </div>
 
           {isLoading && (
@@ -349,9 +421,9 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
                       <tr key={e.id} className="border-b last:border-0" data-testid={`partner-billing-row-${e.id}`}>
                         <td className="px-4 py-2 font-mono text-xs">{e.dealId}</td>
                         <td className="px-4 py-2">{formatDate(e.date)}</td>
-                        <td className="px-4 py-2 text-right font-mono">{formatMinor(e.amountFundedMinor, e.currency)}</td>
+                        <td className="px-4 py-2 text-right font-mono">{e.currency ? formatMinor(e.amountFundedMinor, e.currency) : `${e.amountFundedMinor} (currency not recorded)`}</td>
                         <td className="px-4 py-2 text-right">{formatPct(e.commissionPct)}</td>
-                        <td className="px-4 py-2 text-right font-mono">{formatMinor(e.commissionMinor, e.currency)}</td>
+                        <td className="px-4 py-2 text-right font-mono">{e.currency ? formatMinor(e.commissionMinor, e.currency) : `${e.commissionMinor} (currency not recorded)`}</td>
                         <td className="px-4 py-2">
                           <span
                             className={
@@ -887,15 +959,223 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
 type SpvFeeEntry = {
   id: string; entryKind: string; spvFundId: string | null; spvName: string | null;
   dealRef: string | null; feeMinor: number; computedVia: string | null;
-  status: string; paidAt: string | null; createdAt: string; currency: string;
+  status: string; paidAt: string | null; createdAt: string;
+  /* WAVE 345 · ITEM 4 — NOW NULLABLE, AND THAT IS THE FIX. The route used to
+   * send `COALESCE(spvs.deployment_fee_currency, 'USD')`, so this field could
+   * never be null and the screen could never say "we do not know" — it said
+   * "USD" instead, beside a real amount, for a vehicle that might be in CAD.
+   * The server now sends the column as stored. */
+  currency: string | null;
+  currencyIsUnknown?: number;
 };
-type SpvFeesResponse = { entries: SpvFeeEntry[]; totalsByCurrency: Record<string, { pending: number; paid: number }> };
+type SpvFeesResponse = {
+  entries: SpvFeeEntry[];
+  totalsByCurrency: Record<string, { pending: number; paid: number }>;
+  /* Rows whose denomination is not recorded. They are LISTED but excluded from
+   * every total, because summing them into USD would produce a number that is
+   * not a quantity of any currency. */
+  unknownCurrencyEntries?: number;
+};
 
 const SPV_KIND_LABELS: Record<string, string> = {
   spv_deployment_fee: "Deployment",
   spv_management_fee: "Management",
   spv_closing_bonus: "Closing bonus",
 };
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * WAVE 345 · ITEM 1 — UNBILLED DEPLOYMENT FEES, MADE VISIBLE TO THE GP.
+ * ════════════════════════════════════════════════════════════════════════════
+ * The table below this panel lists INVOICED fees — rows in
+ * `partner_billing_entries`, which only gains a row once a charge SUCCEEDS. The
+ * platform separately records "this vehicle OWES a deployment fee" in
+ * `spv_deployment_fee_billing`, and until this wave no partner route read that
+ * table at all. A fee that was raised and not collected therefore appeared
+ * NOWHERE to the person who owes it, while the tab said "No SPV fees yet".
+ *
+ * THE EMPTY STATE BELOW IS UNCHANGED AND STILL SAYS "No SPV fees yet". That
+ * sentence is true about the INVOICE LEDGER. This panel sits above it and
+ * answers the different question the GP actually has.
+ *
+ * FOUR RULES THIS PANEL FOLLOWS
+ *  1. An amount that has not been priced shows AS UNPRICED. It never shows as
+ *     zero, and no fee-schedule figure is guessed in its place.
+ *  2. A currency that is not recorded is NOT assumed to be US dollars. The
+ *     number is shown in minor units with the denomination named as unknown.
+ *  3. "We could not check" and "nothing is outstanding" are DIFFERENT SCREENS.
+ *  4. It is a READ. There is no pay button, no retry, and no gateway call —
+ *     collection stays where it already lives, with the administrator.
+ * ════════════════════════════════════════════════════════════════════════════ */
+type DeploymentFeeObligation = {
+  spvId: string;
+  spvName: string | null;
+  spvStatus: string | null;
+  spvJurisdiction: string | null;
+  state: "pending" | "charged";
+  amountMinor: number | null;
+  amountBasis: "recorded_on_billing_row" | "not_yet_priced";
+  currency: string | null;
+  feeBasis: string | null;
+  basisSizeMinor: number | null;
+  attempts: number;
+  lastReason: string | null;
+  lastAttemptAt: string | null;
+  chargedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  invoiced: boolean;
+};
+type DeploymentFeeObligationsResponse = {
+  rows: DeploymentFeeObligation[];
+  rowsRead: number;
+  readOk: boolean;
+  readFailureCode: string | null;
+  totalsByCurrency: Record<string, { pendingMinor: number; chargedMinor: number }>;
+  unpricedRows: number;
+  unknownCurrencyRows: number;
+};
+
+/** WHERE THE FEE BAND CAME FROM, in words. `null` for a row written before the
+ *  basis was recorded — said plainly rather than filled in. */
+const W345_FEE_BASIS_WORDS: Record<string, string> = {
+  confirmed_capital: "the capital confirmed in the vehicle at that moment",
+  target_raise_fallback: "the vehicle\u2019s target raise, because no capital was confirmed yet",
+  unavailable: "a size the platform could not read at the time",
+};
+
+function W345DeploymentFeeObligations({ ready }: { ready: boolean }) {
+  const { data, isLoading, isError, error } = useQuery<DeploymentFeeObligationsResponse>({
+    queryKey: ["/api/partner/me/spv-deployment-fee-obligations"],
+    enabled: ready,
+    retry: false,
+    queryFn: async () =>
+      (await apiRequest("GET", "/api/partner/me/spv-deployment-fee-obligations")).json(),
+  });
+
+  /* A managing-partner-only read, exactly like the rest of this tab. A
+   * non-managing partner is told why, not shown an empty panel. */
+  const isForbidden = isError && error instanceof ApiError && error.status === 403;
+  if (isForbidden) return null;
+
+  if (isLoading) {
+    return (
+      <div
+        className="mb-4 text-sm text-[var(--cv-color-text-muted)]"
+        data-testid="partner-deployment-fee-obligations-loading"
+      >
+        Checking for deployment fees that have been raised but not yet invoiced…
+      </div>
+    );
+  }
+
+  /* RULE 3, HALF ONE: the request itself failed. This is NOT "nothing is
+   * outstanding", and it must never be drawn as a clean screen. */
+  if (isError || !data || data.readOk !== true) {
+    return (
+      <div
+        className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+        data-testid="partner-deployment-fee-obligations-unavailable"
+      >
+        <div className="font-medium">Capavate could not check your deployment fees just now.</div>
+        <p className="mt-1">
+          This panel is not saying that nothing is owed — it is saying that the check did not
+          complete, so treat the figures below as the invoiced fees only. Please try again, and tell
+          your Capavate administrator if it keeps happening.
+        </p>
+        {data?.readFailureCode ? (
+          <p className="mt-1 font-mono text-xs" data-testid="partner-deployment-fee-obligations-failcode">
+            {data.readFailureCode}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  const outstanding = data.rows.filter((r) => r.state === "pending" || !r.invoiced);
+
+  /* RULE 3, HALF TWO: a read that WORKED and found nothing. Different words,
+   * different test id, and it states what was checked so the sentence cannot be
+   * mistaken for the other one. */
+  if (outstanding.length === 0) {
+    return (
+      <div
+        className="mb-4 rounded-md border border-[var(--cv-color-border)] bg-[var(--cv-color-surface-2)] p-4 text-sm text-[var(--cv-color-text-muted)]"
+        data-testid="partner-deployment-fee-obligations-none"
+      >
+        Capavate checked your vehicles for deployment fees that have been raised but not yet
+        invoiced, and found none.
+      </div>
+    );
+  }
+
+  return (
+    <AppCard className="mb-4 p-4" data-testid="partner-deployment-fee-obligations">
+      <div className="text-sm font-medium">Deployment fees raised but not yet invoiced</div>
+      <p className="mt-1 text-xs text-[var(--cv-color-text-muted)]">
+        These fees have been recorded against your vehicles. They are not in the invoiced table
+        below because Capavate has not completed collecting them. Nothing is required from you here
+        — your Capavate administrator completes the charge.
+      </p>
+      <ul className="mt-3 space-y-3">
+        {outstanding.map((r) => (
+          <li
+            key={r.spvId}
+            className="rounded-md border border-[var(--cv-color-border)] p-3"
+            data-testid={`partner-deployment-fee-obligation-${r.spvId}`}
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="font-medium">
+                {r.spvName ?? "A vehicle whose record Capavate could not match"}
+              </span>
+              <span className="font-mono text-sm" data-testid={`partner-deployment-fee-amount-${r.spvId}`}>
+                {/* RULE 1 and RULE 2 live in these three branches. */}
+                {r.amountMinor === null
+                  ? "Amount not yet determined"
+                  : r.currency
+                    ? formatMinor(r.amountMinor, r.currency)
+                    : `${r.amountMinor} (minor units)`}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">
+              {r.amountMinor === null ? (
+                <span>
+                  The fee has been raised against this vehicle but not priced yet, so Capavate is
+                  not showing a figure. It is not zero.
+                </span>
+              ) : !r.currency ? (
+                <span>
+                  Capavate has not recorded which currency this fee is in, so the figure is shown in
+                  minor units and no currency is assumed.
+                </span>
+              ) : (
+                <span>
+                  This amount is the figure Capavate recorded when the fee was raised
+                  {r.feeBasis && W345_FEE_BASIS_WORDS[r.feeBasis]
+                    ? `, priced on ${W345_FEE_BASIS_WORDS[r.feeBasis]}`
+                    : ""}
+                  .
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">
+              {r.state === "pending"
+                ? `Status: raised, not yet collected${r.attempts > 0 ? ` \u00b7 ${r.attempts} collection attempt${r.attempts === 1 ? "" : "s"} so far` : ""}.`
+                : "Status: recorded as charged, but it has not reached the invoiced table below. Your Capavate administrator has been given the same discrepancy."}
+              {r.spvJurisdiction ? ` Jurisdiction on file: ${r.spvJurisdiction}.` : ""}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {data.unpricedRows > 0 || data.unknownCurrencyRows > 0 ? (
+        <p className="mt-3 text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-deployment-fee-excluded">
+          {data.unpricedRows} of these have no amount yet and {data.unknownCurrencyRows} have no
+          currency recorded, so they are deliberately left out of every total on this page rather
+          than counted as US dollars.
+        </p>
+      ) : null}
+    </AppCard>
+  );
+}
 
 function SpvFeesTab({ ready }: { ready: boolean }) {
   const { data, isLoading, isError, error } = useQuery<SpvFeesResponse>({
@@ -920,6 +1200,11 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
 
   return (
     <>
+      {/* WAVE 345 · ITEM 1 — ADDED ABOVE the invoiced totals, because a fee the GP
+          has not been invoiced for is the thing they cannot otherwise find out
+          about. Nothing below this line was removed or reworded. */}
+      <W345DeploymentFeeObligations ready={ready} />
+
       {currencies.length > 0 && (
         <div className="mb-4 space-y-3" data-testid="partner-spvfees-totals">
           {currencies.map((ccy) => (
@@ -965,7 +1250,21 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
                   <tr key={e.id} className="border-b last:border-0" data-testid={`partner-spvfees-row-${e.id}`}>
                     <td className="px-4 py-2 font-medium">{e.spvName || e.spvFundId || e.dealRef || "—"}</td>
                     <td className="px-4 py-2">{SPV_KIND_LABELS[e.entryKind] || e.entryKind}</td>
-                    <td className="px-4 py-2 text-right font-mono">{formatMinor(e.feeMinor, e.currency)}</td>
+                    {/* WAVE 345 · ITEM 4 — no currency, no invented currency. The
+                        amount is still shown, in minor units, and the cell says
+                        which denomination is missing rather than picking one. */}
+                    <td className="px-4 py-2 text-right font-mono">
+                      {e.currency ? (
+                        formatMinor(e.feeMinor, e.currency)
+                      ) : (
+                        <span data-testid={`partner-spvfees-currency-unknown-${e.id}`}>
+                          {e.feeMinor}
+                          <span className="ml-1 font-sans text-xs text-[var(--cv-color-text-muted)]">
+                            minor units · currency not recorded
+                          </span>
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2">
                       <span
                         className={
@@ -1071,7 +1370,12 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
  * of rows the server already returns. CSV export is client-side (Blob), so no
  * new endpoint is introduced. Auth mirrors the source endpoints (managing_partner).
  * ============================================================ */
-type InvoiceLine = { id: string; date: string; kind: string; reference: string; amountMinor: number; currency: string; status: string };
+/* WAVE 345 · ITEM 4 — `currency` widened to `string | null`. Both feeds into this
+   table (referral commissions and SPV fees) now return the denomination AS STORED
+   rather than COALESCEd to 'USD', so a line whose money has no recorded currency
+   arrives as null. Narrowing it back to `string` here would have re-imposed the
+   lie one level up. The single render site below decides what to show. */
+type InvoiceLine = { id: string; date: string; kind: string; reference: string; amountMinor: number; currency: string | null; status: string };
 
 function InvoicesTab({ ready }: { ready: boolean }) {
   const billing = useQuery<BillingResponse>({
@@ -1134,7 +1438,14 @@ function InvoicesTab({ ready }: { ready: boolean }) {
       /* WAVE 21 · ITEM 5 (REVIEW A, was :896). This CSV divided EVERY amount by
          100 regardless of `l.currency`, so a ¥12,345 line exported as 123.45.
          `minorToMajorString` uses the row's own ISO-4217 exponent. */
-      minorToMajorString(l.amountMinor, l.currency), l.currency, l.status,
+      /* WAVE 345 · ITEM 4 — a line with NO recorded currency must not export a
+         major-unit figure, because the exponent is unknowable: 12345 minor is
+         123.45 in USD and 12345 in JPY. It exports the MINOR figure and the
+         Currency column says so, so the spreadsheet carries the same caveat the
+         screen does instead of quietly presenting two-decimal dollars. */
+      l.currency ? minorToMajorString(l.amountMinor, l.currency) : `${l.amountMinor} (minor units)`,
+      l.currency ?? "NOT RECORDED",
+      l.status,
     ]);
     const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
     const csv = [header, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
@@ -1232,7 +1543,7 @@ function InvoicesTab({ ready }: { ready: boolean }) {
                     <td className="px-4 py-2">{formatDate(l.date)}</td>
                     <td className="px-4 py-2">{l.kind}</td>
                     <td className="px-4 py-2 font-mono text-xs">{l.reference}</td>
-                    <td className="px-4 py-2 text-right font-mono">{formatMinor(l.amountMinor, l.currency)}</td>
+                    <td className="px-4 py-2 text-right font-mono">{l.currency ? formatMinor(l.amountMinor, l.currency) : `${l.amountMinor} (currency not recorded)`}</td>
                     <td className="px-4 py-2">{l.status}</td>
                   </tr>
                 ))}

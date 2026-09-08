@@ -21,6 +21,29 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthShell } from "@/pages/auth/AuthShell";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+/* WAVE 344 · ITEM 3 — EXPRESS CONSENT AT SIGNUP.
+
+   The owner asked for this to be "easy, seamless, and have users want to consent
+   without any burden". The seamless version — a pre-ticked box, or permission
+   folded into accepting the terms — is the one the Canadian regulator names as NOT
+   valid express consent, so what is built is the version that is easy to understand
+   and easy to decline.
+
+   THREE THINGS ABOUT THE WIRING BELOW, EACH DELIBERATE:
+    1. It is a SEPARATE, UNTICKED, OPTIONAL box, below the required terms box and
+       plainly not part of it.
+    2. `canSubmit` and `missingFields` are NOT touched. The account is created
+       whether the box is ticked or not, and this file sends NO consent field to
+       POST /api/auth/signup — that endpoint has no consent parameter at all, which
+       is what makes "signup succeeds without it" structural rather than a promise.
+    3. The decision is recorded AFTERWARDS, by a separate request, and only when
+       the answer was yes. Its failure is swallowed exactly as the existing legal
+       consent record's failure is: the account already exists by then, and a
+       consent record failing must never fail an account creation. */
+import {
+  MarketingConsentChoice,
+  submitSignupConsent,
+} from "@/components/MarketingConsentChoice";
 import { useRole } from "@/lib/role";
 import { useToast } from "@/hooks/use-toast";
 import { UserRound, Mail, Lock, CheckCircle2, AlertCircle } from "lucide-react";
@@ -98,6 +121,11 @@ export default function Signup() {
   const [duplicateEmail, setDuplicateEmail] = useState(false);
   const [legalChecked, setLegalChecked] = useStateForConsent(false);
   const legalConsentRef = useRef<LegalConsentCheckboxRef>(null);
+  /* W344 ITEM 3 — the OPTIONAL marketing answer. Starts false and there is no code
+     path in this file that starts it true. It is not in `canSubmit` and it is not
+     in `missingFields`, deliberately: it cannot block the form. */
+  const [marketingAnswer, setMarketingAnswer] = useStateForConsent(false);
+  const [marketingVersion, setMarketingVersion] = useStateForConsent<string | null>(null);
   // v23.4.6 Phase 6 (L-010) — post-signup interstitial state. Holds the
   // email the account was created for so we can echo it on the
   // "check your inbox" interstitial without depending on `email` state
@@ -183,6 +211,11 @@ export default function Signup() {
       setRole("founder");
       // Record legal consent after successful account creation
       legalConsentRef.current?.recordConsent().catch(() => null);
+      /* W344 ITEM 3 — and the marketing choice, if the answer was yes. Separate
+         request, after the account exists, failure swallowed. A person who left
+         the box alone has nothing recorded, so "never asked" stays a different
+         fact from "asked and said no". */
+      void submitSignupConsent(marketingAnswer, marketingVersion).catch(() => null);
       // v23.4.6 Phase 6 (L-010) — surface an explicit post-signup
       // interstitial instead of silently redirecting. The interstitial
       // tells the user (a) the account exists, (b) whether they need to
@@ -509,6 +542,18 @@ export default function Signup() {
           context="signup"
           required
           onCheckedChange={setLegalChecked}
+        />
+
+        {/* W344 ITEM 3 — A SEPARATE, UNTICKED, OPTIONAL QUESTION. It is below the
+            required terms box and it is not bundled with it; nothing about it can
+            block this form. */}
+        <MarketingConsentChoice
+          channel="signup"
+          deferSubmission
+          onAnswerChange={(answer, version) => {
+            setMarketingAnswer(answer);
+            setMarketingVersion(version);
+          }}
         />
 
         {/* v23.4.6 Phase 5 (L-006) — the submit button is NO LONGER disabled

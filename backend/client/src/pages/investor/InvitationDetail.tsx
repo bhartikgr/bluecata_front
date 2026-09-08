@@ -1,3 +1,4 @@
+import { DestructiveActionCue } from "@/components/RedStateCue";
 import { asArray } from "@/lib/safeArray";
 import { useState, useRef, useCallback } from "react";
 import { useParams, Link, useSearch, useLocation } from "wouter";
@@ -1754,11 +1755,26 @@ export default function InvitationDetail() {
          <CardContent className="space-y-3 text-sm">
           <div data-testid="text-recorded-softcircle-amount">
            {recordedSoftCircleAmount != null
-            ? <>Amount on record: <strong>{fmtUSD(recordedSoftCircleAmount)}</strong>{decision?.currency ? <> {decision.currency}</> : null}.</>
+            /* INTERNATIONAL CORRECTION — this `fmtUSD` call had NO currency
+               argument, so it formatted every amount with a US dollar sign and
+               then printed the REAL currency code beside it: a Canadian soft
+               circle rendered as "$1,000 CAD". An earlier wave fixed the other
+               calls on this page (see the note above `fmtCompact`) and missed
+               this one. The currency was already in scope on the very same
+               line. Nothing is converted; the amount is unchanged and only its
+               symbol is now the right one. */
+            ? <>Amount on record: <strong data-testid="text-recorded-softcircle-figure">{fmtUSD(recordedSoftCircleAmount, { currency: decision?.currency ?? undefined })}</strong>{decision?.currency ? <> {decision.currency}</> : null}.</>
             : <>The server holds your soft circle for this round, but no amount is recorded against it. {NOT_PROVIDED}</>}
           </div>
           <div className="text-xs text-muted-foreground" data-testid="text-recorded-softcircle-state">
-           Recorded state: <span className="font-mono">{decisionState}</span>. This is the same record the server validates a submission against, which is why re-submitting is refused rather than duplicated.
+           {/* ITEM 9 — this rendered the RAW ENUM (`soft_circled`) as the whole
+               answer. `decisionStateLabel` was ALREADY IMPORTED at the top of
+               this file and simply was not called here. The human label now
+               leads. The literal server value is KEPT in a parenthetical
+               because the point of this sentence is to show exactly what the
+               server will validate against — deleting it would remove the
+               sentence's reason to exist. */}
+           Recorded state: <strong data-testid="text-recorded-softcircle-state-label">{decisionStateLabel(decisionState)}</strong> (the server records this as <span className="font-mono">{decisionState}</span>). This is the same record the server validates a submission against, which is why re-submitting is refused rather than duplicated.
           </div>
           <p className="text-xs text-muted-foreground">
            To change the amount, contact the founder — amending a recorded soft circle is not something this page can do today.
@@ -1830,6 +1846,13 @@ export default function InvitationDetail() {
        <AlertDialogDescription>
         The founder will see your decline (without your reason). You can leave a private note if helpful.
        </AlertDialogDescription>
+       {/* WAVE 342 · W291 — the red button was the only sign that this choice is
+           irreversible, and red here means DESTRUCTIVE, not error and not
+           overdue. Its own glyph and its own words, so the consequence is
+           readable with no colour at all. */}
+       <DestructiveActionCue testId="decline-destructive-cue">
+        Declining cannot be reversed from this screen — the founder would have to invite you again.
+       </DestructiveActionCue>
       </AlertDialogHeader>
       <AlertDialogFooter>
        <AlertDialogCancel>Keep open</AlertDialogCancel>

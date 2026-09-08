@@ -256,10 +256,26 @@ describe("W52b — the LIVE pin, and the baseline is a debt register with a coun
 
        If this number RISES, the fence was widened rather than the tree fixed. If
        an entry stops matching, `staleBaseline` above has already gone red. */
+    /* WAVE 342 · ITEM 4 · W310 — 2 BECAME 0, AND THE CEILING IS UPDATED, NOT
+       DELETED. The assertion above this line and the two below it read
+       `expect(BASELINE).toHaveLength(2)` and `expect(r.baselineHits).toBe(2)`
+       before this wave. Both are re-pinned to ZERO for the reason this test's
+       own comment states: "the count must go DOWN, never UP". W310 labelled the
+       last two sites — the use-of-proceeds total and the closing-checklist
+       progress figure, both in `client/src/pages/founder/RoundDetail.tsx` — on
+       screen, naming the CALLER-SUPPLIED denominator each was divided by, so
+       neither needs an exemption any more. The full reason, including why WAVE
+       52c's objection to labelling the use-of-proceeds total is answered rather
+       than overruled and why the I-4 arithmetic debt on that figure is STILL
+       OWED and still W53's, is recorded where the entries stood in
+       `scripts/lint/percentDenominatorFence.ts`.
+       THE CEILING IS STILL A CEILING: nine remains the number this register may
+       never exceed, and zero is now the number it holds. If either figure rises,
+       the fence was widened rather than the tree fixed. */
     expect(BASELINE.length).toBeLessThanOrEqual(9);
-    expect(BASELINE).toHaveLength(2);
+    expect(BASELINE).toHaveLength(0);
     const r = runPercentDenominatorFence();
-    expect(r.baselineHits).toBe(2);
+    expect(r.baselineHits).toBe(0);
   });
 
   it("W52b every baseline entry carries an owning wave and a reason — none is 'unknown'", () => {
@@ -277,7 +293,20 @@ describe("W52b — the LIVE pin, and the baseline is a debt register with a coun
        survivors are an ARITHMETIC defect (I-4, a sum of a rounded column) and a
        FENCE-CLASSIFICATION item (a closing-checklist progress figure that is not
        an ownership share at all), neither of which is a labelling job. */
-    expect(files).toEqual(new Set(["client/src/pages/founder/RoundDetail.tsx"]));
+    /* WAVE 342 · ITEM 4 · W310 — RoundDetail.tsx has now left the register too.
+       This assertion read
+       `expect(files).toEqual(new Set(["client/src/pages/founder/RoundDetail.tsx"]))`
+       before this wave. Its two survivors were the ARITHMETIC defect (I-4, a sum
+       of a rounded column) and the FENCE-CLASSIFICATION item (the closing-
+       checklist progress figure). W310 ruled that both render a ratio whose
+       denominator came from the CALLER, so both must name it on screen; both now
+       do, and their entries are retired with the reason recorded in the fence.
+       The I-4 arithmetic repair is unaffected by that labelling and is still
+       owed. The assertion is INVERTED rather than removed: the register must now
+       be empty, and no file may re-enter it without adding a fresh entry with
+       its own owner and reason. */
+    expect(files).toEqual(new Set([]));
+    expect(files.has("client/src/pages/founder/RoundDetail.tsx")).toBe(false);
     expect(files.has("client/src/pages/founder/CapTable.tsx")).toBe(false);
     /* RoundNew.tsx is the file Wave 52 rewrote. It has ZERO baselined sites:
        every percentage the new Review preview emits goes through `formatPct`. */

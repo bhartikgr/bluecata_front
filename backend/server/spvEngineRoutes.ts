@@ -23,6 +23,12 @@
  */
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
+import {
+  parseSpvAmountRefusalMessage,
+  spvAmountRefusalHeadline,
+  spvAmountRefusalGuidance,
+  SPV_AMOUNT_REFUSAL_CODE,
+} from "../shared/spvAmountRefusalCopy";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 /* WAVE 22 · ITEM 2 (REVIEW B F-3) — the SPV launch sign-off `ip` used to be the
  * raw `x-forwarded-for` header, i.e. attacker-chosen text in an authorization
@@ -94,6 +100,9 @@ import {
      by the lp-commit route BEFORE it writes the sacred ledger line. */
   assertSubscriptionCurrencyMatchesVehicle,
 } from "./spvEngineStore";
+/* WAVE 306 · WAVE 1 — the denomination refusal sentences. Imported so `err`
+   below can attach words to the code instead of shipping it naked (R77). */
+import { spvCurrencyRefusalCopy } from "@shared/currencyDomain";
 /* WAVE 189 · ITEM C · R159.6 — the attestation gate and its refusal, imported from
    the same module the store sinks use so the route boundary and the store cannot
    come to disagree about whether a vehicle is attested. */
@@ -418,6 +427,33 @@ function err(res: Response, e: unknown): Response {
        not record — the caller re-enters the figure and the request succeeds. */
     SUBSCRIPTION_CURRENCY_MISMATCH: 400,
   };
+  /* ══════════════════════════════════════════════════════════════
+     WAVE 306 · WAVE 1 · R77 — THE DENOMINATION REFUSALS, NEVER NAKED.
+     ══════════════════════════════════════════════════════════════
+     `resolveSpvCurrencyOrThrow` raises three codes, one of which carries the
+     rejected code after a colon (`SPV_CURRENCY_UNKNOWN:NOTACURRENCY123`), so
+     the exact-key `map` above could never match it and it would have left here
+     as an HTTP 500 carrying an internal string.
+
+     Placed ABOVE the subscription prefix block deliberately: these codes are
+     NOT subscription refusals and their sentences live in their own module,
+     `shared/currencyDomain.ts`. Reusing the subscription copy lookup for them
+     would return `undefined` and put a bare code on a paying client's screen.
+
+     The status comes from the copy table, not from a guess here — which is how
+     `SPV_CURRENCY_UNVERIFIABLE` correctly becomes a retryable **503** rather
+     than a 400 telling a client to fix a value that was already correct.
+     `error` carries the exact code unchanged (R44: ADD, do not substitute). */
+  {
+    const currencyRefusal = spvCurrencyRefusalCopy(msg);
+    if (currencyRefusal) {
+      return res.status(currencyRefusal.status).json({
+        error: msg,
+        message: currencyRefusal.headline,
+        guidance: currencyRefusal.guidance,
+      });
+    }
+  }
   {
     const head = msg.split(":")[0] ?? "";
     const prefixStatus = SPV_SUBSCRIPTION_PREFIX_STATUS[head];
@@ -568,6 +604,46 @@ function err(res: Response, e: unknown): Response {
      code changes; a body that previously carried only a code now also carries
      the words. Codes with no copy are left exactly as they were — this cannot
      invent an explanation for a refusal nobody has written one for. */
+  /* ═══════════════════════════════════════════════════════════════════════
+     WAVE 342 · ITEM 2 · W296 — TWELVE REFUSALS, ONE SENTENCE. NOW TWELVE.
+     ═══════════════════════════════════════════════════════════════════════
+     Every amount refusal in the engine store used to throw the BARE code
+     `INVALID_AMOUNT`, so the map lookup above sent all of them out with no
+     words at all (they fell through to the generic tail and arrived carrying an
+     incident reference), and the SPV screen substituted its own single sentence
+     — "Amount must be greater than zero." — for all of them. A GP who typed a
+     figure with a decimal point, or one past the exact-integer range, was told
+     their amount was not greater than zero, which was FALSE.
+
+     The store now throws `INVALID_AMOUNT:<reason>:<field>`. This branch:
+       • RESTORES THE BARE CODE in `error` — `INVALID_AMOUNT`, byte for byte, so
+         every existing assertion and every client that keys on the code is
+         unaffected (R44: add, do not substitute). The suffix NEVER reaches the
+         response body.
+       • names the reason and field machine-readably in `amountError`, so a
+         caller never parses prose and a control can point at the right input.
+       • attaches that refusal's own `message` and `guidance` from
+         `shared/spvAmountRefusalCopy.ts`. If a reason arrives that this build
+         has no copy for, the helpers return null and this sends the code with
+         no invented sentence rather than a wrong one.
+
+     PLACED BEFORE the generic copy lookup below, and 400 not 500: a malformed
+     amount in a request is a client error. Prefix-matched for the same reason
+     `SUBSCRIPTION_MONEY_NOT_INTEGER_MINOR:` is — the useful part follows the
+     code — and NOT added to `map`, because the key is not a literal.
+     ═══════════════════════════════════════════════════════════════════════ */
+  {
+    const amount = parseSpvAmountRefusalMessage(msg);
+    if (amount) {
+      return res.status(400).json({
+        error: SPV_AMOUNT_REFUSAL_CODE,
+        amountError: { reason: amount.reason, field: amount.field },
+        fieldError: amount.field,
+        message: spvAmountRefusalHeadline(amount.reason, amount.field) ?? undefined,
+        guidance: spvAmountRefusalGuidance(amount.reason, amount.field) ?? undefined,
+      });
+    }
+  }
   {
     const headline = spvSubscriptionRefusalHeadline(msg);
     if (headline && map[msg] !== undefined) {
@@ -1132,6 +1208,26 @@ export function registerSpvEngineRoutes(app: Express): void {
          existing vehicle is read, re-checked, rejected or altered. */
       spvEngineStore.validateCreateMoney(
         createBody as Parameters<typeof spvEngineStore.validateCreateMoney>[0],
+      );
+      /* ══ WAVE 306 · WAVE 1 — THE DENOMINATION, IN THE SAME PRE-FLIGHT ═══════
+         Placed here for exactly the reason stated above: `recordSignoff` below
+         is the FIRST WRITE. `createSpv` calls the SAME resolver, so validating
+         only in the store would leave an ORPHANED SIGN-OFF ROW behind on every
+         currency refusal — a signed attestation for a vehicle that does not
+         exist. One rule, two call sites, and it cannot drift.
+
+         WHICH DOORS ACTUALLY ARRIVE HERE — MEASURED, because the obvious
+         assumption is wrong and cost this wave a full re-measurement. THIS
+         route is the SINGULAR `/api/partner/me/spv`, reached by the main wizard
+         (`PartnerSpvEngine.tsx`) and by `PartnerManagedFounders.tsx`. The
+         client-record door `PartnerClientDetail.tsx` does NOT arrive here — it
+         posts to the PLURAL `/api/partner/me/spvs` in
+         `server/partnerRoutes.ts:2946`, a different handler that carries its own
+         copy of this pre-flight for the same orphaned-sign-off reason. Two
+         routes whose paths differ by one letter; do not assume one guards the
+         other. */
+      spvEngineStore.validateCreateCurrency(
+        createBody as Parameters<typeof spvEngineStore.validateCreateCurrency>[0],
       );
 
       /* ══ WAVE 179 · ITEM A · R151.1 — THE TARGET-COMPANY FENCE ══════════════
