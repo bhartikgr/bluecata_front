@@ -1,4 +1,9 @@
 import { asArray } from "@/lib/safeArray";
+/* RESIDUALS · ITEM 4 — this feed rendered `{a.targetLabel || a.target}` RAW at two
+   places, which is how `dataroom:co_a2e5ca95c358:drf_54fe72c0` reached a founder.
+   The founder-facing target formatter is now called at both. See the reasoning
+   block at `client/src/lib/actorLabel.ts`. */
+import { founderTargetLabel } from "@/lib/actorLabel";
 import { isActiveLiveRoundState } from "@shared/schema";
 /* WAVE 116 · FINDING 1 — the founder's own front page printed
    `RAISED THIS YEAR · $0 · of $53.7M target`. Both figures were false, for two
@@ -667,7 +672,7 @@ export default function FounderDashboard() {
                   <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
                     <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
-                      <span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{a.targetLabel || a.target}</span>
+                      <span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{founderTargetLabel(a.targetLabel, a.target)}</span>
                     </div>
                     <span className="text-[11px] text-muted-foreground shrink-0"><Clock className="inline h-3 w-3 mr-0.5" />{timeAgo(a.ts)}</span>
                   </li>
@@ -1070,7 +1075,7 @@ export default function FounderDashboard() {
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
                   <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)]" />
                   <div className="flex-1 min-w-0">
-                    <div><span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{a.targetLabel || a.target}</span></div>
+                    <div><span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground" data-action={a.action}>{describeActivityAction(a.action)}</span> <span className="font-medium">{founderTargetLabel(a.targetLabel, a.target)}</span></div>
                     <div className="text-[11px] text-muted-foreground"><Clock className="inline h-3 w-3 mr-1" />{timeAgo(a.ts)}</div>
                   </div>
                 </li>

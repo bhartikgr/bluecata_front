@@ -67,6 +67,16 @@ import { rawDb } from "../db/connection";
 import { listCommitsForUser } from "../captableCommitStore";
 import { resolveInvestorIdSet } from "./investorIdentityAliasStore";
 import { log } from "./logger";
+/* RESIDUALS · ITEM 4 — the SPV register (where the names of the ids that miss in
+   `companies` actually live) and the platform's two existing identifier-labelling
+   helpers, reused rather than reimplemented. The server → client-library import
+   is the same one `server/lib/invitationCompanyName.ts:43` already makes, for the
+   same reason: ONE definition of the reference label, not a second copy. */
+import { engineGetLegacySpvById } from "../spvEngineStore";
+import { partyReferenceLabel, humanizeMachineKey } from "../../client/src/lib/partnerDisplay";
+
+/** The words used when there is no identifier to reference at all. */
+const PORTFOLIO_COMPANY_NOT_RECORDED = "Company not recorded";
 
 /** Why a field is absent. These are CODES, not sentences: the client owns the
  *  wording so the copy lives with the surface that renders it. */
@@ -145,6 +155,37 @@ function companyMeta(companyId: string): { name: string | null; sector: string |
     log.warn(`[w183 portfolio] companyMeta read failed for ${companyId}: ${(err as Error).message}`);
     return { name: null, sector: null, stage: null };
   }
+}
+
+/**
+ * RESIDUALS · ITEM 4 — the honest display name for a position whose id is not in
+ * the `companies` table. Never the raw id; never an invented name.
+ *
+ * Step 1 is the SPV register, because `spvs.name` holds the real, stored name of
+ * exactly the ids that miss in `companies`. A throwing or un-hydrated SPV store
+ * is not a reason to print an identifier, so it is guarded and falls through
+ * (the SILENT-EMPTY rule: the catch does not become the answer).
+ *
+ * Step 2 is the Wave 115 floor, `partyReferenceLabel`. Server → client-library
+ * imports for these two helpers are already established in this tree —
+ * `server/lib/invitationCompanyName.ts:43` does exactly this, for exactly this
+ * purpose — so there is ONE definition of the label, not a second copy.
+ */
+/* Exported so its poles can be pinned directly: a stored SPV name, an unresolved
+   id (the reported case), and an empty id. */
+export function portfolioCompanyDisplayName(companyId: string): string {
+  const id = String(companyId ?? "").trim();
+  if (!id) return humanizeMachineKey("", PORTFOLIO_COMPANY_NOT_RECORDED);
+  try {
+    const fromSpv = engineGetLegacySpvById(id)?.name;
+    const nm = typeof fromSpv === "string" ? fromSpv.trim() : "";
+    if (nm.length > 0) return nm;
+  } catch (err) {
+    log.warn(`[residuals portfolio] SPV name lookup failed for ${id}: ${(err as Error).message}`);
+  }
+  const reference = partyReferenceLabel(id).trim();
+  if (reference.length > 0) return reference;
+  return humanizeMachineKey(id, PORTFOLIO_COMPANY_NOT_RECORDED);
 }
 
 function roundMeta(roundId: string): { label: string | null; date: string | null; instrument: string | null } {
@@ -335,7 +376,33 @@ export function derivePortfolioPositions(canonicalUserId: string): DerivedPortfo
     out.push({
       id: `pos_${a.companyId}`,
       companyId: a.companyId,
-      company: meta.name ?? a.companyId,
+      /* ══════════════════════════════════════════════════════════════
+         RESIDUALS · ITEM 4 — A POSITION IS NEVER NAMED AFTER ITS OWN STORAGE KEY.
+         ══════════════════════════════════════════════════════════════
+         WAS: `meta.name ?? a.companyId`. `companyMeta` reads the `companies`
+         table ONLY, so an SPV-shaped id — which this ledger legitimately carries,
+         because "an SPV is a company in the entity-agnostic ledger"
+         (spvEngineRoutes.ts:2716) — could never resolve there and the fallback
+         published the raw key AS THE COMPANY'S NAME.
+
+         ONE FIELD, FOUR SCREENS. Every investor-side leak reported against this
+         id came through this single line: the portfolio page heading and its
+         breadcrumb (PortfolioCompanySwitcher.tsx:310/324), the dashboard M&A
+         rollup and the M&A table's COMPANY column (Dashboard.tsx `MaRow`), and
+         "No co-members found for …" (MemberValueIntelligenceInvestor.tsx:209).
+         They all render `position.company`. Fixing them at the four render sites
+         would have been four chances to miss a fifth.
+
+         THE LADDER IS THE ONE `invitationCompanyName` ALREADY USES, and for the
+         same reason: try the real register, then the SPV register — where the
+         name genuinely lives and nothing was looking for it — and only then fall
+         to Wave 115's `partyReferenceLabel`, which returns e.g.
+         `Reference E08DCBDD2921A89C`: plainly a reference, still unique so two
+         unnamed positions never collapse into one another, and NOT the raw id.
+
+         NOTHING IS FABRICATED. Every branch either returns a stored name or a
+         label derived solely from the id the row already carried. */
+      company: meta.name ?? portfolioCompanyDisplayName(a.companyId),
       sector: meta.sector,
       stage: meta.stage,
       instrument: round.instrument,

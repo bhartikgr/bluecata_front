@@ -16,6 +16,12 @@
  * export, where a machine-readable value is exactly what is wanted.
  */
 
+/* RESIDUALS · ITEM 4 — the platform's EXISTING identifier-labelling helpers. They
+   are reused, not reimplemented: `shared/partyIdentifierShape.ts` pins one prefix
+   list against `partyReferenceLabel`, and a second copy here would be a second
+   thing to keep in step. */
+import { partyReferenceLabel, humanizeMachineKey } from "./partnerDisplay";
+
 /** Shaped like a raw platform user id. */
 function looksLikeUserId(s: string): boolean {
   return /^(u|usr)_[A-Za-z0-9_-]*$/.test(s);
@@ -123,4 +129,64 @@ export function safeTargetLabel(
     /^(user|investor|founder|accountant):/i.test(raw) || /^(u|usr)_/.test(raw);
   if (isPersonShaped) return describeRawActor(raw);
   return raw;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   RESIDUALS · ITEM 4 — `dataroom:co_a2e5ca95c358:drf_54fe72c0` IN A FOUNDER FEED.
+   ══════════════════════════════════════════════════════════════════════════════
+   THE MEASUREMENT, BEFORE ANY CHANGE. Two things were wrong, not one.
+
+   (1) `client/src/pages/founder/Dashboard.tsx` renders the activity feed's target
+       as `{a.targetLabel || a.target}` — RAW, at two places (the bento card and
+       the main activity list). It never called a formatter at all. This is the
+       same shape as the currency card: THE FORMATTER ALREADY EXISTED one file
+       away (`founder/Activity.tsx:68 formatTarget`) and this screen was not using
+       it.
+
+   (2) But routing the dashboard through the existing formatter would NOT have
+       fixed the reported string, and saying otherwise would have been a false
+       green. `safeTargetLabel` deliberately returns a non-person target
+       UNCHANGED — a considered decision, because on the ADMIN AUDIT LEDGER an
+       object reference is information an operator needs. So the founder's
+       Activity page leaks this string too, today.
+
+   HENCE A SEPARATE FUNCTION RATHER THAN A CHANGE TO `safeTargetLabel`.
+   `safeTargetLabel` is byte-unchanged and `admin/AuditLog.tsx:616` keeps its
+   exact current behaviour AND its `data-target-id` raw attribute. This layer is
+   for the two FOUNDER-facing surfaces, where the reader is a customer who has
+   no use for a storage key.
+
+   WHAT IT DOES, AND ONLY THAT: a colon-joined composite whose LAST segment is
+   shaped like a storage key (`drf_54fe72c0`) is rendered as its humanised kind
+   plus the platform's existing Wave 115 reference label — `dataroom:co_…:drf_…`
+   becomes `Dataroom · Reference DRF-54FE72C0`. The reference stays unique, so
+   two different files never collapse into the same words, and support can still
+   read it aloud.
+
+   ANYTHING ELSE IS RETURNED EXACTLY AS `safeTargetLabel` RETURNED IT. A real
+   server label, a person, a plain human string like "Series A" — untouched.
+   NOTHING IS INVENTED: every word out of here is either the server's, or
+   derived from characters the id already contained.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/** A single path segment that is a storage key: a short prefix, then a body. */
+const COMPOSITE_KEY_SEGMENT = /^[a-z][a-z0-9]*_[a-z0-9][a-z0-9_-]{5,}$/i;
+
+export function founderTargetLabel(
+  serverLabel: string | null | undefined,
+  rawTarget: string | null | undefined,
+): string {
+  const base = safeTargetLabel(serverLabel, rawTarget);
+  if (!base.includes(":")) return base;
+
+  const segments = base.split(":").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (segments.length < 2) return base;
+
+  const last = segments[segments.length - 1];
+  if (!COMPOSITE_KEY_SEGMENT.test(last)) return base;
+
+  const kind = humanizeMachineKey(segments[0], "").trim();
+  const reference = partyReferenceLabel(last).trim();
+  if (!reference) return base;
+  return kind ? `${kind} · ${reference}` : reference;
 }

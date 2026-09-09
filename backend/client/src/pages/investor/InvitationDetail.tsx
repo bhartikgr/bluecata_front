@@ -1399,7 +1399,58 @@ export default function InvitationDetail() {
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>
          <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><Building2 className="h-4 w-4" /> Files shared with you</CardTitle>
-         <p className="text-sm text-muted-foreground mt-0.5">All access is logged in the company's audit ledger. Watermarked on download.</p>
+         {/* WAVE 347 · ITEM 1 — THE FALSE WATERMARK PROMISE ON THE INVESTOR SCREEN.
+
+             This line said: "All access is logged in the company's audit ledger.
+             Watermarked on download."
+
+             THE SECOND SENTENCE WAS FALSE, and it was false on the screen an
+             OUTSIDE PARTY reads at the moment they open a confidential document.
+             Re-measured before touching it: there is NO watermarking mechanism in
+             this codebase on any path. `fileDownloadHandler`
+             (server/dataroomStore.ts:868-943) sends the stored bytes unmodified
+             (`res.send(bytes)`, :942) with no transformation step between storage
+             and response — the bytes that come out are the bytes that went in.
+
+             The `watermark` column is set unconditionally to `true` on every upload
+             (:759) and is read by nothing that changes a byte.
+
+             THE ONE THING THAT LOOKS LIKE A COUNTER-EXAMPLE, AND IS NOT: `pdfkit`
+             IS a dependency of this platform, so "there is no PDF library" would
+             have been a false statement. It is used only by
+             server/lib/pdfGenerators.ts (`import PDFDocument from "pdfkit"`, :29) to
+             GENERATE term sheets and cap-table documents from scratch. It is never
+             imported by server/dataroomStore.ts and never touches a stored dataroom
+             file. There is no image compositing library (no sharp, no canvas, no
+             jimp) and no per-viewer stamping step anywhere in the tree.
+
+             The only watermark RENDERING in the tree is a CSS overlay in a founder
+             preview modal that cannot open: `previewFile` gates the modal
+             (client/src/pages/founder/Dataroom.tsx:398) but `setPreviewFile` is
+             called in exactly two places, :399 and :406, and BOTH pass `null`.
+             Nothing ever puts a file into that state. And even if it opened, a CSS
+             overlay marks the SCREEN, not the file — which is why the badge there
+             honestly reads "Preview marked · file not modified" (:405).
+
+             WHAT REPLACED IT, AND WHY THAT AND NOT A NEW PROMISE. No new protection
+             is claimed here. The sentence now states the protection that IS built:
+             every view and every download writes an audit event carrying the
+             viewer's name and id. Verified at server/dataroomStore.ts:905-907:
+             `auditActor = ctx.identity.name`, `auditActorId = ctx.userId`, then
+             `logEvent({ ..., actor: auditActor, actorId: auditActorId, action:
+             wantInline ? "view" : "download", targetKind: "file", targetId: f.id })`
+             — both the name and the action are recorded, the name and id come from
+             the SERVER-side session and not from anything the reader can set, and it
+             sits on the same handler that serves the bytes (`res.send(bytes)`, :942)
+             so the record cannot be avoided by taking the file. That
+             is the register this screen already uses thirteen lines above (:1389,
+             "Every view is logged.").
+
+             NOT BUILT HERE, DELIBERATELY: watermarking itself. Whether Capavate
+             should watermark documents is a product decision that sits with the
+             owner, not a defect to be patched. Until that decision is made and
+             built, the honest position is the one below — say what is true. */}
+         <p className="text-sm text-muted-foreground mt-0.5">All access is logged in the company's audit ledger. Every view and download is recorded with your name.</p>
         </div>
         <Badge variant="outline" className="text-[10px]"><Eye className="h-3 w-3 mr-1" /> Read-only</Badge>
        </CardHeader>

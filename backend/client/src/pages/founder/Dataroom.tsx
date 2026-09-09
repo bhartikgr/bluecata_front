@@ -83,17 +83,100 @@ export default function Dataroom() {
 
   const activeFiles = activeFolder ? (filesByFolder[activeFolder] ?? []) : files;
 
-  // Investors that have any permission row — used as rows in matrix
-  const investorIds = useMemo(() => {
-    const set = new Set<string>();
-    perms.forEach(p => set.add(p.investorId));
-    return Array.from(set);
-  }, [perms]);
-
+  /* WAVE 347 · ITEM 2 — the investor CRM query is HOISTED above `investorIds`.
+     It was declared below it and used only for name resolution. `investorIds` now
+     needs it as a ROW SOURCE (see the block below), and a `const` cannot be read
+     before its declaration. Nothing about the query itself changed: same address,
+     same key, same shape. */
   const crmQ = useQuery<Array<{ investorId: string; name: string; firmName: string }>>({
     queryKey: ["/api/founder/investor-crm", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
   });
+
+  /* ════════════════════════════════════════════════════════════════════════════
+     WAVE 347 · ITEM 2 — THE PERMISSION MATRIX COULD NOT BE BOOTSTRAPPED.
+
+     WHAT THIS BLOCK USED TO BE:
+
+         // Investors that have any permission row — used as rows in matrix
+         const investorIds = useMemo(() => {
+           const set = new Set<string>();
+           perms.forEach(p => set.add(p.investorId));
+           return Array.from(set);
+         }, [perms]);
+
+     THE DEFECT, STATED EXACTLY. The matrix's row set was derived FROM THE
+     PERMISSIONS THEMSELVES. An investor appeared as a row only if a permission row
+     for them already existed — and this screen is the ONLY request-driven writer's
+     entry point for `dataroom_permissions` anywhere in the product. Counted, not
+     assumed: `persistPermission` (server/dataroomStore.ts:308) has exactly TWO
+     callers, both inside that same file — :445, which is HYDRATION re-persisting
+     rows that already exist in memory and can therefore never introduce a new
+     investor, and :977, the body of POST /api/founder/dataroom/permissions (route
+     at :956), whose only client is the switch in this matrix. So there was NO PATH,
+     on any surface, to create the FIRST permission row for any investor. With no
+     first row there is no row; with no row there is no matrix line; with no matrix
+     line there is no switch to toggle. The screen rendered "No
+     investor permissions yet." forever and the founder had nothing to click.
+
+     THIS IS NOT A HOLE IN THE FENCE. The enforcement was re-traced in full before
+     anything here was touched, and it is sound — do not weaken any of it:
+       · `investorFolderGrant` (server/dataroomStore.ts:599-608) fails CLOSED on a
+         missing investor id, a missing folder id, NO MATCHING ROW, and on anything
+         but an explicit `view === true`.
+       · `dataroomFileOwnerGate` (:798-840) calls it on the investor branch (:835)
+         and short-circuits on denial; it is called by exactly two handlers,
+         `fileMetaHandler` (:860) and `fileDownloadHandler` (:871).
+       · `fileDownloadHandler` is the route that serves the bytes (`res.send(bytes)`,
+         :942) and carries a SECOND, INDEPENDENT check (:893 refuses with
+         `view_denied` when no row is found, :894 refuses with `download_denied`
+         when the row's `download` is not set) requiring BOTH `view` AND `download`.
+       · Soft-deleted permission rows never enter the in-memory array at all: both
+         hydration reads filter `isNull(deletedAt)` (:441, :501-504).
+     The fence works. Nothing could walk up to it. That is what this block fixes,
+     and it fixes it WITHOUT relaxing a single one of those checks — an investor with
+     no permission row is still refused, because nothing below writes a row.
+
+     THE ROW SOURCE, AND WHY THIS ONE. `crmQ` is the founder's own investor CRM,
+     `GET /api/founder/investor-crm`, served by server/founderCrmStore.ts (:445) over
+     the `founder_crm_contacts` table, scoped by `ensureCompanyId` to the
+     authenticated founder's company. THREE reasons it is the correct source and no
+     new table was invented:
+       (1) It was ALREADY FETCHED BY THIS SCREEN, for `resolveInvestorName` below.
+       (2) `resolveInvestorName` ALREADY MATCHES `c.investorId === iid` against the
+           matrix's ids — i.e. the original author already treated the CRM's
+           `investorId` and the permission row's `investorId` as ONE key space. This
+           change adds no new assumption; it uses the one the file already makes.
+       (3) It is the only company-scoped investor list this screen can see without a
+           new route, a new store or a new table.
+
+     WHAT THIS DOES NOT DO — the honest limits, so nobody reads more into it:
+       · It writes NOTHING. Appearing as a row is not a grant. A row with no stored
+         permission renders both switches OFF (the `?? { view: false, download:
+         false }` default in the row body below), and the server still holds no row.
+       · It WIDENS NO DEFAULT. A new row's default is nothing at all.
+       · It grants access to no one until a founder deliberately toggles a switch,
+         which is exactly the act that was impossible before.
+       · A grant is keyed to the CONTACT'S `investorId`. If that id is not the id the
+         investor actually signs in under, the grant will be stored and will still
+         open nothing, because `dataroomFileOwnerGate` compares against the
+         SERVER-DERIVED `ctx.userId` and never a client-supplied id. That
+         identity-space question is written up for the owner in
+         build_log/dataroomcrm/DATAROOMCRM_FOR_THE_OWNER.md; it is NOT papered over
+         here, and it is not something this screen can resolve on its own.
+     ════════════════════════════════════════════════════════════════════════════ */
+  const investorIds = useMemo(() => {
+    const set = new Set<string>();
+    /* Permission holders FIRST, so an investor who already has a row keeps their
+       existing position in the table and nothing renumbers above them. */
+    perms.forEach(p => set.add(p.investorId));
+    /* Then every CRM contact that carries an investor id. `investorId` is returned
+       as `r.investorId ?? ""` by the store (server/founderCrmStore.ts:172), so the
+       empty string is a real possible value and is skipped — a blank id would render
+       a nameless row whose switches wrote a permission keyed to "". */
+    (crmQ.data ?? []).forEach(c => { if (c.investorId) set.add(c.investorId); });
+    return Array.from(set);
+  }, [perms, crmQ.data]);
 
   function resolveInvestorName(iid: string): string {
     const row = (crmQ.data ?? []).find(c => c.investorId === iid);
@@ -429,7 +512,17 @@ export default function Dataroom() {
                         identifies it as tbody>tr#3; inserting rows above it
                         renumbers it and reads as a drop) and the two new rows
                         are appended after it. */}
-                    {permsQ.isSuccess && investorIds.length === 0 && (
+                    {/* WAVE 347 · ITEM 2 — `&& !crmQ.isError` ADDED, text and position
+                        UNCHANGED. This row is now only truthful when BOTH row sources
+                        answered. `investorIds` is seeded from the CRM as well as from
+                        `perms`, so a FAILED CRM load also produces an empty row set —
+                        and "No investor permissions yet." would then be a silent empty
+                        dressed as a fact, telling the founder their investor list is
+                        empty when the truth is that it could not be read. The refusal
+                        row below says so instead. Original position preserved: the
+                        guard identifies this as tbody>tr#3 and the new rows are
+                        APPENDED after it, exactly as WAVE 22 · ITEM 4 did. */}
+                    {permsQ.isSuccess && !crmQ.isError && investorIds.length === 0 && (
                       <tr><td colSpan={folders.length + 1} className="px-3 py-8 text-center text-muted-foreground">No investor permissions yet.</td></tr>
                     )}
                     {permsQ.isError && (
@@ -444,6 +537,24 @@ export default function Dataroom() {
                     )}
                     {!permsQ.isError && !permsQ.isSuccess && (
                       <tr><td colSpan={folders.length + 1} className="px-3 py-8 text-center text-muted-foreground" data-testid="founder-dataroom-perms-not-loaded">Permissions have not loaded. Check your connection.</td></tr>
+                    )}
+                    {/* WAVE 347 · ITEM 2 — NEW, APPENDED LAST so no existing row moves.
+                        The investor list is now one of the two things this table is
+                        built from, so a failure to load it has to be SAID. Without
+                        this row the founder would see a matrix missing every investor
+                        who has no permission row yet — which is every investor they
+                        have not already granted — and nothing would tell them why.
+                        Same component and same shape as the permissions refusal above,
+                        so the two failures read alike. */}
+                    {crmQ.isError && (
+                      <tr><td colSpan={folders.length + 1} className="px-3 py-4">
+                        <LoadFailedRefusal
+                          what="your investor list, so investors without an existing permission cannot be shown"
+                          testId="founder-dataroom-crm-error"
+                          onRetry={() => void crmQ.refetch()}
+                          isRetrying={crmQ.isFetching}
+                        />
+                      </td></tr>
                     )}
                   </tbody>
                 </table>

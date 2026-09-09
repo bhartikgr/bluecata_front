@@ -31,6 +31,10 @@ import {
   /* W6c · D4 — explains the three identifiers the statement recites, without
      altering a single hashed byte of the statement itself. */
   WAVE216_IDENTIFIER_LEGEND,
+  /* RESIDUALS · ITEM 2 — the statement-version token, so the plain-language
+     summary can LABEL it rather than leave it to be read as a document version.
+     Imported from the same module the statement is built from; not re-typed. */
+  WAVE216_STATEMENT_VERSION,
 } from "@shared/wave216SignedStatement";
 /* WAVE 120 · FINDING 2 — the shared committed-capital predicate (one spelling of
    "committed", summed in bigint) and the platform's bigint money formatter. */
@@ -1513,7 +1517,11 @@ export function SpvDetailTabs({
 
       {/* ── E-signature (WAVE 11 / EN-9) ─────────────────────────────────── */}
       <TabsContent value="esignature">
-        <EsignaturePanel spvId={spvId} documents={documents} canWrite={canWrite} />
+        {/* RESIDUALS · ITEM 2 — the vehicle's stored name is handed down so the
+            signing surface can name it. `spv.name` is the same field the
+            attestation notice and the distribution panel already read on this
+            page; nothing new is fetched and nothing is derived. */}
+        <EsignaturePanel spvId={spvId} vehicleName={(spv as { name?: string | null }).name ?? null} documents={documents} canWrite={canWrite} />
       </TabsContent>
 
       {/* ── NAV (WAVE 32 / CP-SPV-30 capability 1) ───────────────────────── */}
@@ -1632,12 +1640,43 @@ function readPaintedStatementBytes(refs: EsignStatementRefs, envelopeId: string)
   return typeof text === "string" && text.length > 0 ? text : null;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   RESIDUALS · ITEM 2 — THE DOCUMENT-TYPE WORDS, IN ONE PLACE.
+   ══════════════════════════════════════════════════════════════════════════════
+   The dropdown below already reads "LPA — Limited Partnership Agreement". The
+   plain-language summary added above the signing statement has to use THE SAME
+   WORDS, or the surface has two vocabularies for one stored value again. So the
+   three options and their labels are declared once, here, and the dropdown is
+   rendered FROM this map instead of from three hand-written <option> elements.
+   The stored VALUES (`lpa`, `subscription_agreement`, `side_letter`) are
+   byte-unchanged, so nothing that is posted, stored or hashed moves.
+
+   An unrecognised kind is NOT given an invented label: it falls back to the
+   stored token so the screen never claims to know a document type it does not. */
+export const ESIGN_DOCUMENT_KIND_LABELS: Record<string, string> = {
+  lpa: "LPA — Limited Partnership Agreement",
+  subscription_agreement: "Subscription agreement",
+  side_letter: "Side letter",
+};
+
+export function esignDocumentKindLabel(kind: string | null | undefined): string {
+  const raw = String(kind ?? "").trim();
+  if (!raw) return "not on record";
+  return ESIGN_DOCUMENT_KIND_LABELS[raw] ?? raw;
+}
+
 function EsignaturePanel({
   spvId,
+  vehicleName,
   documents,
   canWrite,
 }: {
   spvId: string;
+  /* RESIDUALS · ITEM 2 — the vehicle's stored NAME, so the summary line above the
+     signing statement can say which vehicle this is instead of leaving the
+     signer with `spv_24e2f7d0e2d54c5d`. Nullable on purpose: an absent name is
+     DECLARED absent below, never blanked and never invented. */
+  vehicleName?: string | null;
   documents: Array<{ id?: string; title?: string; docType?: string }>;
   canWrite: boolean;
 }) {
@@ -2045,6 +2084,30 @@ function EsignaturePanel({
                   the server hashes. `whitespace-pre-line` is CSS only and does not
                   touch `textContent`. */}
               <div className="mt-3 rounded-md border border-[var(--cv-color-border)] p-2" data-testid="spv-esign-statement">
+                {/* RESIDUALS · ITEM 2 — the same plain-language summary as the send
+                    form, on the box a SIGNER actually reads. Sibling of the hashed
+                    node, never a child of it: `spv-esign-statement-bytes` below
+                    still holds exactly the built statement, so the
+                    rendered-bytes-are-signed-bytes equality is untouched. */}
+                <div
+                  className="mb-2 border-b border-[var(--cv-color-border)] pb-2 text-[11px] leading-snug"
+                  data-testid={`spv-esign-signer-summary-${d.envelope.id}`}
+                >
+                  <div>
+                    Vehicle: <span className="font-medium">{
+                      (vehicleName ?? "").trim().length > 0
+                        ? (vehicleName as string).trim()
+                        : "this vehicle's name is not on record"
+                    }</span>
+                  </div>
+                  <div>
+                    Document type: <span className="font-medium">{esignDocumentKindLabel(d.envelope.documentKind)}</span>
+                  </div>
+                  <div>
+                    Statement version: <span className="font-medium">{WAVE216_STATEMENT_VERSION}</span>{" "}
+                    — the version of this signing statement's own wording, kept because it forms part of the signed record. It is not the version of your document.
+                  </div>
+                </div>
                 <div
                   className="whitespace-pre-line text-[11px] leading-snug text-[var(--cv-color-text-muted)]"
                   data-testid="spv-esign-statement-bytes"
@@ -2100,12 +2163,15 @@ function EsignaturePanel({
                 data-testid="spv-esign-document-kind"
               >
                 {/* W6c · D4 — the stored VALUE is unchanged (`lpa`); only the
-                    label now spells the acronym out, because "LPA" appeared on
-                    this tab and in the signing statement without ever being
-                    expanded anywhere on the surface. */}
-                <option value="lpa">LPA — Limited Partnership Agreement</option>
-                <option value="subscription_agreement">Subscription agreement</option>
-                <option value="side_letter">Side letter</option>
+                    label spells the acronym out, because "LPA" appeared on this
+                    tab and in the signing statement without ever being expanded
+                    anywhere on the surface. RESIDUALS · ITEM 2 — the same three
+                    labels are now read from `ESIGN_DOCUMENT_KIND_LABELS` so the
+                    summary line above the statement cannot drift from this list.
+                    Same values, same order, same words. */}
+                {Object.keys(ESIGN_DOCUMENT_KIND_LABELS).map((k) => (
+                  <option key={k} value={k}>{ESIGN_DOCUMENT_KIND_LABELS[k]}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -2139,6 +2205,52 @@ function EsignaturePanel({
               builder, same bytes, one text node. Nothing is hashed on this side:
               these exact bytes go on the wire and the SERVER hashes them. */}
           <div className="mt-3 rounded-md border border-[var(--cv-color-border)] p-2" data-testid="spv-esign-pending-statement">
+            {/* ═══════════════════════════════════════════════════════════════
+                RESIDUALS · ITEM 2 — THE SUMMARY THE SIGNER CAN ACTUALLY READ.
+                ═══════════════════════════════════════════════════════════════
+                QA read three raw strings in this box: `spv_24e2f7d0e2d54c5d`,
+                `lpa`, and `esign-statement-v1`.
+
+                RE-MEASURED BEFORE CHANGING ANYTHING, AND THE OBVIOUS FIX IS THE
+                WRONG ONE. Those three lines are not decoration: they are the
+                bytes that are hashed and stored with the signature
+                (`shared/wave216SignedStatement.ts` — "the bytes rendered to the
+                signer === the bytes hashed and stored"). Rewording them would
+                change the digest of every future signature and break equality
+                with every stored one. A copy defect must not be turned into a
+                data-integrity defect, so THE HASHED TEXT NODE BELOW IS NOT
+                TOUCHED.
+
+                What was actually missing is a human sentence. This is a SIBLING
+                of the hashed node, above it, saying the same three facts in
+                plain words: the vehicle by NAME, the document type in THE SAME
+                WORDS THE DROPDOWN USES (one shared map, so they cannot drift),
+                and the statement version LABELLED as what it is rather than
+                removed — it is part of the signed record, so it is kept and
+                explained, per the standing instruction not to drop a version
+                that may be load-bearing.
+
+                An absent vehicle name is DECLARED absent. No name is invented.
+                ═══════════════════════════════════════════════════════════════ */}
+            <div
+              className="mb-2 border-b border-[var(--cv-color-border)] pb-2 text-[11px] leading-snug"
+              data-testid="spv-esign-plain-summary"
+            >
+              <div data-testid="spv-esign-plain-summary-vehicle">
+                Vehicle: <span className="font-medium">{
+                  (vehicleName ?? "").trim().length > 0
+                    ? (vehicleName as string).trim()
+                    : "this vehicle's name is not on record"
+                }</span>
+              </div>
+              <div data-testid="spv-esign-plain-summary-kind">
+                Document type: <span className="font-medium">{esignDocumentKindLabel(docKind)}</span>
+              </div>
+              <div data-testid="spv-esign-plain-summary-version">
+                Statement version: <span className="font-medium">{WAVE216_STATEMENT_VERSION}</span>{" "}
+                — the version of this signing statement's own wording, kept because it forms part of the signed record. It is not the version of your document.
+              </div>
+            </div>
             <div
               className="whitespace-pre-line text-[11px] leading-snug text-[var(--cv-color-text-muted)]"
               data-testid="spv-esign-pending-statement-bytes"

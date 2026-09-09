@@ -966,7 +966,13 @@ export default function RoundDetail() {
  {/* W-INVEST BUG B — additive "Active" badge next to the existing StateBadge. */}
  <td className="px-3 py-3">
    <div className="inline-flex items-center gap-1.5">
-     <StateBadge state={s.status} />
+     {/* RESIDUALS · ITEM 1 — THE ROW SAYS THE SAME WORD THE BUTTON DID.
+         The server writes `status = 'rejected'`; every sentence on this screen
+         (the button, the dialog, the toast) calls the action "withdraw". The
+         badge was the one place that said "rejected", so a founder who pressed
+         Withdraw was shown a word they had not been offered. The STORED value is
+         untouched — only the word on the badge is mapped, at the render site. */}
+     <StateBadge state={s.status === "rejected" ? "withdrawn" : s.status} />
      {s.active && (
        <Badge variant="outline" className="gap-1 bg-emerald-500/10 border-emerald-500/40 text-emerald-700 text-[10px]" data-testid={`badge-sc-active-${s.id}`}>Active</Badge>
      )}
@@ -998,7 +1004,14 @@ export default function RoundDetail() {
      HIGHLIGHTED (solid, not subtle outline) so the founder can clearly find
      "I received this investor's funds; put them on the cap table."
      Confirm = brand red; Mark funded = emerald (money-in). */}
- {s.status !== "committed" && (
+ {/* RESIDUALS · ITEM 1 — a WITHDRAWN entry is no longer offered "Confirm".
+     Measured before changing anything: with `status === "rejected"` this row
+     still rendered a Confirm button, because the only exclusion was
+     `!== "committed"`. So the two $0 entries the founder had just withdrawn came
+     back looking exactly like live ones, which is why they read as "cannot be
+     cleared". `rejected` is added to the same exclusion; nothing is deleted and
+     the row stays on the record. */}
+ {!["committed", "rejected"].includes(s.status) && (
  <Button size="sm" onClick={() => setConfirmSoftId(s.id)} data-testid={`button-confirm-${s.id}`} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white font-semibold">
  <Check className="h-3.5 w-3.5 mr-1" /> Confirm
  </Button>
@@ -1024,7 +1037,14 @@ export default function RoundDetail() {
  <tr className="font-semibold bg-secondary/40">
  <td className="px-6 py-3">Total</td>
  <td className="px-3 py-3 text-right font-mono tabular-nums">
- {fmtUSD(asArray<SoftCircle>(softs.data).reduce((s, x) => s + x.amount, 0))}
+ {/* RESIDUALS · ITEM 1 — the Total no longer counts a WITHDRAWN entry.
+     The withdraw dialog on this same page promises, in the founder's own words,
+     that the entry "stops it counting towards this round". It did not: this
+     reducer summed every row regardless of status, so a withdrawn commitment
+     stayed inside the book's total and the screen contradicted its own promise.
+     Only `rejected` rows are excluded. No currency is converted and nothing is
+     summed across currencies here — this reducer's scope is unchanged. */}
+ {fmtUSD(asArray<SoftCircle>(softs.data).filter(x => x.status !== "rejected").reduce((s, x) => s + x.amount, 0))}
  </td>
  <td colSpan={3} />
  </tr>

@@ -12,7 +12,7 @@ import { Activity as ActivityIcon, Download, Search, Shield } from "lucide-react
 import { fmtDateTime } from "@/lib/format";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
-import { safeActorLabel, safeTargetLabel } from "@/lib/actorLabel";
+import { safeActorLabel, safeTargetLabel, founderTargetLabel } from "@/lib/actorLabel";
 import { describeActivityAction } from "@/lib/activity/activityActionDescription"; /* WAVE 108 · FINDING 2 — never the raw event code. `classifyAction` in this file is deliberately NOT touched. */
 
 type ActivityRow = {
@@ -67,7 +67,13 @@ function formatActor(
    leak was `user:u_founder_…` rendered there. Same rule, same guard. */
 function formatTarget(target: string, serverLabel?: string | null): string {
   if (!target) return "";
-  return safeTargetLabel(serverLabel, target);
+  /* RESIDUALS · ITEM 4 — `safeTargetLabel` alone returns a composite storage key
+     UNCHANGED (deliberately, for the admin audit ledger), so this page leaked
+     `dataroom:co_…:drf_…` too — the founder dashboard was simply the surface QA
+     happened to be looking at. The founder-facing layer is applied here as well,
+     so the two founder screens say the same words. Everything else it returns is
+     byte-identical to before. */
+  return founderTargetLabel(serverLabel, target);
 }
 
 type MeShape = { isAuthed?: boolean; userId?: string | null; identity?: { name?: string | null; displayName?: string | null } | null; name?: string | null };

@@ -127,9 +127,32 @@ function spvVintageLabel(s: SpvDTO): string {
   return "\u2014";
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   RESIDUALS · ITEM 3 — THE LIST CARD NOW NAMES ITS CURRENCY, LIKE THE TABS DO.
+   ══════════════════════════════════════════════════════════════════════════════
+   MEASURED FIRST, AND THE BRIEFED PREMISE NEEDED CORRECTING. The card was NOT
+   using a formatter that had lost the currency: `formatMinorLib(minor, currency)`
+   already receives the vehicle's own `currency` column, and `$100,000.00` is the
+   CORRECT en-US rendering of USD, exactly as `CA$1,200.00` is of CAD. Nothing was
+   fabricated and nothing was converted.
+
+   WHAT IS ACTUALLY WRONG IS THE DISPLAY MODE. `$` is not unambiguous — USD, CAD,
+   AUD, SGD, HKD and NZD all render with a `$` in some locale — and this list is
+   the platform's international shop window, with vehicles in different currencies
+   stacked in one column. Directly BELOW this card, all sixteen SPV tabs already
+   say `USD 100,000.00`, because `SpvDetailTabs.tsx:365` (W6c · D1) passes
+   `currencyDisplay: "code"` through this same library function. So the same
+   vehicle read `$100,000.00` on the card and `USD 100,000.00` one click later.
+
+   THE FORMATTER THAT ALREADY WORKS IS THE ONE ADOPTED HERE — the identical
+   option, on this file's single money chokepoint, so every figure on this page
+   names its currency for the same reason the tabs do.
+
+   NOTHING IS CONVERTED AND NOTHING IS SUMMED ACROSS CURRENCIES: this adds a
+   currency label to a figure that was already correct in its own currency. */
 function fmt(minor: number | null, currency: string) {
   if (minor == null) return "—";
-  return formatMinorLib(minor, currency, { locale: "en-US" });
+  return formatMinorLib(minor, currency, { locale: "en-US", currencyDisplay: "code" });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -2184,7 +2207,10 @@ export default function PartnerSpvEngine() {
                       was right. Nothing about the value changes here — only that
                       a reader can now tell what they are looking at. */}
                   <div className="text-right">
-                    <div className="font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
+                    {/* RESIDUALS · ITEM 3 — a test id, so the figure a customer
+                        reads can be asserted directly rather than inferred from
+                        a neighbouring caption. Additive; nothing else changes. */}
+                    <div className="font-mono" data-testid={`spv-target-raise-amount-${s.id}`}>{fmt(s.targetRaiseMinor, s.currency)}</div>
                     <div className="text-[10px] text-[color:var(--cv-color-text-faint)]" data-testid={`spv-target-raise-caption-${s.id}`}>
                       Target raise — not the amount committed
                     </div>

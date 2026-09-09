@@ -132,7 +132,9 @@ import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore";
 /* WAVE 125 · FINDING 3 — one resolver for the company name in an investor-facing
    invitation payload. Never the raw identifier, never an invented name. */
-import { invitationCompanyName } from "./lib/invitationCompanyName"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
+import { invitationCompanyName } from "./lib/invitationCompanyName";
+/* RESIDUALS · ITEM 4 — the round-name sibling of the resolver above. */
+import { invitationRoundName } from "./lib/invitationRoundName"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForCompany, listFilesVisibleTo as dataroomStoreListVisibleTo } from "./dataroomStore"; // v25.48 DATA-2 (V-4); WAVE 113 FINDING 2 — the permission-filtered reader
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -4725,7 +4727,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
         round: {
           id: inv.roundId,
-          name: round?.name ?? `Round ${inv.roundId}`,
+          /* RESIDUALS · ITEM 4 — the investor's Invitations list showed
+             `Round spvlp_spv_e08dcbdd2921a89c`. An SPV LP invitation is minted
+             against a SYNTHETIC round id for which no `rounds` row is ever
+             written, so this fallback fired every time and printed the storage
+             key. `invitationRoundName` keeps the stored name when there is one,
+             otherwise names the vehicle the invitation is actually into, and
+             otherwise falls to an honest reference — never the raw id, never an
+             invented name. Sibling of `invitationCompanyName` above. */
+          name: invitationRoundName(inv.roundId, round?.name),
           type: round?.type ?? "unknown",
         },
         state: inv.state,
@@ -4891,7 +4901,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       },
       round: {
         id: modern.roundId,
-        name: round?.name ?? `Round ${modern.roundId}`,
+        /* RESIDUALS · ITEM 4 — same resolver as the list projection above, so
+           the Invitations list and the "Your Decision" tab cannot disagree about
+           what a round is called. See `server/lib/invitationRoundName.ts`. */
+        name: invitationRoundName(modern.roundId, round?.name),
         type: round?.type ?? "unknown",
         /* WAVE 80 · ITEM 2 — USE OF PROCEEDS REACHES THE INVESTOR WHO WAS INVITED.
            `InvitationDetail.tsx` has rendered a "Use of proceeds" card since DEF-023,
