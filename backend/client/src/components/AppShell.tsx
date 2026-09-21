@@ -29,6 +29,7 @@ import { useEntitlement } from "@/lib/entitlement";
 import { safeInitials } from "@/lib/investorLabels";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArchivedWorkspaceBanner } from "./ArchivedWorkspaceBanner";
+import { surfaceForPathname } from "@shared/notificationDestination";
 import { AuditChainP0Banner } from "./AuditChainP0Banner";
 
 /** Role-aware glossary link rendered in the page header. */
@@ -364,6 +365,11 @@ const adminNav: NavGroup[] = [
          This entry is IDENTICAL for every admin; the classification a
          partner holds never adds, removes or reorders a nav item. */
       { href: "/admin/partner-taxonomy", label: "Partner Taxonomy", icon: Tags, testId: "nav-admin-partner-taxonomy" },
+      /* slide13b WAVE D — admin CRUD for the DB-backed COMPANY-sector taxonomy
+         (taxonomy_terms, migration 0236) read by PartnerAddPortfolioCompany,
+         PartnerSpvEngine and ApplyToCollective. A DIFFERENT list from the
+         partner classification above; kept adjacent so an admin sees both. */
+      { href: "/admin/company-taxonomy", label: "Company Taxonomy", icon: Tags, testId: "nav-admin-company-taxonomy" },
       /* WAVE 7 R-1 — /admin/commission-rates RESTORED. /admin/fees READS the
          commission rates but its own copy (AdminFeesConsolidated.tsx:1140)
          says the editor "lands with the partner-override component" — i.e. the
@@ -675,7 +681,12 @@ function GlobalSearch() {
 
 function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
   // Sprint 11: light-only — theme toggle removed.
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  /* 2026-09-19 — the bell's workspace is the one the ROUTE names (/founder →
+     founder, /investor → investor, /admin → admin, anything else → account-wide
+     legacy behaviour). Derived from the route, not from the role provider, so a
+     multi-role user standing in the founder workspace sees founder notices. */
+  const bellSurface = surfaceForPathname(location);
   const { role } = useRole();
 
   // W-FIX2 F6 — hardened Sign out. Previously the logout ran inside the Radix
@@ -728,7 +739,7 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
         <RoleSwitch />
       </div>
 
-      <NotificationBell />
+      <NotificationBell surface={bellSurface} />
 
       {/* W-FIX2 F6 — account/avatar menu: de-collided from the switcher group
           with a left divider, extra spacing, and a raised z-index so the avatar

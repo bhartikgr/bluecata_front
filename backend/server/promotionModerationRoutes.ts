@@ -309,7 +309,12 @@ export function registerPromotionModerationRoutes(app: Express): void {
           kind: partnerKind,
           title: partnerTitle,
           body: partnerBody,
-          link: "/partner/pipeline",
+          /* 2026-09-19 — `/partner/pipeline` is not a mounted client route; the
+             partner pipeline renders at `/collective/partner/pipeline` (same
+             target partnerRoutes.ts already emits). Historical rows carrying
+             the old value are repaired at read time by the shared classifier
+             (shared/notificationDestination.ts), never rewritten in storage. */
+          link: "/collective/partner/pipeline",
         });
 
         // 2) On approval, notify chapter members so they see the Deal Room

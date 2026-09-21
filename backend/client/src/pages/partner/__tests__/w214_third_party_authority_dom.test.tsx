@@ -1,5 +1,5 @@
 /**
- * WAVE 214 — THE STATEMENT IS ON THE REAL SCREEN, AND THE BUTTON REALLY WAITS.
+ * WAVE 214 — THE STATEMENT IS ON THE REAL SCREEN, AND AUTHORITY GATES THE WRITE.
  *
  * Handbook §8, NEVER PROVE A REPLICA: the REAL `PartnerAddPortfolioCompany` and
  * `PartnerTeam` pages are mounted and the REAL submit controls are inspected and
@@ -11,15 +11,16 @@
  * satisfied one could still ship the defect:
  *   1. the statement and the consequence RENDER (a block with a heading and no
  *      text would pass a bare "does the block exist" check);
- *   2. the submit control is DISABLED before confirmation (a purely decorative
- *      statement would pass (1));
- *   3. it becomes ENABLED after confirmation — otherwise the "gate" is a brick
- *      wall and the surface is unusable, which is its own defect;
+ *   2. portfolio review refuses missing native authority and sends no write;
+ *      the unchanged team invitation button remains disabled before its tick;
+ *   3. valid authority enables reviewed confirmation (including DOM-only input,
+ *      which a stale React-state disabled gate must not block);
  *   4. the request CARRIES the exact statement text (a confirmation that gated
  *      only the button would pass 1–3 while the server had nothing to hash).
  *
- * And R143.1: the pre-214 copy on both screens is still present. The blocks were
- * appended as static siblings; nothing was replaced.
+ * The shared legal statement/consequence remain byte-identical. Slide13b's
+ * explicit review step replaces the portfolio button's old immediate-create
+ * wording; the authority requirement is not removed.
  */
 import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -111,17 +112,18 @@ describe("A — PartnerAddPortfolioCompany: the typed-name confirmation is on th
     expect(screen.getByText(WAVE214_TYPED_NAME_LABEL)).toBeTruthy();
   });
 
-  it("A2 the submit button is DISABLED while the name box is empty", async () => {
+  it("A2 review refuses empty authority and never sends a create request", async () => {
     mount(<PartnerAddPortfolioCompany />);
     await waitFor(() => expect(screen.getByTestId("apc-authority-block")).toBeTruthy());
-    /* Every other required field is filled, so the ONLY thing holding the button
-       is the missing confirmation. Without this the test would pass for the wrong
-       reason — a button disabled because the form is empty proves nothing. */
-    fireEvent.change(screen.getByTestId("apc-company-name") ?? screen.getAllByRole("textbox")[0], { target: { value: "Northwind Robotics" } });
-    expect(buttonByText(/create|add/i).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("apc-company-name"), { target: { value: "Northwind Robotics" } });
+    fireEvent.change(screen.getByTestId("apc-founder-email"), { target: { value: "founder@example.com" } });
+    fireEvent.click(screen.getByTestId("apc-create-btn"));
+    expect(screen.getByText("Enter your name to confirm your authority before reviewing.")).toBeTruthy();
+    expect(screen.queryByTestId("apc-confirm-create")).toBeNull();
+    expect(apiRequestMock.mock.calls.filter(c => c[0] === "POST")).toHaveLength(0);
   });
 
-  it("A3 typing the name ENABLES it, and the request carries the exact statement", async () => {
+  it("A3 native authority unlocks review, then explicit confirmation carries the exact statement", async () => {
     mount(<PartnerAddPortfolioCompany />);
     await waitFor(() => expect(screen.getByTestId("apc-authority-block")).toBeTruthy());
     const boxes = screen.getAllByRole("textbox") as HTMLInputElement[];
@@ -134,15 +136,19 @@ describe("A — PartnerAddPortfolioCompany: the typed-name confirmation is on th
     const emails = Array.from(document.querySelectorAll('input[type="email"]')) as HTMLInputElement[];
     for (const e of emails) fireEvent.change(e, { target: { value: "founder@example.com" } });
 
-    const btn = buttonByText(/create|add/i);
-    const wasDisabled = btn.disabled;
-    fireEvent.change(screen.getByTestId("apc-authority-name"), { target: { value: "W214 Managing Partner" } });
-    await waitFor(() => expect(buttonByText(/create|add/i).disabled).toBe(false));
-    expect(wasDisabled, "the button must have been disabled BEFORE the confirmation, or A3 proves nothing").toBe(true);
-
-    fireEvent.click(buttonByText(/create|add/i));
-    await waitFor(() => expect(apiRequestMock).toHaveBeenCalled());
-    const call = apiRequestMock.mock.calls.find((c) => String(c[1]).includes("portfolio-companies"));
+    fireEvent.click(screen.getByTestId("apc-create-btn"));
+    expect(screen.queryByTestId("apc-confirm-create")).toBeNull();
+    expect(apiRequestMock.mock.calls.filter(c => c[0] === "POST")).toHaveLength(0);
+    // Password managers/autofill can change the native control without a React
+    // event. The real form must accept that actual reviewed authority.
+    (screen.getByTestId("apc-authority-name") as HTMLInputElement).value = "W214 Managing Partner";
+    fireEvent.click(screen.getByTestId("apc-create-btn"));
+    await waitFor(() => expect(screen.getByTestId("apc-confirm-create")).toBeTruthy());
+    expect(screen.getByTestId("apc-review-recipient").textContent).toContain("founder@example.com");
+    expect(apiRequestMock.mock.calls.filter(c => c[0] === "POST")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("apc-confirm-create"));
+    await waitFor(() => expect(apiRequestMock.mock.calls.some(c => c[0] === "POST")).toBe(true));
+    const call = apiRequestMock.mock.calls.find((c) => c[0] === "POST" && String(c[1]).includes("portfolio-companies"));
     expect(call, "the create request was never sent").toBeTruthy();
     const body = call![2] as Record<string, unknown>;
     expect(body.authorityTypedName).toBe("W214 Managing Partner");
@@ -151,14 +157,10 @@ describe("A — PartnerAddPortfolioCompany: the typed-name confirmation is on th
     expect(body.authorityStatementShown).toBe(WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT);
   });
 
-  it("A4 R143.1 — the pre-214 copy on this screen is still there", async () => {
+  it("A4 R143.1 — company controls and the explicit review action remain available", async () => {
     mount(<PartnerAddPortfolioCompany />);
     await waitFor(() => expect(screen.getByTestId("apc-authority-block")).toBeTruthy());
-    /* The block was APPENDED. Nothing was replaced. A replaced text node scores as
-       REMOVED copy in `npm run guard` and as a bare disappearance in
-       `drop:restyle`, and both gates would have caught it — this asserts the
-       intent in the product, not just in the gate output. */
-    expect(buttonByText(/create|add/i)).toBeTruthy();
+    expect(buttonByText(/review company & founder invitation/i)).toBeTruthy();
     expect(screen.getAllByRole("textbox").length).toBeGreaterThan(1);
   });
 });

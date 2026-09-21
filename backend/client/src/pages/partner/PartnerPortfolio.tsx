@@ -31,6 +31,7 @@ interface PortfolioRow {
   logoUrl: string | null;
   profile: Record<string, unknown> | null;
   updatedAt: string | null;
+  onboarding?: { state: "registered" | "pending" | "indeterminate" | "error" };
 }
 
 export default function PartnerPortfolio() {
@@ -43,6 +44,9 @@ export default function PartnerPortfolio() {
     queryKey: ["/api/partner/me/portfolio"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/portfolio")).json(),
+    refetchOnWindowFocus: true,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 
   const filtered = useMemo(() => {
@@ -120,12 +124,13 @@ export default function PartnerPortfolio() {
                 <th className="text-left p-3">Internal ID</th>
                 <th className="text-left p-3">Last updated</th>
                 <th className="text-right p-3">Profile</th>
+                <th className="text-left p-3">Registration</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
                 <tr data-testid="portfolio-no-match">
-                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={4}>No companies match your search.</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={5}>No companies match your search.</td>
                 </tr>
               )}
               {filtered.map((r) => (
@@ -154,6 +159,11 @@ export default function PartnerPortfolio() {
                     >
                       {canEditProfile ? "Edit profile" : "View profile"}
                     </button>
+                  </td>
+                  <td className="p-3">
+                    <span className="rounded border px-2 py-0.5 text-xs" data-testid={`portfolio-registration-${r.companyId}`}>
+                      {r.onboarding?.state === "registered" ? "Registered" : r.onboarding?.state === "pending" ? "Registration pending" : "Registration needs review"}
+                    </span>
                   </td>
                 </tr>
               ))}

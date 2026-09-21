@@ -32,7 +32,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
 import { registerFounderUser, getUserContextForId } from "./userContext";
-import { setSessionCookie } from "./sessionCookie";
+import { setSessionCookie, readSessionCookie, verifySessionValue } from "./sessionCookie";
+import { isRevoked } from "./sessionRevocation";
+import { evaluateLoginGateForIdentity } from "./accountStatus";
+import { resolveInvitedIdentityStrict, isNewInvitePersonaDurable, type InvitedIdentity } from "./inviteIdentityResolver";
+import { deleteCredential } from "../userCredentialsStore";
 /* WAVE 214 · D5 — the terms acceptance this route already enforces with a 400
    was never recorded. One helper, called from BOTH redeem implementations. */
 import { recordRedeemTermsConsent } from "./wave214RedeemConsentRecord";
@@ -131,6 +135,37 @@ function teamPreviewPayload(row: TeamInvitationRow) {
   };
 }
 
+function identityRefusal(identity: InvitedIdentity, res: Response): boolean {
+  const errors = {
+    ambiguous: [409, "INVITED_IDENTITY_AMBIGUOUS"],
+    deleted: [409, "INVITED_IDENTITY_DELETED"],
+    unavailable: [503, "ACCOUNT_RESOLUTION_UNAVAILABLE"],
+  } as const;
+  if (identity.kind === "single" || identity.kind === "none") return false;
+  const [status, error] = errors[identity.kind];
+  res.status(status).json({ ok: false, kind: "team", error });
+  return true;
+}
+
+/** Deliberately bypass extractUserIdFromCookie's optional raw development
+ * fallback. Use the SAME HMAC verifier/lifetime as canonical login cookies. */
+function signedInviteSession(req: Request): string | null {
+  const raw = readSessionCookie(req);
+  const id = raw ? verifySessionValue(raw) : null;
+  return id && !isRevoked(id) ? id : null;
+}
+
+function claimReturnTo(token: string): string {
+  // Never accept a return target from the request. The token is data only.
+  return `/auth/redeem?token=${encodeURIComponent(token)}&continue=1`;
+}
+
+class InviteClaimIdentityError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super(code);
+  }
+}
+
 /**
  * Register the team-aware redeem interceptors. MUST be called BEFORE
  * `registerAuthShellRoutes(app, …)` so team tokens are handled first and all
@@ -150,11 +185,21 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
     const evald = evaluateTeamInvitation(lk.row);
     if (!evald.ok) {
       const httpCode = evald.reason === "expired" ? 410 : evald.reason === "already_redeemed" ? 409 : 404;
-      return res.status(httpCode).json({ ok: false, error: evald.reason });
+      return res.status(httpCode).json({ ok: false, kind: "team", error: evald.reason });
     }
     // Shape mirrors the investor preview envelope ({ ok, invitation }) plus a
     // `kind:"team"` discriminator the client can branch on.
-    return res.json({ ok: true, invitation: teamPreviewPayload(lk.row) });
+    const identity = resolveInvitedIdentityStrict(lk.row.invited_email);
+    if (identityRefusal(identity, res)) return;
+    const existingAccount = identity.kind === "single";
+    const sessionId = signedInviteSession(req);
+    const sessionState = identity.kind === "none" ? "new_account" : !sessionId ? "sign_in_required"
+      : identity.kind === "single" && sessionId !== identity.userId ? "mismatch"
+      : identity.kind === "single" ? "matching" : "sign_in_required";
+    return res.json({
+      ok: true, existingAccount, sessionState,
+      invitation: teamPreviewPayload(lk.row),
+    });
   });
 
   // ---------- POST /api/auth/redeem (team-aware interceptor) ----------
@@ -169,33 +214,100 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
     if (lk.kind === "not_team") return next(); // fall through to investor redeem
     const row = lk.row;
 
-    if (!body.password || body.password.length < 8)
-      return res.status(400).json({ ok: false, error: "WEAK_PASSWORD", message: "Choose a password of at least 8 characters." });
-    if (!body.agreedToTerms)
-      return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
-
     const evald = evaluateTeamInvitation(row);
     if (!evald.ok) {
       const httpCode = evald.reason === "expired" ? 410 : evald.reason === "already_redeemed" ? 409 : 404;
-      return res.status(httpCode).json({ ok: false, error: evald.reason });
+      return res.status(httpCode).json({ ok: false, kind: "team", error: evald.reason });
     }
 
     const email = row.invited_email.trim().toLowerCase();
     const name = row.invited_name ?? email.split("@")[0];
     const teamRole = (["owner", "admin", "member", "viewer"].includes(row.role) ? row.role : "member") as "owner" | "admin" | "member" | "viewer";
 
-    // GPT-5.5 #1 / Opus #1 — register the invitee as a FOUNDER-capable persona
-    // (NOT an investor). registerFounderUser (userContext, SACRED export — we
-    // CALL it) durably persists persona + users.role='founder' + auth_users +
-    // bcrypt credential. Without this the team member would be misclassified as
-    // an investor and land on an empty founder workspace.
+    const identity = resolveInvitedIdentityStrict(email);
+    if (identityRefusal(identity, res)) return;
+    const isNewIdentity = identity.kind === "none";
     let personaId: string;
-    try {
-      personaId = registerFounderUser({ email, name, password: body.password }).userId;
-    } catch (err) {
-      log.error("[teamInviteRedeem] registerFounderUser failed:", (err as Error).message);
-      return res.status(500).json({ ok: false, error: "PERSONA_FAILED" });
+    if (identity.kind === "single") {
+      const sessionId = signedInviteSession(req);
+      if (!sessionId) {
+        return res.status(401).json({
+          ok: false, error: "SIGN_IN_REQUIRED_TO_ACCEPT", returnTo: claimReturnTo(token),
+        });
+      }
+      if (sessionId !== identity.userId) {
+        return res.status(403).json({
+          ok: false, error: "SESSION_IDENTITY_MISMATCH",
+          message: "You are signed in to a different account. Sign out and sign in with the invited email to accept.",
+        });
+      }
+      const gate = evaluateLoginGateForIdentity({ userId: identity.userId });
+      if (gate.decision === "block") return res.status(403).json({ ok: false, error: "ACCOUNT_NOT_ACTIVE" });
+      if (gate.decision === "error") return res.status(503).json({ ok: false, error: "ACCOUNT_STATUS_UNAVAILABLE" });
+      personaId = identity.userId;
+    } else if (identity.kind === "none") {
+      if (typeof body.password !== "string" || body.password.length < 8)
+        return res.status(400).json({ ok: false, error: "WEAK_PASSWORD", message: "Choose a password of at least 8 characters." });
+      if (body.agreedToTerms !== true)
+        return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
+      let created: { userId: string; alreadyExisted: boolean } | undefined;
+      try {
+        // The frozen signup helper swallows individual SQL write failures.
+        // A caller-owned transaction + SQL assertion rolls back ALL its partial
+        // writes, including a credential-only remnant, before any claim/session.
+        personaId = rawDb().transaction(() => {
+          const beforeSignup = resolveInvitedIdentityStrict(email);
+          if (beforeSignup.kind === "unavailable")
+            throw new InviteClaimIdentityError(503, "ACCOUNT_RESOLUTION_UNAVAILABLE");
+          if (beforeSignup.kind !== "none")
+            throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_STATE_CHANGED");
+          created = registerFounderUser({ email, name, password: body.password! });
+          // A cache-only persona is not a signup and not identity proof. Refuse
+          // it without deleting/rebinding canonical DB rows or demo substitutes.
+          if (created.alreadyExisted) {
+            const afterSignup = resolveInvitedIdentityStrict(email);
+            if (afterSignup.kind === "none")
+              throw new InviteClaimIdentityError(503, "IDENTITY_STATE_NEEDS_OPERATOR");
+            if (afterSignup.kind === "unavailable")
+              throw new InviteClaimIdentityError(503, "ACCOUNT_RESOLUTION_UNAVAILABLE");
+            throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_STATE_CHANGED");
+          }
+          if (!isNewInvitePersonaDurable(email, created.userId))
+            throw new Error("persona_not_durable");
+          return created.userId;
+        })();
+      } catch (err) {
+        // storeCredential caches before the outer transaction commits. Evict
+        // ONLY a newly-created, now-rolled-back ID with no durable identity.
+        // Never call this for alreadyExisted (a stale persona may name a real
+        // canonical account). Frozen runtime-persona ghosts fail closed on retry.
+        if (created && !created.alreadyExisted) {
+          try {
+            const db = rawDb();
+            const durable = db.prepare(
+              /* TENANT-SCOPE-EXEMPT: SLIDE13B_ROLLBACK_IDENTITY_PROTECTION */
+              `SELECT id FROM users WHERE id = ? UNION ALL
+               SELECT id FROM auth_users WHERE id = ? UNION ALL
+               SELECT user_id AS id FROM user_credentials WHERE user_id = ?`,
+            ).all(created.userId, created.userId, created.userId);
+            if (durable.length === 0) deleteCredential(created.userId);
+          } catch {
+            log.error("[teamInviteRedeem] rolled-back signup cache cleanup unavailable");
+          }
+        }
+        if (err instanceof InviteClaimIdentityError) {
+          if (err.code === "IDENTITY_STATE_NEEDS_OPERATOR")
+            log.error("[teamInviteRedeem] frozen runtime persona has no durable identity; operator reconciliation required", { invitationId: row.id });
+          return res.status(err.status).json({ ok: false, kind: "team", error: err.code });
+        }
+        log.error("[teamInviteRedeem] signup persistence validation failed; SQL rolled back", { invitationId: row.id });
+        return res.status(500).json({ ok: false, error: "PERSONA_NOT_DURABLE" });
+      }
+    } else {
+      return; // identityRefusal already handled every refusal state.
     }
+    if (body.agreedToTerms !== true)
+      return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
 
     // GPT-5.5 r3 — FULLY ATOMIC REDEEM (single transaction).
     //
@@ -257,6 +369,32 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
     try {
       const db: any = rawDb();
       claimed = db.transaction(() => {
+        // A0: binding must still hold at the write boundary, not merely at
+        // preview/route entry. A second DB writer can change identity between
+        // the earlier reads and this transaction. No claim/tag/grant precedes
+        // these checks. Never accept an auth/credential-only orphan as a user.
+        const current = resolveInvitedIdentityStrict(email);
+        if (current.kind === "unavailable")
+          throw new InviteClaimIdentityError(503, "ACCOUNT_RESOLUTION_UNAVAILABLE");
+        if (current.kind === "ambiguous")
+          throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_AMBIGUOUS");
+        if (current.kind === "deleted")
+          throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_DELETED");
+        if (current.kind !== "single" || current.userId !== personaId)
+          throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_CHANGED");
+        let liveUser: unknown;
+        try {
+          liveUser = db.prepare(
+            /* TENANT-SCOPE-EXEMPT: SLIDE13B_CLAIM_IDENTITY_LIVE */
+            "SELECT id FROM users WHERE id = ? AND lower(email) = ? AND deleted_at IS NULL",
+          ).get(personaId, email);
+        } catch {
+          throw new InviteClaimIdentityError(503, "ACCOUNT_RESOLUTION_UNAVAILABLE");
+        }
+        if (!liveUser) throw new InviteClaimIdentityError(409, "INVITED_IDENTITY_INCOMPLETE");
+        const currentGate = evaluateLoginGateForIdentity({ userId: personaId });
+        if (currentGate.decision === "block") throw new InviteClaimIdentityError(403, "ACCOUNT_NOT_ACTIVE");
+        if (currentGate.decision === "error") throw new InviteClaimIdentityError(503, "ACCOUNT_STATUS_UNAVAILABLE");
         // (a) Guarded claim: pending → accepted, exactly one row.
         const upd = db
           .prepare(
@@ -294,6 +432,8 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
         return true;
       })();
     } catch (err) {
+      if (err instanceof InviteClaimIdentityError)
+        return res.status(err.status).json({ ok: false, kind: "team", error: err.code });
       log.error("[teamInviteRedeem] atomic redeem failed:", (err as Error).message);
       // Whole tx rolled back — invite still pending, no tag, no access. Retry-safe.
       return res.status(500).json({ ok: false, error: "REDEEM_PERSIST_FAILED" });
@@ -334,7 +474,7 @@ export function registerTeamInviteRedeemRoutes(app: Express): void {
     });
 
     // Session ONLY after all durable writes committed.
-    setSessionCookie(res, personaId);
+    if (isNewIdentity) setSessionCookie(res, personaId);
     const ctx = getUserContextForId(personaId);
     return res.json({
       ok: true,

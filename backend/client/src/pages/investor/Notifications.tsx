@@ -6,8 +6,17 @@
  * dropdown but with full history visible.
  */
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useLocation } from "wouter";
+import { queryClient } from "@/lib/queryClient";
+import { surfaceForPathname } from "@shared/notificationDestination";
+import {
+  useNotifications,
+  useNotificationStream,
+  invalidateNotifications,
+  markAllReadScoped,
+  type NotificationItem as Notification,
+} from "@/lib/useNotifications";
+import { performNotificationNavigation } from "@/lib/notificationNavigate";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,20 +24,10 @@ import { Button } from "@/components/ui/button";
 import { Bell, CheckCheck, BellOff } from "lucide-react";
 import { useEntitlement } from "@/lib/entitlement";
 import { notificationKindLabel } from "@/lib/investorLabels";
-
-type Notification = {
-  id: string;
-  userId: string;
-  kind: string;
-  title: string;
-  body: string;
-  link?: string;
-  read: boolean;
-  archived: boolean;
-  createdAt: string;
-};
-
-type NotifList = { userId: string; total: number; unread: number; items: Notification[] };
+/* 2026-09-19 — the per-row badge uses the SHARED human label the bell and the
+   neutral center use (dotted kinds such as `partner.referral_received`), not a
+   machine value with underscores swapped for spaces. */
+import { notificationKindLabel as sharedNotificationKindLabel } from "@/lib/notificationKindLabels";
 
 function relTime(iso: string): string {
   const ts = new Date(iso).getTime();
@@ -48,12 +47,18 @@ export default function InvestorNotificationsPage() {
   const { data: entCtx, isLoading: entLoading } = useEntitlement();
   const userId = entCtx?.userId;
   const [kindFilter, setKindFilter] = useState("all");
+  const [location, navigate] = useLocation();
+  /* 2026-09-19 — this page is mounted at BOTH /investor/notifications and
+     /founder/notifications. The surface is the one the ROUTE names, so the
+     founder mount lists and counts founder rows and the investor mount investor
+     rows; a multi-role user sees each workspace's notices in that workspace. */
+  const surface = useMemo(() => {
+    const s = surfaceForPathname(location);
+    return s === "investor" || s === "founder" ? s : "investor";
+  }, [location]);
 
-  const { data, isLoading } = useQuery<NotifList>({
-    queryKey: [`/api/notifications?userId=${userId}`],
-    refetchInterval: 30_000,
-    enabled: !!userId,
-  });
+  const { data, isLoading, isError } = useNotifications(userId ?? "", surface);
+  useNotificationStream(userId ?? "", surface);
 
   const filtered = useMemo(() => {
     const items = data?.items ?? [];
@@ -63,8 +68,8 @@ export default function InvestorNotificationsPage() {
 
   const markAllRead = async () => {
     if (!userId) return;
-    await apiRequest("POST", "/api/notifications/read-all", { userId });
-    queryClient.invalidateQueries({ queryKey: [`/api/notifications?userId=${userId}`] });
+    await markAllReadScoped(surface);
+    await invalidateNotifications(queryClient, userId);
   };
 
   if (entLoading) {
@@ -100,7 +105,7 @@ export default function InvestorNotificationsPage() {
       <PageHeader
         title="Notifications"
         description="Your full notification history."
-        breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { label: "Notifications" }]}
+        breadcrumbs={[{ href: surface === "founder" ? "/founder/dashboard" : "/investor/dashboard", label: "Workspace" }, { label: "Notifications" }]}
         actions={
           <Button
             variant="outline"
@@ -114,14 +119,14 @@ export default function InvestorNotificationsPage() {
       />
       <PageBody data-testid="page-investor-notifications">
         {/* Kind filter chips */}
-        <div className="flex flex-wrap gap-2 mb-4" data-testid="notif-kind-filter">
+        <div className="flex flex-wrap gap-2 mb-4" data-testid="notif-kind-filter" data-surface={surface}>
           {KIND_CHIPS.map((k) => (
             <button
               key={k}
               onClick={() => {
                 setKindFilter(k);
                 // Sprint 23 Wave B: re-fire query on every chip click so data stays fresh.
-                queryClient.invalidateQueries({ queryKey: [`/api/notifications?userId=${userId}`] });
+                if (userId) void invalidateNotifications(queryClient, userId);
               }}
               data-testid={`chip-notif-kind-${k}`}
               className={`px-3 py-1 text-xs rounded-full border transition-colors ${
@@ -151,11 +156,19 @@ export default function InvestorNotificationsPage() {
             ))}
           </div>
         )}
-        {!isLoading && filtered.length === 0 && (
+        {!isLoading && !isError && filtered.length === 0 && (
           <Card>
             <CardContent className="py-16 text-center text-sm text-muted-foreground">
               <BellOff className="h-8 w-8 mx-auto mb-3 text-muted-foreground/40" />
               {kindFilter === "all" ? "You're all caught up." : `No ${notificationKindLabel(kindFilter).toLowerCase()} notifications.`}
+            </CardContent>
+          </Card>
+        )}
+        {isError && (
+          /* 2026-09-19 — a failed read is never presented as "caught up". */
+          <Card>
+            <CardContent className="py-16 text-center text-sm text-destructive" data-testid="text-notifications-error" role="alert">
+              Your notifications could not be loaded. They will be retried automatically.
             </CardContent>
           </Card>
         )}
@@ -164,7 +177,13 @@ export default function InvestorNotificationsPage() {
             <Card
               key={n.id}
               data-testid={`notification-${n.id}`}
-              className={`transition-colors ${n.read ? "" : "border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/3"}`}
+              data-kind={n.kind}
+              className={`transition-colors ${n.link ? "cursor-pointer hover:bg-accent/30" : ""} ${n.read ? "" : "border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/3"}`}
+              onClick={() => {
+                /* 2026-09-19 — rows were not actionable here; destination is
+                   decided by the shared classifier (never the raw stored link). */
+                performNotificationNavigation(n, { activeSurface: surface }, navigate);
+              }}
             >
               <CardContent className="p-4 flex items-start gap-3">
                 <Bell className={`h-4 w-4 mt-0.5 shrink-0 ${n.read ? "text-muted-foreground" : "text-[hsl(0_100%_40%)]"}`} />
@@ -174,7 +193,7 @@ export default function InvestorNotificationsPage() {
                     {!n.read && (
                       <span className="h-1.5 w-1.5 rounded-full bg-[hsl(333_75%_55%)] shrink-0" />
                     )}
-                    <Badge variant="outline" className="text-[9px] uppercase ml-auto">{n.kind.replace(/_/g, " ")}</Badge>
+                    <Badge variant="outline" className="text-[9px] ml-auto">{sharedNotificationKindLabel(n.kind)}</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">{n.body}</p>
                 </div>

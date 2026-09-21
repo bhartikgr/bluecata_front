@@ -171,7 +171,13 @@ beforeEach(() => {
       return respond(out.status, out.body);
     }
     if (url === "/api/partner/me/portfolio") {
-      return jsonResponse(200, { portfolio: [{ companyId: COMPANY_ID, companyName: "ORP031 Co" }] });
+      return jsonResponse(200, {
+        portfolio: [{
+          companyId: COMPANY_ID,
+          companyName: "ORP031 Co",
+          onboarding: { state: "registered" },
+        }],
+      });
     }
     if (url === `/api/partner/me/mfcrm/engagements/${ENGAGEMENT_ID}`) {
       return jsonResponse(200, { engagement: engagementFixture(engagementMode), trial: null });

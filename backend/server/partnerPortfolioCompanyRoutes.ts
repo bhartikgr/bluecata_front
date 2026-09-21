@@ -34,6 +34,11 @@ import { partnerPipelineStore, partnerAttributionStore } from "./partnerWorkspac
 import { upsertPortfolioProfile } from "./partnerPortfolioStore";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+import { hasFounderInvitationAuthority, readFounderInvitationCompanyTenant } from "./lib/founderInviteAuthority";
+import {
+  dispatchFounderInvitation, readFounderInvitationStatus,
+  reissueFounderInvitation, FounderInvitationError, founderClaimUrl,
+} from "./lib/portfolioFounderInvitationService";
 /* WAVE 186 · R159.1 — see the audit block at the end of the create handler. */
 import { appendAdminAudit, reportAuditWriteOutcome } from "./adminPlatformStore";
 /* WAVE 214 · surface 1 — the third-party authority confirmation. The statement
@@ -67,6 +72,16 @@ function isEmail(s: unknown): s is string {
 function pendingFounderUserId(email: string): string {
   const h = createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 16);
   return `u_pending_founder_${h}`;
+}
+
+/** Even a post-commit status-read outage must identify the durable invitation,
+ * rather than encouraging the caller to create another company/replacement. */
+function unconfirmedInvitation(id: string, email: string, name: string, token: string) {
+  let claimUrl: string | null = null;
+  try { claimUrl = founderClaimUrl(token); } catch { /* invalid deployment origin */ }
+  return { id, email, name: name || null, status: "pending", claimUrl,
+    sentAt: null, acceptedAt: null, expiresAt: null,
+    handoff: { mode: "unknown" as const, result: "unknown" as const, statusRecorded: false } };
 }
 
 /**
@@ -104,12 +119,66 @@ function ensureFounderTeamInvitationsTable(): void {
 }
 
 export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
+  const invitationPath = "/api/partner/me/portfolio-companies/:companyId/founder-invitation";
+  app.get(invitationPath, requirePartnerAuth, (req, res) => {
+    try {
+      const ctx = req.partnerContext!;
+      const companyId = String(req.params.companyId);
+      if (!hasFounderInvitationAuthority(ctx.partnerId, companyId)) {
+        return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
+      }
+      const status = readFounderInvitationStatus(companyId);
+      return res.json({ ...status, canReissue: status.canReissue &&
+        (WRITE_ROLES as readonly string[]).includes(ctx.partnerSubRole) });
+    } catch (error) {
+      return res.status(error instanceof FounderInvitationError ? error.httpStatus : 503)
+        .json({ error: error instanceof FounderInvitationError ? error.code : "INVITATION_STATUS_UNAVAILABLE" });
+    }
+  });
+  app.post(`${invitationPath}/reissue`, requirePartnerAuth, assertSubRole(...WRITE_ROLES),
+    requireSignedAgreement, async (req, res) => {
+      const ctx = req.partnerContext!;
+      const companyId = String(req.params.companyId);
+      const body = req.body ?? {};
+      try {
+        if (!hasFounderInvitationAuthority(ctx.partnerId, companyId)) {
+          return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
+        }
+        const founderEmail = typeof body.founderEmail === "string" ? body.founderEmail.trim().toLowerCase() : "";
+        const founderName = typeof body.founderName === "string" ? body.founderName.trim() : "";
+        if (!isEmail(founderEmail)) return res.status(400).json({ error: "FOUNDER_EMAIL_REQUIRED" });
+        if (typeof body.expectedInvitationId !== "string" || !body.expectedInvitationId) {
+          return res.status(400).json({ error: "EXPECTED_INVITATION_REQUIRED" });
+        }
+        const authority = evaluateTypedNameAuthority({ req, body,
+          surface: WAVE214_AUTHORITY_SURFACES.partnerPortfolioCompany,
+          expectedStatement: WAVE214_PORTFOLIO_COMPANY_AUTHORITY_STATEMENT });
+        if (!authority.ok) return res.status(authority.httpStatus).json({ error: authority.error, message: authority.message });
+        // Reads canonical company existence and pending-owner state, never an actor fallback.
+        const status = readFounderInvitationStatus(companyId);
+        if (!status.canReissue) return res.status(409).json({ error: "INVITATION_NOT_PENDING" });
+        const replacement = reissueFounderInvitation({ companyId, partnerId: ctx.partnerId,
+          actorId: ctx.userId, expectedInvitationId: body.expectedInvitationId,
+          founderEmail, founderName, authority: authority.envelope });
+        // Dispatch is strictly AFTER the guarded transaction commits.
+        let founderInvite;
+        try {
+          founderInvite = await dispatchFounderInvitation({ ...replacement, companyId, actorId: ctx.userId });
+        } catch {
+          founderInvite = unconfirmedInvitation(replacement.invitationId, founderEmail, founderName, replacement.token);
+        }
+        return res.status(201).json({ ok: true, companyId, founderInvite });
+      } catch (error) {
+        return res.status(error instanceof FounderInvitationError ? error.httpStatus : 503)
+          .json({ error: error instanceof FounderInvitationError ? error.code : "INVITATION_REISSUE_UNAVAILABLE" });
+      }
+    });
   app.post(
     "/api/partner/me/portfolio-companies",
     requirePartnerAuth,
     assertSubRole(...WRITE_ROLES),
     requireSignedAgreement,
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const body = (req.body ?? {}) as Record<string, unknown>;
       const companyName = typeof body.companyName === "string" ? body.companyName.trim() : "";
@@ -250,6 +319,7 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
       //    owned company can never be claimed. Fail-closed WITH ROLLBACK \u2014 on
       //    failure we undo BOTH the attribution and the company, then 500.
       let inviteToken: string;
+      let invitationId: string;
       try {
         ensureFounderTeamInvitationsTable();
         const id = `fti_${Date.now()}_${randomBytes(4).toString("hex")}`;
@@ -266,6 +336,7 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
           )
           .run(id, companyId, ctx.userId, founderEmail, founderName || null, tokenHash, expires, now);
         inviteToken = token; // returned ONCE so the partner can send the claim link
+        invitationId = id;
       } catch (err) {
         log.error("[partnerPortfolioCompanyRoutes] founder owner-invite failed \u2014 rolling back company + attribution:", (err as Error).message);
         /* w-partner F1 \u2014 step 3b now also wrote an attribution ROW; unwind it
@@ -327,7 +398,10 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
        * creation: the company, its attribution and its claim token are already
        * durable, and rolling all three back over a failed log line would destroy
        * more provenance than it preserves (W186_BUILD.md §3). */
-      reportAuditWriteOutcome(
+      try {
+        const companyTenantId = readFounderInvitationCompanyTenant(companyId);
+        if (!companyTenantId) throw new Error("COMPANY_TENANT_UNAVAILABLE");
+        reportAuditWriteOutcome(
         appendAdminAudit(
           ctx.userId,
           `company:${companyId}`,
@@ -346,16 +420,30 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
             origin: "partner_portfolio",
             auditWave: 186,
           },
+          companyTenantId,
         ),
         { bearing: "identity", action: "company.created", route: "partner.portfolio-companies.create", subject: companyId },
-      );
+        );
+      } catch {
+        // Company/invite already exist; never fabricate an audit tenant.
+        // Missing creation evidence will fail closed for later recovery.
+        log.warn("[partnerPortfolioCompanyRoutes] creation audit tenant unavailable; recovery requires reconciliation");
+      }
 
+      let founderInvite;
+      try {
+        founderInvite = await dispatchFounderInvitation({
+          invitationId, companyId, token: inviteToken, actorId: ctx.userId,
+        });
+      } catch {
+        founderInvite = unconfirmedInvitation(invitationId, founderEmail, founderName, inviteToken);
+      }
       res.status(201).json({
         ok: true,
         companyId,
         company,
         attributedPartnerId: ctx.partnerId,
-        founderInvite: { email: founderEmail, claimUrl: `https://capavate.com/auth/redeem?token=${inviteToken}` },
+        founderInvite,
       });
     },
   );
