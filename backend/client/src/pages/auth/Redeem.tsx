@@ -36,7 +36,6 @@ type Preview = {
   // Existing users must NOT be forced through registration/password-set again;
   // they sign in and land on the round instead.
   existingAccount?: boolean;
-  sessionState?: "new_account" | "sign_in_required" | "matching" | "mismatch";
   invitation: {
     /* v25.48.3 Q-J1 — team invitations reuse this envelope with kind:"team".
      * Investor/round invitations omit `kind` (treated as "investor"). */
@@ -65,44 +64,6 @@ function readToken(): string {
 function daysUntil(iso: string): number {
   const d = (new Date(iso).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
   return Math.max(0, Math.round(d));
-}
-
-/** Team-only errors: an identity conflict is NOT a consumed/expired token. */
-function teamErrorCopy(code?: string | null): string | null {
-  switch (code) {
-    case "INVITED_IDENTITY_AMBIGUOUS":
-    case "INVITED_IDENTITY_CHANGED":
-    case "INVITED_IDENTITY_INCOMPLETE":
-      return "We cannot safely match this invitation to an account. Contact your administrator.";
-    case "INVITED_IDENTITY_STATE_CHANGED":
-      return "The account for this invitation changed. Refresh this page and try again.";
-    case "IDENTITY_STATE_NEEDS_OPERATOR":
-      return "Your account needs administrator attention before this invitation can be accepted. Contact your administrator; retrying now will not resolve it.";
-    case "INVITED_IDENTITY_DELETED":
-      return "The account for this invitation is deleted or unavailable for reuse. Contact your administrator.";
-    case "SESSION_IDENTITY_MISMATCH":
-      return "You are signed in to a different account. Sign out, then sign in with the invited email shown here. Your current account has not been signed out automatically.";
-    case "SIGN_IN_REQUIRED_TO_ACCEPT":
-      return "Sign in with the invited email to accept this invitation.";
-    case "ACCOUNT_NOT_ACTIVE":
-      return "Your account is not active. Contact your administrator before accepting this invitation.";
-    case "ACCOUNT_RESOLUTION_UNAVAILABLE":
-    case "ACCOUNT_STATUS_UNAVAILABLE":
-    case "TEAM_INVITE_LOOKUP_FAILED":
-      return "We could not confirm your account or invitation just now. Please try again.";
-    case "PERSONA_NOT_DURABLE":
-      return "Your account could not be safely created. The invitation has not been accepted. Contact your administrator before trying again.";
-    case "TERMS_NOT_ACCEPTED":
-      return "Please agree to the terms before accepting.";
-    case "expired":
-      return "This invitation has expired. Ask for a new invitation.";
-    case "revoked":
-      return "This invitation was revoked. Ask for a new invitation.";
-    case "already_redeemed":
-      return "This invitation has already been redeemed.";
-    default:
-      return null;
-  }
 }
 
 export default function Redeem() {
@@ -136,8 +97,8 @@ export default function Redeem() {
       if (!token) throw Object.assign(new Error("missing"), { status: 400 });
       const res = await fetch(`${API_BASE}/api/auth/redeem/preview?token=${encodeURIComponent(token)}`);
       if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; kind?: string }));
-        throw Object.assign(new Error(body.error ?? "preview_failed"), { status: res.status, error: body.error, kind: body.kind });
+        const body = await res.json().catch(() => ({} as { error?: string }));
+        throw Object.assign(new Error(body.error ?? "preview_failed"), { status: res.status, error: body.error });
       }
       return res.json() as Promise<Preview>;
     },
@@ -148,19 +109,7 @@ export default function Redeem() {
   const errorState = useMemo(() => {
     if (!token) return { kind: "missing" as const, title: "No token provided", body: "Open the secure link from your invitation email, or paste your token below." };
     if (previewQ.isError) {
-      const e = previewQ.error as { status?: number; error?: string; kind?: string };
-      if (e.kind === "team") {
-        const title = e.error === "expired" ? "This invitation has expired"
-          : e.error === "revoked" ? "This invitation was revoked"
-          : e.error === "already_redeemed" ? "This invitation has already been redeemed"
-          : "We couldn't confirm this account";
-        return { kind: "team" as const, title, body: teamErrorCopy(e.error) ?? "Couldn't load this company invitation. Please try again." };
-      }
-      // Identity-specific codes must precede the investor's historic generic
-      // 409 handling. Preserve its existing token error behavior otherwise.
-      if (e.error?.startsWith("INVITED_IDENTITY_") || e.error?.startsWith("ACCOUNT_")) {
-        return { kind: "identity" as const, title: "We couldn't confirm this account", body: teamErrorCopy(e.error) ?? "Please try again." };
-      }
+      const e = previewQ.error as { status?: number; error?: string };
       if (e.error === "expired" || e.status === 410) {
         return { kind: "expired" as const, title: "This invitation has expired", body: "Ask the founder to send you a new invitation. Magic links live for 30 days by default." };
       }
@@ -195,33 +144,10 @@ export default function Redeem() {
       toast({ title: "Welcome to Capavate", description: isTeam ? "Redirecting you to your workspace…" : "Redirecting you to the round…" });
       navigate(json.redirectTo);
     } catch (err: any) {
-      if (previewQ.data?.invitation.kind === "team") {
-        setSubmitErr(teamErrorCopy(err?.code) ?? "We couldn't accept this invitation. Please try again.");
-        return;
-      }
       const msg = String(err?.message ?? "");
       if (msg.includes("409")) setSubmitErr("This invitation has already been redeemed.");
       else if (msg.includes("410")) setSubmitErr("This invitation has expired.");
       else setSubmitErr("We couldn't redeem this invitation.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function acceptExistingTeam(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitErr(null);
-    if (!agreed) return setSubmitErr("Please agree to the terms before accepting.");
-    setSubmitting(true);
-    try {
-      const res = await apiRequest("POST", "/api/auth/redeem", { token, agreedToTerms: true });
-      const json = await res.json() as { redirectTo: string };
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      setRole("founder");
-      toast({ title: "Invitation accepted", description: "Taking you to your company workspace…" });
-      navigate(json.redirectTo);
-    } catch (err: any) {
-      setSubmitErr(teamErrorCopy(err?.code) ?? "We couldn't accept this invitation. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -276,7 +202,7 @@ export default function Redeem() {
 
   if (errorState) {
     return (
-      <AuthShell title={errorState.title} subtitle={errorState.kind === "identity" || errorState.kind === "team" ? "Company invitation" : "Investor invitation"}>
+      <AuthShell title={errorState.title} subtitle="Investor invitation">
         <p className="text-sm text-muted-foreground" data-testid="text-redeem-error">
           {errorState.body}
         </p>
@@ -335,54 +261,6 @@ export default function Redeem() {
 
   const inv = previewQ.data!.invitation;
   const existingAccount = previewQ.data!.existingAccount === true;
-  // No request-controlled returnTo is forwarded. Encode the token as query
-  // data inside a fixed, site-relative claim URL, then encode that URL for login.
-  const teamLoginUrl = `/login?returnTo=${encodeURIComponent(`/auth/redeem?token=${encodeURIComponent(token)}&continue=1`)}`;
-
-  if (existingAccount && inv.kind === "team") {
-    const matchingSession = previewQ.data!.sessionState === "matching";
-    const mismatch = previewQ.data!.sessionState === "mismatch";
-    return (
-      <AuthShell
-        title={matchingSession ? "Accept your company invitation" : "Sign in to accept invitation"}
-        subtitle="Join your company's team on Capavate."
-      >
-        <div className="rounded-md border border-black/10 bg-muted/30 p-4 text-sm" data-testid="redeem-context">
-          <Row label="Company" value={inv.companyName} testId="row-company" />
-          <Row label="Team role" value={inv.role ?? "member"} testId="row-team-role" />
-          <Row label="Expires" value={`in ${daysUntil(inv.expiresAt)} days`} testId="row-expires" />
-        </div>
-        <div className="mt-4">
-          <Label htmlFor="email">Invited email</Label>
-          <Input id="email" value={inv.inviteeEmail} disabled data-testid="input-email-locked" />
-        </div>
-        {mismatch && (
-          <p className="mt-4 text-sm text-red-700" data-testid="text-redeem-session-mismatch">
-            {teamErrorCopy("SESSION_IDENTITY_MISMATCH")}
-          </p>
-        )}
-        {matchingSession && (
-          <form onSubmit={acceptExistingTeam} className="mt-6 space-y-4" data-testid="form-redeem-team-accept">
-            <label className="flex items-start gap-2 text-sm cursor-pointer">
-              <Checkbox checked={agreed} onCheckedChange={v => setAgreed(v === true)} data-testid="checkbox-tos" />
-              <span>I agree to the Capavate Terms of Service and Privacy Policy.</span>
-            </label>
-            <Button type="submit" disabled={submitting || !agreed} className="w-full rounded-full font-semibold" data-testid="button-accept-team-invitation">
-              {submitting ? "Accepting…" : "Accept invitation"}
-            </Button>
-          </form>
-        )}
-        {submitErr && (
-          <p className="mt-4 text-sm text-red-700" data-testid="text-redeem-submit-error">{submitErr}</p>
-        )}
-        {(!matchingSession || submitErr) && (
-          <Button asChild className="mt-6 w-full rounded-full font-semibold">
-            <Link href={teamLoginUrl} data-testid="link-team-invitation-signin">Sign in to accept invitation</Link>
-          </Button>
-        )}
-      </AuthShell>
-    );
-  }
 
   // BUG N6 — the invitee already has a Capavate account. Do NOT show the
   // password-set form (which would force a second registration). Route them to
@@ -434,24 +312,18 @@ export default function Redeem() {
 
   return (
     <AuthShell
-      title={inv.kind === "team" ? "Create your account to join the company" : "You've been invited to view a round on Capavate"}
-      subtitle={inv.kind === "team" ? "Set your password to join your company's team." : "Set your password to view the round."}
+      title="You've been invited to view a round on Capavate"
+      subtitle="Set your password to view the round."
       footer={
         <div className="text-xs">
-          Already redeemed? <Link href={inv.kind === "team" ? teamLoginUrl : "/auth/login?portal=investor"} className="text-[#cc0001] hover:underline" data-testid="link-redeem-existing">Sign in</Link>
+          Already redeemed? <Link href="/auth/login?portal=investor" className="text-[#cc0001] hover:underline" data-testid="link-redeem-existing">Sign in</Link>
         </div>
       }
     >
       <div className="rounded-md border border-black/10 bg-muted/30 p-4 text-sm" data-testid="redeem-context">
         <Row label="Company" value={inv.companyName} testId="row-company" />
-        {inv.kind === "team" ? (
-          <Row label="Team role" value={inv.role ?? "member"} testId="row-team-role" />
-        ) : (
-          <>
-            <Row label="Round" value={inv.roundLabel ?? "Open round"} testId="row-round" />
-            <Row label="Invited by" value={inv.founderName ?? "Founder"} testId="row-founder" />
-          </>
-        )}
+        <Row label="Round" value={inv.roundLabel ?? "Open round"} testId="row-round" />
+        <Row label="Invited by" value={inv.founderName ?? "Founder"} testId="row-founder" />
         <Row label="Expires" value={`in ${daysUntil(inv.expiresAt)} days`} testId="row-expires" />
       </div>
 
@@ -459,13 +331,7 @@ export default function Redeem() {
         <div>
           <Label htmlFor="email">Email</Label>
           <Input id="email" value={inv.inviteeEmail} disabled data-testid="input-email-locked" />
-          <p className="mt-1 text-xs text-muted-foreground">
-            {inv.kind === "team" ? (
-              <>Locked — this is the address on this invitation.</>
-            ) : (
-              <>Locked — this is the address the invitation was sent to.</>
-            )}
-          </p>
+          <p className="mt-1 text-xs text-muted-foreground">Locked — this is the address the invitation was sent to.</p>
         </div>
         <div>
           <Label htmlFor="password">Choose password</Label>
@@ -495,7 +361,7 @@ export default function Redeem() {
         {/* v25.43 R4-1 — capavate.com red pill CTA (default Button variant
            inherits the red --primary token; pill + semibold added). */}
         <Button type="submit" className="w-full rounded-full font-semibold" disabled={submitting} data-testid="button-submit-redeem">
-          {submitting ? "Redeeming…" : inv.kind === "team" ? "Create account and join company" : "View this round"}
+          {submitting ? "Redeeming…" : "View this round"}
         </Button>
       </form>
     </AuthShell>

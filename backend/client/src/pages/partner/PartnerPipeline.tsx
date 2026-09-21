@@ -58,7 +58,7 @@ import {
 const STAGES = PARTNER_PIPELINE_STAGES;
 type Stage = PartnerPipelineStageKey;
 
-interface Deal { id: string; dealName: string; stage: Stage; estCheckSizeMinor: number | null; currency: string | null; ownerUserId: string; sector: string | null; companyId?: string | null; onboarding?: { state: "registered" | "pending" | "indeterminate" | "error" } | null }
+interface Deal { id: string; dealName: string; stage: Stage; estCheckSizeMinor: number | null; currency: string | null; ownerUserId: string; sector: string | null; companyId?: string | null }
 interface SpvRow { id: string; name?: string | null; spvName?: string | null; status?: string | null; type?: string | null; spvType?: string | null; distributionScope?: string | null }
 interface FollowRow { companyId: string; companyName: string | null; logoUrl: string | null }
 
@@ -103,9 +103,6 @@ export default function PartnerPipeline() {
     queryKey: ["/api/partner/me/pipeline"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/pipeline")).json(),
-    refetchOnWindowFocus: true,
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: false,
   });
   const promoQ = useQuery<{ promotions: Promotion[] }>({
     queryKey: ["/api/partner/me/promotions"],
@@ -499,11 +496,6 @@ export default function PartnerPipeline() {
                   return (
                     <div key={d.id} className="border rounded p-2 text-xs bg-[var(--cv-color-surface-2)]" data-testid={`deal-${d.id}`}>
                       <div className="font-medium">{d.dealName}</div>
-                      {d.onboarding && (
-                        <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]" data-testid={`pipeline-registration-${d.id}`}>
-                          {d.onboarding.state === "registered" ? "Registered" : d.onboarding.state === "pending" ? "Registration pending" : "Registration needs review"}
-                        </div>
-                      )}
                       <div className="text-[var(--cv-color-text-muted)]">{d.sector ?? "—"}</div>
                       {(liveCollective || pendingRefer) && (
                         <div className="flex flex-wrap gap-1 mt-1" data-testid={`deal-${d.id}-badges`}>

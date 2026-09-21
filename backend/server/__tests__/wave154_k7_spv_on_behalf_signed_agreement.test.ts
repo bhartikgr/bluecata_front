@@ -33,7 +33,6 @@ import { applyMfcrmSchema } from "../lib/mfcrmSchema";
 import { managedFounderStore } from "../managedFounderStore";
 import { seedTestPartnerSandbox, partnerAttributionStore } from "../partnerWorkspaceStore";
 import { rawDb } from "../db/connection";
-import { registerFounderTeamRoutes } from "../lib/founderTeamStore";
 
 const PARTNER_A = "ac_consortium_partner_test_partner_inc";
 const MANAGING = "u_avi_managing";
@@ -81,26 +80,13 @@ const createOnBehalf = () =>
       carryBasis: "whole_spv",
     });
 
-const seedRegisteredCanonicalCompany = (): void => {
-  const tenantId = `tenant_${CO}`;
-  const founderId = `u_founder_${CO}`;
-  run("INSERT OR IGNORE INTO companies (id,tenant_id,name,legal_name) VALUES (?,?,?,?)", CO, tenantId, "K7 Company", "K7 Company Ltd");
-  run("INSERT OR IGNORE INTO users (id,tenant_id,email,name,role) VALUES (?,?,?,?,?)",
-    founderId, `tenant_${founderId}`, `${founderId}@test.example`, "K7 Founder", "founder");
-  run(`INSERT OR IGNORE INTO company_members
-    (id,company_id,user_id,role,tenant_id,is_active) VALUES (?,?,?,'founder',?,1)`,
-    `cm_${CO}`, CO, founderId, tenantId);
-};
-
 beforeAll(async () => {
   app = express();
   app.use(express.json());
-  registerFounderTeamRoutes(app);
   registerPartnerRoutes(app);
   registerMfcrmRoutes(app);
   applyMfcrmSchema();
   seedTestPartnerSandbox({ force: true });
-  seedRegisteredCanonicalCompany();
   partnerAttributionStore.create(PARTNER_A, CO, MANAGING);
   managedFounderStore.setCapabilityProfile(
     PARTNER_A,

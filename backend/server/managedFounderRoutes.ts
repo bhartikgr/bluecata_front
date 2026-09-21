@@ -32,10 +32,6 @@ import { partnerAttributionStore } from "./partnerWorkspaceStore";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { resolveDisplayName } from "./lib/displayNameResolver";
 import {
-  CompanyOnboardingUnavailableError,
-  requireRegisteredCompany,
-} from "./lib/companyOnboardingState";
-import {
   managedFounderStore,
   GateError,
   SEEDABLE_PARTNER_TYPES,
@@ -94,12 +90,7 @@ function isAttributed(partnerId: string, companyId: string): boolean {
 
 /** GateError / plain-Error → HTTP status + body. Fail-closed: unknown → 403. */
 function sendError(res: Response, e: unknown): Response {
-  if (e instanceof CompanyOnboardingUnavailableError) {
-    return res.status(503).json({ error: e.code, state: "error", message: e.message });
-  }
-  const code = e instanceof GateError
-    ? e.code
-    : (e as Error & { code?: string })?.code ?? (e as Error)?.message ?? "ERROR";
+  const code = e instanceof GateError ? e.code : (e as Error)?.message ?? "ERROR";
   const message = (e as Error)?.message ?? String(e);
   // 404 — not found / cross-partner (never leak existence).
   if (["ENGAGEMENT_NOT_FOUND", "HANDOVER_NOT_FOUND", "PUSH_NOT_FOUND"].includes(code)) {
@@ -160,7 +151,6 @@ export function registerMfcrmRoutes(app: Express): void {
         return res.status(404).json({ error: "COMPANY_NOT_FOUND_OR_NOT_ATTRIBUTED" });
       }
       try {
-        requireRegisteredCompany(companyId);
         const e = managedFounderStore.createEngagement(
           pid,
           {
@@ -364,20 +354,17 @@ export function registerMfcrmRoutes(app: Express): void {
       const pid = req.partnerContext!.partnerId;
       const actor = req.partnerContext!.userId;
       const body = req.body ?? {};
-      const engagementId = String(body.engagementId ?? "");
-      const engagement = managedFounderStore.getEngagement(pid, engagementId);
-      if (!engagement) return res.status(404).json({ error: "ENGAGEMENT_NOT_FOUND" });
-      const companyId = engagement.companyId;
+      const companyId = String(body.companyId ?? "");
+      if (!companyId) return res.status(400).json({ error: "COMPANY_ID_REQUIRED" });
       if (!isAttributed(pid, companyId)) {
         return res.status(404).json({ error: "COMPANY_NOT_FOUND_OR_NOT_ATTRIBUTED" });
       }
       try {
-        requireRegisteredCompany(companyId);
         const out = managedFounderStore.softCircleGraduate(
           pid,
           {
             companyId,
-            engagementId,
+            engagementId: String(body.engagementId ?? ""),
             invitationId: String(body.invitationId ?? ""),
             roundId: String(body.roundId ?? ""),
             investorId: String(body.investorId ?? ""),
@@ -432,20 +419,17 @@ export function registerMfcrmRoutes(app: Express): void {
       const pid = req.partnerContext!.partnerId;
       const actor = req.partnerContext!.userId;
       const body = req.body ?? {};
-      const engagementId = String(body.engagementId ?? "");
-      const engagement = managedFounderStore.getEngagement(pid, engagementId);
-      if (!engagement) return res.status(404).json({ error: "ENGAGEMENT_NOT_FOUND" });
-      const companyId = engagement.companyId;
+      const companyId = String(body.companyId ?? "");
+      if (!companyId) return res.status(400).json({ error: "COMPANY_ID_REQUIRED" });
       if (!isAttributed(pid, companyId)) {
         return res.status(404).json({ error: "COMPANY_NOT_FOUND_OR_NOT_ATTRIBUTED" });
       }
       try {
-        requireRegisteredCompany(companyId);
         const out = managedFounderStore.createSpvOnBehalf(
           pid,
           {
             companyId,
-            engagementId,
+            engagementId: String(body.engagementId ?? ""),
             name: String(body.name ?? ""),
             jurisdiction: String(body.jurisdiction ?? ""),
             carryBasis: String(body.carryBasis ?? ""),

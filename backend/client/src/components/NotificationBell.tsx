@@ -5,23 +5,31 @@
  * decorative bell that previously had no behavior. Shows unread badge count,
  * opens a dropdown with the 10 most recent items + link to /notifications.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { apiRequest } from "@/lib/queryClient";
 import { Bell, CheckCheck } from "lucide-react";
-import { inboxHrefForSurface, type NotificationSurface } from "@shared/notificationDestination";
-import {
-  useNotifications,
-  useNotificationStream,
-  invalidateNotifications,
-  markAllReadScoped,
-} from "@/lib/useNotifications";
-import { performNotificationNavigation } from "@/lib/notificationNavigate";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuLabel, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { useRole } from "@/lib/role";
 import { notificationKindLabel } from "@/lib/notificationKindLabels";
+
+type Notification = {
+  id: string;
+  userId: string;
+  kind: string;
+  title: string;
+  body: string;
+  link?: string;
+  read: boolean;
+  archived: boolean;
+  createdAt: string;
+};
+
+type NotifList = { userId: string; total: number; unread: number; items: Notification[] };
 
 function relTime(iso: string): string {
   const ts = new Date(iso).getTime();
@@ -43,25 +51,11 @@ function relTime(iso: string): string {
  * their bell was sent to a founder page or to the role-agnostic `/notifications`
  * — a page that renders outside their own shell. A shell knows which persona it
  * is hosting; the bell does not and should not have to. The shell therefore names
- * the destination. (The role expression that served as the default until
- * 2026-09-19 is retired: the default is now derived from `surface`, below.)
+ * the destination, and the existing role expression stays as the DEFAULT so every
+ * present call site (AppShell.tsx:715) behaves exactly as it did.
  */
-/**
- * 2026-09-19 · `surface`.
- *
- * The bell listed and COUNTED every notification of the session user, whatever
- * workspace it belonged to, and navigated to the stored link unexamined. The
- * shell that mounts the bell knows which persona it hosts (AppShell derives it
- * from the route; CollectiveShell from partner vs Collective path), and names
- * it here. List, badge count, mark-all-read, cache key and SSE scope all use
- * this ONE value, so what is shown and what is counted can never disagree.
- * Default `account` preserves the legacy account-wide behaviour for any mount
- * that does not name a surface.
- */
-export function NotificationBell({
-  viewAllHref,
-  surface = "account",
-}: { viewAllHref?: string; surface?: NotificationSurface } = {}) {
+export function NotificationBell({ viewAllHref }: { viewAllHref?: string } = {}) {
+  const { role } = useRole();
   // Patch v4 — the bell uses the actual session user id from /api/auth/me.
   // When there is no authed user we render nothing (no badge, no SSE).
   const meQ = useQuery<{ isAuthed: boolean; userId: string | null }>({
@@ -70,64 +64,70 @@ export function NotificationBell({
   const userId = meQ.data?.userId ?? "";
   const [_, navigate] = useLocation();
   const qc = useQueryClient();
+  const [sseAlive, setSseAlive] = useState(false);
 
-  const { data, isError } = useNotifications(userId, surface);
-  /* Distinct loading / error / empty states: an unresolved first read is NOT an
-     empty inbox, so "caught up" is never rendered before the first response. */
-  const isPending = !data && !isError;
-  /* 2026-09-19 — controlled open state so a SUCCESSFUL row navigation closes
-     the menu. Previously every row `preventDefault`ed Radix's close-on-select;
-     once the repaired destination stays inside the same shell, the still-open
-     menu survived the navigation and intercepted pointer events on the next
-     page (observed in the real browser). Rows whose plan is `none` keep the
-     menu open — nothing happened, so nothing should disappear. */
-  const [open, setOpen] = useState(false);
-  // SSE stream — scoped, bounded durable-state invalidations; the 30 s poll in
-  // useNotifications carries the function when the stream is unavailable.
-  const sseAlive = useNotificationStream(userId, surface);
+  const { data } = useQuery<NotifList>({
+    queryKey: [`/api/notifications?userId=${userId}`],
+    refetchInterval: 30_000,
+    enabled: Boolean(userId),
+  });
+
+  // SSE stream — live updates
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!userId) return;
+    // Skip SSE in production proxy env (no URL rewriting for EventSource); falls back to refetchInterval.
+    const apiBase = ("__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__");
+    if (!apiBase && /sites\.pplx\.app/.test(window.location.hostname)) {
+      setSseAlive(false);
+      return;
+    }
+    let es: EventSource | null = null;
+    let closed = false;
+    try {
+      es = new EventSource(`${apiBase}/api/notifications/stream?userId=${userId}`);
+      es.addEventListener("hello", () => setSseAlive(true));
+      es.addEventListener("notification", () => {
+        // Sprint 19 L — match the exact query key used by useQuery above.
+        qc.invalidateQueries({ queryKey: [`/api/notifications?userId=${userId}`] });
+      });
+      // Silent fallback: close the connection on first error so the browser
+      // doesn't repeatedly retry and spam the console with EventSource errors.
+      es.onerror = () => {
+        setSseAlive(false);
+        if (!closed && es) {
+          closed = true;
+          try { es.close(); } catch { /* noop */ }
+        }
+      };
+    } catch {
+      setSseAlive(false);
+    }
+    return () => {
+      closed = true;
+      if (es) { try { es.close(); } catch { /* noop */ } }
+    };
+  }, [userId, qc]);
 
   const unread = userId ? (data?.unread ?? 0) : 0;
   const recent = useMemo(() => (data?.items ?? []).slice(0, 10), [data]);
-  const outsideWorkspace = data?.outsideWorkspace ?? 0;
-  /* 2026-09-19 — the "View all" target is the inbox of the SAME surface the
-     bell lists and counts, so the navigation plane and the data plane cannot
-     disagree. Shells may pass an explicit `viewAllHref`; otherwise the shared
-     mapping decides (admin → /admin/inbox, account → /notifications). The
-     former role-provider branch is gone: a multi-role account standing in one
-     workspace must not be sent to another workspace's inbox. Handler change
-     authorised by the owner 2026-09-19 (scripts/silent-drop-guard/allowlist.json). */
-  const effectiveViewAllHref = viewAllHref ?? inboxHrefForSurface(surface);
 
   // Hide the bell entirely for anonymous users (no badge, no surface).
   if (!userId) return null;
 
   const markAllRead = async () => {
-    // Scoped to this shell's surface; the server applies owner + surface.
-    await markAllReadScoped(surface);
-    await invalidateNotifications(qc, userId);
+    await apiRequest("POST", "/api/notifications/read-all", { userId });
+    qc.invalidateQueries({ queryKey: [`/api/notifications?userId=${userId}`] });
   };
 
-  /* The account-wide history (every row the user holds, including rows whose
-     workspace could not be identified) is reachable from the shell's OWN inbox
-     with `?scope=account`, so a partner never leaves their shell to see it. */
-  const accountHistoryHref = viewAllHref
-    ? `${viewAllHref}${viewAllHref.includes("?") ? "&" : "?"}scope=account`
-    : surface === "admin"
-      ? `${inboxHrefForSurface("admin")}?scope=account`
-      /* founder/investor inboxes are the shared kind-chip page (no scope toggle);
-         their account history is the role-agnostic center inside the SAME AppShell. */
-      : "/notifications";
-
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           aria-label="Notifications"
           data-testid="button-notifications"
           data-sse-alive={sseAlive ? "true" : "false"}
           data-unread-count={unread}
-          data-surface={surface}
-          data-menu-open={open ? "true" : "false"}
           className="relative p-2 rounded text-white/90 hover:bg-white/10"
         >
           <Bell className="h-4 w-4" />
@@ -154,16 +154,7 @@ export function NotificationBell({
           </button>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {isError ? (
-          /* A failed read is NOT an empty inbox. Never render "caught up" for an error. */
-          <div className="p-6 text-center text-xs text-destructive" data-testid="text-notifications-error" role="alert">
-            Your notifications could not be loaded. They will be retried automatically.
-          </div>
-        ) : isPending ? (
-          <div className="p-6 text-center text-xs text-muted-foreground" data-testid="text-notifications-loading" role="status">
-            Loading notifications…
-          </div>
-        ) : recent.length === 0 ? (
+        {recent.length === 0 ? (
           <div className="p-6 text-center text-xs text-muted-foreground" data-testid="text-notifications-empty">
             You're all caught up.
           </div>
@@ -175,20 +166,8 @@ export function NotificationBell({
               data-kind={n.kind}
               data-read={n.read ? "true" : "false"}
               onSelect={(e) => {
-                /* 2026-09-19 — destination decided by the shared classifier:
-                   exact legacy alias repaired (/partner/pipeline →
-                   /collective/partner/pipeline), unsafe values refused, the
-                   audited data-room download opened outside the router, and
-                   rows with no identified workspace left where they are. The
-                   raw stored link is never handed to the router. Handler
-                   change authorised by the owner 2026-09-19 (see
-                   scripts/silent-drop-guard/allowlist.json). */
-                const plan = performNotificationNavigation(n, { activeSurface: surface }, navigate);
-                /* Navigated or opened a document → let Radix close the menu.
-                   Nothing happened (wrong surface / unsafe / unknown path) →
-                   keep it open; the row stays where the user can see it. */
-                if (plan.action === "none") e.preventDefault();
-                else setOpen(false);
+                e.preventDefault();
+                if (n.link) navigate(n.link);
               }}
               className="flex flex-col items-start gap-0.5 py-2"
             >
@@ -206,36 +185,47 @@ export function NotificationBell({
           ))
         )}
         <DropdownMenuSeparator />
-        {/* WAVE 149 · ITEM 3 kept two static "View all" siblings (shell-supplied
-            href vs. the Sprint 20 role chain) because the guard fingerprints
-            handler EXPRESSIONS and no owner authorization existed to change one.
-            2026-09-19 — the owner authorized this repair (final reconciled
-            notification spec): ONE item whose destination is the inbox of the
-            SAME surface the bell lists and counts (`inboxHrefForSurface`), so the
-            data plane and the navigation plane cannot disagree. Both former
-            handler fingerprints are retired under that authorization
-            (scripts/silent-drop-guard/allowlist.json, 2026-09-19). */}
+        {/* ══════════════════════════════════════════════════════════════════════
+            WAVE 149 · ITEM 3 — TWO STATIC SIBLINGS, NOT ONE REWRITTEN HANDLER.
+            ══════════════════════════════════════════════════════════════════════
+            MEASURED, NOT GUESSED. The first attempt wrote the override INTO the
+            existing handler as `navigate(viewAllHref ?? (…role chain…))`. `npm run
+            guard` then reported a hard failure — `REMOVED event handlers (1):
+            NotificationBell.tsx | DropdownMenuItem | onSelect | expr:3e8ed36cb1db`
+            — because the guard fingerprints the handler EXPRESSION, so editing it
+            in place reads as the baseline handler having disappeared. Suppressing
+            that with an allow-list entry would have been an owner-approval claim
+            nobody made.
+
+            THE SHAPE THAT IS ACTUALLY CORRECT. The role chain below is preserved
+            BYTE-FOR-BYTE and still serves every persona that has no shell-supplied
+            destination — investor, founder, admin — exactly as before, so the
+            baseline handler is present and unchanged. A persona-scoped sibling is
+            ADDED beside it for shells that DO name their own inbox. Exactly one
+            renders, they carry the same `data-testid` (every existing pin keeps
+            working, and a duplicate id is impossible because the conditions are
+            complements), and no existing control was replaced. */}
+        {viewAllHref && (
+          <DropdownMenuItem
+            onSelect={() => navigate(viewAllHref)}
+            data-testid="button-open-notification-center"
+            data-view-all-scope="shell"
+          >
+            View all notifications →
+          </DropdownMenuItem>
+        )}
+        {/* Sprint 20 Wave 2 — role-based notifications route (defect 64) */}
+        {!viewAllHref && (
         <DropdownMenuItem
-          onSelect={() => { setOpen(false); navigate(effectiveViewAllHref); }}
+          onSelect={() => navigate(
+            role === "investor" ? "/investor/notifications" :
+            role === "founder"  ? "/founder/notifications" :
+            "/notifications"
+          )}
           data-testid="button-open-notification-center"
-          data-view-all-scope={viewAllHref ? "shell" : "surface"}
-          data-view-all-href={effectiveViewAllHref}
         >
           View all notifications →
         </DropdownMenuItem>
-        {/* 2026-09-19 — labelled account-history entry. Only rendered for a
-            scoped bell that actually has rows outside this workspace (including
-            "Workspace not identified" rows), so nothing is silently hidden and
-            nothing is shown in a workspace it does not belong to. */}
-        {surface !== "account" && outsideWorkspace > 0 && (
-          <DropdownMenuItem
-            onSelect={() => { setOpen(false); navigate(accountHistoryHref); }}
-            data-testid="button-open-account-history"
-            data-outside-workspace-count={outsideWorkspace}
-            className="text-[11px] text-muted-foreground"
-          >
-            {outsideWorkspace} more across your account →
-          </DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

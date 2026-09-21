@@ -14,7 +14,7 @@ import {
 } from "@shared/crmStages";
 import AttributionProvenancePanel from "@/components/partner/AttributionProvenancePanel";
 
-interface ClientRow { id: string; companyId: string; companyName?: string | null; attributionSource: string; attributedAt: string; onboarding?: { state: "registered" | "pending" | "indeterminate" | "error" } }
+interface ClientRow { id: string; companyId: string; companyName?: string | null; attributionSource: string; attributedAt: string }
 
 /* v25.49 Phase-3A — small brand-navy stage badge. Uses the capavate.com scoped
  * tokens (navy text on a faint navy tint) applied by the partner subtree. */
@@ -59,9 +59,6 @@ export default function PartnerClients() {
     queryKey: ["/api/partner/me/clients"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/clients")).json(),
-    refetchOnWindowFocus: true,
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: false,
   });
   /* v25.49 Phase-3A — per-client CRM stage index (separate partner-clients
    * engine). Best-effort: if it fails, rows fall back to the default stage.
@@ -174,13 +171,12 @@ export default function PartnerClients() {
                 <th className="text-left p-3">Source</th>
                 <th className="text-left p-3">Attributed</th>
                 <th></th>
-                <th className="text-left p-3">Registration</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
                 <tr data-testid="clients-no-match">
-                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={6}>No clients match your filters.</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={5}>No clients match your filters.</td>
                 </tr>
               )}
               {filtered.map((c) => (
@@ -206,9 +202,6 @@ export default function PartnerClients() {
                     >
                       View
                     </Link>
-                  </td>
-                  <td className="p-3 text-xs" data-testid={`client-registration-${c.companyId}`}>
-                    {c.onboarding?.state === "registered" ? "Registered" : c.onboarding?.state === "pending" ? "Registration pending" : "Registration needs review"}
                   </td>
                 </tr>
               ))}

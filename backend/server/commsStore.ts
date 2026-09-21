@@ -236,150 +236,6 @@ function messagesPathForUser(userId: string, threadId: string): string {
   return `/${isFounder ? "founder" : "investor"}/messages?thread=${threadId}`;
 }
 
-/**
- * 2026-09-19 — post deep-link resolved PER RECIPIENT **from the channel the
- * post was published into**, not from anyone's global role.
- *
- * History: the post-created notification first derived the surface from the
- * AUTHOR's role (every co-participant of a founder's post was deep-linked to
- * `/founder/posts/:id`); the first repair of this wave resolved per recipient
- * but by GLOBAL ROLE PRIORITY (partner → founder → investor), which sends a
- * multi-role account to its partner page for a post it received as an
- * investor. Both were rejected by independent review. The scheduled-publish
- * producer meanwhile still emitted `/posts/:id`, which is not a mounted route
- * and which the shared classifier keeps as `unknown_path` — durable but shown
- * in no persona inbox.
- *
- * ONE resolver for BOTH producers (immediate publication and
- * `publishDueScheduledPosts`). Mounted routes only (client/src/App.tsx):
- *   /founder/posts/:id · /investor/posts/:id · /collective/partner/posts/:id
- *
- * Decision order — channel/audience evidence first, recipient role only when
- * it is the sole role, a disclosed default last:
- *   1. Company-anchored channel (cap_table / soft_circle / company_followers,
- *      or any channel carrying `companyId`): the recipient is either THAT
- *      company's founder (durable `company_members` founder roles, the
- *      channel's `founderUserId`, or the recipient's founder context) →
- *      founder; otherwise they sit in the channel as its investor / soft-circle /
- *      follower audience → investor. A partner-and-investor account in a cap
- *      table is an investor HERE.
- *   2. Collective-public post (`visibility === "public_to_collective"`) with a
- *      recipient who is an active Consortium Partner team member → partner.
- *   3. Personal network channel (`network`) / anything else: a recipient whose
- *      only role is partner → partner; founder-only → founder; investor-only →
- *      investor. A founder+investor recipient is resolved by their RELATIONSHIP
- *      to the channel owner (the author): founder of a company the owner
- *      invests in → founder; investor in a company the owner founded → investor.
- *   4. No evidence at all (founder+investor with no relationship to the channel
- *      owner, or a user the platform cannot place) → NO LINK. The notice is
- *      still emitted (title/body carry the fact) and is retained in the
- *      recipient's explicit account history ("Workspace not identified"); no
- *      persona is invented for it. `basis: "unresolved_no_link"`, `href`
- *      undefined, `surface: "account"`.
- *
- * Exactly one destination per recipient; the resolver never emits.
- */
-export type PostDestinationBasis =
-  | "company_founder" | "company_audience"
-  | "collective_partner" | "partner_only"
-  | "single_role_founder" | "single_role_investor"
-  | "relationship_founder" | "relationship_investor"
-  | "unresolved_no_link";
-
-export type PostDestination =
-  | { href: string; surface: "founder" | "investor" | "partner"; basis: Exclude<PostDestinationBasis, "unresolved_no_link"> }
-  | { href: undefined; surface: "account"; basis: "unresolved_no_link" };
-
-const POST_ROUTE = {
-  founder: (postId: string) => `/founder/posts/${postId}`,
-  investor: (postId: string) => `/investor/posts/${postId}`,
-  partner: (postId: string) => `/collective/partner/posts/${postId}`,
-} as const;
-
-const COMPANY_ANCHORED_CHANNEL_KINDS: ReadonlyArray<string> = ["cap_table", "soft_circle", "company_followers"];
-
-type RecipientCtx = ReturnType<typeof getUserContextForId> | null;
-
-function safeUserContext(userId: string): RecipientCtx {
-  try { return getUserContextForId(userId); } catch { return null; }
-}
-
-function isActivePartnerTeamMember(userId: string): boolean {
-  try { return Boolean(partnerTeamStore.findByUserId(userId)); } catch { return false; }
-}
-
-function founderCompanyIdsOf(ctx: RecipientCtx): string[] {
-  const ids = new Set<string>();
-  for (const c of ctx?.founder?.companies ?? []) if (c?.companyId) ids.add(c.companyId);
-  return [...ids];
-}
-
-function investorCompanyIdsOf(ctx: RecipientCtx): string[] {
-  const ids = new Set<string>();
-  for (const p of ctx?.investor?.capTablePositions ?? []) if (p?.companyId) ids.add(p.companyId);
-  return [...ids];
-}
-
-function channelFounderUserId(channel: Channel | undefined): string | undefined {
-  const v = (channel?.metadata as Record<string, unknown> | undefined)?.founderUserId;
-  return typeof v === "string" ? v : undefined;
-}
-
-function isFounderOfCompany(userId: string, companyId: string | undefined, channel: Channel | undefined, ctx: RecipientCtx): boolean {
-  if (channelFounderUserId(channel) === userId) return true;
-  if (!companyId) return false;
-  try { if (founderUserIdsOfCompany(companyId).includes(userId)) return true; } catch { /* durable lookup unavailable → fall through */ }
-  return founderCompanyIdsOf(ctx).includes(companyId);
-}
-
-export function postDestinationForRecipient(
-  recipientUserId: string,
-  post: { id: string; authorUserId?: string; visibility?: string },
-  channel: Channel | undefined,
-): PostDestination {
-  const ctx = safeUserContext(recipientUserId);
-  const commsRoles: string[] = (commsUserRef(recipientUserId) as UserRef | undefined)?.roles ?? [];
-  const pick = (surface: "founder" | "investor" | "partner", basis: Exclude<PostDestinationBasis, "unresolved_no_link">): PostDestination =>
-    ({ href: POST_ROUTE[surface](post.id), surface, basis });
-
-  /* 1 — company-anchored channel: the recipient's seat in THAT company decides. */
-  if (channel && (channel.companyId || COMPANY_ANCHORED_CHANNEL_KINDS.includes(channel.kind))) {
-    if (isFounderOfCompany(recipientUserId, channel.companyId, channel, ctx)) return pick("founder", "company_founder");
-    return pick("investor", "company_audience");
-  }
-
-  /* 2 — Collective-public post read by an active Consortium Partner. */
-  const isPartner = isActivePartnerTeamMember(recipientUserId);
-  if (post.visibility === "public_to_collective" && isPartner) return pick("partner", "collective_partner");
-
-  /* 3 — personal network / other: single role decides; multi-role by relationship. */
-  const founderCompanies = founderCompanyIdsOf(ctx);
-  const isFounder = founderCompanies.length > 0 || commsRoles.includes("founder");
-  const investorCompanies = investorCompanyIdsOf(ctx);
-  const isInvestor = investorCompanies.length > 0
-    || (ctx?.investor?.invitedRounds?.length ?? 0) > 0
-    || commsRoles.some((r) => r === "investor" || r === "soft_circler" || r === "co_member");
-
-  if (isPartner && !isFounder && !isInvestor) return pick("partner", "partner_only");
-  if (isFounder && !isInvestor) return pick("founder", "single_role_founder");
-  if (isInvestor && !isFounder) return pick("investor", "single_role_investor");
-
-  if (isFounder && isInvestor) {
-    const meta = channel?.metadata as Record<string, unknown> | undefined;
-    const ownerId = (typeof meta?.ownerUserId === "string" ? meta.ownerUserId : undefined) ?? post.authorUserId;
-    if (ownerId && ownerId !== recipientUserId) {
-      const ownerCtx = safeUserContext(ownerId);
-      const ownerInvests = investorCompanyIdsOf(ownerCtx);
-      if (founderCompanies.some((c) => ownerInvests.includes(c))) return pick("founder", "relationship_founder");
-      const ownerFounds = founderCompanyIdsOf(ownerCtx);
-      if (investorCompanies.some((c) => ownerFounds.includes(c))) return pick("investor", "relationship_investor");
-    }
-  }
-
-  /* 4 — no evidence: retain the notice in account history, invent nothing. */
-  return { href: undefined, surface: "account", basis: "unresolved_no_link" };
-}
-
 /* ==================================================================== */
 /* DEMO USERS — the cast for Sprint 9                                    */
 /* ==================================================================== */
@@ -3066,11 +2922,7 @@ export function registerCommsRoutes(app: Express): void {
         /* D3 (:2095) — re-sourced. Was ALWAYS "investor" on live, so a founder's
            own post notification deep-linked their co-participants to the
            investor surface. */
-        /* 2026-09-19 — the AUTHOR's role is the wrong input for a RECIPIENT's
-           deep link (a founder's post notified investors/partners with a
-           founder-surface URL). Resolved per recipient AND channel via
-           postDestinationForRecipient — the same resolver the scheduled
-           producer (publishDueScheduledPosts) uses. */
+        const viewerRole = commsUserRef(actorId)?.roles.includes("founder") ? "founder" : "investor";
         for (const uid of (ch?.participantUserIds ?? []).filter((u: string) => u !== actorId)) {
           try {
             emitNotification({
@@ -3078,7 +2930,7 @@ export function registerCommsRoutes(app: Express): void {
               kind: "investor_report.published",
               title: `New post from ${resolveCommsDisplayName(null, actorId, { fullName: commsUserRef(actorId)?.legalName })}`,
               body: post.body.slice(0, 100),
-              link: postDestinationForRecipient(uid, post, ch).href,
+              link: `/${viewerRole}/posts/${id}`,
             });
           } catch { /* noop */ }
         }
@@ -4243,9 +4095,7 @@ export function publishDueScheduledPosts(now: Date = new Date()): {
             kind: "investor_report.published",
             title: `New post from ${resolveCommsDisplayName(null, p.authorUserId, { fullName: commsUserRef(p.authorUserId)?.legalName })}`,
             body: p.body.slice(0, 100),
-            /* 2026-09-19 — same recipient+channel resolver as immediate
-               publication. `/posts/:id` was never a mounted route. */
-            link: postDestinationForRecipient(uid, p, ch).href,
+            link: `/posts/${p.id}`,
           });
         } catch { /* noop */ }
       }

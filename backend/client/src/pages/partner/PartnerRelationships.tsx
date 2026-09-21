@@ -118,15 +118,6 @@ export default function PartnerRelationships() {
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/relationships")).json(),
   });
-  const onboardingQ = useQuery<{ portfolio: Array<{ companyId: string; onboarding: { state: "registered" | "pending" | "indeterminate" | "error" } }> }>({
-    queryKey: ["/api/partner/me/portfolio"],
-    enabled: role.ready,
-    queryFn: async () => (await apiRequest("GET", "/api/partner/me/portfolio")).json(),
-    refetchOnWindowFocus: true,
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: false,
-  });
-  const onboardingByCompany = new Map((onboardingQ.data?.portfolio ?? []).map((row) => [row.companyId, row.onboarding.state]));
 
   const reconcile = useMutation({
     mutationFn: async () =>
@@ -292,13 +283,12 @@ export default function PartnerRelationships() {
                 <th className="p-3 text-left">Previously</th>
                 <th className="p-3 text-left">Last change</th>
                 <th className="p-3 text-right">History</th>
-                <th className="p-3 text-left">Registration</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
                 <tr data-testid="relationships-no-match">
-                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={6}>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={5}>
                     No companies match your search.
                   </td>
                 </tr>
@@ -350,19 +340,10 @@ export default function PartnerRelationships() {
                         {expanded === r.id ? "Hide" : `Show (${r.presence.length})`}
                       </button>
                     </td>
-                    <td className="p-3 text-xs" data-testid={`relationship-registration-${r.companyId}`}>
-                      {onboardingQ.isError
-                        ? "Registration unavailable"
-                        : onboardingByCompany.get(r.companyId) === "registered"
-                          ? "Registered"
-                          : onboardingByCompany.get(r.companyId) === "pending"
-                            ? "Registration pending"
-                            : "Registration needs review"}
-                    </td>
                   </tr>
                   {expanded === r.id && (
                     <tr className="border-t bg-[var(--cv-color-surface-2)]" data-testid={`relationship-history-${r.companyId}`}>
-                      <td className="p-3" colSpan={6}>
+                      <td className="p-3" colSpan={5}>
                         {/* pcr_surface_presence is append-only, so this really is
                             the full history — nothing was ever deleted from it. */}
                         <ul className="space-y-1 text-xs">

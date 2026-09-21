@@ -200,18 +200,10 @@ import AdminReconciliation from "@/pages/admin/Reconciliation";
 import AdminPartners from "@/pages/admin/Partners";
 /* WAVE 4B (PT-2) — admin CRUD for the partner-classification lookup tables. */
 import PartnerTaxonomyAdmin from "@/pages/admin/PartnerTaxonomyAdmin";
-/* slide13b WAVE D — admin CRUD for the DB-backed COMPANY-sector taxonomy (taxonomy_terms, 0236). Separate from partner classification. */
-import CompanyTaxonomyAdmin from "@/pages/admin/CompanyTaxonomyAdmin";
 import PartnerResponders from "@/pages/admin/PartnerResponders"; /* W6 — Ask-an-Expert partner-responder registry */
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
 import NotificationCenter from "@/pages/NotificationCenter";
-
-/** 2026-09-19 — exact legacy `/partner/pipeline` → mounted partner pipeline, query/hash kept. */
-function LegacyPartnerPipelineRedirect() {
-  const suffix = typeof window !== "undefined" ? `${window.location.search}${window.location.hash}` : "";
-  return <Redirect to={`/collective/partner/pipeline${suffix}`} replace />;
-}
 import AdminBridge from "@/pages/admin/Bridge";
 import AdminBridgeHistory from "@/pages/admin/BridgeHistory";
 import AdminPartnerDetail from "@/pages/admin/PartnerDetail";
@@ -897,15 +889,6 @@ function AppRouter() {
         <Route path="/notifications">
           {() => <RequireAuth><NotificationCenter /></RequireAuth>}
         </Route>
-        {/* 2026-09-19 — LEGACY BOOKMARK ALIAS. Notifications persisted before this
-            date carry link `/partner/pipeline`, a path that never had a route
-            (Page not found). The bell/center now repair it through the shared
-            classifier, but a stored bookmark or an e-mail still lands here, so the
-            EXACT legacy path forwards to the mounted partner pipeline with its
-            query/hash preserved. Exact path only — no global `/partner/*`. */}
-        <Route path="/partner/pipeline">
-          {() => <LegacyPartnerPipelineRedirect />}
-        </Route>
 
         {/* ===== ADMIN ROUTES — RequireAuth role="admin" ===== */}
         <Route path="/admin/dashboard">
@@ -960,10 +943,6 @@ function AppRouter() {
         </Route>
         <Route path="/admin/partner-taxonomy">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerTaxonomyAdmin /></RequireAuth>}
-        </Route>
-        {/* slide13b WAVE D — company-sector taxonomy admin (distinct from partner taxonomy). */}
-        <Route path="/admin/company-taxonomy">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CompanyTaxonomyAdmin /></RequireAuth>}
         </Route>
         {/* D2.5 SLICE 1 — the ONE consolidated fee page. Replaces 15 routes:
              /admin/pricing · /admin/pricing-models · /admin/pricing-models/:id
@@ -1159,13 +1138,6 @@ function AppRouter() {
         <Route path="/admin/notifications">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminNotifications /></RequireAuth>}
         </Route>
-        {/* 2026-09-19 — the admin's PERSONAL inbox (notices addressed to the admin
-            session user, scoped to the admin workspace). Distinct from
-            `/admin/notifications` above, which is the campaign composer/list and is
-            not replaced. */}
-        <Route path="/admin/inbox">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><NotificationCenter surface="admin" /></RequireAuth>}
-        </Route>
         <Route path="/admin/formulas/new">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFormulaNew /></RequireAuth>}
         </Route>
@@ -1320,14 +1292,7 @@ function AppRouter() {
             are NOT touched — they are what makes this shell the only chrome on the
             page, which is the point. */}
         <Route path="/collective/notifications">
-          {() => <RequireAuth><CollectiveShell><NotificationCenter surface="collective" chrome="collective" /></CollectiveShell></RequireAuth>}
-        </Route>
-        {/* 2026-09-19 — the Consortium Partner's OWN inbox in the SAME shell, a
-            separate route so partner notices are listed and counted apart from
-            Collective-member notices. Partner nav (`nav-partner-notifications`)
-            and the partner-mode bell's "View all" both point here. */}
-        <Route path="/collective/partner/notifications">
-          {() => <RequireAuth><CollectiveShell><NotificationCenter surface="partner" chrome="collective" /></CollectiveShell></RequireAuth>}
+          {() => <RequireAuth><CollectiveShell><NotificationCenter /></CollectiveShell></RequireAuth>}
         </Route>
         {/* WAVE A · ITEM 3b — A SECOND DOOR ONTO THE SAME PAGE, SO A CONSORTIUM
             PARTNER KEEPS THEIR OWN SHELL.

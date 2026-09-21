@@ -134,10 +134,6 @@ function renderShell(path: string) {
    file fail to load against a pre-wave tree, hiding the render failures the
    fail-before harness exists to show. */
 const COLLECTIVE_NOTIFICATIONS_HREF = "/collective/notifications";
-/* 2026-09-19 — the Consortium Partner's own inbox is a SEPARATE in-shell route
-   (persona-scoped list/count). Partner nav and the partner-mode bell's
-   "View all" point here; the member nav still points at the Collective inbox. */
-const PARTNER_NOTIFICATIONS_HREF = "/collective/partner/notifications";
 
 async function bell(): Promise<HTMLElement> {
   return screen.findByTestId("button-notifications", {}, { timeout: 4000 });
@@ -254,7 +250,7 @@ describe("W149 · E-T3 — the inbox is REACHABLE, and AppShell is undisturbed",
     chapters = [];
     renderShell("/collective/partner/dashboard");
     const partnerNav = await screen.findByTestId("nav-partner-notifications", {}, { timeout: 4000 });
-    expect(partnerNav.getAttribute("href")).toBe(PARTNER_NOTIFICATIONS_HREF);
+    expect(partnerNav.getAttribute("href")).toBe(COLLECTIVE_NOTIFICATIONS_HREF);
     expect(partnerNav.textContent).toContain("Notifications");
 
     cleanup();
@@ -273,7 +269,7 @@ describe("W149 · E-T3 — the inbox is REACHABLE, and AppShell is undisturbed",
     fireEvent.pointerDown(viewAll, { button: 0, pointerType: "mouse" });
     fireEvent.click(viewAll);
     await waitFor(() => {
-      expect(window.location.pathname).toBe(PARTNER_NOTIFICATIONS_HREF);
+      expect(window.location.pathname).toBe(COLLECTIVE_NOTIFICATIONS_HREF);
     }, { timeout: 4000 });
   });
 

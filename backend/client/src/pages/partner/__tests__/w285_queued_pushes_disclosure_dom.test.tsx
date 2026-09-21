@@ -181,13 +181,11 @@ function mount(): void {
 
 const widget = (): Promise<HTMLElement> => screen.findByTestId("mf-dashboard-widget");
 
-/** The pending-requests tile, found by the LABEL A PARTNER READS. Scoped.
- *  2026-09-19 — owner-approved label "Pending sharing requests" (was "Queued pushes"). */
-const TILE_LABEL = "Pending sharing requests";
+/** The "Queued pushes" tile, found by the LABEL A PARTNER READS. Scoped. */
 function queuedTile(w: HTMLElement): HTMLElement {
   const tiles = Array.from(w.children) as HTMLElement[];
-  const tile = tiles.find((t) => t.textContent?.includes(TILE_LABEL));
-  if (!tile) throw new Error(`the '${TILE_LABEL}' tile is gone — the page shape changed`);
+  const tile = tiles.find((t) => t.textContent?.includes("Queued pushes"));
+  if (!tile) throw new Error("the 'Queued pushes' tile is gone — the page shape changed");
   return tile;
 }
 
@@ -197,8 +195,7 @@ describe("W285 §1 — the tile disclosure sits IMMEDIATELY AFTER the tile it co
     const w = await widget();
     /* Asserted BEFORE any conclusion is drawn from the new sentence. */
     const tile = queuedTile(w);
-    expect(tile.textContent).toContain(TILE_LABEL);
-    expect(tile.textContent).not.toContain("Queued pushes");
+    expect(tile.textContent).toContain("Queued pushes");
     expect(tile.textContent).toContain("0");
     const labels = Array.from(w.children)
       .map((c) => (c as HTMLElement).querySelector(".text-xs")?.textContent ?? "")
@@ -206,7 +203,7 @@ describe("W285 §1 — the tile disclosure sits IMMEDIATELY AFTER the tile it co
     expect(labels).toContain("Engagements");
     expect(labels).toContain("Active");
     expect(labels).toContain("Open crossover flags");
-    expect(labels).toContain(TILE_LABEL);
+    expect(labels).toContain("Queued pushes");
   });
 
   it("the disclosure is the tile's NEXT ELEMENT SIBLING — placement, not page presence", async () => {
@@ -214,7 +211,7 @@ describe("W285 §1 — the tile disclosure sits IMMEDIATELY AFTER the tile it co
     const w = await widget();
     const tile = queuedTile(w);
     const next = tile.nextElementSibling as HTMLElement | null;
-    expect(next, "nothing follows the pending-requests tile").not.toBeNull();
+    expect(next, "nothing follows the Queued pushes tile").not.toBeNull();
     expect(next!.getAttribute("data-testid")).toBe("mf-queued-pushes-no-delivery");
     /* And it is the LAST thing in the grid, so no tile was renumbered. */
     expect(w.lastElementChild).toBe(next);
@@ -222,16 +219,16 @@ describe("W285 §1 — the tile disclosure sits IMMEDIATELY AFTER the tile it co
     expect(tile.contains(next!)).toBe(false);
   });
 
-  it("it says pending requests are not shared with the Collective and give investors no access", async () => {
-    /* 2026-09-19 — owner-approved copy (final reconciled notification spec). */
+  it("it says delivery is unavailable, that the count only rises, and what a zero means", async () => {
     mount();
     const w = await widget();
     const note = w.querySelector('[data-testid="mf-queued-pushes-no-delivery"]') as HTMLElement;
-    const text = (note.textContent ?? "").replace(/\s+/g, " ").trim();
-    expect(text).toBe(
-      "Requests recorded for vehicles created on a founder’s behalf. Pending requests have not been shared with the Collective and do not give investors access.",
-    );
-    expect(text).not.toContain("Delivery of queued pushes");
+    const text = note.textContent ?? "";
+    expect(text).toContain("Delivery of queued pushes to the Collective is not available yet.");
+    expect(text).toContain("no screen on Capavate can move a push out of the queue");
+    expect(text).toContain("this figure can rise but never fall");
+    expect(text).toContain("A push counted here has not reached the Collective");
+    expect(text).toContain("a zero here means nothing is waiting — not that a deal was delivered");
   });
 });
 
@@ -265,22 +262,22 @@ describe("W285 §2 — every state the tile can be in, including 'not yet'", () 
       expect(screen.queryByTestId("mf-dashboard-widget")).toBeNull();
     });
     expect(screen.queryByTestId("mf-queued-pushes-no-delivery")).toBeNull();
-    expect(screen.queryByText(/Pending sharing requests/)).toBeNull();
     expect(screen.queryByText(/Queued pushes/)).toBeNull();
   });
 });
 
 describe("W285 §3 — the SECOND surface: the enqueue panel's own promise", () => {
-  it("PRECONDITION — the on-behalf panel renders the owner-approved sentence verbatim", async () => {
-    /* 2026-09-19 — owner-approved copy (final reconciled notification spec)
-       replaces the W285 promise + correction pair. */
+  it("PRECONDITION — the on-behalf panel renders and its ORIGINAL sentence is byte-identical", async () => {
     h.detailRoute = true;
     mount();
     const panel = await screen.findByTestId("mf-spv-on-behalf");
     const p = panel.querySelector("p");
     expect(p, "the panel's description paragraph is gone").not.toBeNull();
-    expect(p!.textContent).toContain("Creates a vehicle for this founder and records your action.");
-    expect(p!.textContent).not.toContain("queues the Collective push");
+    /* No trim, no lowercase, no whitespace collapse inside the comparison —
+       the original clause is asserted verbatim. */
+    expect(p!.textContent).toContain(
+      "Creates the vehicle, records an audit entry in the on-behalf chain, and queues the Collective push — in one transaction.",
+    );
   });
 
   it("the correction is the LAST CHILD of that same paragraph, not a page-level note", async () => {
@@ -291,9 +288,8 @@ describe("W285 §3 — the SECOND surface: the enqueue panel's own promise", () 
     const span = p.querySelector('[data-testid="mf-sob-push-not-delivered"]') as HTMLElement | null;
     expect(span, "the panel disclosure is not inside the promise paragraph").not.toBeNull();
     expect(p.lastElementChild).toBe(span);
-    expect((span!.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(
-      "Creating the vehicle does not publish it to the Collective or give investors access.",
-    );
+    expect(span!.textContent).toContain("The queued push is not delivered to the Collective.");
+    expect(span!.textContent).toContain("this deal does not reach the Collective");
   });
 
   it("the panel is still rendered exactly once and nothing was removed from it", async () => {

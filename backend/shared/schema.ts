@@ -11,7 +11,7 @@
  * Auth0-issued user IDs, tenant_id row-level security, and the audit-log
  * hash chain from R165 §12.
  */
-import { sqliteTable, text, integer, real, primaryKey } from "drizzle-orm/sqlite-core"; /* slide13b WAVE D — primaryKey for taxonomy_terms composite key */
+import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -3280,33 +3280,3 @@ export const partnerClassifications = sqliteTable("partner_classifications", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
-
-/* ============================================================
- * slide13b WAVE D — generic DB-backed taxonomy (migration 0236).
- *
- * `taxonomy_terms` is keyed by (namespace, value). The first namespace is
- * `company_sector`, seeded with the 45 COLLECTIVE_SECTORS_45 strings
- * (value == label). After 0236 the DATABASE is canonical for company sectors;
- * COLLECTIVE_SECTORS_45 above is retained ONLY as the migration seed / test
- * oracle and is no longer read by the three sector selectors.
- *
- *   value  — IMMUTABLE stored identifier (written into companies.sector,
- *            Collective application sectors[], SPV wizard sectors[]).
- *   label  — EDITABLE display string; renaming never rewrites stored rows.
- *   active — 1 offered for new selections, 0 retired (retire, never delete).
- *
- * NOT this table: INDUSTRY_OPTIONS (48) and COLLECTIVE_STAGES are unchanged;
- * partner_sectors / partner_subsectors (0149) are a separate taxonomy.
- * Dialect: SQLite (live driver). PostgreSQL path unverified — not claimed.
- * ============================================================ */
-export const taxonomyTerms = sqliteTable("taxonomy_terms", {
-  namespace: text("namespace").notNull(),
-  value: text("value").notNull(),
-  label: text("label").notNull(),
-  active: integer("active").notNull().default(1),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-}, (t) => ({
-  pk: primaryKey({ columns: [t.namespace, t.value] }),
-}));

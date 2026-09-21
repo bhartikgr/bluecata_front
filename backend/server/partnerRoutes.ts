@@ -260,6 +260,7 @@ import {
   spvSubscriptionRefusalCopy,
 } from "@shared/spvSubscriptionRefusalCopy";
 import {
+  partnerHasCompanyRelationship,
   partnerMayAttributeSpvToCompany,
   SPV_TARGET_COMPANY_NOT_YOURS,
   SPV_TARGET_COMPANY_NOT_YOURS_MESSAGE,
@@ -268,19 +269,6 @@ import { setSpvLegalForm } from "./spvLegalFormStore"; /* WAVE 179 · ITEM B · 
 import { resolveSpvJurisdiction } from "../shared/spvEngine"; /* WAVE 4A follow-up 2 */
 /* WAVE 230D — per-record test-data exclusion for display surfaces (R228, R230.6). */
 import { wave230CompanyVisible, wave230HiddenCompanyIds } from "./lib/wave230DisplayExclusion";
-import {
-  CompanyOnboardingUnavailableError,
-  projectCompanyOnboardingForPartner,
-  readCompanyOnboardingState,
-} from "./lib/companyOnboardingState";
-import {
-  FounderInviteAuthorityUnavailableError,
-  hasFounderInvitationAuthority,
-} from "./lib/founderInviteAuthority";
-import {
-  durablePartnerHasCompanyRelationship,
-  readDurablePartnerCompanyCandidates,
-} from "./lib/partnerCompanyRelationshipCandidates";
 /* NUMBERS BAND · WAVE E (W328) — the same LP name chain the LP Roster builder
    runs, so the Fund Register and the roster cannot name one row two ways. */
 import { investorDisplayNameMap } from "./lib/investorDisplayName";
@@ -1744,32 +1732,18 @@ export function registerPartnerRoutes(app: Express): void {
   // PartnerClientDetail.tsx consume.
   app.get("/api/partner/me/clients", requirePartnerAuth, (req: Request, res: Response) => {
     const pid = req.partnerContext!.partnerId;
-    try {
-      const clients = partnerAttributionStore
-        .listByPartner(pid)
-        .map((a) => {
-          const onboarding = partnerOnboardingProjection(pid, a.companyId);
-          return {
-            id: a.id,
-            companyId: a.companyId,
-            companyName: onboarding.company.name,
-            attributionSource: a.attributionSource,
-            attributedAt: a.attributedAt,
-            canViewFounderInvitation: onboarding.canViewFounderInvitation,
-            onboarding,
-          };
-        });
-      res.json({ clients });
-    } catch (error) {
-      if (error instanceof CompanyOnboardingUnavailableError || error instanceof FounderInviteAuthorityUnavailableError) {
-        return res.status(503).json({
-          error: error instanceof CompanyOnboardingUnavailableError ? error.code : "FOUNDER_INVITE_AUTHORITY_UNAVAILABLE",
-          state: "error",
-          message: error.message,
-        });
-      }
-      throw error;
-    }
+    const clients = partnerAttributionStore
+      .listByPartner(pid)
+      .map((a) => ({
+        id: a.id,
+        companyId: a.companyId,
+        /* w-partner F1(d) — the list rendered raw company ids because the
+           name was never joined in. Additive field; the id stays. */
+        companyName: getCompanyRecordById(a.companyId)?.companyName ?? null,
+        attributionSource: a.attributionSource,
+        attributedAt: a.attributedAt,
+      }));
+    res.json({ clients });
   });
 
   app.get("/api/partner/me/clients/:id", requirePartnerAuth, (req: Request, res: Response) => {
@@ -1848,29 +1822,7 @@ export function registerPartnerRoutes(app: Express): void {
 
   // PIPELINE
   app.get("/api/partner/me/pipeline", requirePartnerAuth, (req: Request, res: Response) => {
-    try {
-      const partnerId = req.partnerContext!.partnerId;
-      const pipeline = partnerPipelineStore.listByPartner(partnerId).map((deal) => {
-        const onboarding = deal.companyId
-          ? partnerOnboardingProjection(partnerId, deal.companyId)
-          : null;
-        return {
-          ...deal,
-          canViewFounderInvitation: onboarding?.canViewFounderInvitation ?? false,
-          onboarding,
-        };
-      });
-      res.json({ pipeline, stages: ALL_PIPELINE_STAGES });
-    } catch (error) {
-      if (error instanceof CompanyOnboardingUnavailableError || error instanceof FounderInviteAuthorityUnavailableError) {
-        return res.status(503).json({
-          error: error instanceof CompanyOnboardingUnavailableError ? error.code : "FOUNDER_INVITE_AUTHORITY_UNAVAILABLE",
-          state: "error",
-          message: error.message,
-        });
-      }
-      throw error;
-    }
+    res.json({ pipeline: partnerPipelineStore.listByPartner(req.partnerContext!.partnerId), stages: ALL_PIPELINE_STAGES });
   });
 
   // v25.50.0 Phase 2 (spec 2b) — "Following from Collective": companies this
@@ -1906,19 +1858,14 @@ export function registerPartnerRoutes(app: Express): void {
    * relationship. Following (member personal interest) is intentionally NOT a proof.
    * Returns 404 (not 403) on failure so the route cannot be used as an existence oracle.
    */
-  /* Slide 13b B — use the DB-direct form of the existing six proofs for this
-     owned Portfolio surface. The list, detail and write gate must agree even
-     when another process committed the relationship after local stores loaded. */
+  /* WAVE 179 · ITEM A · R151.1 — THE SIX PROOFS MOVED, NOT COPIED.
+     The body of this predicate now lives in `lib/partnerCompanyLinkGate.ts` so
+     that `spvEngineRoutes.ts` can gate a partner-supplied `targetCompanyId`
+     against the SAME derivation instead of against a second copy of it. This
+     name, its signature and its 404-not-403 contract are unchanged, and every
+     existing caller below is untouched. */
   const partnerCanAccessCompanyPortfolio = (partnerId: string, companyId: string): boolean =>
-    durablePartnerHasCompanyRelationship(partnerId, companyId);
-
-  const partnerOnboardingProjection = (partnerId: string, companyId: string) => {
-    const state = readCompanyOnboardingState(companyId, { includeInvitationEmail: true });
-    return projectCompanyOnboardingForPartner(
-      state,
-      hasFounderInvitationAuthority(partnerId, companyId),
-    );
-  };
+    partnerHasCompanyRelationship(partnerId, companyId);
 
   // List all private-portfolio company profiles for this partner.
   app.get("/api/partner/me/portfolio", requirePartnerAuth, (req: Request, res: Response) => {
@@ -1930,81 +1877,38 @@ export function registerPartnerRoutes(app: Express): void {
        companies themselves are untouched, and unmarking restores them. With
        nothing marked the set is empty and the list is byte-identical. */
     const w230Hidden = wave230HiddenCompanyIds();
-    try {
-      const privateProfiles = new Map(listPortfolioCompanies(ctx.partnerId).map((p) => [p.companyId, p]));
-      const candidateIds = readDurablePartnerCompanyCandidates(ctx.partnerId);
-      const items = Array.from(candidateIds).sort()
-        .filter((companyId) => wave230CompanyVisible(w230Hidden, companyId))
-        .map((companyId) => {
-          const p = privateProfiles.get(companyId);
-          const onboarding = partnerOnboardingProjection(ctx.partnerId, companyId);
-          const rec = getCompanyRecordById(companyId);
-          return {
-            companyId,
-            companyName: onboarding.company.name,
-            logoUrl: rec?.logoUrl ?? null,
-            profile: p?.profile ?? null,
-            updatedAt: p?.updatedAt ?? null,
-            canViewFounderInvitation: onboarding.canViewFounderInvitation,
-            onboarding,
-          };
-        });
-      res.json({ portfolio: items });
-    } catch (error) {
-      return res.status(503).json({
-        error: "COMPANY_ONBOARDING_UNAVAILABLE",
-        state: "error",
-        message: error instanceof CompanyOnboardingUnavailableError ? error.message : "Portfolio relationships could not be read.",
-      });
-    }
+    const items = listPortfolioCompanies(ctx.partnerId)
+      .filter((p) => wave230CompanyVisible(w230Hidden, p.companyId))
+      .map((p) => {
+      const rec = getCompanyRecordById(p.companyId);
+      return {
+        companyId: p.companyId,
+        companyName: rec?.companyName ?? null,
+        logoUrl: rec?.logoUrl ?? null,
+        profile: p.profile,
+        updatedAt: p.updatedAt,
+      };
+    });
+    res.json({ portfolio: items });
   });
 
   // Read a single private-portfolio profile.
   app.get("/api/partner/me/portfolio/:companyId", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
     const companyId = String(req.params.companyId);
-    try {
-      // W1 H3 — require relationship BEFORE exposing any global company metadata.
-      if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
-        return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
-      }
-      const p = getPortfolioCompany(ctx.partnerId, companyId);
-      const rec = getCompanyRecordById(companyId);
-      const onboarding = partnerOnboardingProjection(ctx.partnerId, companyId);
-      res.json({
-        companyId,
-        companyName: onboarding.company.name,
-        logoUrl: rec?.logoUrl ?? null,
-        profile: p?.profile ?? {},
-        updatedAt: p?.updatedAt ?? null,
-        source: onboarding.company,
-        canViewFounderInvitation: onboarding.canViewFounderInvitation,
-        ...(onboarding.canViewFounderInvitation
-          ? { invitation: onboarding.ownerInvitation }
-          : {}),
-        onboarding,
-      });
-    } catch (error) {
-      if (error instanceof CompanyOnboardingUnavailableError) {
-        return res.status(503).json({ error: error.code, state: "error", message: error.message });
-      }
-      return res.status(503).json({
-        error: "COMPANY_ONBOARDING_UNAVAILABLE",
-        state: "error",
-        message: "Portfolio relationships could not be read.",
-      });
+    // W1 H3 — require relationship BEFORE exposing any global company metadata.
+    if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
+      return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
     }
-  });
-
-  app.get("/api/admin/companies/:id/onboarding", requireAdmin, (req: Request, res: Response) => {
-    try {
-      res.json(readCompanyOnboardingState(String(req.params.id), { includeInvitationEmail: true }));
-    } catch (error) {
-      if (error instanceof CompanyOnboardingUnavailableError) {
-        return res.status(503).json({ error: error.code, state: "error", message: error.message });
-      }
-      throw error;
-    }
+    const p = getPortfolioCompany(ctx.partnerId, companyId);
+    const rec = getCompanyRecordById(companyId);
+    res.json({
+      companyId,
+      companyName: rec?.companyName ?? null,
+      logoUrl: rec?.logoUrl ?? null,
+      profile: p?.profile ?? {},
+      updatedAt: p?.updatedAt ?? null,
+    });
   });
 
   // Upsert (create-or-merge) the partner's private profile for a company.
@@ -2020,16 +1924,8 @@ export function registerPartnerRoutes(app: Express): void {
       const ctx = req.partnerContext!;
       const companyId = String(req.params.companyId);
       // W1 H4 — require relationship BEFORE body validation (no validation oracle) or upsert.
-      try {
-        if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
-          return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
-        }
-      } catch {
-        return res.status(503).json({
-          error: "COMPANY_ONBOARDING_UNAVAILABLE",
-          state: "error",
-          message: "Portfolio relationships could not be read.",
-        });
+      if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
+        return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
       }
       // w-partner F2-b — surface FIELD-LEVEL issues. A single bad value (e.g. a
       // free-text industry) previously 400'd the whole patch and silently

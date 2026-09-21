@@ -134,30 +134,6 @@
  "note": "each entry must include reason + approvedBy + date. Entry shape: { \"id\": \"<exact baseline id>\", \"reason\": \"...\", \"approvedBy\": \"...\", \"date\": \"YYYY-MM-DD\" }. A plain string id is also accepted but the object form (with reason/approvedBy/date) is required for a legitimate, logged removal. WAVE 2B / BLOCKER 3: entries dated 2026-08-09 resolve the 20 disappearances under Ozan's ruling. FOUR ids are DELIBERATELY NOT allowlisted — they are real losses, registered instead in scripts/silent-drop-guard/deferrals.json (v8 items RS-1 and RS-2).",
  "removedCopy": [
   {
-   "id": "client/src/pages/partner/PartnerAddPortfolioCompany.tsx\ttext\tCreate a genuinely new, independent company on Capavate for a client you are leading. The company is created with its own account and is tagged to your firm so everyone can see you are leading the raise. The founder is invited by email to claim the account and complete their full company profile — they only ever access their own company workspace, never your partner workspace.",
-   "reason": "slide13b: replaced in the same visible introduction by recipient-review and attempted-email wording, with access limited to what the invitation grants rather than a false ban on an existing multi-role user's other workspaces. Company creation, attribution and founder claim remain. Actual component and browser tests prove reviewed recipient submission; no hidden copy or removed capability. See build_log/slide13b/a1/COPY_CHANGE_MAP.txt and preflight/slide13b/REPLACEMENT_REGISTER.md.",
-   "approvedBy": "User-authorized slide13b bug repair and standing decision delegation; exact truthful replacement reviewed and approved by the delegated lead developer, 2026-09-20. No claim of a separate verbatim owner approval.",
-   "date": "2026-09-20"
-  },
-  {
-   "id": "client/src/pages/partner/PartnerAddPortfolioCompany.tsx\ttext\tThe company has been created as an independent entity, tagged to your firm, and added to your Pipeline (Invited). Send the founder the link below so they can claim the account and complete the full company profile.",
-   "reason": "slide13b: same success panel now distinguishes saved company/attribution from the optional Pipeline attempt and the measured email handoff. The one-time claim link and Copy control remain. The former unconditional Pipeline-success promise contradicted the existing non-fatal write contract. Actual SMTP-failure UI test proves saved company plus truthful failure and preserved recovery.",
-   "approvedBy": "User-authorized slide13b bug repair and standing decision delegation; exact replacement approved by the delegated lead developer with executed positive controls and explicit delta record.",
-   "date": "2026-09-20"
-  },
-  {
-   "id": "client/src/pages/partner/PartnerAddPortfolioCompany.tsx\ttext\tThe company was created and attributed, but the founder invitation could not be issued. You can re-invite the founder from the company's team settings.",
-   "reason": "slide13b: replaced the inaccurate team-settings recovery direction with an invitation-integrity warning and the implemented, authority-gated partner status/reissue workflow. Pending founders cannot authenticate into that old team-settings route. No recovery capability was removed; previously absent reissue now has actual DB/HTTP/UI tests, exact-recipient confirmation, token rotation and strong origination authority.",
-   "approvedBy": "User-authorized slide13b invitation repair and delegated lead implementation decision; no baseline change, no loss of an existing working control.",
-   "date": "2026-09-20"
-  },
-  {
-   "id": "client/src/pages/partner/PartnerAddPortfolioCompany.tsx\ttext\tThe founder receives an invitation to claim ownership and finish the profile.",
-   "reason": "slide13b: the same adjacent help location now asks the operator to review the exact recipient before company creation and attempted email handoff. Receiving an email cannot be guaranteed: transport failure and dry-run are explicit tested states. Actual review and confirmation controls preserve company creation and claiming without promising delivery.",
-   "approvedBy": "User-authorized slide13b wrong-recipient and missing-email repair; delegated lead approved this truthful replacement with actual DOM/browser evidence.",
-   "date": "2026-09-20"
-  },
-  {
    "id": "client/src/components/partner/SpvDetailTabs.tsx\ttext\tCollection outcome",
    "reason": "WAVE 1A / S-2 (fee self-mark security hole) — the GP-facing \"Collection outcome\" selector let a Consortium Partner name the carry settlement outcome, which reached state=\"paid\" at server/spvEngineStore.ts:752 with no gateway. The control is removed deliberately; the settlement outcome is now derived server-side only (gateway mint, or the Capavate platform-admin settle route). Replaced in-place by an explanatory note (data-testid=spv-distribution-settlement-note); no other distribution functionality removed.",
    "approvedBy": "Ozan (WAVE 1A S-2 build directive)",
@@ -1158,27 +1134,9 @@
    "reason": "WAVE 347 / ITEM 1 - A FALSE PROMISE WITHDRAWN, NOT A FEATURE REMOVED. This sentence told an OUTSIDE INVESTOR, on the screen where they open a founder's confidential documents, that those documents are 'Watermarked on download.' NO WATERMARKING EXISTS ON ANY PATH IN THIS CODEBASE, so the string described a protection the reader was not getting. Re-measured before the edit: fileDownloadHandler (server/dataroomStore.ts:868-943) returns the stored bytes unmodified via res.send(bytes) at :942 with no transformation step; the watermark column is written unconditionally true on every upload (:759) and is read by nothing that alters a byte; pdfkit is present in the tree but only in server/lib/pdfGenerators.ts, which GENERATES term sheets and never imports or touches dataroomStore (grep count of pdfkit/pdfGenerators in server/dataroomStore.ts = 0); no image compositing dependency exists; and the one CSS watermark overlay lives in a founder preview modal that cannot open because setPreviewFile is called only at client/src/pages/founder/Dataroom.tsx:399 and :406 and both pass null. THIS IS NOT AN ABSENCE, IT IS A SUBSTITUTION. The same <p> now reads 'All access is logged in the company's audit ledger. Every view and download is recorded with your name.' - a statement of the protection that IS implemented and verified at server/dataroomStore.ts:905-907, where auditActor = ctx.identity.name and auditActorId = ctx.userId are written by logEvent with action 'view' or 'download' on the same handler that serves the bytes, from the server session and not from anything the reader can set. The screen already used this register thirteen lines above at :1389 ('Every view is logged.'). WHAT WAS DELIBERATELY NOT DONE: watermarking was NOT built. Whether Capavate should watermark documents is a product decision that sits with the owner and was left with the owner, not quietly patched. Only the false claim was withdrawn. ENFORCED BY client/src/pages/investor/__tests__/w347_item1_no_false_watermark_promise.test.tsx, which asserts on the RENDERED text of the investor screen that the word 'Watermarked' is absent and that the replacement sentence is present - so this removal is proved by a test that reads the page, not by this allowlist entry.",
    "approvedBy": "Delegated build brief for WAVE 347 (owner away, decisions delegated). The brief specifies this exact change and its exact shape: 'Fix the STRING. Do NOT build watermarking - that is a product decision already with the owner.' and 'Do not write a new promise; state the protection that actually exists.' Withdrawing a false statement of security to an outside party is a correction, not a product removal. NOTHING WAS DELETED FOR CONVENIENCE and no baseline was re-cut.",
    "date": "2026-09-08"
-  },
-  {
-   "id": "client/src/pages/NotificationCenter.tsx\tdescription\tAll notifications across surfaces. Real-time updates via SSE; preferences in Settings.",
-   "reason": "SLIDE 13a (2026-09-19) — REWORDED for accuracy, not removed. The page is now persona-scoped (with a labelled 'Across your account' scope) and refresh is a bounded poll-backed stream plus a 30 s refetch, not an instant SSE fan-out. New literal: 'Refreshes automatically; preferences in Settings.' (independent reviewer requirement: state auto-refresh plainly, not 'real-time').",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
-  },
-  {
-   "id": "client/src/pages/partner/PartnerManagedFounders.tsx\ttext\tQueued pushes",
-   "reason": "SLIDE 13a (2026-09-19) — RENAMED by owner-approved copy, not removed. Tile label 'Queued pushes' → 'Pending sharing requests'; the counter {dashQ.data.queuedPushes}, the tile position and the adjacent disclosure (data-testid mf-queued-pushes-no-delivery, reworded to the approved sentence) are all retained. Proof: server/__tests__/w285_collective_push_disclosure_http.test.ts §C and client/src/pages/partner/__tests__/w285_queued_pushes_disclosure_dom.test.tsx.",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
   }
  ],
  "removedEvents": [
-  {
-   "id": "client/src/pages/partner/PartnerAddPortfolioCompany.tsx\tButton\tonClick\texpr:cd1e4aabd0ec",
-   "reason": "slide13b: the same apc-create-btn is now a real form submit that captures current native values and opens recipient review; apc-confirm-create then submits the immutable reviewed snapshot. Replacing direct create.mutate() is the required wrong-recipient protection, not deletion of creation. Server authority checks, all original fields, reset, claim link and Pipeline navigation remain. Actual-component desynchronization tests and main Chromium replay prove zero POST before review and one correctly addressed POST after confirmation. Raw wave-floor disappearance remains reported; floor was not re-emitted.",
-   "approvedBy": "User-authorized slide13b fix with delegated engineering decisions; lead-approved review-before-submit replacement, independently tested. No separate verbatim owner approval is implied.",
-   "date": "2026-09-20"
-  },
   {
    "id": "client/src/components/partner/SpvDetailTabs.tsx\tselect\tonChange\texpr:32763a19dccb",
    "reason": "WAVE 1A / S-2 — onChange of the removed \"Collection outcome\" <select data-testid=spv-distribution-outcome>. That control was the client half of the fee self-mark hole (partner-named settlement outcome reaching state=\"paid\" at server/spvEngineStore.ts:752 with no gateway). Removed deliberately with the selector itself; the outcome is now derived server-side only.",
@@ -1291,30 +1249,6 @@
    "reason": "WAVE 197 / owner ruling R169 — MODIFICATION, NOT A REMOVAL, AND THE DESTINATION IS NAMED. DESTINATION ID: client/src/pages/collective/ScreeningEventsPage.tsx\tbutton\tonClick\texpr:763e6074e1bd — same file, same <button type=\"button\">, same position inside the same event card, same \"Add to calendar\" ICS-download control, still reachable in the browser. Nothing was deleted or disabled. WHY THE IDENTITY MOVED AT ALL: the guard fingerprints an INLINE arrow handler as a sha256 digest of its whole normalised text (scripts/silent-drop-guard/extract-inventory.ts:1679), so ANY edit inside an inline handler necessarily retires its id. A named handler would have kept a stable id, but converting this one to a named function would itself have been a larger edit to a live surface than the fix. WHAT ACTUALLY CHANGED — one expression and one comment: the failure toast read `description: (e as Error).message`, which put the raw thrown text in front of a Collective MEMBER on a non-admin page. It now reads `description: describeFailure(e, \"read\")` (client/src/lib/failureMessage.ts, wave 196), which yields a sanitised human sentence under the 240-character looksHuman gate. \"read\" is correct and deliberate: downloading an .ics file changes no server state, so the copy must not imply a failed write (R169 item 5). WHAT DID NOT CHANGE, PROVED BY DIGEST RATHER THAN ASSERTED: build_log/wave197/w197_handler_digest.ts reconstructs the pre-wave handler text from the current file by reversing exactly those two edits and reproduces THIS id, b1c4efd360fd, exactly. A digest is a total function of the whole text, so an exact match proves there was no third edit: the try block, the fetch URL, `credentials: \"include\"`, the blob/anchor/download/revoke sequence, `variant: \"destructive\"` and the title literal \"Could not download ICS\" are all byte-identical. Recorded output: build_log/wave197/artefacts/w197_handler_identity.txt, and the independent hand check of the same surface is build_log/wave197/artefacts/w197_surface42_{BEFORE,AFTER}.txt. GUARD ARITHMETIC: event-handler additions went 541 -> 542 against one disappearance, i.e. a 1:1 replacement, and no other inventory count in any of the nine categories moved (build_log/wave197/artefacts/gate_guard_{before,after}.txt).",
    "approvedBy": "Ozan Isinak (delegated authority — R169, verbatim: \"I don't want any exposure of our internal process.\"; same delegated-authority basis and same modification-not-removal class as the 2026-08-11 AdminFeesConsolidated.tsx onClick entry in this file)",
    "date": "2026-08-28"
-  },
-  {
-   "id": "client/src/components/NotificationBell.tsx\tDropdownMenuItem\tonSelect\texpr:3d02321855c0",
-   "reason": "SLIDE 13a (2026-09-19) — REPLACED, not lost. The Sprint 20 'View all notifications' handler resolved its destination from useRole() (investor/founder/else). The bell now lists and counts ONE route-derived surface, and the same item (same data-testid button-open-notification-center, same copy) navigates to inboxHrefForSurface(surface) so the data plane and the navigation plane cannot disagree for a multi-role account. Proof: client/src/components/__tests__/w149_notification_bell_in_collective_shell.test.ts and the new notification_persona_2026_09_19 client tests.",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
-  },
-  {
-   "id": "client/src/components/NotificationBell.tsx\tDropdownMenuItem\tonSelect\texpr:3e8ed36cb1db",
-   "reason": "SLIDE 13a (2026-09-19) — REPLACED, not lost. The W149 shell-supplied 'View all' sibling (navigate(viewAllHref)) is folded into the single surface-derived item above; viewAllHref is still honoured first when a shell passes it. Same data-testid, same copy, one render path instead of two complementary ones.",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
-  },
-  {
-   "id": "client/src/pages/NotificationCenter.tsx\tCard\tonClick\texpr:4c9cbb2a959b",
-   "reason": "SLIDE 13a (2026-09-19) — REPLACED, not lost. The row handler was navigate(n.link): the stored string handed to the router unexamined, which is how a persisted '/partner/pipeline' link produced 'Page not found' outside the partner shell (live rows ntf_84eafa149474 et al.). The row still navigates on click, now through performNotificationNavigation (shared classifier: exact legacy alias repair, unsafe-URL refusal, wrong-workspace refusal, protected download outside the router).",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
-  },
-  {
-   "id": "client/src/pages/investor/Notifications.tsx\tbutton\tonClick\texpr:88f02ddfb5d4",
-   "reason": "SLIDE 13a (2026-09-19) — RETARGETED, not lost. The kind-chip onClick still sets the filter and still re-fires the query; the invalidation now targets the scoped ['notifications', userId, …] cache key every consumer uses instead of the retired URL-string key `/api/notifications?userId=` that no query registers any more.",
-   "approvedBy": "Ozan, 2026-09-19 request to fix slide 13a (persona notification bug); implementation interpretation by lead engineer (NOTIFICATION_ENGINEERING_SPEC_2026_09_19.md); see preflight/notification_2026_09_19/AUTHORIZED_CHANGE_RECONCILIATION.md",
-   "date": "2026-09-19"
   }
  ],
  "removedPanels": [

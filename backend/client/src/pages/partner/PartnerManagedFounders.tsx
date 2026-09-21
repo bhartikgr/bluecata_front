@@ -731,13 +731,19 @@ export function SpvOnBehalfPanel({ engagement, subRole }: { engagement: Engageme
     <div className="mt-3 bg-white rounded-lg border border-[var(--cv-color-border)] p-4" data-testid="mf-spv-on-behalf">
       <h3 className="text-sm font-semibold">SPV on behalf of this founder</h3>
       <p className="mt-0.5 text-xs text-[var(--cv-color-text-muted)]">
-        {/* 2026-09-19 — owner-approved copy (final reconciled spec) replaces the
-            WAVE 285 two-part sentence. One <p>, same sibling index; the W285
-            disclosure testid is kept on the second sentence so the "not shared /
-            no investor access" statement stays individually addressable. */}
-        Creates a vehicle for this founder and records your action.{" "}
-        <span data-testid="mf-sob-push-not-delivered">
-          Creating the vehicle does not publish it to the Collective or give investors access.
+        Creates the vehicle, records an audit entry in the on-behalf chain, and queues the Collective push — in one transaction.
+        {/* WAVE 285 — SECOND CONSUMER of the same unbuilt promise. The sentence
+            above is TRUE about queueing and silent about delivery, and a partner
+            reading "queues the Collective push" reasonably concludes the deal
+            reaches the Collective. It does not: nothing drains
+            mf_collective_push (see the block comment at the "Queued pushes"
+            tile). Appended as a static sibling, LAST INSIDE THE EXISTING <p>,
+            so the existing literal is neither reworded nor hoisted and no panel
+            sibling index is renumbered (guard rules 1, 3, 5). Unconditional, so
+            it is not a suppression (rule 4). */}
+        <span className="block mt-1" data-testid="mf-sob-push-not-delivered">
+          The queued push is not delivered to the Collective. Capavate has no automated delivery step yet, so the
+          vehicle and the audit entry are created, but this deal does not reach the Collective.
         </span>
       </p>
 
@@ -848,13 +854,10 @@ function CreateEngagementPanel({
    * would silently hide legitimately attributable companies, so the field stays a
    * free text input with a datalist and the server's attribution refusal is shown
    * verbatim in human words. */
-  const portfolioQ = useQuery<{ portfolio: Array<{ companyId: string; companyName: string | null; onboarding?: { state: "registered" | "pending" | "indeterminate" | "error" } }> }>({
+  const portfolioQ = useQuery<{ portfolio: Array<{ companyId: string; companyName: string | null }> }>({
     queryKey: ["/api/partner/me/portfolio"],
     enabled: open,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/portfolio")).json(),
-    refetchOnWindowFocus: true,
-    refetchInterval: open ? 15_000 : false,
-    refetchIntervalInBackground: false,
   });
 
   const canWrite = MFCRM_WRITE_ROLES.includes(subRole);
@@ -934,14 +937,14 @@ function CreateEngagementPanel({
                 placeholder="co_..."
               />
               <datalist id="mf-company-options">
-                {(portfolioQ.data?.portfolio ?? []).filter((p) => p.onboarding?.state === "registered").map((p) => (
+                {(portfolioQ.data?.portfolio ?? []).map((p) => (
                   <option key={p.companyId} value={p.companyId}>
                     {p.companyName ?? p.companyId}
                   </option>
                 ))}
               </datalist>
               <div className="mt-1 text-[11px] text-[var(--cv-color-text-muted)]">
-                Only registered companies are suggested. Pending companies remain visible in Portfolio and Clients until the owner completes registration.
+                The company must be attributed to your firm.
               </div>
             </div>
 
@@ -1101,7 +1104,7 @@ export default function PartnerManagedFounders() {
                 <div className="text-xl font-semibold">{dashQ.data.openCrossoverFlags}</div>
               </div>
               <div className="rounded-lg border border-[var(--cv-color-border)] bg-white p-3">
-                <div className="text-xs text-[var(--cv-color-text-muted)]">Pending sharing requests</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)]">Queued pushes</div>
                 <div className="text-xl font-semibold">{dashQ.data.queuedPushes}</div>
               </div>
               {/* WAVE 285 — the "Queued pushes" tile counts `mf_collective_push`
@@ -1150,9 +1153,10 @@ export default function PartnerManagedFounders() {
                 className="col-span-2 sm:col-span-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
                 data-testid="mf-queued-pushes-no-delivery"
               >
-                {/* 2026-09-19 — owner-approved copy (final reconciled spec). Same
-                    tile, same counter, same sibling position; only the wording. */}
-                Requests recorded for vehicles created on a founder’s behalf. Pending requests have not been shared with the Collective and do not give investors access.
+                Delivery of queued pushes to the Collective is not available yet. Creating a vehicle on a founder&apos;s
+                behalf adds one to this count, and no screen on Capavate can move a push out of the queue, so this
+                figure can rise but never fall. A push counted here has not reached the Collective, and a zero here
+                means nothing is waiting — not that a deal was delivered.
               </div>
             </div>
           )}

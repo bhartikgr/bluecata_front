@@ -50,17 +50,8 @@ import { useEntitlement } from "@/lib/entitlement";
 // eligibility query + funded-position signal into a single `eligible` verdict.
 import { useInvestorSpine } from "@/lib/investor/investorSpine";
 
-/* slide13b WAVE D — sector chips read the DB-backed company-sector taxonomy
-   (`taxonomy_terms`, migration 0236) via `useCompanySectorTaxonomy`; the
-   static `COLLECTIVE_SECTORS_45` array is no longer read here (seed only).
-   Values already on the draft always render, active, retired or custom. */
 import {
-  COMPANY_TAXONOMY_ERROR_COPY,
-  COMPANY_TAXONOMY_LOADING_COPY,
-  useCompanySectorTaxonomy,
-} from "@/lib/companyTaxonomy";
-import { mergeTaxonomyOptions } from "@shared/companyTaxonomy";
-import {
+  COLLECTIVE_SECTORS_45,
   COLLECTIVE_REGIONS_9,
   COLLECTIVE_STAGES,
   ACCREDITATION_JURISDICTIONS,
@@ -748,33 +739,9 @@ function Step1Eligibility({ eligibility, loading }: { eligibility?: Eligibility;
 /* Step 2                                                           */
 /* ---------------------------------------------------------------- */
 
-/** Mirrors collectiveApplicationSchema.sectors.max(45) — a SELECTION cap, not the catalog size. */
-const COLLECTIVE_MAX_SECTORS_SELECTED = 45;
-const COLLECTIVE_MAX_SECTORS_COPY = "Maximum of 45 sectors selected — deselect one to choose another.";
-const COLLECTIVE_MAX_SECTORS_HINT = "Select up to 45 — the list may offer more.";
-
 function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm: (f: CollectiveApplication) => void }) {
-  /* slide13b WAVE D — DB taxonomy ∪ held draft values; toggling is blocked while
-     loading or on error so a failed read can neither drop nor add a sector. */
-  const sectorTaxonomy = useCompanySectorTaxonomy();
-  const sectorChipOptions = mergeTaxonomyOptions(sectorTaxonomy.allTerms ?? [], form.sectors);
-  const sectorsLocked = sectorTaxonomy.isLoading || sectorTaxonomy.isError;
-  /* The application schema caps `sectors` at 45 (shared/schema
-     collectiveApplicationSchema: z.array(z.string()).min(1).max(45)). While the
-     catalog was exactly 45 that cap was unreachable; an admin can now add a
-     46th term, so the cap is enforced HERE with feedback instead of failing
-     silently at submit. Deselecting is always allowed. */
-  const [maxSectorsHit, setMaxSectorsHit] = useState(false);
   function toggleSector(s: string) {
-    if (sectorsLocked) return;
-    if (form.sectors.includes(s)) {
-      setMaxSectorsHit(false);
-      setForm({ ...form, sectors: form.sectors.filter((x) => x !== s) });
-      return;
-    }
-    if (form.sectors.length >= COLLECTIVE_MAX_SECTORS_SELECTED) { setMaxSectorsHit(true); return; }
-    setMaxSectorsHit(false);
-    setForm({ ...form, sectors: [...form.sectors, s] });
+    setForm({ ...form, sectors: form.sectors.includes(s) ? form.sectors.filter((x) => x !== s) : [...form.sectors, s] });
   }
   function toggleStage(s: string) {
     setForm({ ...form, stages: form.stages.includes(s) ? form.stages.filter((x) => x !== s) : [...form.stages, s] });
@@ -812,38 +779,17 @@ function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm:
 
         <div>
           <Label>Sectors ({form.sectors.length} / 45)</Label>
-          <span className="ml-2 text-xs text-muted-foreground" data-testid="chips-sectors-cap-hint">{COLLECTIVE_MAX_SECTORS_HINT}</span>
-          <div
-            className="flex flex-wrap gap-1.5 mt-2 max-h-44 overflow-y-auto p-2 border rounded-md"
-            data-testid="chips-sectors"
-            aria-busy={sectorTaxonomy.isLoading || undefined}
-          >
-            {sectorChipOptions.map((o) => { const s = o.value; return (
+          <div className="flex flex-wrap gap-1.5 mt-2 max-h-44 overflow-y-auto p-2 border rounded-md">
+            {COLLECTIVE_SECTORS_45.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => toggleSector(s)}
-                disabled={sectorsLocked}
                 data-testid={`chip-sector-${s.replace(/\W/g, "_")}`}
-                data-kind={o.kind}
-                title={o.kind === "retired" ? "Retired sector — kept because this application already holds it" : o.kind === "custom" ? "Not in the current sector list — kept as entered" : undefined}
-                className={`px-2.5 py-1 text-xs rounded-full border disabled:opacity-60 ${form.sectors.includes(s) ? "bg-[hsl(0_100%_40%)] text-white border-transparent" : "bg-white text-slate-700"}`}
-              >{o.label}</button>
-            ); })}
-            {sectorTaxonomy.isLoading && (
-              <span className="text-xs text-muted-foreground" data-testid="chips-sectors-loading">{COMPANY_TAXONOMY_LOADING_COPY}</span>
-            )}
+                className={`px-2.5 py-1 text-xs rounded-full border ${form.sectors.includes(s) ? "bg-[hsl(0_100%_40%)] text-white border-transparent" : "bg-white text-slate-700"}`}
+              >{s}</button>
+            ))}
           </div>
-          {maxSectorsHit && (
-            <div className="text-xs text-rose-600 mt-1" role="alert" data-testid="chips-sectors-max">
-              {COLLECTIVE_MAX_SECTORS_COPY}
-            </div>
-          )}
-          {sectorTaxonomy.isError && (
-            <div className="text-xs text-rose-600 mt-1" role="alert" data-testid="chips-sectors-error">
-              {COMPANY_TAXONOMY_ERROR_COPY}
-            </div>
-          )}
         </div>
 
         <div>

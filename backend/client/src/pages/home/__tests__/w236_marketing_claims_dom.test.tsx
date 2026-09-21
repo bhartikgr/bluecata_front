@@ -396,24 +396,19 @@ describe("WAVE 236 §D — no rendered sentence claims a check", () => {
 /* ═════════════════════════════════════════════════════════════════════════════
    §E — THE CORRECTED SECTIONS ARE IN POSITION, NOT APPENDED SOMEWHERE ELSE.
    ═════════════════════════════════════════════════════════════════════════════ */
-describe("WAVE 236 §E — corrected sections survive the owner-directed homepage order", () => {
-  it("E1 — mission is second and the preserved trust section immediately precedes pricing", () => {
+describe("WAVE 236 §E — the page's structure is unchanged", () => {
+  it("E1 — both corrected sections are mounted, in the frozen components' slots", () => {
     const { container } = mountRealHome();
     const main = home3Root(container).querySelector<HTMLElement>("main#main-content");
     expect(main).not.toBeNull();
     const children = Array.from(main!.children);
     const trustIdx = children.findIndex((c) => c.getAttribute("data-w236-corrected") === "trust-signals");
     const credIdx = children.findIndex((c) => c.getAttribute("data-w236-corrected") === "credibility");
-    /* 20 September UI request explicitly moves Trust before Pricing and inserts
-     * Mission below Hero. Keep this real-DOM assertion, updated rather than removed. */
-    expect(children[0].classList.contains("hero")).toBe(true);
-    expect(children[1].id).toBe("mission");
-    expect(children[6].id).toBe("how-it-works");
-    expect(credIdx).toBe(7);
-    expect(trustIdx).toBe(8);
-    expect(children[trustIdx + 1].id).toBe("pricing");
-    expect(main!.querySelectorAll('[data-w236-corrected="trust-signals"]')).toHaveLength(1);
-    expect(children.length).toBe(12);
+    /* TrustSignals sat immediately after Hero; CredibilitySection after
+     * PlatformSection. Same slots, same order. */
+    expect(trustIdx).toBe(1);
+    expect(credIdx).toBeGreaterThan(trustIdx);
+    expect(children.length).toBe(11);
   });
 
   it("E2 — the superseded sections are retained and NEVER taken", () => {

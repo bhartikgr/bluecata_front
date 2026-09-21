@@ -27,7 +27,6 @@ import { INDUSTRY_OPTIONS } from "@/lib/profile/data/enums";
 import { COUNTRIES } from "@/lib/profile/data/countries";
 import { useToast } from "@/hooks/use-toast";
 import { describeFailure } from "@/lib/failureMessage";
-import { FounderInvitationStatus } from "@/components/partner/FounderInvitationStatus";
 
 type Section = Record<string, unknown>;
 interface PortfolioProfile {
@@ -41,8 +40,6 @@ interface PortfolioResponse {
   companyName: string | null;
   profile: PortfolioProfile;
   updatedAt: string | null;
-  source?: { sector: string | null };
-  canViewFounderInvitation: boolean;
 }
 
 const STEPS = [
@@ -159,9 +156,6 @@ export function PartnerPortfolioProfileDialog({
     queryKey: ["/api/partner/me/portfolio", companyId],
     enabled: open && !!companyId,
     queryFn: async () => (await apiRequest("GET", `/api/partner/me/portfolio/${companyId}`)).json(),
-    refetchOnWindowFocus: true,
-    refetchInterval: open ? 15_000 : false,
-    refetchIntervalInBackground: false,
   });
 
   // Hydrate local form state whenever the fetched profile changes.
@@ -215,20 +209,6 @@ export function PartnerPortfolioProfileDialog({
             Your private view of this company. Only your workspace can see it; it does not affect the company’s own Capavate profile.
           </DialogDescription>
         </DialogHeader>
-
-        <div className="rounded-md border bg-[var(--cv-color-surface-2)] p-3 text-sm" data-testid="portfolio-canonical-registration">
-          <div>
-            <div className="text-xs text-[var(--cv-color-text-muted)]">Canonical Sector (read-only)</div>
-            <div data-testid="portfolio-canonical-sector">{profileQ.data?.source?.sector || "—"}</div>
-          </div>
-        </div>
-        {profileQ.data?.canViewFounderInvitation === true && (
-          <FounderInvitationStatus
-            companyId={companyId}
-            companyName={profileQ.data?.companyName ?? companyName}
-            canWrite={canEdit}
-          />
-        )}
 
         <div className="flex gap-1 mb-3" data-testid="portfolio-steps">
           {STEPS.map((s) => (

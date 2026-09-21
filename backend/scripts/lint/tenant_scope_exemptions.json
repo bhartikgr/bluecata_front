@@ -16,46 +16,6 @@
   ],
   "exemptions": [
     {
-      "key": "SLIDE13B_INVITED_IDENTITY_GLOBAL",
-      "file": "server/lib/inviteIdentityResolver.ts",
-      "function": "resolveInvitedIdentityStrict",
-      "table": "users",
-      "ruling": "Slide13b delegated lead-developer decision, 2026-09-20: the approved invitation identity binding must detect all conflicting identities before tenant selection. This is a declared global identity read, not a sacred waiver or baseline change.",
-      "reason": ["A person may belong to multiple companies and partner teams. Restricting identity resolution to the invited company tenant would misclassify an existing account as new or conceal duplicate IDs."],
-      "countervailingControl": ["Email is taken from a hash-matched invitation, not an arbitrary public lookup. All matching durable IDs are compared; ambiguity, deletion and lookup errors fail closed. Ownership requires an exact HMAC-verified non-revoked session, live canonical user and account-status gate. Candidate identities and credential material are not returned."],
-      "provenAfterChange": "server/__tests__/slide13b_a0_team_identity_http.test.ts; independent slide13b A0 security regressions."
-    },
-    {
-      "key": "SLIDE13B_NEW_IDENTITY_DURABILITY",
-      "file": "server/lib/inviteIdentityResolver.ts",
-      "function": "isNewInvitePersonaDurable",
-      "table": "users",
-      "ruling": "Slide13b delegated lead-developer decision, 2026-09-20: verify signup identity globally by exact generated ID and invitation email before ownership is granted.",
-      "reason": ["The canonical signup assigns a user-home tenant rather than the invited company tenant. A company-tenant condition would reject valid signup without adding identity protection."],
-      "countervailingControl": ["Exact generated user ID, normalized invitation email and non-deleted row are mandatory. Durable credential and strict cross-source identity agreement are separately verified inside the signup transaction. Failure rolls back partial identity writes before claim or session issuance."],
-      "provenAfterChange": "server/__tests__/slide13b_a0_team_identity_http.test.ts: new-user persistence and SQL-trigger rollback controls."
-    },
-    {
-      "key": "SLIDE13B_ROLLBACK_IDENTITY_PROTECTION",
-      "file": "server/lib/teamInviteRedeem.ts",
-      "function": "registerTeamInviteRedeemRoutes signup rollback",
-      "table": "users",
-      "ruling": "Slide13b delegated lead-developer decision, 2026-09-20: rollback cleanup must check every canonical identity source for the exact newly returned ID before evicting its credential cache.",
-      "reason": ["Tenant filtering could hide a durable identity and make cleanup unsafe. The query is exact-ID existence protection, not a listing of other users."],
-      "countervailingControl": ["Runs only after failed fresh signup and never for alreadyExisted. Exact ID is checked across users, auth_users and credentials; any durable row prevents cleanup. It never deletes canonical identity rows."],
-      "provenAfterChange": "server/__tests__/slide13b_a0_team_identity_http.test.ts: failed persistence, credential-cache cleanup and runtime-ghost controls."
-    },
-    {
-      "key": "SLIDE13B_CLAIM_IDENTITY_LIVE",
-      "file": "server/lib/teamInviteRedeem.ts",
-      "function": "registerTeamInviteRedeemRoutes atomic claim",
-      "table": "users",
-      "ruling": "Slide13b delegated lead-developer decision, 2026-09-20: revalidate the exact invited identity within the atomic claim, independently of its home tenant.",
-      "reason": ["Legitimate cross-company and partner/founder identities have a user-home tenant different from the company receiving the membership."],
-      "countervailingControl": ["Exact durable ID and invitation email plus non-deleted users row are required inside the final transaction. Strict identity resolution is repeated; matching signed session and account-status checks remain mandatory. No existing-account cookie or password is issued or changed."],
-      "provenAfterChange": "server/__tests__/slide13b_a0_team_identity_http.test.ts: claim-time identity changes, orphan identity refusal and cross-role positive controls."
-    },
-    {
       "key": "Q10_COHORT_BENCHMARK",
       "file": "server/wave9ReportingStore.ts",
       "function": "computeCohortBenchmark",

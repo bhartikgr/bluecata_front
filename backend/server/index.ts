@@ -36,7 +36,6 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { seedDemoData } from "./lib/seedDemoData";
 import { getDb } from "./db/connection";
 import { log as structuredLog } from "./lib/logger";
-import { apiRequestLog } from "./lib/apiRequestLog";
 import { getAirwallexMode } from "./lib/paymentGatewayResolver"; // v25.52 Track 4.4 — Airwallex fail-closed boot guard (static ESM import; no runtime require shim)
 // W-COLLECTIVE Wave 1 — boot self-checks (v4 §0a.8 and §1.5). Both are
 // warn-only: they must be loud, but must never abort a live boot.
@@ -106,8 +105,31 @@ export function log(message: string, source = "express") {
   structuredLog.info(`${formattedTime} [${source}] ${message}`);
 }
 
-// Keep operational timing and correlation logging, never bearer URLs or bodies.
-app.use(apiRequestLog(log));
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path = req.path;
+  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+
+  const originalResJson = res.json;
+  res.json = function (bodyJson, ...args) {
+    capturedJsonResponse = bodyJson;
+    return originalResJson.apply(res, [bodyJson, ...args]);
+  };
+
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (path.startsWith("/api")) {
+      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      if (capturedJsonResponse) {
+        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      }
+
+      log(logLine);
+    }
+  });
+
+  next();
+});
 
 (async () => {
   // v25.25 Avi-1 — fail fast in production if JWT_SECRET is missing/short.
@@ -574,3 +596,4 @@ app.use(apiRequestLog(log));
     },
   );
 })();
+
