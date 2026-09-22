@@ -2,8 +2,8 @@
  * v25.49 Phase-4 — CANONICAL SPV Engine surface (GP context).
  * v25.50.0 Phase 4 (spec 3a–3o) — wizard overhaul: marketing copy, country
  * jurisdiction dropdown (+ Other), 5 SPV types & 4 mandate modes with help,
- * mandatory mandate description, sector multi-select bound to the canonical
- * COLLECTIVE_SECTORS_45 + sub-sector, currency-aware amount labels + currency
+ * mandatory mandate description, sector multi-select bound to the DB-backed
+ * company-sector taxonomy (slide13b WAVE D; was COLLECTIVE_SECTORS_45) + sub-sector, currency-aware amount labels + currency
  * dropdowns, relabelled distribution scopes, carry-basis moved into the Terms
  * step, an optional terms-doc link, and a full Review & launch step with
  * per-section edit affordances.
@@ -52,7 +52,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { COLLECTIVE_SECTORS_45 } from "@shared/schema";
+/* slide13b WAVE D — sector chips come from the DB-backed company-sector
+   taxonomy (`taxonomy_terms`, migration 0236), not the static
+   `COLLECTIVE_SECTORS_45` array (now seed only). Chips already held on the
+   mandate (`w.sectors`) always render — active, retired or custom — so an
+   admin retiring a sector never silently drops it from a draft. */
+import {
+  COMPANY_TAXONOMY_ERROR_COPY,
+  COMPANY_TAXONOMY_LOADING_COPY,
+  useCompanySectorTaxonomy,
+} from "@/lib/companyTaxonomy";
+import { mergeTaxonomyOptions } from "@shared/companyTaxonomy";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import { SPV_EDU } from "@/lib/spvEducation"; /* WAVE 8 / ORP-063 */
 import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
@@ -284,7 +294,7 @@ interface WizardState {
   currency: string;
   mandateMode: string;
   mandateDescription: string;    // 3e — mandatory
-  sectors: string[];             // 3f — multi-select (COLLECTIVE_SECTORS_45)
+  sectors: string[];             // 3f — multi-select (DB company-sector taxonomy; slide13b WAVE D)
   subSector: string;             // 3f — optional free text
   mgmtFeeType: string;
   mgmtFixedMinor: string;
@@ -889,6 +899,11 @@ export default function PartnerSpvEngine() {
     return () => clearTimeout(t);
   }, [wizardOpen, step]);
 
+  /* slide13b WAVE D — hook MUST run on every render, including the loading
+     render that returns null below; calling it after the gate made the
+     resolved render register more hooks than the first (React #310). */
+  const sectorTaxonomy = useCompanySectorTaxonomy();
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const canWrite = me.subRole === "managing_partner" || me.subRole === "associate" || me.subRole === "bd";
@@ -1068,8 +1083,16 @@ export default function PartnerSpvEngine() {
     if (step === 3) return !!w.distributionScope;
     return true;
   };
-  const toggleSector = (s: string) =>
+  /* slide13b WAVE D — union of ACTIVE DB sectors (alphabetical) and whatever the
+     draft already holds. On error nothing is offered beyond the held chips and
+     toggling is blocked, so a failed read cannot drop or add a value.
+     (The hook itself is called ABOVE the role gate — see `sectorTaxonomy`.) */
+  const sectorChipOptions = mergeTaxonomyOptions(sectorTaxonomy.allTerms ?? [], w.sectors);
+  const sectorsLocked = sectorTaxonomy.isLoading || sectorTaxonomy.isError;
+  const toggleSector = (s: string) => {
+    if (sectorsLocked) return; // real enforcement: no toggle while the DB list is loading or failed
     setW((prev) => ({ ...prev, sectors: prev.sectors.includes(s) ? prev.sectors.filter((x) => x !== s) : [...prev.sectors, s] }));
+  };
   // SPV-BUG-2 — switching the fee type must RESET the now-irrelevant dependent
   // fields to valid defaults. Previously the raw setW left stale values from the
   // other branch (e.g. an empty carry% after picking "fixed"), which failed the
@@ -1314,21 +1337,37 @@ export default function PartnerSpvEngine() {
                   </div>
                 )}
               </div>
-              {/* 3f — sectors multi-select from COLLECTIVE_SECTORS_45 + sub-sector */}
+              {/* 3f — sectors multi-select + sub-sector. slide13b WAVE D: chips are
+                  the DB taxonomy's active terms ∪ the draft's held values. */}
               <div>
                 <Label>Sectors</Label>
-                <div className="flex flex-wrap gap-1 mt-1 max-h-40 overflow-auto border rounded p-2" data-testid="spv-w-sectors">
-                  {COLLECTIVE_SECTORS_45.map((s) => (
+                <div
+                  className="flex flex-wrap gap-1 mt-1 max-h-40 overflow-auto border rounded p-2"
+                  data-testid="spv-w-sectors"
+                  aria-busy={sectorTaxonomy.isLoading || undefined}
+                >
+                  {sectorChipOptions.map((o) => { const s = o.value; return (
                     <button
                       type="button"
                       key={s}
                       onClick={() => toggleSector(s)}
+                      disabled={sectorsLocked}
                       data-testid={`spv-w-sector-${s}`}
-                      className="text-[11px] rounded-full px-2 py-0.5 border"
+                      data-kind={o.kind}
+                      title={o.kind === "retired" ? "Retired sector — kept because this mandate already holds it" : o.kind === "custom" ? "Not in the current sector list — kept as entered" : undefined}
+                      className="text-[11px] rounded-full px-2 py-0.5 border disabled:opacity-60"
                       style={w.sectors.includes(s) ? { background: NAVY, color: "#fff", borderColor: NAVY } : {}}
-                    >{s}</button>
-                  ))}
+                    >{o.label}</button>
+                  ); })}
+                  {sectorTaxonomy.isLoading && (
+                    <span className="text-[11px] text-[var(--cv-color-text-muted)]" data-testid="spv-w-sectors-loading">{COMPANY_TAXONOMY_LOADING_COPY}</span>
+                  )}
                 </div>
+                {sectorTaxonomy.isError && (
+                  <div className="text-xs text-rose-600 mt-1" role="alert" data-testid="spv-w-sectors-error">
+                    {COMPANY_TAXONOMY_ERROR_COPY}
+                  </div>
+                )}
               </div>
               <div><Label>Sub-sector (optional)</Label><Input data-testid="spv-w-subsector" value={w.subSector} onChange={(e) => setW({ ...w, subSector: e.target.value })} placeholder="e.g. embedded payments" /></div>
 

@@ -204,6 +204,10 @@ import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
 import { registerBridgeRoutes } from "./bridgeStore";
 import { registerNotificationsRoutes } from "./notificationsStore";
+/* 2026-09-19 persona notifications — registered facade for the four customer-
+   facing pairs (GET/PATCH list, read-all, stream). MUST be registered before
+   registerNotificationsRoutes so Express dispatches to it first. */
+import { registerPersonaNotificationRoutes } from "./notificationPersonaRoutes";
 import { registerEmailRoutes, countOutboxByStatus } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
 import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog, reportAuditWriteOutcome } from "./adminPlatformStore";
@@ -353,6 +357,7 @@ import { registerAdminCompedMembershipRoutes } from "./adminCompedMembershipRout
 import { installLaunchGateSettings } from "./lib/spvEligibilityGate";
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
 import { registerPartnerClassificationRoutes } from "./partnerClassificationRoutes"; /* WAVE 4B PT-2 — partner classification read/write + admin CRUD over the DB-driven Sector // Sub-sector taxonomy (reporting/filtering only) */
+import { registerCompanyTaxonomyRoutes } from "./companyTaxonomyRoutes"; /* slide13b WAVE D — DB-backed company-sector taxonomy (taxonomy_terms, 0236); separate from partner classification */
 import { registerCollectiveSubscriptionAdminRoutes } from "./collectiveSubscriptionAdminRoutes"; /* W4 — Collective dynamic subscription-package admin CRUD */
 import { registerCollectiveEnvFallbackAdminRoutes } from "./lib/collectiveEnvFallbackAdminRoutes"; /* D2.5 R1 fix B-5 — use_env_fallback write path */
 import { configureCollectiveSubscriptionConfigStore } from "./collectiveSubscriptionConfigStore"; /* W4 */
@@ -1589,6 +1594,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  /* 2026-09-19 persona notifications — same-resource facade FIRST (order is
+     load-bearing: first matching registration wins). The frozen module below
+     stays registered and unchanged; its preferences/broadcast/emit/kinds routes
+     are still served by it. */
+  registerPersonaNotificationRoutes(app);
   registerNotificationsRoutes(app);
   registerEmailRoutes(app);
   registerAdminPlatformRoutes(app);
@@ -1840,6 +1850,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
      /api/partner/me/classifications, /api/admin/partner-taxonomy/{sectors,subsectors}.
      REPORTING AND FILTERING ONLY — no guard, route or menu reads a classification. */
   registerPartnerClassificationRoutes(app);
+  /* slide13b WAVE D — company_sector taxonomy read (requireAuth) + admin CRUD
+     (requireAdmin). Fail-closed bootstrap → 503 TAXONOMY_UNAVAILABLE. */
+  registerCompanyTaxonomyRoutes(app);
   /* W4 — Collective dynamic subscription-package admin CRUD (10 routes under
      /api/admin/collective-subscriptions). Wire audit/bridge to the admin audit log. */
   try {

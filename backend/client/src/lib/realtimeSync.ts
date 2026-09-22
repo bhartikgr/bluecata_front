@@ -28,12 +28,14 @@ const AGGREGATE_TO_KEYS: Record<string, string[]> = {
   // Sprint 21 Wave C: captable_position changes invalidate per-company portfolio view
   captable_position: ["/api/companies", "/api/cap-table", "/api/holders", "/api/investor/portfolio2"],
   collective_nomination: ["/api/investor/companies"],
-  notificationPrefs: ["/api/notifications"],
+  /* 2026-09-19 — notification consumers now key on ["notifications", userId,
+     surface, …]; the legacy URL-string root is kept for anything still on it. */
+  notificationPrefs: ["/api/notifications", "notifications"],
   auditEntry:        ["/api/admin/audit-log"],
   // Sprint 21 Wave D: investor CRM realtime refresh
   investor_crm:      ["/api/investor/crm"],
   // Sprint 22 Wave 2: new aggregates (DEF-F17)
-  notification:      ["/api/notifications"],
+  notification:      ["/api/notifications", "notifications"],
   collective_application: ["/api/collective/applications", "/api/founder/collective/applications"],
   crm_contact:       ["/api/investor/crm", "/api/founder/investor-crm"],
   /* D2 LOCK 4 (§15.4, V32-M1) — partnerRepresentation. Ozan requirement #5:

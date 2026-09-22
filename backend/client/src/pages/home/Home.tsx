@@ -1,6 +1,7 @@
 
 import React from 'react'
 import './home3style.css';
+import './homeMission.css';
 import Header3 from "../../components/home3compo/Header3";
 import Footer3 from "../../components/home3compo/Footer3";
 /* WAVE 210 — Footer3.jsx is SACRED (BASE entry, enforced 48-file list) and its
@@ -68,6 +69,8 @@ import TrustSignals from "../../components/home3compo/TrustSignals";
 import { useW236MarketingClaimCorrections } from "../../components/marketing/w236MarketingClaimCorrections";
 import W236TrustSignals from "../../components/marketing/W236TrustSignals";
 import W236CredibilitySection from "../../components/marketing/W236CredibilitySection";
+import HomeMission from "../../components/marketing/HomeMission";
+import { useHeroPartnerValue } from "../../components/marketing/HeroPartnerValue";
 
 /* WAVE 236 — RETIRED IN PLACE, NOT DELETED (R195.5).
  *
@@ -93,6 +96,7 @@ export default function Home() {
    * `data-w236-unmatched` on the root, so a test can prove every correction found
    * its target instead of assuming it did. */
   useW236MarketingClaimCorrections(home3RootRef);
+  const heroPartnerValue = useHeroPartnerValue(home3RootRef);
   return (
     /* WAVE 0 · H-1 — the scope for the marketing button reset.
        `home3style.css` used to reset `border` on EVERY button on the platform
@@ -108,18 +112,17 @@ export default function Home() {
           Pairs with the skip-to-content link in Header3 and gives SRs a primary region. */}
       <main id="main-content" role="main">
         <Hero />
-        {/* Wave G Track 2 — G6: Trust signals (between hero and audiences/pricing) */}
-        {/* WAVE 236 — the corrected section, IN POSITION. Same slot, same order, same
-            `data-testid` and same `aria-labelledby` as the frozen component it stands
-            in for, so `<main>`'s child count and order are unchanged. */}
-        <W236TrustSignals />
+        {heroPartnerValue}
+        {/* Owner-directed landing UI order: mission directly after the hero,
+            strongest audience/network sections first, trust just before pricing. */}
+        <HomeMission />
         <AudiencesSection />
-        <HowItWorks />
         <MultiplierSection />
         <DynamicCRM />
         <PlatformSection />
-        {/* WAVE 236 — the corrected section, IN POSITION. See above. */}
+        <HowItWorks />
         <W236CredibilitySection />
+        <W236TrustSignals />
         <PricingSection />
         <LearnSection />
         <FinalCTA />

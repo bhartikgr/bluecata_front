@@ -98,6 +98,11 @@ const createOnBehalf = (name: string) =>
       name,
       jurisdiction: "delaware",
       carryBasis: "whole_spv",
+      /* 2026-09-19 — explicit fixture currency. The engine refuses a vehicle
+         without one (SPV_CURRENCY_REQUIRED); this fixture predates that rule
+         and was failing PRE-edit for exactly that reason. Stated by the test,
+         never defaulted by product code. */
+      currency: "USD",
     });
 
 /* ---------- source-scan instrument, used for the absence proofs ---------- */
@@ -280,10 +285,12 @@ describe("WAVE 285 · C — the disclosure the screen now carries is true of thi
     "utf8",
   );
 
-  it("the tile's label and value are UNTOUCHED — the fix appends, it does not reword", () => {
-    /* Anchored on strings this wave did not write, so it can tell the fix from
-       the defect. */
-    expect(page).toContain(">Queued pushes</div>");
+  it("the tile's label and value — label reworded by owner 2026-09-19, value untouched", () => {
+    /* 2026-09-19 — owner-approved copy (final reconciled notification spec):
+       the tile is now "Pending sharing requests"; the counter expression is
+       the same single render site. */
+    expect(page).toContain(">Pending sharing requests</div>");
+    expect(page).not.toContain(">Queued pushes</div>");
     expect(page).toContain("{dashQ.data.queuedPushes}");
     /* Counted on the RENDER EXPRESSION, not on the bare identifier: the bare
        identifier also appears in this wave's own explanatory comment and in the
@@ -297,27 +304,33 @@ describe("WAVE 285 · C — the disclosure the screen now carries is true of thi
     ).toBe(1);
   });
 
-  it("the disclosure says delivery is not available and that a zero is not a delivery", () => {
-    expect(page).toContain("Delivery of queued pushes to the Collective is not available yet.");
-    expect(page).toContain("has not reached the Collective");
-    expect(page).toContain("not that a deal was delivered");
-    /* It must NOT tell the partner the figure is always zero — that claim is
-       false, as section A proves by execution. What it says instead is the
-       measured direction of travel. */
-    expect(page).toContain("figure can rise but never fall");
+  it("the disclosure says pending requests are not shared and give no investor access", () => {
+    /* 2026-09-19 — owner-approved copy (final reconciled notification spec).
+       The disclosure remains unconditional, on the same testid, and still
+       states the two facts that matter: not shared, no investor access. */
+    expect(page).toContain(
+      "Requests recorded for vehicles created on a founder’s behalf. Pending requests have not been shared with the Collective and do not give investors access.",
+    );
+    expect(page).toContain('data-testid="mf-queued-pushes-no-delivery"');
     const rendered = page.slice(
-      page.indexOf("Delivery of queued pushes"),
-      page.indexOf("not that a deal was delivered"),
+      page.indexOf("Requests recorded for vehicles"),
+      page.indexOf("do not give investors access."),
     );
     expect(rendered.length).toBeGreaterThan(80);
+    /* It must NOT tell the partner the figure is always zero — that claim is
+       false, as section A proves by execution. */
     expect(rendered.toLowerCase()).not.toContain("always zero");
     expect(rendered.toLowerCase()).not.toContain("permanently zero");
+    /* Old W285 wording must be gone in full — no half-replaced sentence. */
+    expect(page).not.toContain("Delivery of queued pushes to the Collective is not available yet.");
+    expect(page).not.toContain("figure can rise but never fall");
   });
 
-  it("the enqueue surface carries its own disclosure, and its old sentence is intact", () => {
-    expect(page).toContain(
-      "Creates the vehicle, records an audit entry in the on-behalf chain, and queues the Collective push — in one transaction.",
-    );
-    expect(page).toContain("The queued push is not delivered to the Collective.");
+  it("the enqueue surface carries the owner-approved sentence and its disclosure", () => {
+    expect(page).toContain("Creates a vehicle for this founder and records your action.");
+    expect(page).toContain("Creating the vehicle does not publish it to the Collective or give investors access.");
+    expect(page).toContain('data-testid="mf-sob-push-not-delivered"');
+    expect(page).not.toContain("queues the Collective push — in one transaction.");
+    expect(page).not.toContain("The queued push is not delivered to the Collective.");
   });
 });

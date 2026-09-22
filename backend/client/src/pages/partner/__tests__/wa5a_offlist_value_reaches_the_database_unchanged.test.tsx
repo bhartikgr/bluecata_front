@@ -90,10 +90,16 @@ beforeAll(async () => {
   const { registerPartnerPortfolioCompanyRoutes } = await import(
     "../../../../../server/partnerPortfolioCompanyRoutes"
   );
+  /* slide13b WAVE D — the sector dropdown now reads the DB-backed taxonomy over
+     HTTP, so the in-process app must serve /api/company-taxonomy too. */
+  const { registerCompanyTaxonomyRoutes } = await import(
+    "../../../../../server/companyTaxonomyRoutes"
+  );
   app = express();
   app.use(express.json());
   registerPartnerRoutes(app);
   registerPartnerPortfolioCompanyRoutes(app);
+  registerCompanyTaxonomyRoutes(app);
   seedTestPartnerSandbox({ force: true });
 
   (global as never as { fetch: unknown }).fetch = async (url: string, init?: RequestInit) => {
@@ -126,19 +132,27 @@ beforeAll(async () => {
 
 afterEach(() => cleanup());
 
-function mount(): void {
+async function mount(): Promise<void> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
       <PartnerAddPortfolioCompany />
     </QueryClientProvider>,
   );
+  /* slide13b WAVE D — the sector list arrives from the database (45 seeded rows,
+     same count the static list had). Wait for it so the assertions below measure
+     the loaded form, not the disabled "Loading sectors…" state. */
+  await waitFor(() => {
+    const sel = screen.getByTestId("apc-sector-select") as HTMLSelectElement;
+    expect(sel.disabled).toBe(false);
+    expect(sel.options.length).toBe(COLLECTIVE_SECTORS_45.length + 1);
+  }, { timeout: 8000 });
 }
 
 /** Assert PRECONDITIONS before measuring anything (standing rule 5). */
 describe("0 · preconditions", () => {
-  it("the real form, the real dropdowns and the real lists are all present", () => {
-    mount();
+  it("the real form, the real dropdowns and the real lists are all present", async () => {
+    await mount();
     for (const id of [
       "apc-company-name",
       "apc-founder-email",
@@ -155,7 +169,8 @@ describe("0 · preconditions", () => {
     }
     /* The dropdowns are bound to the shipped lists at the counts measured, not
        to a list this wave invented. 45 + "Not specified", 7 + "Not specified",
-       250 + "Country not specified". */
+       250 + "Country not specified". slide13b WAVE D: the 45 sectors are now the
+       DB taxonomy's active rows (seeded from COLLECTIVE_SECTORS_45 by 0236). */
     expect((screen.getByTestId("apc-sector-select") as HTMLSelectElement).options.length)
       .toBe(COLLECTIVE_SECTORS_45.length + 1);
     expect((screen.getByTestId("apc-stage-select") as HTMLSelectElement).options.length)
@@ -177,7 +192,7 @@ describe("0 · preconditions", () => {
 
 describe("A · a canonical choice reaches the database as itself", () => {
   it("choosing Fintech / Series A / Canada stores exactly those", async () => {
-    mount();
+    await mount();
     fireEvent.change(screen.getByTestId("apc-company-name"), { target: { value: "WA5a Canonical Co" } });
     fireEvent.change(screen.getByTestId("apc-founder-email"), { target: { value: "founder@wa5a-canon.test" } });
     fireEvent.change(screen.getByTestId("apc-sector-select"), { target: { value: "Fintech" } });
@@ -192,6 +207,8 @@ describe("A · a canonical choice reaches the database as itself", () => {
 
     const before = creates201();
     fireEvent.click(screen.getByTestId("apc-create-btn"));
+    expect(creates201()).toBe(before);
+    fireEvent.click(await screen.findByTestId("apc-confirm-create"));
     await waitFor(() => expect(creates201()).toBeGreaterThan(before), { timeout: 8000 });
 
     /* THE STORED ROW. Read from SQLite, not from the page and not from the reply. */
@@ -207,7 +224,7 @@ describe("A · a canonical choice reaches the database as itself", () => {
 
 describe("B · THE HIGH-RISK CASE — an off-list value is not dropped and not coerced", () => {
   it("a sector, stage and HQ the lists do not contain survive to the row byte-for-byte", async () => {
-    mount();
+    await mount();
     fireEvent.change(screen.getByTestId("apc-company-name"), { target: { value: "WA5a Off List Co" } });
     fireEvent.change(screen.getByTestId("apc-founder-email"), { target: { value: "founder@wa5a-off.test" } });
 
@@ -234,6 +251,8 @@ describe("B · THE HIGH-RISK CASE — an off-list value is not dropped and not c
 
     const before = creates201();
     fireEvent.click(screen.getByTestId("apc-create-btn"));
+    expect(creates201()).toBe(before);
+    fireEvent.click(await screen.findByTestId("apc-confirm-create"));
     await waitFor(() => expect(creates201()).toBeGreaterThan(before), { timeout: 8000 });
 
     /* THE STORED ROW — the assertion that matters. */
@@ -250,7 +269,7 @@ describe("B · THE HIGH-RISK CASE — an off-list value is not dropped and not c
   }, 20_000);
 
   it("choosing a country ADDS to an off-list HQ instead of replacing it", async () => {
-    mount();
+    await mount();
     fireEvent.change(screen.getByTestId("apc-company-name"), { target: { value: "WA5a Hq Append Co" } });
     fireEvent.change(screen.getByTestId("apc-founder-email"), { target: { value: "founder@wa5a-hq.test" } });
     /* The shipped convention, which holds a US STATE code in the ", XX" slot. */
@@ -263,6 +282,8 @@ describe("B · THE HIGH-RISK CASE — an off-list value is not dropped and not c
 
     const before = creates201();
     fireEvent.click(screen.getByTestId("apc-create-btn"));
+    expect(creates201()).toBe(before);
+    fireEvent.click(await screen.findByTestId("apc-confirm-create"));
     await waitFor(() => expect(creates201()).toBeGreaterThan(before), { timeout: 8000 });
     const row = rawDb()
       .prepare(`SELECT hq FROM companies WHERE name = ?`)

@@ -109,6 +109,10 @@ type NavGroup = {
    bell's "View all" cannot drift apart. The route itself is registered in
    `App.tsx` wrapped in this same shell. */
 export const COLLECTIVE_NOTIFICATIONS_HREF = "/collective/notifications";
+/* 2026-09-19 — the Consortium Partner inbox is a SEPARATE route in this same
+   shell. Partner nav and the partner-mode bell's "View all" both read it, so
+   the partner's inbox lists and counts partner notices only. */
+export const PARTNER_NOTIFICATIONS_HREF = "/collective/partner/notifications";
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -299,7 +303,7 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          (`:359-363` before this wave), so without an entry here a partner's own
          inbox would be reachable through the bell alone. Same route, same page;
          which shell it renders in is decided by the route, not by the persona. */
-      { href: COLLECTIVE_NOTIFICATIONS_HREF, label: "Notifications", icon: Bell, "data-testid": "nav-partner-notifications" },
+      { href: PARTNER_NOTIFICATIONS_HREF, label: "Notifications", icon: Bell, "data-testid": "nav-partner-notifications" },
       { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
     ],
   },
@@ -530,7 +534,12 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
 
 function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
   const { role } = useRole();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  /* 2026-09-19 — the bell's workspace follows the ROUTE this shell is showing:
+     a partner page → partner notices and the partner inbox; any other
+     Collective page → Collective notices and the Collective inbox. */
+  const bellSurface = location.startsWith("/collective/partner") ? "partner" : "collective";
+  const bellViewAllHref = bellSurface === "partner" ? PARTNER_NOTIFICATIONS_HREF : COLLECTIVE_NOTIFICATIONS_HREF;
   // v25.41 Bug-1 — partner-only sessions retitle the topbar and hide the
   // chapter selector (a pure partner has no Collective chapter scope).
   const partnerOnly = usePartnerOnlyMode();
@@ -637,7 +646,7 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
             depends on. `viewAllHref` names the in-shell inbox route this wave adds,
             so "View all notifications" no longer ejects the reader to the
             shell-less `/notifications` through a role default that is wrong here. */}
-        <NotificationBell viewAllHref={COLLECTIVE_NOTIFICATIONS_HREF} />
+        <NotificationBell viewAllHref={bellViewAllHref} surface={bellSurface} />
         {/* v17 Phase A — chapter selector. Renders null when COLLECTIVE_ENABLED!=1
             or when the user has zero chapter memberships, so the topbar layout
             matches the v16 Friday baseline by default. */}
@@ -725,6 +734,7 @@ function isMemberGateExempt(path: string): boolean {
        explicitly rather than folded into the partner prefix because it serves EVERY
        persona this shell hosts, not just the partner. */
     path === COLLECTIVE_NOTIFICATIONS_HREF ||
+    path === PARTNER_NOTIFICATIONS_HREF ||
     path === "/syndicate/apply" ||
     path.startsWith("/collective/syndicate/apply")
   );

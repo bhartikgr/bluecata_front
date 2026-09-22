@@ -45,6 +45,14 @@ interface CompanyFullRow {
   region: string;
   sector: string;
   stage: string;
+  hq?: string | null;
+}
+
+interface CompanyOnboarding {
+  state: "registered" | "pending" | "indeterminate" | "error";
+  reason: string;
+  ownerInvitation: { email?: string; invitedName: string | null; status: string; sentAt: string | null; expiresAt: string | null; acceptedAt: string | null } | null;
+  registeredFounders: Array<{ userId: string; email: string; name: string | null; role: string }>;
 }
 
 interface CompanyProfile {
@@ -162,7 +170,7 @@ function EditDrawer({ open, onClose, title, fields, profile, companyId }: EditDr
             const n = raw === "" ? undefined : Number(raw);
             patch[f.key] = isNaN(n as number) ? undefined : n;
           } else {
-            patch[f.key] = raw === "" ? undefined : raw;
+            patch[f.key] = f.key === "sector" ? raw : raw === "" ? undefined : raw;
           }
         }
       }
@@ -258,6 +266,15 @@ export default function AdminCompanyDetail() {
       (await apiRequest("GET", `/api/admin/companies/${params?.id}/profile`)).json(),
     enabled: Boolean(params?.id),
   });
+  const { data: onboarding, isError: onboardingError } = useQuery<CompanyOnboarding>({
+    queryKey: ["/api/admin/companies", params?.id, "onboarding"],
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/admin/companies/${params?.id}/onboarding`)).json(),
+    enabled: Boolean(params?.id),
+    refetchOnWindowFocus: true,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+  });
 
   const c = companiesData?.rows.find((x) => x.id === params?.id);
   const profile = profileData?.profile;
@@ -284,6 +301,14 @@ export default function AdminCompanyDetail() {
   function displayVal(val: unknown): string {
     if (val === undefined || val === null || val === "") return "—";
     return String(val);
+  }
+
+  function displayedProfileValue(key: keyof CompanyProfile): unknown {
+    if (profile && Object.prototype.hasOwnProperty.call(profile, key)) return profile[key];
+    if (key === "sector") return c?.sector;
+    if (key === "stage") return c?.stage;
+    if (key === "hqAddress") return c?.hq;
+    return profile?.[key];
   }
 
   return (
@@ -339,7 +364,7 @@ export default function AdminCompanyDetail() {
                       <tr key={String(f.key)} className="border-b border-border/40 last:border-0">
                         <td className="px-6 py-2 text-xs text-muted-foreground font-mono w-1/2">{f.label}</td>
                         <td className="px-3 py-2 font-medium text-xs" data-testid={`field-${String(f.key)}`}>
-                          {displayVal(profile?.[f.key])}
+                          {displayVal(displayedProfileValue(f.key))}
                         </td>
                       </tr>
                     ))}
@@ -421,6 +446,43 @@ export default function AdminCompanyDetail() {
               mark panel is — the breakdown is meaningless without a resolved
               company id. */}
           {c && <FounderChannelsPanel companyId={c.id} />}
+
+          {/* Slide 13b C — appended after every pre-existing grid card so the
+              existing profile, M&A, mark and channel panels retain position. */}
+          <Card data-testid="admin-company-onboarding">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Founder onboarding</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {onboardingError ? (
+                <div className="text-rose-700">Onboarding state is temporarily unavailable.</div>
+              ) : onboarding ? (
+                <>
+                  <div><span className="text-muted-foreground">State:</span> {onboarding.state}</div>
+                  <div><span className="text-muted-foreground">Reason:</span> {onboarding.reason}</div>
+                  <div data-testid="admin-owner-invitation">
+                    <span className="text-muted-foreground">Owner invitation:</span>{" "}
+                    {onboarding.ownerInvitation
+                      ? `${onboarding.ownerInvitation.invitedName ?? "Owner"} · ${onboarding.ownerInvitation.email ?? "Email withheld"} · ${onboarding.ownerInvitation.status}`
+                      : "None"}
+                  </div>
+                  {onboarding.ownerInvitation && (
+                    <div className="text-xs text-muted-foreground">
+                      Sent {displayVal(onboarding.ownerInvitation.sentAt)} · expires {displayVal(onboarding.ownerInvitation.expiresAt)} · accepted {displayVal(onboarding.ownerInvitation.acceptedAt)}
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-muted-foreground">Registered founder identities</div>
+                    {onboarding.registeredFounders.length
+                      ? onboarding.registeredFounders.map((founder) => (
+                          <div key={founder.userId}>{founder.name ?? founder.email} · {founder.email} · {founder.role}</div>
+                        ))
+                      : <div>None verified</div>}
+                  </div>
+                </>
+              ) : <Skeleton className="h-20 w-full" />}
+            </CardContent>
+          </Card>
         </div>
 
         {/* ── Edit Drawers ────────────────────────────── */}
